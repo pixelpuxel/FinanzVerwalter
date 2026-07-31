@@ -121,9 +121,9 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 23 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 24 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 67 ausgeführte XCTest-Fälle: 66
+implementiert. Die Suite umfasst aktuell 69 ausgeführte XCTest-Fälle: 68
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -345,6 +345,31 @@ Für den Banking-Simulator gilt reproduzierbar:
   Automatisierte Tests dürfen die Produktivdatei weder migrieren noch
   verändern; prüfe dies zusätzlich durch identische SHA-256-Werte vor und
   nach der vollständigen Suite.
+
+Für SEPA-Core-Lastschriften gilt reproduzierbar:
+
+- Migration 24 erzeugt `direct_debit_orders`. Ein Auftrag referenziert ein
+  offenes EUR-Gläubigerkonto, einen aktiven Empfänger, genau dessen aktive
+  Bankverbindung und genau dessen aktives unterschriebenes Mandat.
+- Friere beim Anlegen Gläubigername/-ID/IBAN/BIC, Schuldnername/-IBAN/BIC,
+  Mandatsreferenz/-datum/-sequenz, Betrag, Fälligkeit, Verwendungszweck und
+  End-to-End-ID als unveränderlichen Schnappschuss ein. Prüfe die exakte
+  Übereinstimmung mit den Stammdaten innerhalb derselben SQLite-Transaktion.
+- Verwende dieselbe sichere Zustandsmaschine wie bei Überweisungen. Eine
+  Annahme materialisiert atomar genau eine positive vorgemerkte Buchung mit
+  stabiler Kennung `direct-debit:<Auftrags-UUID>`. TAN/Freigabecode bleiben
+  ausschließlich kurzlebiger UI-Zustand.
+- Exportiere nur Entwürfe lokal als `pain.008.001.08`. Kapsle Namespace,
+  Wirksamkeit ab 05.10.2025 und Quellenkennung in
+  `Pain008RulePackage.epc2025` (`EPC-SDD-CORE-2025-V1.1`). Schreibe CORE,
+  Sequenztyp, Fälligkeit, Kontrollsummen, Gläubiger-ID, Mandat und sämtliche
+  Schuldnerdaten; validiere EUR, Betrags-/Längen-/Slash-/BIC-Regeln und
+  XML-Escaping. Der Export sendet nichts und ändert keinen Auftrag.
+- Zeige im Zahlungsverkehr getrennte Segmente für Überweisungen,
+  Lastschriften und Daueraufträge. Vor Ausführung muss die vollständige,
+  unveränderliche Lastschriftzusammenfassung sichtbar und doppelt bestätigt
+  sein. Prüfe Rundlauf, Manipulationsschutz, Idempotenz, Zustandsübergänge,
+  genau-einmalige Buchung und deterministischen XML-Export.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 

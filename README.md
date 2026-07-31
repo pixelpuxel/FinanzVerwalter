@@ -366,6 +366,16 @@ Dauerauftrag und Fälligkeitsdatum sowie eine unveränderliche Historie
 verhindern Doppelentwürfe; spätere Vorlagenänderungen verändern bereits
 erzeugte Aufträge nicht.
 
+SEPA-Core-Lastschriften verwenden ein offenes EUR-Gläubigerkonto, eine
+aktive Empfänger-Bankverbindung und ein aktives unterschriebenes Mandat.
+Gläubiger- und Schuldnerdaten, Mandatsreferenz, Unterschriftsdatum,
+Sequenztyp, Fälligkeit, Betrag, Verwendungszweck und End-to-End-ID werden beim
+Anlegen unveränderlich eingefroren. Nach doppelter Bestätigung durchläuft der
+lokale Simulator dieselbe sichere Statusmaschine; eine Annahme erzeugt genau
+eine vorgemerkte Gutschrift. Entwürfe können lokal als
+`pain.008.001.08` nach dem datierten Regelpaket `EPC-SDD-CORE-2025-V1.1`
+exportiert werden. Es findet keine echte Bankübermittlung statt.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand

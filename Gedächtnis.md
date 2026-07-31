@@ -1316,3 +1316,52 @@ Rechtsberatung.
   ohne Screenshot.
 - Der Zielzählerstand vor diesem Veröffentlichungsprotokoll beträgt
   9.207.144 Tokens.
+
+## 2026-07-31 – SEPA-Core-Lastschriften und pain.008
+
+- SQLite-Migration 24 ergänzt `direct_debit_orders`. Jeder Auftrag verknüpft
+  ein offenes EUR-Gläubigerkonto, einen aktiven Empfänger, dessen aktive
+  Bankverbindung und dessen aktives unterschriebenes Mandat. Gläubiger- und
+  Schuldnerdaten, Mandatsreferenz/-datum/-sequenz, Fälligkeit, Betrag,
+  Verwendungszweck und End-to-End-ID werden als unveränderlicher Schnappschuss
+  gespeichert und innerhalb einer einzigen Transaktion gegen Manipulation
+  geprüft.
+- Der Zahlungsverkehr besitzt nun getrennte Bereiche für Überweisungen,
+  Lastschriften und Daueraufträge. Der Lastschrifteditor wählt Konto,
+  Zahlungspflichtigen, Bankverbindung und Mandat; die Detailansicht zeigt vor
+  der simulierten Ausführung eine vollständige unveränderliche Zusammenfassung
+  und verlangt eine doppelte Bestätigung. Freigabecodes werden nie gespeichert.
+- Die bestehende sichere Statusmaschine wird wiederverwendet. Eine angenommene
+  Lastschrift erzeugt atomar genau eine positive vorgemerkte Buchung mit
+  Empfänger-, Bank-, Mandats-, Gläubiger- und End-to-End-Verknüpfung.
+- `Pain008Exporter` schreibt deterministisch `pain.008.001.08` nach dem
+  datierten Paket `EPC-SDD-CORE-2025-V1.1`, gültig ab 05.10.2025. Grundlage
+  sind EPC SDD Core Rulebook 2025 V1.1 und C2PSP Implementation Guidelines
+  2025 V1.0. CORE, Sequenztyp, Fälligkeit, Kontrollsummen, Gläubiger-ID,
+  Mandat und Schuldnerdaten werden geschrieben; EUR-, Betrags-, BIC-, Längen-,
+  Slash- und XML-Escaping-Regeln werden vor dem lokalen Export geprüft.
+- Zwei neue Integrationstests prüfen Stammdatenzuordnung, Manipulationsschutz,
+  unveränderte historische Mandatsdaten, Idempotenz, sämtliche zulässigen und
+  unzulässigen Statusübergänge, genau-einmalige Buchung sowie deterministischen
+  pain.008-Export und Negativfälle. Der temporäre Testdatenbank-Helfer schließt
+  SQLite nun ausdrücklich vor dem Löschen und erzeugt keine API-Warnung mehr.
+- Die vollständige Abnahme führte 69 Tests aus: 68 bestanden, der private
+  opt-in-Real-QIF-Test wurde erwartungsgemäß übersprungen, 0 Fehler. Debug-
+  und optimierter Release-Build bestehen.
+- Derselbe opt-in-Test wurde anschließend separat mit einer nur temporär nach
+  `/tmp` kopierten, SHA-256-identischen privaten 2025-QIF-Datei ausgeführt und
+  bestand mit allen 97 Konten und 2.170 Buchungen. Die temporäre Kopie wurde
+  danach entfernt; weder Pfad noch Inhalt werden eingecheckt.
+- Vor der Produktivmigration wurde
+  `Vor Migration 24 Lastschriften.qbackup` erstellt und geprüft: Schema 23,
+  Integrität `ok`, 97 Konten und 2.170 Buchungen. Der optimierte Release wurde
+  signaturgeprüft, unter `~/Applications/FinanzVerwalter.app` installiert und
+  gestartet; der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-lastschriften-20260731-1445.app`.
+- Nach kontrolliertem WAL-Checkpoint meldet die Produktivdatei Schema 24,
+  Integrität `ok`, unverändert 97 Konten und 2.170 Buchungen, 0
+  Lastschriftaufträge und SHA-256
+  `ea205b382540a4eba259f5d57b0b32a39fbdbbdf614a2be6e0aa475a3b9b5345`.
+- Die sichtbare UI-/VoiceOver-Abnahme und ein neuer Screenshot bleiben offen,
+  solange die macOS-Sitzung gesperrt ist; dieser Nachweis wird nicht
+  vorgetäuscht.
