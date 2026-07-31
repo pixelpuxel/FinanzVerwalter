@@ -203,6 +203,149 @@ enum Pain001Exporter {
         )
     }
 
+    static func export(
+        batch: PaymentBatch,
+        orders: [PaymentOrder],
+        account: FinanceAccount,
+        createdAt: Date = Date(),
+        messageID: String? = nil
+    ) throws -> Pain001ExportResult {
+        try batch.validate()
+        guard batch.kind == .creditTransfer else {
+            throw FinanceError.invalidPaymentBatch(
+                "Dieser Sammler enthält keine Überweisungen."
+            )
+        }
+        guard batch.accountID == account.id else {
+            throw Pain001ExportError.accountMismatch
+        }
+        guard orders.map(\.id) == batch.memberOrderIDs else {
+            throw FinanceError.invalidPaymentBatch(
+                "Mitglieder oder Reihenfolge stimmen nicht mit dem gespeicherten Sammler überein."
+            )
+        }
+        guard let first = orders.first else {
+            throw FinanceError.invalidPaymentBatch("Der Sammler ist leer.")
+        }
+        let requestedDay = day(batch.requestedDate)
+        guard orders.allSatisfy({
+            $0.accountID == batch.accountID
+                && $0.status == .draft
+                && $0.type == first.type
+                && day($0.executionDate) == requestedDay
+        }) else {
+            throw FinanceError.invalidPaymentBatch(
+                "Typ, Konto, Status oder Ausführungstag der Überweisungen stimmen nicht überein."
+            )
+        }
+        for (index, order) in orders.enumerated() {
+            _ = try export(
+                order: order, account: account, createdAt: createdAt,
+                messageID: "CHECK-\(index + 1)"
+            )
+        }
+        var totalMinor: Int64 = 0
+        for order in orders {
+            let (sum, overflow) = totalMinor.addingReportingOverflow(order.amountMinor)
+            guard !overflow, sum <= maximumMinorUnits else {
+                throw Pain001ExportError.amountOutOfRange
+            }
+            totalMinor = sum
+        }
+        let rules = try rulePackage(for: createdAt)
+        let compactBatchID = batch.id.uuidString
+            .replacingOccurrences(of: "-", with: "").uppercased()
+        let resolvedMessageID = messageID ?? "BT-\(compactBatchID)"
+        let paymentInformationID = "BT-\(compactBatchID)"
+        try validateIdentifier(
+            resolvedMessageID, field: "Nachrichten-ID", maximum: 35
+        )
+        try validateIdentifier(
+            paymentInformationID, field: "Zahlungsblock-ID", maximum: 35
+        )
+
+        let debtorName = account.ownerName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let debtorIBAN = IBANValidator.normalized(account.iban)
+        let debtorBIC = try normalizedBIC(account.bic)
+        let debtorAgent: String
+        if debtorBIC.isEmpty {
+            debtorAgent = """
+              <DbtrAgt>
+                <FinInstnId><Othr><Id>NOTPROVIDED</Id></Othr></FinInstnId>
+              </DbtrAgt>
+            """
+        } else {
+            debtorAgent = """
+              <DbtrAgt>
+                <FinInstnId><BICFI>\(xml(debtorBIC))</BICFI></FinInstnId>
+              </DbtrAgt>
+            """
+        }
+        let transactionXML = try orders.map { order -> String in
+            let creditorBIC = try normalizedBIC(order.bic)
+            let creditorAgent = creditorBIC.isEmpty ? "" : """
+
+                <CdtrAgt>
+                  <FinInstnId><BICFI>\(xml(creditorBIC))</BICFI></FinInstnId>
+                </CdtrAgt>
+            """
+            return """
+              <CdtTrfTxInf>
+                <PmtId><EndToEndId>\(xml(normalizedEndToEndID(order.endToEndID)))</EndToEndId></PmtId>
+                <Amt><InstdAmt Ccy="EUR">\(decimalAmount(order.amountMinor))</InstdAmt></Amt>\(creditorAgent)
+                <Cdtr><Nm>\(xml(order.recipientName.trimmingCharacters(in: .whitespacesAndNewlines)))</Nm></Cdtr>
+                <CdtrAcct><Id><IBAN>\(IBANValidator.normalized(order.iban))</IBAN></Id></CdtrAcct>
+                <RmtInf><Ustrd>\(xml(order.purpose.trimmingCharacters(in: .whitespacesAndNewlines)))</Ustrd></RmtInf>
+              </CdtTrfTxInf>
+            """
+        }.joined(separator: "\n")
+        let localInstrument = first.type == .instantCreditTransfer
+            ? "\n          <LclInstrm><Cd>INST</Cd></LclInstrm>" : ""
+        let content = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Document xmlns="\(rules.namespace)">
+          <CstmrCdtTrfInitn>
+            <GrpHdr>
+              <MsgId>\(xml(resolvedMessageID))</MsgId>
+              <CreDtTm>\(timestamp(createdAt))</CreDtTm>
+              <NbOfTxs>\(orders.count)</NbOfTxs>
+              <CtrlSum>\(decimalAmount(totalMinor))</CtrlSum>
+              <InitgPty><Nm>\(xml(debtorName))</Nm></InitgPty>
+            </GrpHdr>
+            <PmtInf>
+              <PmtInfId>\(xml(paymentInformationID))</PmtInfId>
+              <PmtMtd>TRF</PmtMtd>
+              <BtchBookg>true</BtchBookg>
+              <NbOfTxs>\(orders.count)</NbOfTxs>
+              <CtrlSum>\(decimalAmount(totalMinor))</CtrlSum>
+              <PmtTpInf>
+                <SvcLvl><Cd>SEPA</Cd></SvcLvl>\(localInstrument)
+              </PmtTpInf>
+              <ReqdExctnDt><Dt>\(requestedDay)</Dt></ReqdExctnDt>
+              <Dbtr><Nm>\(xml(debtorName))</Nm></Dbtr>
+              <DbtrAcct><Id><IBAN>\(debtorIBAN)</IBAN></Id></DbtrAcct>
+        \(debtorAgent)
+              <ChrgBr>SLEV</ChrgBr>
+        \(transactionXML)
+            </PmtInf>
+          </CstmrCdtTrfInitn>
+        </Document>
+
+        """
+        guard let data = content.data(using: .utf8) else {
+            throw FinanceError.invalidPaymentBatch(
+                "pain.001 konnte nicht als UTF-8 codiert werden."
+            )
+        }
+        return Pain001ExportResult(
+            data: data,
+            fileName: "pain.001-sammler-\(requestedDay)-\(batch.id.uuidString.prefix(8)).xml",
+            rulePackage: rules
+        )
+    }
+
     static func rulePackage(for date: Date) throws -> Pain001RulePackage {
         let package = Pain001RulePackage.epc2025
         guard date >= package.validFrom,

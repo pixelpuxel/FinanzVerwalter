@@ -5153,6 +5153,7 @@ struct PaymentsView: View {
     private enum PaymentSection: String, CaseIterable, Identifiable {
         case payments = "Überweisungen"
         case directDebits = "Lastschriften"
+        case batches = "Sammler"
         case standingOrders = "Daueraufträge"
         var id: Self { self }
     }
@@ -5161,9 +5162,11 @@ struct PaymentsView: View {
     @State private var selectedID: UUID?
     @State private var selectedDirectDebitID: UUID?
     @State private var selectedStandingOrderID: UUID?
+    @State private var selectedBatchID: UUID?
     @State private var section: PaymentSection = .payments
     @State private var showNewPayment = false
     @State private var showNewDirectDebit = false
+    @State private var showNewBatch = false
     @State private var editedStandingOrder: StandingOrder?
 
     private var selectedOrder: PaymentOrder? {
@@ -5176,6 +5179,10 @@ struct PaymentsView: View {
 
     private var selectedDirectDebit: DirectDebitOrder? {
         store.directDebitOrders.first { $0.id == selectedDirectDebitID }
+    }
+
+    private var selectedBatch: PaymentBatch? {
+        store.paymentBatches.first { $0.id == selectedBatchID }
     }
 
     var body: some View {
@@ -5198,13 +5205,15 @@ struct PaymentsView: View {
                     ForEach(PaymentSection.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 390)
+                .frame(width: 500)
                 Button {
                     switch section {
                     case .payments:
                         showNewPayment = true
                     case .directDebits:
                         showNewDirectDebit = true
+                    case .batches:
+                        showNewBatch = true
                     case .standingOrders:
                         guard let account = store.accounts.first(where: {
                             !$0.isClosed && $0.currency == "EUR"
@@ -5227,7 +5236,9 @@ struct PaymentsView: View {
                     Label(
                         section == .payments
                             ? "Überweisung"
-                            : (section == .directDebits ? "Lastschrift" : "Dauerauftrag"),
+                            : (section == .directDebits
+                                ? "Lastschrift"
+                                : (section == .batches ? "Sammler" : "Dauerauftrag")),
                         systemImage: "plus"
                     )
                 }
@@ -5237,7 +5248,12 @@ struct PaymentsView: View {
                         ? !store.accounts.contains(where: {
                             !$0.isClosed && $0.currency == "EUR"
                         })
-                        : store.accounts.isEmpty
+                        : (section == .batches
+                            ? (
+                                store.paymentOrders.filter({ $0.status == .draft }).count < 2
+                                    && store.directDebitOrders.filter({ $0.status == .draft }).count < 2
+                            )
+                            : store.accounts.isEmpty)
                 )
             }
             .padding(12)
@@ -5247,6 +5263,8 @@ struct PaymentsView: View {
                 paymentOrdersContent
             case .directDebits:
                 directDebitsContent
+            case .batches:
+                batchesContent
             case .standingOrders:
                 standingOrdersContent
             }
@@ -5259,12 +5277,18 @@ struct PaymentsView: View {
             if selectedStandingOrderID == nil {
                 selectedStandingOrderID = store.standingOrders.first?.id
             }
+            if selectedBatchID == nil {
+                selectedBatchID = store.paymentBatches.first?.id
+            }
         }
         .sheet(isPresented: $showNewPayment) {
             PaymentDraftEditor()
         }
         .sheet(isPresented: $showNewDirectDebit) {
             DirectDebitDraftEditor()
+        }
+        .sheet(isPresented: $showNewBatch) {
+            PaymentBatchDraftEditor()
         }
         .sheet(item: $editedStandingOrder) {
             StandingOrderEditor(value: $0)
@@ -5456,6 +5480,569 @@ struct PaymentsView: View {
                 )
                 .frame(minWidth: 520)
             }
+        }
+    }
+
+    private var batchesContent: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("SEPA-Sammler").font(.headline)
+                    Spacer()
+                    Text("\(store.paymentBatches.count)")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                Divider()
+                if store.paymentBatches.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Sammler",
+                        systemImage: "square.stack.3d.up",
+                        description: Text(
+                            "Fasse mindestens zwei kompatible Entwürfe zu einer Sammelüberweisung oder Sammellastschrift zusammen."
+                        )
+                    )
+                } else {
+                    List(selection: $selectedBatchID) {
+                        ForEach(store.paymentBatches) { batch in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(batch.name).fontWeight(.medium)
+                                    Spacer()
+                                    Text(
+                                        Money(
+                                            minorUnits: batchTotal(batch),
+                                            currency: "EUR"
+                                        ).formatted
+                                    )
+                                    .monospacedDigit()
+                                }
+                                HStack {
+                                    PaymentStatusBadge(status: batch.status)
+                                    Text("\(batch.memberOrderIDs.count) Aufträge")
+                                    Spacer()
+                                    Text(batch.kind.title)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .tag(batch.id)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 390, idealWidth: 470)
+
+            if let selectedBatch {
+                PaymentBatchDetail(batch: selectedBatch)
+                    .id(selectedBatch)
+                    .frame(minWidth: 520)
+            } else {
+                ContentUnavailableView(
+                    "Kein Sammler ausgewählt",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Wähle links einen SEPA-Sammler.")
+                )
+                .frame(minWidth: 520)
+            }
+        }
+    }
+
+    private func batchTotal(_ batch: PaymentBatch) -> Int64 {
+        switch batch.kind {
+        case .creditTransfer:
+            return store.paymentOrders
+                .filter { batch.memberOrderIDs.contains($0.id) }
+                .reduce(Int64.zero) { $0 + $1.amountMinor }
+        case .directDebit:
+            return store.directDebitOrders
+                .filter { batch.memberOrderIDs.contains($0.id) }
+                .reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+    }
+}
+
+private struct PaymentBatchDraftEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var name = "Neuer SEPA-Sammler"
+    @State private var kind = PaymentBatchKind.creditTransfer
+    @State private var selectedIDs: Set<UUID> = []
+
+    private var alreadyBatchedIDs: Set<UUID> {
+        Set(store.paymentBatches.flatMap(\.memberOrderIDs))
+    }
+
+    private var creditCandidates: [PaymentOrder] {
+        store.paymentOrders.filter { order in
+            order.status == .draft
+                && order.currency.uppercased() == "EUR"
+                && !alreadyBatchedIDs.contains(order.id)
+                && store.accounts.contains { account in
+                    account.id == order.accountID && !account.isClosed
+                }
+        }
+    }
+
+    private var debitCandidates: [DirectDebitOrder] {
+        store.directDebitOrders.filter {
+            $0.status == .draft && !alreadyBatchedIDs.contains($0.id)
+        }
+    }
+
+    private var totalMinor: Int64 {
+        switch kind {
+        case .creditTransfer:
+            creditCandidates.filter { selectedIDs.contains($0.id) }
+                .reduce(Int64.zero) { $0 + $1.amountMinor }
+        case .directDebit:
+            debitCandidates.filter { selectedIDs.contains($0.id) }
+                .reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("SEPA-Sammler anlegen").font(.title2.bold())
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Entwurf anlegen") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || selectedIDs.count < 2
+                    )
+            }
+            .padding(14)
+            Divider()
+            Form {
+                Section("Sammler") {
+                    TextField("Bezeichnung", text: $name)
+                    Picker("Art", selection: $kind) {
+                        ForEach(PaymentBatchKind.allCases) { value in
+                            Text(value.title).tag(value)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: kind) {
+                        selectedIDs.removeAll()
+                        name = kind == .creditTransfer
+                            ? "Neue Sammelüberweisung" : "Neue Sammellastschrift"
+                    }
+                }
+                Section("Kompatible Entwürfe") {
+                    if kind == .creditTransfer {
+                        if creditCandidates.isEmpty {
+                            Text("Keine freien Überweisungsentwürfe vorhanden.")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(creditCandidates) { order in
+                            Toggle(isOn: selectionBinding(order.id)) {
+                                batchCandidateLabel(
+                                    name: order.recipientName,
+                                    amount: order.amountMinor,
+                                    date: order.executionDate,
+                                    detail: store.accountName(order.accountID)
+                                        + " · " + order.type.title
+                                )
+                            }
+                            .disabled(!isCompatible(order))
+                        }
+                    } else {
+                        if debitCandidates.isEmpty {
+                            Text("Keine freien Lastschriftentwürfe vorhanden.")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(debitCandidates) { order in
+                            Toggle(isOn: selectionBinding(order.id)) {
+                                batchCandidateLabel(
+                                    name: order.debtorName,
+                                    amount: order.amountMinor,
+                                    date: order.collectionDate,
+                                    detail: store.accountName(order.creditorAccountID)
+                                        + " · " + order.sequenceType.title
+                                )
+                            }
+                            .disabled(!isCompatible(order))
+                        }
+                    }
+                }
+                Section("Unveränderliche Vorschau") {
+                    LabeledContent("Aufträge", value: "\(selectedIDs.count)")
+                    LabeledContent(
+                        "Gesamtsumme",
+                        value: Money(minorUnits: totalMinor, currency: "EUR").formatted
+                    )
+                    Label(
+                        "Nach dem Anlegen sind Mitglieder, Reihenfolge, gemeinsames Konto und Datum eingefroren.",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 760, height: 760)
+    }
+
+    @ViewBuilder
+    private func batchCandidateLabel(
+        name: String,
+        amount: Int64,
+        date: Date,
+        detail: String
+    ) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(Money(minorUnits: amount, currency: "EUR").formatted)
+                    .monospacedDigit()
+                Text(date, format: .dateTime.day().month().year())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func selectionBinding(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { selectedIDs.contains(id) },
+            set: { selected in
+                if selected { selectedIDs.insert(id) }
+                else { selectedIDs.remove(id) }
+            }
+        )
+    }
+
+    private func isCompatible(_ order: PaymentOrder) -> Bool {
+        guard let selectedID = selectedIDs.sorted(by: {
+            $0.uuidString < $1.uuidString
+        }).first,
+              let baseline = creditCandidates.first(where: {
+                  $0.id == selectedID
+              }) else { return true }
+        return order.accountID == baseline.accountID
+            && order.type == baseline.type
+            && Calendar.current.isDate(
+                order.executionDate, inSameDayAs: baseline.executionDate
+            )
+    }
+
+    private func isCompatible(_ order: DirectDebitOrder) -> Bool {
+        guard let selectedID = selectedIDs.sorted(by: {
+            $0.uuidString < $1.uuidString
+        }).first,
+              let baseline = debitCandidates.first(where: {
+                  $0.id == selectedID
+              }) else { return true }
+        return order.creditorAccountID == baseline.creditorAccountID
+            && order.sequenceType == baseline.sequenceType
+            && order.creditorID == baseline.creditorID
+            && order.creditorName == baseline.creditorName
+            && order.creditorIBAN == baseline.creditorIBAN
+            && order.creditorBIC == baseline.creditorBIC
+            && Calendar.current.isDate(
+                order.collectionDate, inSameDayAs: baseline.collectionDate
+            )
+    }
+
+    private func save() {
+        if store.createPaymentBatch(
+            name: name, kind: kind, memberOrderIDs: selectedIDs
+        ) {
+            dismiss()
+        }
+    }
+}
+
+private struct PaymentBatchDetail: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let batch: PaymentBatch
+    @State private var confirmInitiation = false
+    @State private var authorizationCode = ""
+    @State private var showExporter = false
+    @State private var exportDocument = Pain001Document(data: Data())
+    @State private var exportFileName = "SEPA-Sammler.xml"
+
+    private var paymentMembers: [PaymentOrder] {
+        batch.memberOrderIDs.compactMap { id in
+            store.paymentOrders.first { $0.id == id }
+        }
+    }
+
+    private var debitMembers: [DirectDebitOrder] {
+        batch.memberOrderIDs.compactMap { id in
+            store.directDebitOrders.first { $0.id == id }
+        }
+    }
+
+    private var totalMinor: Int64 {
+        switch batch.kind {
+        case .creditTransfer:
+            paymentMembers.reduce(Int64.zero) { $0 + $1.amountMinor }
+        case .directDebit:
+            debitMembers.reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+    }
+
+    private var statusPath: [PaymentStatus] {
+        var values: [PaymentStatus] = [
+            .initiated, .challengeReceived, .awaitingUser, .submitted
+        ]
+        if [.accepted, .rejected, .unknown, .cancelled].contains(batch.status) {
+            values.append(batch.status)
+        }
+        return values
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(batch.name).font(.title2.bold())
+                        Text(batch.kind.title).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    PaymentStatusBadge(status: batch.status)
+                }
+                GroupBox("Unveränderliche Sammlerzusammenfassung") {
+                    Grid(
+                        alignment: .leading,
+                        horizontalSpacing: 18,
+                        verticalSpacing: 8
+                    ) {
+                        GridRow {
+                            Text("Konto").foregroundStyle(.secondary)
+                            Text(store.accountName(batch.accountID))
+                        }
+                        GridRow {
+                            Text("Datum").foregroundStyle(.secondary)
+                            Text(
+                                batch.requestedDate,
+                                format: .dateTime.day().month().year()
+                            )
+                        }
+                        GridRow {
+                            Text("Aufträge").foregroundStyle(.secondary)
+                            Text("\(batch.memberOrderIDs.count)")
+                        }
+                        GridRow {
+                            Text("Gesamtsumme").foregroundStyle(.secondary)
+                            Text(
+                                Money(minorUnits: totalMinor, currency: "EUR").formatted
+                            )
+                            .bold()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+                GroupBox("Enthaltene Aufträge") {
+                    VStack(spacing: 0) {
+                        if batch.kind == .creditTransfer {
+                            ForEach(Array(paymentMembers.enumerated()), id: \.element.id) {
+                                index, order in
+                                memberRow(
+                                    index: index, name: order.recipientName,
+                                    purpose: order.purpose,
+                                    amount: order.amountMinor
+                                )
+                                if index != paymentMembers.indices.last { Divider() }
+                            }
+                        } else {
+                            ForEach(Array(debitMembers.enumerated()), id: \.element.id) {
+                                index, order in
+                                memberRow(
+                                    index: index, name: order.debtorName,
+                                    purpose: order.purpose,
+                                    amount: order.amountMinor
+                                )
+                                if index != debitMembers.indices.last { Divider() }
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                GroupBox("Lokaler Übermittlungszustand") {
+                    HStack(spacing: 5) {
+                        ForEach(statusPath, id: \.self) { status in
+                            PaymentStatusBadge(status: status)
+                            if status != statusPath.last {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                actionArea
+                Button(
+                    batch.kind == .creditTransfer
+                        ? "Sammel-pain.001 exportieren …"
+                        : "Sammel-pain.008 exportieren …",
+                    systemImage: "doc.badge.arrow.up"
+                ) {
+                    prepareExport()
+                }
+                .disabled(batch.status != .draft)
+                if batch.status == .unknown {
+                    Label(
+                        "Der Status ist unbekannt. Der Sammler wird niemals automatisch erneut eingereicht.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                }
+                Text("Idempotenz: \(batch.idempotencyKey.prefix(20))…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(18)
+        }
+        .alert("SEPA-Sammler vorbereiten?", isPresented: $confirmInitiation) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Im Simulator initialisieren") {
+                _ = store.transitionPaymentBatch(batch, to: .initiated)
+            }
+        } message: {
+            Text(
+                "\(batch.memberOrderIDs.count) Aufträge über insgesamt "
+                    + Money(minorUnits: totalMinor, currency: "EUR").formatted
+                    + " werden gemeinsam vorbereitet. Dies ist ausschließlich eine lokale Simulation."
+            )
+        }
+        .fileExporter(
+            isPresented: $showExporter,
+            document: exportDocument,
+            contentType: .xml,
+            defaultFilename: exportFileName
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "SEPA-Sammler exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func memberRow(
+        index: Int,
+        name: String,
+        purpose: String,
+        amount: Int64
+    ) -> some View {
+        HStack(alignment: .top) {
+            Text("\(index + 1).")
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .trailing)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).fontWeight(.medium)
+                Text(purpose).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(Money(minorUnits: amount, currency: "EUR").formatted)
+                .monospacedDigit()
+        }
+        .padding(.vertical, 7)
+    }
+
+    private func prepareExport() {
+        guard let account = store.accounts.first(where: {
+            $0.id == batch.accountID
+        }) else {
+            store.errorMessage = FinanceError.missingAccount.localizedDescription
+            return
+        }
+        do {
+            switch batch.kind {
+            case .creditTransfer:
+                let result = try Pain001Exporter.export(
+                    batch: batch, orders: paymentMembers, account: account
+                )
+                exportDocument = Pain001Document(data: result.data)
+                exportFileName = result.fileName
+            case .directDebit:
+                let result = try Pain008Exporter.export(
+                    batch: batch, orders: debitMembers, account: account
+                )
+                exportDocument = Pain001Document(data: result.data)
+                exportFileName = result.fileName
+            }
+            showExporter = true
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private var actionArea: some View {
+        switch batch.status {
+        case .draft:
+            Button("Gemeinsame Einreichung vorbereiten …") {
+                confirmInitiation = true
+            }
+            .buttonStyle(.borderedProminent)
+        case .initiated:
+            Button("Bank-Challenge simulieren") {
+                _ = store.transitionPaymentBatch(batch, to: .challengeReceived)
+            }
+            .buttonStyle(.borderedProminent)
+        case .challengeReceived:
+            Button("Freigabedialog öffnen") {
+                _ = store.transitionPaymentBatch(batch, to: .awaitingUser)
+            }
+            .buttonStyle(.borderedProminent)
+        case .awaitingUser:
+            VStack(alignment: .leading, spacing: 8) {
+                SecureField("Simulierter Freigabecode", text: $authorizationCode)
+                    .frame(maxWidth: 320)
+                Text("Der Code wird niemals gespeichert oder protokolliert.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Sammler freigeben") {
+                    if store.submitPaymentBatch(
+                        batch, authorizationCode: authorizationCode
+                    ) {
+                        authorizationCode = ""
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        case .submitted:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Simulator-Ergebnis").font(.headline)
+                HStack {
+                    ForEach(SimulatorOutcome.allCases) { outcome in
+                        Button(outcome.title) {
+                            _ = store.simulatePaymentBatchDecision(
+                                batch, outcome: outcome
+                            )
+                        }
+                    }
+                }
+            }
+        case .accepted:
+            Label(
+                "Angenommen · alle Aufträge wurden atomar vorgemerkt",
+                systemImage: "checkmark.seal.fill"
+            )
+            .foregroundStyle(.green)
+        case .rejected:
+            Label("Vom Simulator vollständig abgelehnt", systemImage: "xmark.octagon.fill")
+                .foregroundStyle(.red)
+        case .unknown:
+            EmptyView()
+        case .cancelled:
+            Label("Sammler abgebrochen", systemImage: "nosign")
         }
     }
 }
@@ -5786,6 +6373,10 @@ private struct PaymentOrderDetail: View {
     @State private var pain001Document = Pain001Document(data: Data())
     @State private var pain001FileName = "pain.001.xml"
 
+    private var containingBatch: PaymentBatch? {
+        store.paymentBatches.first { $0.memberOrderIDs.contains(order.id) }
+    }
+
     private var scaPath: [PaymentStatus] {
         var values: [PaymentStatus] = [
             .initiated, .challengeReceived, .awaitingUser, .submitted
@@ -5834,12 +6425,14 @@ private struct PaymentOrderDetail: View {
             Button("pain.001 exportieren …", systemImage: "doc.badge.arrow.up") {
                 preparePain001Export()
             }
-            .disabled(order.status != .draft)
+            .disabled(order.status != .draft || containingBatch != nil)
             .help(
-                order.status == .draft
+                containingBatch != nil
+                    ? "Dieser Auftrag wird ausschließlich als Teil seines Sammlers exportiert."
+                    : (order.status == .draft
                     ? "Erzeugt eine lokale SEPA-XML-Datei nach "
                         + Pain001RulePackage.epc2025.source
-                    : "Nur unveränderte Entwürfe können als pain.001 initiiert werden."
+                    : "Nur unveränderte Entwürfe können als pain.001 initiiert werden.")
             )
             if order.status == .unknown {
                 Label(
@@ -5896,7 +6489,14 @@ private struct PaymentOrderDetail: View {
 
     @ViewBuilder
     private var actionArea: some View {
-        switch order.status {
+        if let containingBatch {
+            Label(
+                "Mitglied von „\(containingBatch.name)“. Status und Export werden ausschließlich im Sammler gesteuert.",
+                systemImage: "square.stack.3d.up.fill"
+            )
+            .foregroundStyle(.blue)
+        } else {
+            switch order.status {
         case .draft:
             Button("Übermittlung vorbereiten …") { confirmInitiation = true }
                 .buttonStyle(.borderedProminent)
@@ -5945,6 +6545,7 @@ private struct PaymentOrderDetail: View {
             EmptyView()
         case .cancelled:
             Label("Auftrag abgebrochen", systemImage: "nosign")
+            }
         }
     }
 }
@@ -6155,6 +6756,10 @@ private struct DirectDebitOrderDetail: View {
     @State private var pain008Document = Pain001Document(data: Data())
     @State private var pain008FileName = "pain.008.xml"
 
+    private var containingBatch: PaymentBatch? {
+        store.paymentBatches.first { $0.memberOrderIDs.contains(order.id) }
+    }
+
     private var statusPath: [PaymentStatus] {
         var values: [PaymentStatus] = [
             .initiated, .challengeReceived, .awaitingUser, .submitted
@@ -6253,12 +6858,14 @@ private struct DirectDebitOrderDetail: View {
                 Button("pain.008 exportieren …", systemImage: "doc.badge.arrow.up") {
                     preparePain008Export()
                 }
-                .disabled(order.status != .draft)
+                .disabled(order.status != .draft || containingBatch != nil)
                 .help(
-                    order.status == .draft
+                    containingBatch != nil
+                        ? "Diese Lastschrift wird ausschließlich als Teil ihres Sammlers exportiert."
+                        : (order.status == .draft
                         ? "Erzeugt eine lokale SEPA-XML-Datei nach "
                             + Pain008RulePackage.epc2025.source
-                        : "Nur unveränderte Entwürfe können als pain.008 exportiert werden."
+                        : "Nur unveränderte Entwürfe können als pain.008 exportiert werden.")
                 )
                 if order.status == .unknown {
                     Label(
@@ -6317,7 +6924,14 @@ private struct DirectDebitOrderDetail: View {
 
     @ViewBuilder
     private var actionArea: some View {
-        switch order.status {
+        if let containingBatch {
+            Label(
+                "Mitglied von „\(containingBatch.name)“. Status und Export werden ausschließlich im Sammler gesteuert.",
+                systemImage: "square.stack.3d.up.fill"
+            )
+            .foregroundStyle(.blue)
+        } else {
+            switch order.status {
         case .draft:
             Button("Einreichung vorbereiten …") {
                 confirmInitiation = true
@@ -6375,6 +6989,7 @@ private struct DirectDebitOrderDetail: View {
             EmptyView()
         case .cancelled:
             Label("Auftrag abgebrochen", systemImage: "nosign")
+            }
         }
     }
 }

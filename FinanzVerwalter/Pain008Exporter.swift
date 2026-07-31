@@ -192,7 +192,7 @@ enum Pain008Exporter {
                     <DtOfSgntr>\(mandateDay)</DtOfSgntr>
                   </MndtRltdInf>
                 </DrctDbtTx>
-        \(debtorAgent)
+            \(debtorAgent)
                 <Dbtr><Nm>\(xml(debtorName))</Nm></Dbtr>
                 <DbtrAcct><Id><IBAN>\(debtorIBAN)</IBAN></Id></DbtrAcct>
                 <RmtInf><Ustrd>\(xml(purpose))</Ustrd></RmtInf>
@@ -210,6 +210,148 @@ enum Pain008Exporter {
         return Pain008ExportResult(
             data: data,
             fileName: "pain.008-\(collectionDay)-\(order.id.uuidString.prefix(8)).xml",
+            rulePackage: rules
+        )
+    }
+
+    static func export(
+        batch: PaymentBatch,
+        orders: [DirectDebitOrder],
+        account: FinanceAccount,
+        createdAt: Date = Date(),
+        messageID: String? = nil
+    ) throws -> Pain008ExportResult {
+        try batch.validate()
+        guard batch.kind == .directDebit else {
+            throw FinanceError.invalidPaymentBatch(
+                "Dieser Sammler enthält keine Lastschriften."
+            )
+        }
+        guard batch.accountID == account.id else {
+            throw Pain008ExportError.accountMismatch
+        }
+        guard orders.map(\.id) == batch.memberOrderIDs else {
+            throw FinanceError.invalidPaymentBatch(
+                "Mitglieder oder Reihenfolge stimmen nicht mit dem gespeicherten Sammler überein."
+            )
+        }
+        guard let first = orders.first else {
+            throw FinanceError.invalidPaymentBatch("Der Sammler ist leer.")
+        }
+        let requestedDay = day(batch.requestedDate)
+        guard orders.allSatisfy({
+            $0.creditorAccountID == batch.accountID
+                && $0.status == .draft
+                && $0.sequenceType == first.sequenceType
+                && $0.creditorID == first.creditorID
+                && $0.creditorName == first.creditorName
+                && $0.creditorIBAN == first.creditorIBAN
+                && $0.creditorBIC == first.creditorBIC
+                && day($0.collectionDate) == requestedDay
+        }) else {
+            throw FinanceError.invalidPaymentBatch(
+                "Gläubiger, Sequenztyp, Konto, Status oder Fälligkeit der Lastschriften stimmen nicht überein."
+            )
+        }
+        for (index, order) in orders.enumerated() {
+            _ = try export(
+                order: order, account: account, createdAt: createdAt,
+                messageID: "CHECK-\(index + 1)"
+            )
+        }
+        var totalMinor: Int64 = 0
+        for order in orders {
+            let (sum, overflow) = totalMinor.addingReportingOverflow(order.amountMinor)
+            guard !overflow, sum <= maximumMinorUnits else {
+                throw Pain008ExportError.amountOutOfRange
+            }
+            totalMinor = sum
+        }
+        let rules = try rulePackage(for: createdAt)
+        let compactBatchID = batch.id.uuidString
+            .replacingOccurrences(of: "-", with: "").uppercased()
+        let resolvedMessageID = messageID ?? "DB-\(compactBatchID)"
+        let paymentInformationID = "DB-\(compactBatchID)"
+        try validateIdentifier(
+            resolvedMessageID, field: "Nachrichten-ID", maximum: 35
+        )
+        try validateIdentifier(
+            paymentInformationID, field: "Zahlungsblock-ID", maximum: 35
+        )
+
+        let creditorBIC = try normalizedBIC(first.creditorBIC)
+        let creditorAgent = agentXML(element: "CdtrAgt", bic: creditorBIC)
+        let transactionXML = try orders.map { order -> String in
+            let debtorBIC = try normalizedBIC(order.debtorBIC)
+            let debtorAgent = agentXML(element: "DbtrAgt", bic: debtorBIC)
+            return """
+              <DrctDbtTxInf>
+                <PmtId><EndToEndId>\(xml(normalizedEndToEndID(order.endToEndID)))</EndToEndId></PmtId>
+                <InstdAmt Ccy="EUR">\(decimalAmount(order.amountMinor))</InstdAmt>
+                <DrctDbtTx>
+                  <MndtRltdInf>
+                    <MndtId>\(xml(order.mandateReference))</MndtId>
+                    <DtOfSgntr>\(day(order.mandateSignedOn))</DtOfSgntr>
+                  </MndtRltdInf>
+                </DrctDbtTx>
+            \(debtorAgent)
+                <Dbtr><Nm>\(xml(order.debtorName.trimmingCharacters(in: .whitespacesAndNewlines)))</Nm></Dbtr>
+                <DbtrAcct><Id><IBAN>\(IBANValidator.normalized(order.debtorIBAN))</IBAN></Id></DbtrAcct>
+                <RmtInf><Ustrd>\(xml(order.purpose.trimmingCharacters(in: .whitespacesAndNewlines)))</Ustrd></RmtInf>
+              </DrctDbtTxInf>
+            """
+        }.joined(separator: "\n")
+        let creditorName = first.creditorName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let creditorID = SEPACreditorIDValidator.normalized(first.creditorID)
+        let content = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Document xmlns="\(rules.namespace)">
+          <CstmrDrctDbtInitn>
+            <GrpHdr>
+              <MsgId>\(xml(resolvedMessageID))</MsgId>
+              <CreDtTm>\(timestamp(createdAt))</CreDtTm>
+              <NbOfTxs>\(orders.count)</NbOfTxs>
+              <CtrlSum>\(decimalAmount(totalMinor))</CtrlSum>
+              <InitgPty><Nm>\(xml(creditorName))</Nm></InitgPty>
+            </GrpHdr>
+            <PmtInf>
+              <PmtInfId>\(xml(paymentInformationID))</PmtInfId>
+              <PmtMtd>DD</PmtMtd>
+              <BtchBookg>true</BtchBookg>
+              <NbOfTxs>\(orders.count)</NbOfTxs>
+              <CtrlSum>\(decimalAmount(totalMinor))</CtrlSum>
+              <PmtTpInf>
+                <SvcLvl><Cd>SEPA</Cd></SvcLvl>
+                <LclInstrm><Cd>CORE</Cd></LclInstrm>
+                <SeqTp>\(sequenceCode(first.sequenceType))</SeqTp>
+              </PmtTpInf>
+              <ReqdColltnDt>\(requestedDay)</ReqdColltnDt>
+              <Cdtr><Nm>\(xml(creditorName))</Nm></Cdtr>
+              <CdtrAcct><Id><IBAN>\(IBANValidator.normalized(first.creditorIBAN))</IBAN></Id></CdtrAcct>
+        \(creditorAgent)
+              <ChrgBr>SLEV</ChrgBr>
+              <CdtrSchmeId>
+                <Id><PrvtId><Othr>
+                  <Id>\(xml(creditorID))</Id>
+                  <SchmeNm><Prtry>SEPA</Prtry></SchmeNm>
+                </Othr></PrvtId></Id>
+              </CdtrSchmeId>
+        \(transactionXML)
+            </PmtInf>
+          </CstmrDrctDbtInitn>
+        </Document>
+
+        """
+        guard let data = content.data(using: .utf8) else {
+            throw FinanceError.invalidPaymentBatch(
+                "pain.008 konnte nicht als UTF-8 codiert werden."
+            )
+        }
+        return Pain008ExportResult(
+            data: data,
+            fileName: "pain.008-sammler-\(requestedDay)-\(batch.id.uuidString.prefix(8)).xml",
             rulePackage: rules
         )
     }

@@ -1446,6 +1446,61 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 24")
             }
         }
+        if version < 25 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payment_batches (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        kind TEXT NOT NULL CHECK(kind IN ('creditTransfer','directDebit')),
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        requested_date TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN ('draft','initiated','challengeReceived','awaitingUser','submitted','accepted','rejected','unknown','cancelled')),
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        bank_reference TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE payment_batch_items (
+                        batch_id TEXT NOT NULL REFERENCES payment_batches(id) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK(position>=0),
+                        payment_order_id TEXT REFERENCES payment_orders(id),
+                        direct_debit_order_id TEXT REFERENCES direct_debit_orders(id),
+                        PRIMARY KEY(batch_id,position),
+                        CHECK((payment_order_id IS NOT NULL) != (direct_debit_order_id IS NOT NULL))
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX payment_batch_credit_member
+                    ON payment_batch_items(payment_order_id)
+                    WHERE payment_order_id IS NOT NULL
+                    """
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX payment_batch_debit_member
+                    ON payment_batch_items(direct_debit_order_id)
+                    WHERE direct_debit_order_id IS NOT NULL
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payment_batches_date_status
+                    ON payment_batches(requested_date,status,id)
+                    """
+                )
+                try execute("PRAGMA user_version = 25")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2223,6 +2278,71 @@ final class SQLiteFinanceStore {
             )
         }
         return values
+    }
+
+    func paymentBatches() throws -> [PaymentBatch] {
+        struct Header {
+            let id: UUID
+            let name: String
+            let kind: PaymentBatchKind
+            let accountID: UUID
+            let requestedDate: Date
+            let status: PaymentStatus
+            let idempotencyKey: String
+            let bankReference: String
+            let createdAt: Date
+            let updatedAt: Date
+        }
+        var headers: [Header] = []
+        try query(
+            """
+            SELECT id,name,kind,account_id,requested_date,status,idempotency_key,
+                   bank_reference,created_at,updated_at
+            FROM payment_batches ORDER BY created_at DESC,id DESC
+            """
+        ) {
+            guard let id = UUID(uuidString: Self.text($0, 0)),
+                  let kind = PaymentBatchKind(rawValue: Self.text($0, 2)),
+                  let accountID = UUID(uuidString: Self.text($0, 3)),
+                  let requestedDate = Self.date(Self.text($0, 4)),
+                  let status = PaymentStatus(rawValue: Self.text($0, 5)),
+                  let createdAt = Self.timestampDate(Self.text($0, 8)),
+                  let updatedAt = Self.timestampDate(Self.text($0, 9))
+            else { return }
+            headers.append(
+                Header(
+                    id: id, name: Self.text($0, 1), kind: kind,
+                    accountID: accountID, requestedDate: requestedDate,
+                    status: status, idempotencyKey: Self.text($0, 6),
+                    bankReference: Self.text($0, 7), createdAt: createdAt,
+                    updatedAt: updatedAt
+                )
+            )
+        }
+        return try headers.map { header in
+            var memberIDs: [UUID] = []
+            let column = header.kind == .creditTransfer
+                ? "payment_order_id" : "direct_debit_order_id"
+            try query(
+                """
+                SELECT \(column) FROM payment_batch_items
+                WHERE batch_id=? ORDER BY position
+                """,
+                [.text(header.id.uuidString)]
+            ) {
+                if let id = UUID(uuidString: Self.text($0, 0)) {
+                    memberIDs.append(id)
+                }
+            }
+            return PaymentBatch(
+                id: header.id, name: header.name, kind: header.kind,
+                accountID: header.accountID, requestedDate: header.requestedDate,
+                status: header.status, idempotencyKey: header.idempotencyKey,
+                bankReference: header.bankReference,
+                memberOrderIDs: memberIDs, createdAt: header.createdAt,
+                updatedAt: header.updatedAt
+            )
+        }
     }
 
     func standingOrders() throws -> [StandingOrder] {
@@ -3974,6 +4094,14 @@ final class SQLiteFinanceStore {
     }
 
     func transitionPaymentOrder(id: UUID, to target: PaymentStatus) throws {
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_batch_items WHERE payment_order_id=?",
+            [.text(id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Dieser Auftrag gehört zu einem Sammler und kann nur gemeinsam weitergeschaltet werden."
+            )
+        }
         var currentStatus: PaymentStatus?
         try query("SELECT status FROM payment_orders WHERE id=?", [.text(id.uuidString)]) {
             currentStatus = PaymentStatus(rawValue: Self.text($0, 0))
@@ -4148,6 +4276,14 @@ final class SQLiteFinanceStore {
     }
 
     func transitionDirectDebitOrder(id: UUID, to target: PaymentStatus) throws {
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_batch_items WHERE direct_debit_order_id=?",
+            [.text(id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Diese Lastschrift gehört zu einem Sammler und kann nur gemeinsam weitergeschaltet werden."
+            )
+        }
         guard let current = try directDebitOrders().first(where: { $0.id == id })
         else {
             throw FinanceError.invalidDirectDebit("Der Lastschriftauftrag fehlt.")
@@ -4205,6 +4341,312 @@ final class SQLiteFinanceStore {
             }
             try audit(
                 entity: "direct_debit_order", id: id, action: "transition",
+                details: "\(current.status.rawValue)->\(target.rawValue)"
+            )
+        }
+    }
+
+    func createPaymentBatch(_ value: PaymentBatch) throws {
+        try value.validate()
+        guard let account = try accounts().first(where: { $0.id == value.accountID }),
+              !account.isClosed, account.currency.uppercased() == "EUR" else {
+            throw FinanceError.invalidPaymentBatch(
+                "Das gemeinsame Konto fehlt, ist geschlossen oder führt keine EUR."
+            )
+        }
+        let requestedDay = Self.day(value.requestedDate)
+        switch value.kind {
+        case .creditTransfer:
+            let byID = Dictionary(uniqueKeysWithValues: try paymentOrders().map { ($0.id, $0) })
+            let members = try value.memberOrderIDs.map { id in
+                guard let order = byID[id] else {
+                    throw FinanceError.invalidPaymentBatch("Ein Überweisungsentwurf fehlt.")
+                }
+                return order
+            }
+            guard let first = members.first,
+                  members.allSatisfy({
+                      $0.status == .draft
+                          && $0.accountID == value.accountID
+                          && $0.currency.uppercased() == "EUR"
+                          && Self.day($0.executionDate) == requestedDay
+                          && $0.type == first.type
+                  }) else {
+                throw FinanceError.invalidPaymentBatch(
+                    "Alle Überweisungen müssen unveränderte Entwürfe desselben Typs, Kontos und Ausführungstags sein."
+                )
+            }
+            var total: Int64 = 0
+            for member in members {
+                let (sum, overflow) = total.addingReportingOverflow(
+                    member.amountMinor
+                )
+                guard !overflow, sum <= 999_999_999_999_999_999 else {
+                    throw FinanceError.invalidPaymentBatch(
+                        "Die Gesamtsumme überschreitet den SEPA-Wertebereich."
+                    )
+                }
+                total = sum
+            }
+        case .directDebit:
+            let byID = Dictionary(uniqueKeysWithValues: try directDebitOrders().map { ($0.id, $0) })
+            let members = try value.memberOrderIDs.map { id in
+                guard let order = byID[id] else {
+                    throw FinanceError.invalidPaymentBatch("Ein Lastschriftentwurf fehlt.")
+                }
+                return order
+            }
+            guard let first = members.first,
+                  members.allSatisfy({
+                      $0.status == .draft
+                          && $0.creditorAccountID == value.accountID
+                          && $0.currency.uppercased() == "EUR"
+                          && Self.day($0.collectionDate) == requestedDay
+                          && $0.sequenceType == first.sequenceType
+                          && $0.creditorID == first.creditorID
+                          && $0.creditorName == first.creditorName
+                          && $0.creditorIBAN == first.creditorIBAN
+                          && $0.creditorBIC == first.creditorBIC
+                  }) else {
+                throw FinanceError.invalidPaymentBatch(
+                    "Alle Lastschriften müssen unveränderte Entwürfe mit gleichem Gläubiger, Sequenztyp, Konto und Fälligkeitstag sein."
+                )
+            }
+            var total: Int64 = 0
+            for member in members {
+                let (sum, overflow) = total.addingReportingOverflow(
+                    member.amountMinor
+                )
+                guard !overflow, sum <= 999_999_999_999_999_999 else {
+                    throw FinanceError.invalidPaymentBatch(
+                        "Die Gesamtsumme überschreitet den SEPA-Wertebereich."
+                    )
+                }
+                total = sum
+            }
+        }
+        if try scalarInt(
+            "SELECT COUNT(*) FROM payment_batches WHERE idempotency_key=?",
+            [.text(value.idempotencyKey)]
+        ) > 0 {
+            throw FinanceError.duplicatePaymentBatch
+        }
+        let info = try financeFileInfo()
+        let createdAt = Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_batches(
+                    id,finance_file_id,name,kind,account_id,requested_date,status,
+                    idempotency_key,bank_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(value.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.kind.rawValue), .text(value.accountID.uuidString),
+                    .text(requestedDay), .text(value.status.rawValue),
+                    .text(value.idempotencyKey), .text(value.bankReference),
+                    .text(createdAt), .text(Self.timestamp(value.updatedAt))
+                ]
+            )
+            for (position, memberID) in value.memberOrderIDs.enumerated() {
+                let membershipStillValid: Bool
+                if value.kind == .creditTransfer {
+                    membershipStillValid = try scalarInt(
+                        """
+                        SELECT COUNT(*) FROM payment_orders
+                        WHERE id=? AND status='draft' AND account_id=?
+                              AND execution_date=? AND currency='EUR'
+                        """,
+                        [
+                            .text(memberID.uuidString),
+                            .text(value.accountID.uuidString), .text(requestedDay)
+                        ]
+                    ) == 1
+                } else {
+                    membershipStillValid = try scalarInt(
+                        """
+                        SELECT COUNT(*) FROM direct_debit_orders
+                        WHERE id=? AND status='draft' AND creditor_account_id=?
+                              AND collection_date=? AND currency='EUR'
+                        """,
+                        [
+                            .text(memberID.uuidString),
+                            .text(value.accountID.uuidString), .text(requestedDay)
+                        ]
+                    ) == 1
+                }
+                guard membershipStillValid else {
+                    throw FinanceError.invalidPaymentBatch(
+                        "Mindestens ein ausgewählter Entwurf wurde zwischenzeitlich geändert."
+                    )
+                }
+                try run(
+                    """
+                    INSERT INTO payment_batch_items(
+                        batch_id,position,payment_order_id,direct_debit_order_id
+                    ) VALUES(?,?,?,?)
+                    """,
+                    [
+                        .text(value.id.uuidString), .integer(Int64(position)),
+                        value.kind == .creditTransfer
+                            ? .text(memberID.uuidString) : .null,
+                        value.kind == .directDebit
+                            ? .text(memberID.uuidString) : .null
+                    ]
+                )
+            }
+            try audit(
+                entity: "payment_batch", id: value.id, action: "create",
+                details: "\(value.kind.rawValue);members=\(value.memberOrderIDs.count)"
+            )
+        }
+    }
+
+    func transitionPaymentBatch(id: UUID, to target: PaymentStatus) throws {
+        guard let current = try paymentBatches().first(where: { $0.id == id }) else {
+            throw FinanceError.invalidPaymentBatch("Der Sammler fehlt.")
+        }
+        guard current.status.canTransition(to: target) else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        let now = Self.timestamp(Date())
+        let batchReference = target == .accepted
+            ? "SIM-BT-\(id.uuidString.prefix(8).uppercased())"
+            : current.bankReference
+        try transaction {
+            try run(
+                """
+                UPDATE payment_batches
+                SET status=?,bank_reference=?,updated_at=?,version=version+1
+                WHERE id=? AND status=?
+                """,
+                [
+                    .text(target.rawValue), .text(batchReference), .text(now),
+                    .text(id.uuidString), .text(current.status.rawValue)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.invalidPaymentTransition
+            }
+            switch current.kind {
+            case .creditTransfer:
+                let byID = Dictionary(uniqueKeysWithValues: try paymentOrders().map { ($0.id, $0) })
+                for memberID in current.memberOrderIDs {
+                    guard let order = byID[memberID], order.status == current.status else {
+                        throw FinanceError.invalidPaymentBatch(
+                            "Mindestens ein Überweisungsstatus wurde zwischenzeitlich geändert."
+                        )
+                    }
+                    let reference = target == .accepted
+                        ? "SIM-\(memberID.uuidString.prefix(8).uppercased())"
+                        : order.bankReference
+                    try run(
+                        """
+                        UPDATE payment_orders
+                        SET status=?,bank_reference=?,updated_at=?,version=version+1
+                        WHERE id=? AND status=?
+                        """,
+                        [
+                            .text(target.rawValue), .text(reference), .text(now),
+                            .text(memberID.uuidString), .text(current.status.rawValue)
+                        ]
+                    )
+                    guard sqlite3_changes(database) == 1 else {
+                        throw FinanceError.invalidPaymentTransition
+                    }
+                    if target == .accepted {
+                        let transactionReference = "payment:\(memberID.uuidString)"
+                        if try scalarInt(
+                            "SELECT COUNT(*) FROM transactions WHERE reference=?",
+                            [.text(transactionReference)]
+                        ) == 0 {
+                            try writeTransaction(
+                                FinanceTransaction(
+                                    id: UUID(), accountID: order.accountID,
+                                    bookingDate: order.executionDate,
+                                    valueDate: order.executionDate,
+                                    payee: order.recipientName, purpose: order.purpose,
+                                    categoryID: nil, amountMinor: -order.amountMinor,
+                                    currency: order.currency, status: .pending,
+                                    memo: order.type.title,
+                                    reference: transactionReference,
+                                    transferID: nil, importFingerprint: nil, splits: []
+                                ),
+                                now: now
+                            )
+                        }
+                    }
+                    try audit(
+                        entity: "payment_order", id: memberID,
+                        action: "batch-transition",
+                        details: "batch=\(id.uuidString);\(current.status.rawValue)->\(target.rawValue)"
+                    )
+                }
+            case .directDebit:
+                let byID = Dictionary(uniqueKeysWithValues: try directDebitOrders().map { ($0.id, $0) })
+                for memberID in current.memberOrderIDs {
+                    guard let order = byID[memberID], order.status == current.status else {
+                        throw FinanceError.invalidPaymentBatch(
+                            "Mindestens ein Lastschriftstatus wurde zwischenzeitlich geändert."
+                        )
+                    }
+                    let reference = target == .accepted
+                        ? "SIM-DD-\(memberID.uuidString.prefix(8).uppercased())"
+                        : order.bankReference
+                    try run(
+                        """
+                        UPDATE direct_debit_orders
+                        SET status=?,bank_reference=?,updated_at=?,version=version+1
+                        WHERE id=? AND status=?
+                        """,
+                        [
+                            .text(target.rawValue), .text(reference), .text(now),
+                            .text(memberID.uuidString), .text(current.status.rawValue)
+                        ]
+                    )
+                    guard sqlite3_changes(database) == 1 else {
+                        throw FinanceError.invalidPaymentTransition
+                    }
+                    if target == .accepted {
+                        let transactionReference = "direct-debit:\(memberID.uuidString)"
+                        if try scalarInt(
+                            "SELECT COUNT(*) FROM transactions WHERE reference=?",
+                            [.text(transactionReference)]
+                        ) == 0 {
+                            try writeTransaction(
+                                FinanceTransaction(
+                                    id: UUID(), accountID: order.creditorAccountID,
+                                    bookingDate: order.collectionDate,
+                                    valueDate: order.collectionDate,
+                                    payee: order.debtorName, purpose: order.purpose,
+                                    categoryID: nil, amountMinor: order.amountMinor,
+                                    currency: order.currency, status: .pending,
+                                    memo: "SEPA-Basislastschrift",
+                                    reference: transactionReference,
+                                    transferID: nil, importFingerprint: nil, splits: [],
+                                    payeeID: order.debtorPayeeID, origin: .manual,
+                                    counterpartyIBAN: order.debtorIBAN,
+                                    endToEndID: order.endToEndID,
+                                    mandateReference: order.mandateReference,
+                                    counterpartyBIC: order.debtorBIC,
+                                    creditorID: order.creditorID,
+                                    bookingText: "SEPA-Basislastschrift"
+                                ),
+                                now: now
+                            )
+                        }
+                    }
+                    try audit(
+                        entity: "direct_debit_order", id: memberID,
+                        action: "batch-transition",
+                        details: "batch=\(id.uuidString);\(current.status.rawValue)->\(target.rawValue)"
+                    )
+                }
+            }
+            try audit(
+                entity: "payment_batch", id: id, action: "transition",
                 details: "\(current.status.rawValue)->\(target.rawValue)"
             )
         }

@@ -2103,6 +2103,267 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testCreditTransferBatchIsAtomicAndExportsDeterministicPain001() throws {
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Sammlerkonto", institution: "Testbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 50_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Müller & Co."
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        try context.store.saveAccount(account)
+        let executionDate = Pain001Exporter.gregorianDate(
+            year: 2026, month: 8, day: 17
+        )
+        let createdAt = Pain001Exporter.gregorianDate(
+            year: 2026, month: 7, day: 31
+        )
+        let orders = [
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Empfänger <Eins>",
+                iban: "DE12500105170648489890", bic: "INGDDEFFXXX",
+                amountMinor: 1_000, currency: "EUR",
+                executionDate: executionDate, purpose: "Rechnung & eins",
+                endToEndID: "SAMMEL-1", status: .draft,
+                idempotencyKey: "batch-payment-1", bankReference: "",
+                createdAt: createdAt, updatedAt: createdAt
+            ),
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Empfänger Zwei",
+                iban: "DE75512108001245126199", bic: "",
+                amountMinor: 2_000, currency: "EUR",
+                executionDate: executionDate, purpose: "Rechnung zwei",
+                endToEndID: "SAMMEL-2", status: .draft,
+                idempotencyKey: "batch-payment-2", bankReference: "",
+                createdAt: createdAt.addingTimeInterval(1),
+                updatedAt: createdAt.addingTimeInterval(1)
+            )
+        ]
+        for order in orders { try context.store.createPaymentOrder(order) }
+        let memberIDs = orders.map(\.id).sorted { $0.uuidString < $1.uuidString }
+        let batch = PaymentBatch(
+            id: UUID(), name: "Rechnungen August",
+            kind: .creditTransfer, accountID: account.id,
+            requestedDate: executionDate, status: .draft,
+            idempotencyKey: "credit-batch-2026-08", bankReference: "",
+            memberOrderIDs: memberIDs, createdAt: createdAt,
+            updatedAt: createdAt
+        )
+        try context.store.createPaymentBatch(batch)
+        XCTAssertEqual(try context.store.paymentBatches(), [batch])
+        XCTAssertThrowsError(try context.store.createPaymentBatch(batch)) {
+            XCTAssertEqual($0 as? FinanceError, .duplicatePaymentBatch)
+        }
+        XCTAssertThrowsError(
+            try context.store.transitionPaymentOrder(
+                id: memberIDs[0], to: .initiated
+            )
+        ) {
+            guard case .invalidPaymentBatch = $0 as? FinanceError else {
+                return XCTFail("Erwartet wurde der Sammlerschutz.")
+            }
+        }
+
+        let orderedMembers = memberIDs.compactMap { id in
+            orders.first { $0.id == id }
+        }
+        let first = try Pain001Exporter.export(
+            batch: batch, orders: orderedMembers, account: account,
+            createdAt: createdAt, messageID: "MSG-BATCH-001"
+        )
+        let second = try Pain001Exporter.export(
+            batch: batch, orders: orderedMembers, account: account,
+            createdAt: createdAt, messageID: "MSG-BATCH-001"
+        )
+        XCTAssertEqual(first, second)
+        let document = try XMLDocument(data: first.data)
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='CdtTrfTxInf']").count,
+            2
+        )
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='NbOfTxs']")
+                .compactMap(\.stringValue),
+            ["2", "2"]
+        )
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='CtrlSum']")
+                .compactMap(\.stringValue),
+            ["30.00", "30.00"]
+        )
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='BtchBookg']")
+                .first?.stringValue,
+            "true"
+        )
+        let rawXML = try XCTUnwrap(String(data: first.data, encoding: .utf8))
+        XCTAssertTrue(rawXML.contains("Müller &amp; Co."))
+        XCTAssertTrue(rawXML.contains("Empfänger &lt;Eins&gt;"))
+
+        for target in [
+            PaymentStatus.initiated, .challengeReceived, .awaitingUser,
+            .submitted, .accepted
+        ] {
+            try context.store.transitionPaymentBatch(id: batch.id, to: target)
+        }
+        let acceptedBatch = try XCTUnwrap(context.store.paymentBatches().first)
+        XCTAssertEqual(acceptedBatch.status, .accepted)
+        XCTAssertTrue(acceptedBatch.bankReference.hasPrefix("SIM-BT-"))
+        let acceptedOrders = try context.store.paymentOrders().filter {
+            memberIDs.contains($0.id)
+        }
+        XCTAssertEqual(Set(acceptedOrders.map(\.status)), [.accepted])
+        let expectedReferences = Set(memberIDs.map { "payment:\($0.uuidString)" })
+        let materialized = try context.store.transactions().filter {
+            expectedReferences.contains($0.reference)
+        }
+        XCTAssertEqual(materialized.count, 2)
+        XCTAssertEqual(materialized.reduce(Int64.zero) { $0 + $1.amountMinor }, -3_000)
+        XCTAssertThrowsError(
+            try context.store.transitionPaymentBatch(id: batch.id, to: .submitted)
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testDirectDebitBatchIsAtomicAndExportsDeterministicPain008() throws {
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Vereinskonto", institution: "Testbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Verein Beispiel"
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        try context.store.saveAccount(account)
+        let signedOn = Pain008Exporter.gregorianDate(
+            year: 2026, month: 1, day: 15
+        )
+        let collectionDate = Pain008Exporter.gregorianDate(
+            year: 2026, month: 8, day: 20
+        )
+        let createdAt = Pain008Exporter.gregorianDate(
+            year: 2026, month: 7, day: 31
+        )
+        var orders: [DirectDebitOrder] = []
+        for index in 1...2 {
+            let payee = FinancePayee(
+                id: UUID(), canonicalName: "Mitglied \(index)", aliases: [],
+                address: "", email: "", phone: "", iban: "", bic: "",
+                defaultCategoryID: nil, preferredAccountID: nil,
+                note: "", isActive: true
+            )
+            try context.store.savePayee(payee)
+            let bank = FinancePayeeBankAccount(
+                id: UUID(), payeeID: payee.id, label: "Beitragskonto",
+                accountHolder: index == 1 ? "Mitglied & Eins" : "Mitglied Zwei",
+                iban: index == 1
+                    ? "DE12500105170648489890" : "DE75512108001245126199",
+                bic: index == 1 ? "INGDDEFFXXX" : "",
+                bankName: "", isDefault: true, isActive: true
+            )
+            try context.store.savePayeeBankAccount(bank)
+            let mandate = FinanceSEPAMandate(
+                id: UUID(), payeeID: payee.id, reference: "MANDAT-\(index)",
+                signedOn: signedOn, sequenceType: .recurring,
+                note: "", isActive: true
+            )
+            try context.store.saveSEPAMandate(mandate)
+            let order = DirectDebitOrder(
+                id: UUID(), creditorAccountID: account.id,
+                debtorPayeeID: payee.id, debtorBankAccountID: bank.id,
+                mandateID: mandate.id, creditorName: account.ownerName,
+                creditorID: "DE98ZZZ09999999999",
+                creditorIBAN: account.iban, creditorBIC: account.bic,
+                debtorName: bank.accountHolder, debtorIBAN: bank.iban,
+                debtorBIC: bank.bic, amountMinor: Int64(index * 1_500),
+                currency: "EUR", collectionDate: collectionDate,
+                purpose: "Beitrag \(index)", endToEndID: "DD-BATCH-\(index)",
+                mandateReference: mandate.reference,
+                mandateSignedOn: signedOn, sequenceType: .recurring,
+                status: .draft, idempotencyKey: "dd-batch-order-\(index)",
+                bankReference: "", createdAt: createdAt.addingTimeInterval(
+                    TimeInterval(index)
+                ), updatedAt: createdAt
+            )
+            try context.store.createDirectDebitOrder(order)
+            orders.append(order)
+        }
+        let memberIDs = orders.map(\.id).sorted { $0.uuidString < $1.uuidString }
+        let batch = PaymentBatch(
+            id: UUID(), name: "Beiträge August", kind: .directDebit,
+            accountID: account.id, requestedDate: collectionDate,
+            status: .draft, idempotencyKey: "dd-batch-2026-08",
+            bankReference: "", memberOrderIDs: memberIDs,
+            createdAt: createdAt, updatedAt: createdAt
+        )
+        try context.store.createPaymentBatch(batch)
+        XCTAssertThrowsError(
+            try context.store.transitionDirectDebitOrder(
+                id: memberIDs[0], to: .initiated
+            )
+        ) {
+            guard case .invalidPaymentBatch = $0 as? FinanceError else {
+                return XCTFail("Erwartet wurde der Sammlerschutz.")
+            }
+        }
+        let orderedMembers = memberIDs.compactMap { id in
+            orders.first { $0.id == id }
+        }
+        let result = try Pain008Exporter.export(
+            batch: batch, orders: orderedMembers, account: account,
+            createdAt: createdAt, messageID: "MSG-BATCH-008"
+        )
+        XCTAssertEqual(
+            result,
+            try Pain008Exporter.export(
+                batch: batch, orders: orderedMembers, account: account,
+                createdAt: createdAt, messageID: "MSG-BATCH-008"
+            )
+        )
+        let document = try XMLDocument(data: result.data)
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='DrctDbtTxInf']").count,
+            2
+        )
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='CtrlSum']")
+                .compactMap(\.stringValue),
+            ["45.00", "45.00"]
+        )
+        XCTAssertEqual(
+            try document.nodes(forXPath: "//*[local-name()='SeqTp']")
+                .first?.stringValue,
+            "RCUR"
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(String(data: result.data, encoding: .utf8))
+                .contains("Mitglied &amp; Eins")
+        )
+        for target in [
+            PaymentStatus.initiated, .challengeReceived, .awaitingUser,
+            .submitted, .accepted
+        ] {
+            try context.store.transitionPaymentBatch(id: batch.id, to: target)
+        }
+        XCTAssertEqual(
+            Set(try context.store.directDebitOrders().filter {
+                memberIDs.contains($0.id)
+            }.map(\.status)),
+            [.accepted]
+        )
+        let transactions = try context.store.transactions().filter {
+            $0.reference.hasPrefix("direct-debit:")
+        }
+        XCTAssertEqual(transactions.count, 2)
+        XCTAssertEqual(transactions.reduce(Int64.zero) { $0 + $1.amountMinor }, 4_500)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testStandingOrderMaterializationIsIdempotentAuditedAndWeekendSafe() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3035,7 +3296,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To24PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To25PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -3150,11 +3411,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 24)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 25)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To24PromotesLegacyPayeeBankData() throws {
+    func testMigration22To25PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -3181,6 +3442,8 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         let downgradeSQL = """
+        DROP TABLE payment_batch_items;
+        DROP TABLE payment_batches;
         DROP TABLE direct_debit_orders;
         ALTER TABLE payment_orders DROP COLUMN payee_bank_account_id;
         ALTER TABLE payment_orders DROP COLUMN payee_id;

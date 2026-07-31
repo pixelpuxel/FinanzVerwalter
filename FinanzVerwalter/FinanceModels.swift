@@ -983,6 +983,53 @@ struct DirectDebitOrder: Identifiable, Hashable, Sendable {
     }
 }
 
+enum PaymentBatchKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case creditTransfer
+    case directDebit
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .creditTransfer: "Sammelüberweisung"
+        case .directDebit: "Sammellastschrift"
+        }
+    }
+}
+
+struct PaymentBatch: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var name: String
+    var kind: PaymentBatchKind
+    var accountID: UUID
+    var requestedDate: Date
+    var status: PaymentStatus
+    var idempotencyKey: String
+    var bankReference: String
+    var memberOrderIDs: [UUID]
+    var createdAt: Date
+    var updatedAt: Date
+
+    func validate() throws {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty, normalizedName.count <= 140 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Die Bezeichnung muss 1 bis 140 Zeichen lang sein."
+            )
+        }
+        guard memberOrderIDs.count >= 2,
+              Set(memberOrderIDs).count == memberOrderIDs.count else {
+            throw FinanceError.invalidPaymentBatch(
+                "Ein Sammler benötigt mindestens zwei unterschiedliche Aufträge."
+            )
+        }
+        guard status == .draft else {
+            throw FinanceError.invalidPaymentBatch(
+                "Ein neuer Sammler muss als Entwurf beginnen."
+            )
+        }
+    }
+}
+
 enum StandingOrderStatus: String, Codable, CaseIterable, Identifiable, Sendable {
     case active
     case paused

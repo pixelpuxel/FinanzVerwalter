@@ -93,6 +93,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
+    @Published private(set) var paymentBatches: [PaymentBatch] = []
     @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
     @Published private(set) var payeeBankAccounts: [FinancePayeeBankAccount] = []
@@ -1576,6 +1577,99 @@ final class FinanceAppStore: ObservableObject {
         transitionPayment(order, to: outcome.paymentStatus)
     }
 
+    func createPaymentBatch(
+        name: String,
+        kind: PaymentBatchKind,
+        memberOrderIDs: Set<UUID>
+    ) -> Bool {
+        guard let repository else { return false }
+        let sortedIDs = memberOrderIDs.sorted { $0.uuidString < $1.uuidString }
+        let accountID: UUID
+        let requestedDate: Date
+        switch kind {
+        case .creditTransfer:
+            guard let firstID = sortedIDs.first,
+                  let first = paymentOrders.first(where: { $0.id == firstID })
+            else {
+                errorMessage = "Bitte wähle mindestens zwei Überweisungsentwürfe."
+                return false
+            }
+            accountID = first.accountID
+            requestedDate = first.executionDate
+        case .directDebit:
+            guard let firstID = sortedIDs.first,
+                  let first = directDebitOrders.first(where: { $0.id == firstID })
+            else {
+                errorMessage = "Bitte wähle mindestens zwei Lastschriftentwürfe."
+                return false
+            }
+            accountID = first.creditorAccountID
+            requestedDate = first.collectionDate
+        }
+        let requestedDay = requestedDate.formatted(
+            .iso8601.year().month().day().dateSeparator(.dash)
+        )
+        let canonical = ([kind.rawValue, accountID.uuidString, requestedDay]
+            + sortedIDs.map(\.uuidString)).joined(separator: "|")
+        let idempotencyKey = SHA256.hash(data: Data(canonical.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let now = Date()
+        do {
+            try repository.createPaymentBatch(
+                PaymentBatch(
+                    id: UUID(),
+                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    kind: kind, accountID: accountID,
+                    requestedDate: requestedDate, status: .draft,
+                    idempotencyKey: idempotencyKey, bankReference: "",
+                    memberOrderIDs: sortedIDs, createdAt: now, updatedAt: now
+                )
+            )
+            try load()
+            statusText = "\(kind.title) angelegt"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func transitionPaymentBatch(
+        _ batch: PaymentBatch,
+        to target: PaymentStatus
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.transitionPaymentBatch(id: batch.id, to: target)
+            try load()
+            statusText = "Sammlerstatus: \(target.title)"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func submitPaymentBatch(
+        _ batch: PaymentBatch,
+        authorizationCode: String
+    ) -> Bool {
+        guard !authorizationCode.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            errorMessage = "Für die Simulation ist ein Freigabecode erforderlich. Er wird nicht gespeichert."
+            return false
+        }
+        return transitionPaymentBatch(batch, to: .submitted)
+    }
+
+    func simulatePaymentBatchDecision(
+        _ batch: PaymentBatch,
+        outcome: SimulatorOutcome
+    ) -> Bool {
+        transitionPaymentBatch(batch, to: outcome.paymentStatus)
+    }
+
     func createDirectDebitOrder(
         creditorAccountID: UUID,
         debtorPayeeID: UUID,
@@ -2046,6 +2140,7 @@ final class FinanceAppStore: ObservableObject {
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()
         directDebitOrders = try repository.directDebitOrders()
+        paymentBatches = try repository.paymentBatches()
         standingOrders = try repository.standingOrders()
         payees = try repository.payees()
         payeeBankAccounts = try repository.payeeBankAccounts()

@@ -124,6 +124,8 @@ enum FinanceError: LocalizedError, Equatable {
     case duplicatePaymentOrder
     case invalidDirectDebit(String)
     case duplicateDirectDebitOrder
+    case invalidPaymentBatch(String)
+    case duplicatePaymentBatch
     case invalidStandingOrder(String)
     case inactiveStandingOrder
     case standingOrderRunFinalized
@@ -161,6 +163,10 @@ enum FinanceError: LocalizedError, Equatable {
             "Die Lastschrift ist ungültig: \(message)"
         case .duplicateDirectDebitOrder:
             "Diese Lastschrift wurde mit derselben Idempotenzkennung bereits angelegt."
+        case .invalidPaymentBatch(let message):
+            "Der Sammler ist ungültig: \(message)"
+        case .duplicatePaymentBatch:
+            "Dieser Sammler wurde mit derselben Idempotenzkennung bereits angelegt."
         case .invalidStandingOrder(let message): "Der Dauerauftrag ist ungültig: \(message)"
         case .inactiveStandingOrder: "Nur aktive Daueraufträge können vorbereitet oder übersprungen werden."
         case .standingOrderRunFinalized:
