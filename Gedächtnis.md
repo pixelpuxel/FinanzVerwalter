@@ -736,3 +736,14 @@ Rechtsberatung.
 - Computer Use meldet auch beim finalen Schema-19-Release den gesperrten
   Mac. Deshalb bleibt die visuelle Importdialog-Abnahme offen und es wird
   ausdrücklich kein angeblicher Screenshot veröffentlicht.
+- Der Funktionsstand ist als Commit `f8200c6` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 zeigt auf genau diesen
+  Commit und dokumentiert Schema 19 sowie 47 ausgeführte Tests.
+- GitHub CLI 2.97.0 wurde aus dem offiziellen macOS-arm64-Release nach
+  erfolgreicher SHA-256-Prüfung benutzerlokal unter `~/.local/bin/gh`
+  installiert. Die vorhandene Schlüsselbund-Anmeldung für `pixelpuxel`
+  funktioniert; keine Zugangsdaten wurden in Projektdateien geschrieben.
+- Telegram-Nachricht 941 wurde im Projektthread 894 veröffentlicht. Sie
+  enthält den geprüften Matching-, Release- und Teststatus sowie den
+  ausdrücklichen Hinweis, dass wegen des gesperrten Macs noch kein echter
+  Screenshot vorliegt.
