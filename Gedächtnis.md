@@ -1564,3 +1564,12 @@ Rechtsberatung.
   sich nicht automatisch entsperren lässt. Die sichtbare UI-/VoiceOver-
   Abnahme und ein echter neuer Screenshot bleiben offen; es wurde nichts
   vorgetäuscht.
+- Implementierung und Tests sind als Commit `ddebfbc`, die reproduzierbare
+  Dokumentation als `26bfdd8` auf `agent/qif-mehrkontenimport` festgeschrieben
+  und nach GitHub gepusht. Draft-PR 1 dokumentiert Schema 27, Sicherheit,
+  Vollsuite, privaten QIF-Test und Produktionsmigration.
+- Telegram-Nachricht 971 wurde im Projektthread 894 (`/quicken`)
+  veröffentlicht. Sie enthält denselben Import-, Test-, Release-, Datenbank-
+  und GitHub-Stand sowie den Zielzählerstand von 10.740.657 Tokens. Wegen der
+  bestätigten Bildschirmsperre wurde ausdrücklich kein Screenshot angehängt
+  oder vorgetäuscht.
