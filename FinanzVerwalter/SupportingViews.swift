@@ -632,55 +632,354 @@ struct ReconciliationView: View {
     @State private var accountID: UUID?
     @State private var statementDate = Date()
     @State private var endingBalance = ""
+    @State private var snapshot: ReconciliationSnapshot?
+    @State private var selectedTransactionIDs = Set<UUID>()
+    @State private var history: [ReconciliationRecord] = []
+    @State private var createAdjustment = false
+    @State private var showAdjustmentConfirmation = false
+    @State private var reconciliationToRevert: ReconciliationRecord?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Konto abgleichen").font(.title2.bold())
-            Text("Der Auszugssaldo muss exakt mit dem lokalen Saldo zum Stichtag übereinstimmen. Erst dann werden die Buchungen geschützt.")
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Konto abgleichen")
+                    .font(.title2.bold())
+                Text(
+                    "Markiere nur die Buchungen des Bankauszugs. "
+                        + "Anfangssaldo, markierte Summe und Endsaldo "
+                        + "müssen sich exakt ausgleichen."
+                )
                 .foregroundStyle(.secondary)
-            Form {
-                Picker("Konto", selection: $accountID) {
-                    Text("Bitte wählen").tag(UUID?.none)
-                    ForEach(store.accounts) { Text($0.name).tag(UUID?.some($0.id)) }
-                }
-                DatePicker("Auszugsdatum", selection: $statementDate, displayedComponents: .date)
-                TextField("Endsaldo des Auszugs", text: $endingBalance)
-                if let accountID, let balance = store.balances[accountID] {
-                    LabeledContent("Aktueller lokaler Saldo") {
-                        Text(Money(minorUnits: balance).formatted).monospacedDigit()
-                    }
-                }
             }
+            .padding(24)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 18) {
+                        Picker("Konto", selection: $accountID) {
+                            Text("Bitte wählen").tag(UUID?.none)
+                            ForEach(store.accounts.filter { !$0.isClosed }) {
+                                Text($0.name).tag(UUID?.some($0.id))
+                            }
+                        }
+                        .frame(width: 280)
+                        DatePicker(
+                            "Auszugsdatum",
+                            selection: $statementDate,
+                            displayedComponents: .date
+                        )
+                        .frame(width: 230)
+                        Spacer()
+                    }
+
+                    reconciliationSummary
+
+                    if let snapshot {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Buchungen auf dem Auszug")
+                                    .font(.headline)
+                                Text("\(selectedTransactionIDs.count) von \(snapshot.candidates.count) markiert")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Alle markieren") {
+                                    selectedTransactionIDs = Set(
+                                        snapshot.candidates.map(\.id)
+                                    )
+                                }
+                                Button("Keine markieren") {
+                                    selectedTransactionIDs.removeAll()
+                                }
+                            }
+                            Table(
+                                snapshot.candidates,
+                                selection: $selectedTransactionIDs
+                            ) {
+                                TableColumn("Datum") { transaction in
+                                    Text(
+                                        transaction.bookingDate,
+                                        format: .dateTime
+                                            .day()
+                                            .month(.twoDigits)
+                                            .year()
+                                    )
+                                    .monospacedDigit()
+                                }
+                                .width(90)
+                                TableColumn("Empfänger") { transaction in
+                                    Text(transaction.payee)
+                                        .lineLimit(1)
+                                }
+                                TableColumn("Verwendungszweck") { transaction in
+                                    Text(transaction.purpose)
+                                        .lineLimit(1)
+                                }
+                                TableColumn("Status") { transaction in
+                                    Text(transaction.status.title)
+                                }
+                                .width(80)
+                                TableColumn("Betrag") { transaction in
+                                    Text(
+                                        Money(
+                                            minorUnits: transaction.amountMinor,
+                                            currency: selectedAccount?.currency ?? "EUR"
+                                        ).formatted
+                                    )
+                                    .monospacedDigit()
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        alignment: .trailing
+                                    )
+                                }
+                                .width(110)
+                            }
+                            .frame(minHeight: 260)
+                        }
+                    }
+
+                    if differenceMinor != 0 {
+                        Toggle(
+                            "Differenz ausdrücklich als Ausgleichsbuchung anlegen",
+                            isOn: $createAdjustment
+                        )
+                        Text(
+                            "Die Ausgleichsbuchung wird mit Referenz "
+                                + "„ABGLEICH“ protokolliert. Bei einer "
+                                + "Rücknahme bleibt sie storniert als Auditspur erhalten."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    reconciliationHistory
+                }
+                .padding(24)
+            }
+
+            Divider()
+
             HStack {
-                Spacer()
                 Button("Abbrechen", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                Spacer()
                 Button("Abgleich abschließen") {
-                    guard let accountID else { return }
-                    if store.reconcile(
-                        accountID: accountID,
-                        endingBalance: endingBalance,
-                        date: statementDate
-                    ) {
-                        dismiss()
+                    if differenceMinor != 0 && createAdjustment {
+                        showAdjustmentConfirmation = true
+                    } else {
+                        completeReconciliation()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(accountID == nil || endingBalance.isEmpty)
+                .disabled(
+                    accountID == nil
+                        || endingBalanceMinor == nil
+                        || (differenceMinor != 0 && !createAdjustment)
+                )
             }
+            .padding(18)
         }
-        .padding(24)
-        .frame(width: 540)
+        .frame(width: 900, height: 720)
         .onAppear {
             accountID = store.selectedAccountID ?? store.accounts.first?.id
-            fillBalance()
+            reload()
         }
-        .onChange(of: accountID) { fillBalance() }
+        .onChange(of: accountID) { reload() }
+        .onChange(of: statementDate) { reload() }
+        .alert(
+            "Ausgleichsbuchung bestätigen",
+            isPresented: $showAdjustmentConfirmation
+        ) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Differenz buchen und abgleichen") {
+                completeReconciliation()
+            }
+        } message: {
+            Text(
+                "Es wird eine Ausgleichsbuchung über "
+                    + formatted(differenceMinor)
+                    + " angelegt. Diese Aktion wird auditiert."
+            )
+        }
+        .confirmationDialog(
+            "Jüngsten Kontoabgleich zurücknehmen?",
+            isPresented: Binding(
+                get: { reconciliationToRevert != nil },
+                set: { if !$0 { reconciliationToRevert = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Abgleich zurücknehmen", role: .destructive) {
+                guard let reconciliationToRevert else { return }
+                if store.revertReconciliation(reconciliationToRevert) {
+                    self.reconciliationToRevert = nil
+                    reload()
+                }
+            }
+            Button("Abbrechen", role: .cancel) {
+                reconciliationToRevert = nil
+            }
+        } message: {
+            Text(
+                "Die Buchungen erhalten ihren vorherigen Status. "
+                    + "Eine Ausgleichsbuchung wird storniert, nicht gelöscht."
+            )
+        }
     }
 
-    private func fillBalance() {
-        guard let accountID, let value = store.balances[accountID] else { return }
-        endingBalance = NSDecimalNumber(decimal: Decimal(value) / Decimal(100)).stringValue
+    private var selectedAccount: FinanceAccount? {
+        accountID.flatMap { id in
+            store.accounts.first { $0.id == id }
+        }
+    }
+
+    private var endingBalanceMinor: Int64? {
+        guard let account = selectedAccount else { return nil }
+        return try? Money(
+            parsing: endingBalance,
+            currency: account.currency
+        ).minorUnits
+    }
+
+    private var selectedSumMinor: Int64 {
+        snapshot?.selectedSumMinor(selectedTransactionIDs) ?? 0
+    }
+
+    private var calculatedBalanceMinor: Int64 {
+        (snapshot?.startingBalanceMinor ?? 0) + selectedSumMinor
+    }
+
+    private var differenceMinor: Int64 {
+        guard let endingBalanceMinor else { return 0 }
+        return endingBalanceMinor - calculatedBalanceMinor
+    }
+
+    private var reconciliationSummary: some View {
+        Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 10) {
+            GridRow {
+                Text("Anfangssaldo")
+                Text("Markierte Summe")
+                Text("Berechneter Saldo")
+                Text("Endsaldo des Auszugs")
+                Text("Differenz")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            GridRow {
+                Text(formatted(snapshot?.startingBalanceMinor ?? 0))
+                Text(formatted(selectedSumMinor))
+                Text(formatted(calculatedBalanceMinor))
+                TextField("0,00", text: $endingBalance)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+                Text(formatted(differenceMinor))
+                    .foregroundStyle(differenceMinor == 0 ? .green : .red)
+                    .fontWeight(.semibold)
+            }
+            .monospacedDigit()
+        }
+        .padding(14)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+    }
+
+    private var reconciliationHistory: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Abgleichshistorie")
+                .font(.headline)
+            if history.isEmpty {
+                Text("Für dieses Konto gibt es noch keinen Kontoabgleich.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(history.prefix(6)) { value in
+                    HStack {
+                        Image(
+                            systemName: value.revertedAt == nil
+                                ? "checkmark.seal.fill"
+                                : "arrow.uturn.backward.circle"
+                        )
+                        .foregroundStyle(
+                            value.revertedAt == nil ? Color.green : .secondary
+                        )
+                        Text(
+                            value.statementDate,
+                            format: .dateTime
+                                .day()
+                                .month(.twoDigits)
+                                .year()
+                        )
+                        Text(formatted(value.endingBalanceMinor))
+                            .monospacedDigit()
+                        if value.adjustmentTransactionID != nil {
+                            Text("mit Ausgleichsbuchung")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if value.revertedAt != nil {
+                            Text("zurückgenommen")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if value.canRevert {
+                            Button("Zurücknehmen") {
+                                reconciliationToRevert = value
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                }
+            }
+        }
+    }
+
+    private func formatted(_ value: Int64) -> String {
+        Money(
+            minorUnits: value,
+            currency: selectedAccount?.currency ?? "EUR"
+        ).formatted
+    }
+
+    private func reload() {
+        guard let accountID else {
+            snapshot = nil
+            history = []
+            selectedTransactionIDs.removeAll()
+            return
+        }
+        guard let value = store.reconciliationSnapshot(
+            accountID: accountID,
+            date: statementDate
+        ) else { return }
+        snapshot = value
+        history = store.reconciliationHistory(accountID: accountID)
+        selectedTransactionIDs = Set(
+            value.candidates.filter { $0.status == .cleared }.map(\.id)
+        )
+        let suggested = value.startingBalanceMinor
+            + value.candidates.reduce(Int64.zero) { $0 + $1.amountMinor }
+        endingBalance = NSDecimalNumber(
+            decimal: Decimal(suggested) / Decimal(100)
+        ).stringValue
+        createAdjustment = false
+    }
+
+    private func completeReconciliation() {
+        guard let accountID else { return }
+        if store.reconcile(
+            accountID: accountID,
+            endingBalance: endingBalance,
+            date: statementDate,
+            selectedTransactionIDs: selectedTransactionIDs,
+            createAdjustment: createAdjustment
+        ) {
+            reload()
+        }
     }
 }
 

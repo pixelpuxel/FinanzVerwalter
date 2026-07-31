@@ -519,3 +519,25 @@ Verwendungszweck, Kategorie, Konto und Status wählbar. Genau eine markierte
 Buchung wird über `RegisterF3Field.selection(for:)` in einen typisierten
 Filterwert übersetzt. Keine oder mehrere Markierungen sowie leere Textfelder
 ändern keinen Filter und melden den Grund in der Statuszeile.
+
+# Reproduzierbarer Kontoabgleich
+
+Der Kontoabgleich darf niemals pauschal alle Buchungen bis zu einem Datum
+ändern. Erzeuge einen unveränderlichen Abgleichskopf mit Konto,
+Auszugsdatum, Anfangssaldo, markierter Summe, Endsaldo, Abschlusszeit,
+optionaler Ausgleichsbuchung, Workflowversion und monotoner Folge. Halte jede
+ausgewählte Buchung separat mit vorherigem Status, Betrag und
+Ausgleichskennzeichen fest.
+
+Der Anfangssaldo ist der Endsaldo des jüngsten aktiven Abgleichs oder ohne
+Vorgänger der Eröffnungssaldo. Kandidaten sind ausschließlich gebuchte oder
+bestätigte Buchungen desselben Kontos bis zum Stichtag. Nur explizit
+markierte Kandidaten wechseln atomar zu `reconciled`. Eine Differenz bricht
+ab, außer der Nutzer bestätigt in einem zweiten Schritt eine eigene
+Ausgleichsbuchung mit Referenz `ABGLEICH`.
+
+Nur der jüngste aktive Abgleich ist rücknehmbar. Stelle für normale
+Positionen den gespeicherten vorherigen Status wieder her und setze eine
+Ausgleichsbuchung auf `cancelled`, ohne sie zu löschen. Markiere den
+Abgleichskopf als zurückgenommen und schreibe ein Auditereignis. Historische
+Alteinträge ohne Positionsliste bleiben sichtbar, aber nicht rücknehmbar.

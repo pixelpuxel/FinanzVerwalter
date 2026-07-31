@@ -902,6 +902,53 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 14")
             }
         }
+        if version < 15 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN starting_balance_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN selected_sum_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN adjustment_transaction_id TEXT REFERENCES transactions(id)"
+                )
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN workflow_version INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    """
+                    CREATE TABLE reconciliation_items (
+                        reconciliation_id TEXT NOT NULL
+                            REFERENCES reconciliations(id) ON DELETE CASCADE,
+                        transaction_id TEXT NOT NULL REFERENCES transactions(id),
+                        previous_status TEXT NOT NULL,
+                        amount_minor INTEGER NOT NULL,
+                        is_adjustment INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(reconciliation_id,transaction_id)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX reconciliation_items_transaction ON reconciliation_items(transaction_id)"
+                )
+                try execute(
+                    "CREATE INDEX reconciliations_active ON reconciliations(account_id,reverted_at,statement_date DESC,completed_at DESC)"
+                )
+                try execute("PRAGMA user_version = 15")
+            }
+        }
+        if version < 16 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "UPDATE reconciliations SET sequence=rowid WHERE sequence=0"
+                )
+                try execute("PRAGMA user_version = 16")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -3242,47 +3289,369 @@ final class SQLiteFinanceStore {
         }
     }
 
-    func reconcile(account: FinanceAccount, endingBalanceMinor: Int64, date: Date) throws {
-        let calculated = try scalarInt64(
+    func reconciliationSnapshot(
+        account: FinanceAccount,
+        statementDate: Date
+    ) throws -> ReconciliationSnapshot {
+        var latestID: UUID?
+        var latestDay: String?
+        var startingBalance = account.openingBalanceMinor
+        try query(
             """
-            SELECT ? + COALESCE(SUM(amount_minor),0)
-            FROM transactions
-            WHERE account_id=? AND booking_date<=? AND status!='cancelled'
+            SELECT id,statement_date,ending_balance_minor
+            FROM reconciliations
+            WHERE account_id=? AND reverted_at IS NULL
+            ORDER BY statement_date DESC,sequence DESC,completed_at DESC,id DESC
+            LIMIT 1
             """,
-            [
-                .integer(account.openingBalanceMinor),
-                .text(account.id.uuidString),
-                .text(Self.day(date))
-            ]
-        )
-        guard calculated == endingBalanceMinor else {
-            throw FinanceError.reconciliationDifference(endingBalanceMinor - calculated)
+            [.text(account.id.uuidString)]
+        ) { statement in
+            latestID = UUID(uuidString: Self.text(statement, 0))
+            latestDay = Self.text(statement, 1)
+            startingBalance = sqlite3_column_int64(statement, 2)
         }
+        if let latestDay, Self.day(statementDate) < latestDay {
+            throw FinanceError.database(
+                "Das Auszugsdatum liegt vor dem jüngsten aktiven Kontoabgleich."
+            )
+        }
+        let day = Self.day(statementDate)
+        let candidates = try transactions(accountID: account.id).filter {
+            ($0.status == .booked || $0.status == .cleared)
+                && Self.day($0.bookingDate) <= day
+        }.sorted {
+            if $0.bookingDate != $1.bookingDate {
+                return $0.bookingDate < $1.bookingDate
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        return ReconciliationSnapshot(
+            accountID: account.id,
+            statementDate: statementDate,
+            startingBalanceMinor: startingBalance,
+            candidates: candidates,
+            latestActiveReconciliationID: latestID
+        )
+    }
+
+    @discardableResult
+    func reconcile(
+        account: FinanceAccount,
+        endingBalanceMinor: Int64,
+        date: Date,
+        selectedTransactionIDs: Set<UUID>,
+        createAdjustment: Bool
+    ) throws -> ReconciliationRecord {
+        let snapshot = try reconciliationSnapshot(
+            account: account,
+            statementDate: date
+        )
+        let candidateIDs = Set(snapshot.candidates.map(\.id))
+        guard selectedTransactionIDs.isSubset(of: candidateIDs) else {
+            throw FinanceError.database(
+                "Die Auswahl enthält keine abgleichbare Buchung dieses Kontos."
+            )
+        }
+        let selectedSum = snapshot.selectedSumMinor(selectedTransactionIDs)
+        let difference = snapshot.differenceMinor(
+            endingBalanceMinor: endingBalanceMinor,
+            selectedIDs: selectedTransactionIDs
+        )
+        guard difference == 0 || createAdjustment else {
+            throw FinanceError.reconciliationDifference(difference)
+        }
+
         let reconciliationID = UUID()
-        let now = Self.timestamp(Date())
+        let adjustmentID = difference == 0 ? nil : UUID()
+        let completedAt = Date()
+        let now = Self.timestamp(completedAt)
         try transaction {
+            if let adjustmentID {
+                let adjustment = FinanceTransaction(
+                    id: adjustmentID,
+                    accountID: account.id,
+                    bookingDate: date,
+                    valueDate: date,
+                    payee: "Kontoabgleich",
+                    purpose: "Ausgleichsbuchung zum Kontoabgleich",
+                    categoryID: nil,
+                    amountMinor: difference,
+                    currency: account.currency,
+                    status: .booked,
+                    memo: "Explizit bestätigte Differenzbuchung",
+                    reference: "ABGLEICH",
+                    transferID: nil,
+                    importFingerprint: nil,
+                    splits: []
+                )
+                try writeTransaction(adjustment, now: now)
+            }
             try run(
                 """
-                INSERT INTO reconciliations(id,account_id,statement_date,ending_balance_minor,completed_at)
-                VALUES(?,?,?,?,?)
+                INSERT INTO reconciliations(
+                    id,account_id,statement_date,ending_balance_minor,
+                    completed_at,starting_balance_minor,selected_sum_minor,
+                    adjustment_transaction_id,workflow_version,sequence
+                )
+                SELECT ?,?,?,?,?,?,?,?,1,COALESCE(MAX(sequence),0)+1
+                FROM reconciliations WHERE account_id=?
                 """,
                 [
-                    .text(reconciliationID.uuidString), .text(account.id.uuidString),
-                    .text(Self.day(date)), .integer(endingBalanceMinor), .text(now)
+                    .text(reconciliationID.uuidString),
+                    .text(account.id.uuidString),
+                    .text(Self.day(date)),
+                    .integer(endingBalanceMinor),
+                    .text(now),
+                    .integer(snapshot.startingBalanceMinor),
+                    .integer(selectedSum),
+                    adjustmentID.map { .text($0.uuidString) } ?? .null,
+                    .text(account.id.uuidString)
                 ]
             )
-            try run(
-                """
-                UPDATE transactions SET status='reconciled',updated_at=?,version=version+1
-                WHERE account_id=? AND booking_date<=? AND status IN ('booked','cleared')
-                """,
-                [.text(now), .text(account.id.uuidString), .text(Self.day(date))]
+            let selected = snapshot.candidates.filter {
+                selectedTransactionIDs.contains($0.id)
+            }
+            for value in selected {
+                try insertReconciliationItem(
+                    reconciliationID: reconciliationID,
+                    transaction: value,
+                    isAdjustment: false
+                )
+            }
+            if let adjustmentID {
+                let adjustment = FinanceTransaction(
+                    id: adjustmentID,
+                    accountID: account.id,
+                    bookingDate: date,
+                    valueDate: date,
+                    payee: "Kontoabgleich",
+                    purpose: "Ausgleichsbuchung zum Kontoabgleich",
+                    categoryID: nil,
+                    amountMinor: difference,
+                    currency: account.currency,
+                    status: .booked,
+                    memo: "Explizit bestätigte Differenzbuchung",
+                    reference: "ABGLEICH",
+                    transferID: nil,
+                    importFingerprint: nil,
+                    splits: []
+                )
+                try insertReconciliationItem(
+                    reconciliationID: reconciliationID,
+                    transaction: adjustment,
+                    isAdjustment: true
+                )
+            }
+            let reconciledIDs = selectedTransactionIDs.union(
+                adjustmentID.map { Set([$0]) } ?? []
             )
+            for transactionID in reconciledIDs {
+                try run(
+                    """
+                    UPDATE transactions
+                    SET status='reconciled',updated_at=?,version=version+1
+                    WHERE id=? AND account_id=? AND status IN ('booked','cleared')
+                    """,
+                    [
+                        .text(now),
+                        .text(transactionID.uuidString),
+                        .text(account.id.uuidString)
+                    ]
+                )
+                guard sqlite3_changes(database) == 1 else {
+                    throw FinanceError.protectedTransaction
+                }
+            }
             try audit(
-                entity: "reconciliation", id: reconciliationID, action: "complete",
-                details: "\(account.id.uuidString):\(endingBalanceMinor)"
+                entity: "reconciliation",
+                id: reconciliationID,
+                action: "complete",
+                details: "account=\(account.id.uuidString);start=\(snapshot.startingBalanceMinor);selected=\(selectedSum);end=\(endingBalanceMinor);adjustment=\(difference)"
             )
         }
+        return ReconciliationRecord(
+            id: reconciliationID,
+            accountID: account.id,
+            statementDate: date,
+            startingBalanceMinor: snapshot.startingBalanceMinor,
+            endingBalanceMinor: endingBalanceMinor,
+            selectedSumMinor: selectedSum,
+            adjustmentTransactionID: adjustmentID,
+            completedAt: completedAt,
+            revertedAt: nil,
+            canRevert: true
+        )
+    }
+
+    @discardableResult
+    func reconcile(
+        account: FinanceAccount,
+        endingBalanceMinor: Int64,
+        date: Date
+    ) throws -> ReconciliationRecord {
+        let snapshot = try reconciliationSnapshot(
+            account: account,
+            statementDate: date
+        )
+        return try reconcile(
+            account: account,
+            endingBalanceMinor: endingBalanceMinor,
+            date: date,
+            selectedTransactionIDs: Set(snapshot.candidates.map(\.id)),
+            createAdjustment: false
+        )
+    }
+
+    func reconciliations(accountID: UUID) throws -> [ReconciliationRecord] {
+        var values: [ReconciliationRecord] = []
+        try query(
+            """
+            SELECT id,statement_date,starting_balance_minor,
+                   ending_balance_minor,selected_sum_minor,
+                   adjustment_transaction_id,completed_at,reverted_at,
+                   workflow_version
+            FROM reconciliations
+            WHERE account_id=?
+            ORDER BY statement_date DESC,sequence DESC,completed_at DESC,id DESC
+            """,
+            [.text(accountID.uuidString)]
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let statementDate = Self.date(Self.text(statement, 1)),
+                let completedAt = Self.timestampDate(Self.text(statement, 6))
+            else { return }
+            values.append(
+                ReconciliationRecord(
+                    id: id,
+                    accountID: accountID,
+                    statementDate: statementDate,
+                    startingBalanceMinor: sqlite3_column_int64(statement, 2),
+                    endingBalanceMinor: sqlite3_column_int64(statement, 3),
+                    selectedSumMinor: sqlite3_column_int64(statement, 4),
+                    adjustmentTransactionID: Self.optionalText(statement, 5)
+                        .flatMap(UUID.init(uuidString:)),
+                    completedAt: completedAt,
+                    revertedAt: Self.optionalText(statement, 7)
+                        .flatMap(Self.timestampDate),
+                    canRevert: sqlite3_column_int(statement, 8) == 1
+                        && sqlite3_column_type(statement, 7) == SQLITE_NULL
+                )
+            )
+        }
+        if let latestActiveID = values.first(where: { $0.revertedAt == nil })?.id {
+            values = values.map { value in
+                ReconciliationRecord(
+                    id: value.id,
+                    accountID: value.accountID,
+                    statementDate: value.statementDate,
+                    startingBalanceMinor: value.startingBalanceMinor,
+                    endingBalanceMinor: value.endingBalanceMinor,
+                    selectedSumMinor: value.selectedSumMinor,
+                    adjustmentTransactionID: value.adjustmentTransactionID,
+                    completedAt: value.completedAt,
+                    revertedAt: value.revertedAt,
+                    canRevert: value.canRevert && value.id == latestActiveID
+                )
+            }
+        }
+        return values
+    }
+
+    func revertReconciliation(id: UUID, accountID: UUID) throws {
+        guard let latest = try reconciliations(accountID: accountID)
+            .first(where: { $0.revertedAt == nil }),
+              latest.id == id,
+              latest.canRevert
+        else {
+            throw FinanceError.database(
+                "Nur der jüngste mit dieser Version erstellte Abgleich kann zurückgenommen werden."
+            )
+        }
+        var items: [(UUID, TransactionStatus, Bool)] = []
+        try query(
+            """
+            SELECT transaction_id,previous_status,is_adjustment
+            FROM reconciliation_items WHERE reconciliation_id=?
+            ORDER BY transaction_id
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard
+                let transactionID = UUID(uuidString: Self.text(statement, 0)),
+                let status = TransactionStatus(rawValue: Self.text(statement, 1))
+            else { return }
+            items.append(
+                (
+                    transactionID,
+                    status,
+                    sqlite3_column_int(statement, 2) != 0
+                )
+            )
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            for item in items {
+                try run(
+                    """
+                    UPDATE transactions
+                    SET status=?,updated_at=?,version=version+1
+                    WHERE id=? AND account_id=? AND status='reconciled'
+                    """,
+                    [
+                        .text(
+                            item.2
+                                ? TransactionStatus.cancelled.rawValue
+                                : item.1.rawValue
+                        ),
+                        .text(now),
+                        .text(item.0.uuidString),
+                        .text(accountID.uuidString)
+                    ]
+                )
+                guard sqlite3_changes(database) == 1 else {
+                    throw FinanceError.protectedTransaction
+                }
+            }
+            try run(
+                "UPDATE reconciliations SET reverted_at=? WHERE id=? AND reverted_at IS NULL",
+                [.text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Der Kontoabgleich wurde bereits zurückgenommen."
+                )
+            }
+            try audit(
+                entity: "reconciliation",
+                id: id,
+                action: "revert",
+                details: "account=\(accountID.uuidString);items=\(items.count)"
+            )
+        }
+    }
+
+    private func insertReconciliationItem(
+        reconciliationID: UUID,
+        transaction value: FinanceTransaction,
+        isAdjustment: Bool
+    ) throws {
+        try run(
+            """
+            INSERT INTO reconciliation_items(
+                reconciliation_id,transaction_id,previous_status,
+                amount_minor,is_adjustment
+            )
+            VALUES(?,?,?,?,?)
+            """,
+            [
+                .text(reconciliationID.uuidString),
+                .text(value.id.uuidString),
+                .text(value.status.rawValue),
+                .integer(value.amountMinor),
+                .integer(isAdjustment ? 1 : 0)
+            ]
+        )
     }
 
     func commitImport(_ preview: ImportPreview) throws {

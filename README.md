@@ -92,6 +92,21 @@ aktiviert die Splitbuchung. `F3` übernimmt aus genau einer markierten Buchung
 wahlweise Empfänger, Verwendungszweck, Kategorie, Konto oder Status als
 Filter; das gewünschte Feld wird direkt im Kontenblatt gewählt.
 
+## Kontoabgleich
+
+Der Abgleich zeigt den Anfangssaldo aus dem jüngsten aktiven Abgleich oder
+dem Eröffnungssaldo und lässt die tatsächlich auf dem Bankauszug enthaltenen
+Buchungen einzeln markieren. Anfangssaldo, markierte Summe, berechneter Saldo,
+Auszugsendsaldo und Differenz bleiben gleichzeitig sichtbar. Nur markierte
+Buchungen werden geschützt; spätere oder nicht ausgewählte Buchungen bleiben
+unverändert.
+
+Eine Differenz verhindert den Abschluss. Sie kann nur nach ausdrücklicher
+zweiter Bestätigung als auditierte Buchung mit Referenz `ABGLEICH`
+ausgeglichen werden. Der jeweils jüngste aktive Abgleich kann zurückgenommen
+werden: Ursprüngliche Buchungsstatus werden wiederhergestellt und eine
+Ausgleichsbuchung wird storniert, aber nicht gelöscht.
+
 ## Berichtswerkstatt
 
 Die Berichtswerkstatt wertet Buchungen als unveränderliche Live-Momentaufnahme

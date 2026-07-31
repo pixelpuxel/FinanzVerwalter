@@ -570,3 +570,36 @@ Rechtsberatung.
   bestehende Draft-PR 1 zeigt auf diesen Commit und seine Beschreibung
   enthält Saldo-Migration, Kontoblatt-Druck/PDF, F3 und den aktualisierten
   Teststand.
+- Migration 15 ersetzt den pauschalen Kontoabgleich durch Abgleichssätze mit
+  Anfangssaldo, markierter Summe, optionaler Ausgleichsbuchung und
+  unveränderlichen Einzelpositionen samt vorherigem Buchungsstatus.
+  Migration 16 ergänzt eine monotone Folge, damit der jüngste Abgleich selbst
+  bei identischem Datum und Zeitstempel eindeutig bleibt.
+- Im neuen Abgleichsdialog werden gebuchte und bestätigte Kandidaten bis zum
+  Auszugsdatum einzeln markiert. Anfangssaldo, markierte Summe, berechneter
+  Saldo, Auszugsendsaldo und Differenz sind gleichzeitig sichtbar. Eine
+  Differenz sperrt den Abschluss oder benötigt eine ausdrückliche zweite
+  Bestätigung für eine Buchung mit Referenz `ABGLEICH`.
+- Nur der jüngste aktive Abgleich kann zurückgenommen werden. Normale
+  Buchungen erhalten ihren vorherigen Status; eine Differenzbuchung wird
+  storniert statt gelöscht. Ältere Abgleiche bleiben lesbar und gegen
+  Rücknahme gesperrt. Alle Schritte laufen atomar und erzeugen
+  Auditereignisse.
+- Der neue Domänentest deckt Teilmengen, Stichtag, Folge-Anfangssaldo,
+  Differenzablehnung, explizite Ausgleichsbuchung, Schutz, eindeutige
+  Rücknahmereihenfolge und Statuswiederherstellung ab. Ein separater
+  Migrationstest übernimmt eine Schema-14-Abgleichshistorie nach Schema 16,
+  ohne alte Einträge fälschlich rücknehmbar zu machen.
+- Die vollständige XCTest-Abnahme über `xcodebuild test` besteht mit
+  38 regulären Tests sowie einem bewusst übersprungenen
+  opt-in-Real-QIF-Test.
+- Vor der produktiven Migration wurde ausschließlich lokal die validierte
+  Datei `Vor Migration 16 Kontoabgleich.qbackup` angelegt: Schema 14,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Abgleiche, SHA-256
+  `605bc02a21f6666bcb22f23d5803397f78e72d05c09eb1db68068ae64bf1d422`.
+- Der Release mit Kontoabgleich ist unter
+  `~/Applications/FinanzVerwalter.app` installiert, ad hoc signaturgeprüft
+  und gestartet. Die produktive Datei wurde additiv auf Schema 16 migriert
+  und meldet Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Abgleiche und
+  0 Abgleichspositionen. Das vorherige Bundle liegt ignoriert unter
+  `build/FinanzVerwalter-vor-kontoabgleich-20260731-0951.app`.

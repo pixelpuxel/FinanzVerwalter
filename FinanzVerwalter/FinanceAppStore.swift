@@ -599,7 +599,42 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
-    func reconcile(accountID: UUID, endingBalance: String, date: Date) -> Bool {
+    func reconciliationSnapshot(
+        accountID: UUID,
+        date: Date
+    ) -> ReconciliationSnapshot? {
+        guard
+            let repository,
+            let account = accounts.first(where: { $0.id == accountID })
+        else { return nil }
+        do {
+            return try repository.reconciliationSnapshot(
+                account: account,
+                statementDate: date
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func reconciliationHistory(accountID: UUID) -> [ReconciliationRecord] {
+        guard let repository else { return [] }
+        do {
+            return try repository.reconciliations(accountID: accountID)
+        } catch {
+            present(error)
+            return []
+        }
+    }
+
+    func reconcile(
+        accountID: UUID,
+        endingBalance: String,
+        date: Date,
+        selectedTransactionIDs: Set<UUID>,
+        createAdjustment: Bool
+    ) -> Bool {
         guard
             let repository,
             let account = accounts.first(where: { $0.id == accountID })
@@ -607,10 +642,30 @@ final class FinanceAppStore: ObservableObject {
         do {
             let amount = try Money(parsing: endingBalance, currency: account.currency)
             try repository.reconcile(
-                account: account, endingBalanceMinor: amount.minorUnits, date: date
+                account: account,
+                endingBalanceMinor: amount.minorUnits,
+                date: date,
+                selectedTransactionIDs: selectedTransactionIDs,
+                createAdjustment: createAdjustment
             )
             try load()
             statusText = "Konto „\(account.name)“ erfolgreich abgeglichen"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func revertReconciliation(_ value: ReconciliationRecord) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.revertReconciliation(
+                id: value.id,
+                accountID: value.accountID
+            )
+            try load()
+            statusText = "Kontoabgleich wurde mit Auditspur zurückgenommen"
             return true
         } catch {
             present(error)

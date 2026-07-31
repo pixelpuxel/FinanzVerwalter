@@ -347,6 +347,200 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testReconciliationSelectsStatementItemsAdjustsAndRevertsLatestOnly() throws {
+        let context = try TestDatabase()
+        let calendar = Calendar(identifier: .gregorian)
+        let statementDate = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 1, day: 31))
+        )
+        let futureDate = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 2, day: 1))
+        )
+        let account = FinanceAccount(
+            id: UUID(),
+            name: "Auswahlkonto",
+            institution: "",
+            type: .checking,
+            currency: "EUR",
+            openingBalanceMinor: 10_000,
+            isHidden: false,
+            isClosed: false,
+            sortOrder: 0
+        )
+        let booked = FinanceTransaction(
+            id: UUID(),
+            accountID: account.id,
+            bookingDate: statementDate,
+            valueDate: nil,
+            payee: "Miete",
+            purpose: "Januar",
+            categoryID: nil,
+            amountMinor: -2_000,
+            currency: "EUR",
+            status: .booked,
+            memo: "",
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: []
+        )
+        let cleared = FinanceTransaction(
+            id: UUID(),
+            accountID: account.id,
+            bookingDate: statementDate,
+            valueDate: nil,
+            payee: "Erstattung",
+            purpose: "Januar",
+            categoryID: nil,
+            amountMinor: 500,
+            currency: "EUR",
+            status: .cleared,
+            memo: "",
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: []
+        )
+        let future = FinanceTransaction(
+            id: UUID(),
+            accountID: account.id,
+            bookingDate: futureDate,
+            valueDate: nil,
+            payee: "Später",
+            purpose: "Februar",
+            categoryID: nil,
+            amountMinor: 100,
+            currency: "EUR",
+            status: .booked,
+            memo: "",
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: []
+        )
+        try context.store.saveAccount(account)
+        try context.store.saveTransaction(booked)
+        try context.store.saveTransaction(cleared)
+        try context.store.saveTransaction(future)
+
+        let firstSnapshot = try context.store.reconciliationSnapshot(
+            account: account,
+            statementDate: statementDate
+        )
+        XCTAssertEqual(firstSnapshot.startingBalanceMinor, 10_000)
+        XCTAssertEqual(
+            Set(firstSnapshot.candidates.map(\.id)),
+            [booked.id, cleared.id]
+        )
+        XCTAssertEqual(
+            firstSnapshot.differenceMinor(
+                endingBalanceMinor: 8_000,
+                selectedIDs: [booked.id]
+            ),
+            0
+        )
+        let first = try context.store.reconcile(
+            account: account,
+            endingBalanceMinor: 8_000,
+            date: statementDate,
+            selectedTransactionIDs: [booked.id],
+            createAdjustment: false
+        )
+        var transactions = try context.store.transactions(accountID: account.id)
+        XCTAssertEqual(
+            transactions.first(where: { $0.id == booked.id })?.status,
+            .reconciled
+        )
+        XCTAssertEqual(
+            transactions.first(where: { $0.id == cleared.id })?.status,
+            .cleared
+        )
+        XCTAssertEqual(
+            transactions.first(where: { $0.id == future.id })?.status,
+            .booked
+        )
+
+        let secondSnapshot = try context.store.reconciliationSnapshot(
+            account: account,
+            statementDate: statementDate
+        )
+        XCTAssertEqual(secondSnapshot.startingBalanceMinor, 8_000)
+        XCTAssertEqual(secondSnapshot.candidates.map(\.id), [cleared.id])
+        XCTAssertThrowsError(
+            try context.store.reconcile(
+                account: account,
+                endingBalanceMinor: 8_600,
+                date: statementDate,
+                selectedTransactionIDs: [cleared.id],
+                createAdjustment: false
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? FinanceError,
+                .reconciliationDifference(100)
+            )
+        }
+        let second = try context.store.reconcile(
+            account: account,
+            endingBalanceMinor: 8_600,
+            date: statementDate,
+            selectedTransactionIDs: [cleared.id],
+            createAdjustment: true
+        )
+        let adjustmentID = try XCTUnwrap(second.adjustmentTransactionID)
+        transactions = try context.store.transactions(accountID: account.id)
+        XCTAssertEqual(
+            transactions.first(where: { $0.id == cleared.id })?.status,
+            .reconciled
+        )
+        let adjustment = try XCTUnwrap(
+            transactions.first(where: { $0.id == adjustmentID })
+        )
+        XCTAssertEqual(adjustment.amountMinor, 100)
+        XCTAssertEqual(adjustment.reference, "ABGLEICH")
+        XCTAssertEqual(adjustment.status, .reconciled)
+
+        var history = try context.store.reconciliations(accountID: account.id)
+        XCTAssertEqual(history.count, 2)
+        XCTAssertTrue(history.first(where: { $0.id == second.id })?.canRevert == true)
+        XCTAssertTrue(history.first(where: { $0.id == first.id })?.canRevert == false)
+        XCTAssertThrowsError(
+            try context.store.revertReconciliation(
+                id: first.id,
+                accountID: account.id
+            )
+        )
+
+        try context.store.revertReconciliation(
+            id: second.id,
+            accountID: account.id
+        )
+        transactions = try context.store.transactions(accountID: account.id)
+        XCTAssertEqual(
+            transactions.first(where: { $0.id == cleared.id })?.status,
+            .cleared
+        )
+        XCTAssertEqual(
+            transactions.first(where: { $0.id == adjustmentID })?.status,
+            .cancelled
+        )
+        history = try context.store.reconciliations(accountID: account.id)
+        XCTAssertNotNil(
+            history.first(where: { $0.id == second.id })?.revertedAt
+        )
+        XCTAssertTrue(history.first(where: { $0.id == first.id })?.canRevert == true)
+        XCTAssertThrowsError(
+            try context.store.reconciliationSnapshot(
+                account: account,
+                statementDate: calendar.date(
+                    byAdding: .day,
+                    value: -1,
+                    to: statementDate
+                ) ?? statementDate
+            )
+        )
+    }
+
     func testBulkCategorizationIsAtomicAndProtectsReconciledAndStructuredTransactions() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(
@@ -1393,6 +1587,14 @@ final class FinanzVerwalterTests: XCTestCase {
             created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1
         );
+        CREATE TABLE reconciliations (
+            id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            statement_date TEXT NOT NULL,
+            ending_balance_minor INTEGER NOT NULL,
+            completed_at TEXT NOT NULL,
+            reverted_at TEXT
+        );
         INSERT INTO finance_files VALUES(
             '\(fileID.uuidString)','Altbestand','EUR','de-DE','Europe/Berlin',
             '2025-01-01T00:00:00Z','2025-01-01T00:00:00Z',1
@@ -1427,6 +1629,114 @@ final class FinanzVerwalterTests: XCTestCase {
             "Bankkonten"
         )
         XCTAssertTrue(try migrated.integrityCheck())
+    }
+
+    func testMigration14To16PreservesLegacyReconciliationHistory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-migration-14-16-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.qdata")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        let accountID = UUID()
+        let reconciliationID = UUID()
+        let legacySQL = """
+        CREATE TABLE accounts (id TEXT PRIMARY KEY);
+        CREATE TABLE transactions (id TEXT PRIMARY KEY);
+        CREATE TABLE reconciliations (
+            id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            statement_date TEXT NOT NULL,
+            ending_balance_minor INTEGER NOT NULL,
+            completed_at TEXT NOT NULL,
+            reverted_at TEXT
+        );
+        INSERT INTO accounts(id) VALUES('\(accountID.uuidString)');
+        INSERT INTO reconciliations(
+            id,account_id,statement_date,ending_balance_minor,completed_at
+        ) VALUES(
+            '\(reconciliationID.uuidString)',
+            '\(accountID.uuidString)',
+            '2025-12-31',
+            123456,
+            '2025-12-31T12:00:00Z'
+        );
+        PRAGMA user_version=14;
+        """
+        var message: UnsafeMutablePointer<CChar>?
+        XCTAssertEqual(
+            sqlite3_exec(database, legacySQL, nil, nil, &message),
+            SQLITE_OK
+        )
+        if let message { sqlite3_free(message) }
+        sqlite3_close(database)
+
+        var migratedStore: SQLiteFinanceStore? = try SQLiteFinanceStore(
+            fileURL: url
+        )
+        migratedStore?.close()
+        migratedStore = nil
+
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                url.path,
+                &database,
+                SQLITE_OPEN_READONLY,
+                nil
+            ),
+            SQLITE_OK
+        )
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(
+                database,
+                """
+                SELECT workflow_version,sequence,starting_balance_minor,
+                       selected_sum_minor,adjustment_transaction_id
+                FROM reconciliations WHERE id=?
+                """,
+                -1,
+                &statement,
+                nil
+            ),
+            SQLITE_OK
+        )
+        sqlite3_bind_text(
+            statement,
+            1,
+            reconciliationID.uuidString,
+            -1,
+            unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
+        XCTAssertGreaterThan(sqlite3_column_int64(statement, 1), 0)
+        XCTAssertEqual(sqlite3_column_int64(statement, 2), 0)
+        XCTAssertEqual(sqlite3_column_int64(statement, 3), 0)
+        XCTAssertEqual(sqlite3_column_type(statement, 4), SQLITE_NULL)
+        sqlite3_finalize(statement)
+        statement = nil
+        XCTAssertEqual(
+            sqlite3_prepare_v2(
+                database,
+                "PRAGMA user_version",
+                -1,
+                &statement,
+                nil
+            ),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 16)
+        sqlite3_finalize(statement)
     }
 
     @MainActor

@@ -204,6 +204,42 @@ struct FinanceTransaction: Identifiable, Hashable, Sendable {
     }
 }
 
+struct ReconciliationSnapshot: Equatable, Sendable {
+    let accountID: UUID
+    let statementDate: Date
+    let startingBalanceMinor: Int64
+    let candidates: [FinanceTransaction]
+    let latestActiveReconciliationID: UUID?
+
+    func selectedSumMinor(_ ids: Set<UUID>) -> Int64 {
+        candidates
+            .filter { ids.contains($0.id) }
+            .reduce(Int64.zero) { $0 + $1.amountMinor }
+    }
+
+    func differenceMinor(
+        endingBalanceMinor: Int64,
+        selectedIDs: Set<UUID>
+    ) -> Int64 {
+        endingBalanceMinor
+            - startingBalanceMinor
+            - selectedSumMinor(selectedIDs)
+    }
+}
+
+struct ReconciliationRecord: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let accountID: UUID
+    let statementDate: Date
+    let startingBalanceMinor: Int64
+    let endingBalanceMinor: Int64
+    let selectedSumMinor: Int64
+    let adjustmentTransactionID: UUID?
+    let completedAt: Date
+    let revertedAt: Date?
+    let canRevert: Bool
+}
+
 struct BulkCategoryUpdateResult: Equatable, Sendable {
     let updatedCount: Int
     let totalsByCurrency: [String: Int64]
