@@ -9,12 +9,12 @@ fertigen Funktionsbereich.
 
 | Priorität | Anforderung | Status | Nachweis / nächste Lücke |
 |---|---|---|---|
-| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–21, Integritätstest, append-only Auditereignisse |
+| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–22, Integritätstest, append-only Auditereignisse |
 | P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; externe und lokale Konten werden beim Simulatorabruf sichtbar eins zu eins zugeordnet |
 | P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo einschließlich Bestands- und Ansichtenmigration, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Klassen-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenorganisation, vollständige Kategorie- und Klassenpfade, elf dynamische Standardspalten, benannte Ansichten, persistente Mehrkonto-Tabs, F3-Auswahlfilter, direkter PDF-/Systemdruck, zehn anpassbare konfliktgeprüfte Shortcuts, währungs-/splitkorrekter Minireport, zweites Kontoblatt sowie semantische Saldo-/Filter-/Tabellen-/Zellbeschriftungen und getrennt bedienbare Tabaktionen vorhanden; vollständige sichtbare Tastatur-/VoiceOver-/UI-Abnahme fehlt |
 | P0 | Kategorien und Unterkategorien | Erfüllt für lokalen Kern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade, Beschreibung, Budgetierbarkeit, Standard-MwSt.-Schlüssel sowie deutsche und optionale US-Steuerzuordnung |
 | P0 | Klassen/Mehrfach-Tags | Erfüllt für lokalen Kern | Hierarchische Tags auf Buchungen und Splits, Kreis-/Elternprüfung, vollständige Pfade, eigenständige Filter in Einzel-/Zweit-/Sammelkontenblatt, benannte Ansichten und atomare gemeinsame Kategorie-/Tag-Massenbearbeitung mit Schutzregeln vorhanden |
-| P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten und deterministische SmartFill-Vorschläge mit Präfix-, Nutzungs-, Namens- und UUID-Rangfolge sowie sicherer Freitextentkopplung vorhanden; Mandate und Gläubiger-ID fehlen |
+| P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten, Standardkategorie/-konto/-klassen, geprüfte SEPA-Gläubiger-ID, mehrere versionierte Mandate sowie deterministische SmartFill-Vorschläge mit Präfix-, Nutzungs-, Namens- und UUID-Rangfolge, sicherer Freitextentkopplung und Buchungsverknüpfung vorhanden; mehrere Bankverbindungen je Akte und ein vollständiger Lastschrifteinzug fehlen |
 | P0 | Buchungen, Splits und Transfers | Teilweise | Centgenaue Buchungen, Splitinvariante, atomare Transfers, frei definierbare MwSt.-Schlüssel einschließlich 0 %, automatische/manuelle Brutto-Netto-Steuer-Berechnung mit Rundung je Splitzeile sowie bestätigtes, atomares Mehrfachlöschen mit Schutz abgeglichener Buchungen vorhanden; Fremdwährung, Anhänge, Duplizieren/Verschieben und Undo fehlen |
 | P0 | Regeln | Erfüllt für lokalen Kern | Versionierte rekursive AND/OR-Ausdrücke, 16 fachliche Felder, acht Operatoren einschließlich Regex/Bereich/Leerprüfung, Kategorie-/Empfänger-/Notiz-/Tag-/Text-/Splitaktionen, Priorität, Konfliktanzeige, buchungsweise Vorher/Nachher-Auswahl, atomarer Commit, vollständiges konfliktgeschütztes Undo und Regel aus Buchung; konfliktfreie Regeln laufen sichtbar in der Bankabrufvorschau, Konflikte verhindern die automatische Anwendung |
 | P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF, Mehrkonten-QIF, OFX-2-XML, OFX-1/QFX-SGML, MT940 sowie camt.052/053/054 mit Mehrkontenzuordnung, Vorschau/Paket-Idempotenz, gestuftem Buchungs-Matching, konfigurierbarem Datumsfenster, expliziter Entscheidung, erhaltener lokaler Anreicherung und eindeutiger externer Bank-ID sowie pain.001.001.09-Export; Profilassistent und weitere ISO-20022-Formate fehlen |
@@ -44,6 +44,7 @@ fertigen Funktionsbereich.
 
 1. Vollständige Kontoblatt-Tastatur-/Accessibility-/UI-Abnahme nach dem
    manuellen Entsperren des Macs.
-2. Empfänger-Mandate/Gläubiger-ID sowie Buchungsduplizieren/-verschieben.
+2. Buchungsduplizieren/-verschieben sowie mehrere Bankverbindungen je
+   Empfängerakte.
 3. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,
    SCA-, Datenschutz- und Sicherheitsarchitektur.

@@ -132,9 +132,18 @@ Der Buchungseditor bietet SmartFill für gepflegte Empfängerakten. Die Suche
 berücksichtigt kanonische Namen und Aliase ohne Unterschied bei Großschreibung
 oder Diakritika. Präfixtreffer stehen vor bloßen Teiltreffern; danach folgen
 bisherige Verwendung, Name und UUID als stabile Sortierung. Erst die bewusste
-Auswahl übernimmt den kanonischen Namen und noch freie Standardwerte. Wird der
-Text anschließend manuell verändert, löst FinanzVerwalter die Aktenverknüpfung,
-damit kein falscher Empfänger gespeichert wird.
+Auswahl übernimmt den kanonischen Namen und noch freie Standardwerte für Konto,
+Kategorie und Klassen/Tags. Wird der Text anschließend manuell verändert, löst
+FinanzVerwalter die Aktenverknüpfung, damit kein falscher Empfänger gespeichert
+wird.
+
+Empfängerakten speichern außerdem eine nach Mod 97 geprüfte SEPA-Gläubiger-ID
+und beliebig viele eindeutige Mandate mit Referenz, Unterschriftsdatum,
+Sequenztyp, Notiz und Aktivstatus. Der Buchungseditor kann ein aktives Mandat
+aus der verknüpften Akte auswählen und schreibt Gläubiger-ID und
+Mandatsreferenz dauerhaft in die Buchung. Eine einzelne aktive Mandatsakte wird
+bei bewusster Empfängerauswahl automatisch vorgeschlagen; mehrere Mandate
+bleiben eine ausdrückliche Auswahl.
 
 ## Regeln
 

@@ -121,7 +121,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 21 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 22 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
 implementiert. Die Suite umfasst aktuell 64 ausgeführte XCTest-Fälle: 63
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
@@ -354,6 +354,12 @@ Für Empfänger und Klassen/Tags gilt reproduzierbar:
   verknüpft optional die kanonische Empfängerakte.
 - Aliase werden getrimmt, dedupliziert und getrennt vom kanonischen Namen
   gespeichert.
+- Migration 22 ergänzt die normalisierte, mit dem SEPA-Mod-97-Verfahren
+  geprüfte Gläubiger-ID, n:m-Standardklassen über `payee_default_tags` und
+  mehrere `sepa_mandates` je Empfänger. Eine Mandatsreferenz ist je Empfänger
+  eindeutig, 1 bis 35 zulässige SEPA-Zeichen lang und wird zusammen mit
+  optionalem Unterschriftsdatum, Sequenztyp OOFF/FRST/RCUR/FNAL, Notiz und
+  Aktivstatus atomar versioniert gespeichert.
 - Tags besitzen optionale Hierarchie, Farbe, Beschreibung und Aktivstatus.
 - Verhindere Selbstbezüge, fehlende Oberklassen und direkte oder indirekte
   Kreise vor jedem Speichern. Zeige auswählbare und zugeordnete Tags anhand
@@ -370,8 +376,12 @@ Für Empfänger und Klassen/Tags gilt reproduzierbar:
   den normalisierten kanonischen Namen und zuletzt die UUID. Zeige den
   treffenden Alias und die Verwendung im Vorschlag. Erst eine bewusste
   Auswahl übernimmt den kanonischen Namen und noch freie Standardwerte im
-  Editor. Weicht der Text danach vom Namen ab, löse `payee_id`, damit niemals
-  eine falsche Empfängerakte gespeichert wird.
+  Editor, einschließlich Standardklasse/-tag. Weicht der Text danach vom Namen
+  ab, löse `payee_id`, damit niemals eine falsche Empfängerakte gespeichert
+  wird. Der Buchungseditor bietet für die gewählte Akte deren aktive Mandate
+  an und persistiert Gläubiger-ID und Mandatsreferenz in der Buchung; genau ein
+  aktives Mandat darf automatisch vorgeschlagen, niemals jedoch unbemerkt
+  gespeichert werden.
 
 Für Depots und Wertpapiere gilt reproduzierbar:
 
@@ -514,7 +524,10 @@ Titel `Saldo` und steht in der Standardreihenfolge rechts von `Betrag`.
 Bestehende Installationen benötigen eine einmalige, versionierte
 Präferenzmigration: Sie ergänzt `balance` zu einer vorhandenen
 `registerVisibleColumnsV1`-Liste sowie zu jeder benannten Ansicht und setzt
-erst danach den Marker `registerVisibleColumnsIncludesBalanceV2`.
+erst danach den Marker `registerVisibleColumnsIncludesBalanceV3`. Die neue
+Markerversion behebt Bestandsinstallationen, bei denen ein früher gesetzter
+Marker die Ergänzung einer später wiederhergestellten Altansicht verhindert
+konnte.
 Anschließend darf der Nutzer die Spalte wieder frei ausblenden.
 
 Für Druck und PDF wird zuerst ein unveränderlicher `RegisterPrintSnapshot`

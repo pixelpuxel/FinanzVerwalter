@@ -1164,3 +1164,48 @@ Rechtsberatung.
 - Telegram-Nachricht 951 im Projektthread 894 (`/quicken`) enthält denselben
   SmartFill-, Test-, Release-, Datenbank-, GitHub- und Tokenstatus; wegen des
   gesperrten Bildschirms weiterhin ohne vorgetäuschten Screenshot.
+
+## 2026-07-31 – SEPA-Empfängerakten und verlässliche Saldo-Spalte
+
+- SQLite-Migration 22 ergänzt Empfängerakten um eine normalisierte und nach
+  Mod 97 geprüfte SEPA-Gläubiger-ID. Standardklassen/-tags werden n:m in
+  `payee_default_tags` gespeichert. `sepa_mandates` unterstützt mehrere
+  eindeutige Mandatsreferenzen je Empfänger mit Unterschriftsdatum,
+  OOFF/FRST/RCUR/FNAL-Sequenztyp, Notiz, Aktivstatus, Version und Audit.
+- Die Empfängerverwaltung bearbeitet Gläubiger-ID, vollständige
+  Standardklassenpfade und Mandate. SmartFill übernimmt neben Konto und
+  Kategorie nun auch noch freie Standardklassen. Der Buchungseditor bietet
+  aktive Mandate der gewählten Akte an und speichert Gläubiger-ID sowie
+  Mandatsreferenz sowohl für einfache als auch für Splitbuchungen. Genau ein
+  aktives Mandat wird vorgeschlagen; bei mehreren bleibt die Auswahl bewusst.
+- Der laufende Buchungssaldo war bereits als dynamische Spalte, in beiden
+  Kontenblättern, Sammelansicht, Accessibility und Druck/PDF implementiert.
+  Der Präferenzmarker wurde auf V3 angehoben, damit auch eine
+  Bestandsinstallation mit bereits gesetztem älteren Marker die Spalte
+  zuverlässig einmalig in vorhandene Spaltenlisten und benannte Ansichten
+  übernimmt. Danach bleibt sie frei ein- und ausblendbar.
+- Die Schema-10- und Schema-14-Migrationsfixtures enthalten nun die in ihren
+  historischen Versionen bereits vorhandenen Empfänger- und Tagtabellen. Die
+  frische Gesamtabnahme führte 64 Tests aus: 63 bestanden, der private
+  opt-in-Real-QIF-Test wurde erwartungsgemäß übersprungen, 0 Fehler. Debug-
+  und optimierter Release-Build bestehen.
+- Vor der Produktivmigration wurde die validierte Sicherung
+  `Vor Migration 22 SEPA.qbackup` angelegt: Schema 21, Integrität `ok`, 97
+  Konten, 2.170 Buchungen, SHA-256
+  `ac49f035009a78f76751308e70aaad92520bc15178abaa0547f55d1dd9ba339e`.
+- Der optimierte Release ist ad hoc signiert, unter
+  `~/Applications/FinanzVerwalter.app` installiert und gestartet. Der
+  Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-sepa-20260731-1342.app`.
+- Die Produktivdatei ist nach kontrolliertem WAL-Checkpoint auf Schema 22,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, einer Berichtsvorlage, 0
+  Banking-Verbindungen, 0 Mandaten und 0 Empfänger-Standardtagzuordnungen;
+  SHA-256
+  `2f03b155d3e06c81114252fd05d3cdaa9f44bff7450b13ca7ff70379d20c073a`.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin den gesperrten Mac.
+  Deshalb wurde keine sichtbare UI-Abnahme oder ein Screenshot vorgetäuscht.
+- Die Implementierung einschließlich Schema 22, Mandatsverwaltung,
+  Buchungsverknüpfung und Saldo-Bestandsmigration wurde als Commit `c8cf402`
+  auf `agent/qif-mehrkontenimport` festgeschrieben. Der exakte
+  Zielzählerstand vor Dokumentationscommit und Veröffentlichung beträgt
+  8.677.004 Tokens.
