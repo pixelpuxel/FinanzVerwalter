@@ -990,3 +990,11 @@ Rechtsberatung.
   `0a8d6dd9695ccbace6155c05b82f9367c9621904bf9a68ef7bbb073f4d1bd77e`.
 - Der exakte Zielzählerstand nach Release-Installation und Diffprüfung lag
   bei 7.334.872 verbrauchten Tokens.
+- Der vollständige OFX/QFX-Stand wurde als Commit `825c3f3` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 nennt nun 57 ausgeführte
+  Tests und die geprüfte Release-Installation.
+- Telegram-Nachricht 947 wurde im Projektthread 894 (`/quicken`)
+  veröffentlicht. Sie enthält den Import-, Test-, Release-, Datenbank- und
+  GitHub-Status sowie den exakten Zielzählerstand von 7.383.816 Tokens. Ein
+  neuer Screenshot bleibt wegen des gesperrten Macs ausdrücklich offen und
+  wurde nicht durch ein Ersatzbild vorgetäuscht.
