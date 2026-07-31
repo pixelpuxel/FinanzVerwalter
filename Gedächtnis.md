@@ -1158,3 +1158,9 @@ Rechtsberatung.
   Berichtsvorlage und 0 Banking-Verbindungen.
 - Der exakte Zielzählerstand dieses geprüften SmartFill-Meilensteins beträgt
   8.085.000 Tokens.
+- Implementierung `4595ff1` und Dokumentation `c26abb1` wurden auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 nennt nun SmartFill und 64
+  ausgeführte Tests.
+- Telegram-Nachricht 951 im Projektthread 894 (`/quicken`) enthält denselben
+  SmartFill-, Test-, Release-, Datenbank-, GitHub- und Tokenstatus; wegen des
+  gesperrten Bildschirms weiterhin ohne vorgetäuschten Screenshot.
