@@ -69,6 +69,58 @@ enum RegisterCategorySelection: Codable, Equatable, Sendable {
     case category(UUID)
 }
 
+enum RegisterF3Field: String, CaseIterable, Identifiable, Sendable {
+    case payee
+    case purpose
+    case category
+    case account
+    case status
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .payee: "Empfänger"
+        case .purpose: "Verwendungszweck"
+        case .category: "Kategorie"
+        case .account: "Konto"
+        case .status: "Status"
+        }
+    }
+}
+
+enum RegisterF3Selection: Equatable, Sendable {
+    case search(String)
+    case category(RegisterCategorySelection)
+    case account(UUID)
+    case status(TransactionStatus)
+}
+
+extension RegisterF3Field {
+    func selection(for transaction: FinanceTransaction) -> RegisterF3Selection? {
+        switch self {
+        case .payee:
+            return searchSelection(transaction.payee)
+        case .purpose:
+            return searchSelection(transaction.purpose)
+        case .category:
+            if let categoryID = transaction.categoryID {
+                return .category(.category(categoryID))
+            }
+            return .category(.uncategorized)
+        case .account:
+            return .account(transaction.accountID)
+        case .status:
+            return .status(transaction.status)
+        }
+    }
+
+    private func searchSelection(_ value: String) -> RegisterF3Selection? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : .search(normalized)
+    }
+}
+
 struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     var name: String
@@ -115,6 +167,12 @@ enum RegisterPreferencesCodec {
             }
         )
         return decoded.isEmpty ? RegisterColumn.defaultSet : decoded
+    }
+
+    static func addingBalanceColumn(to value: String) -> String {
+        var columns = decodeColumns(value)
+        columns.insert(.balance)
+        return encodeColumns(columns)
     }
 
     static func encodeViews(_ views: [SavedRegisterView]) throws -> String {

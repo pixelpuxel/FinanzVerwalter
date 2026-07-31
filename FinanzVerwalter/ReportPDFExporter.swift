@@ -1,6 +1,8 @@
+import AppKit
 import CoreGraphics
 import CoreText
 import Foundation
+import PDFKit
 
 enum ReportPDFOrientation: String, CaseIterable, Identifiable, Sendable {
     case portrait
@@ -13,6 +15,346 @@ enum ReportPDFOrientation: String, CaseIterable, Identifiable, Sendable {
         case .portrait: "Hochformat"
         case .landscape: "Querformat"
         }
+    }
+}
+
+struct RegisterPrintSnapshot: Equatable, Sendable {
+    var title: String
+    var filterSummary: String
+    var generatedAt: Date
+    var columns: [RegisterColumn]
+    var rows: [[String]]
+}
+
+enum RegisterPDFExporter {
+    static func data(
+        snapshot: RegisterPrintSnapshot,
+        orientation: ReportPDFOrientation = .landscape
+    ) throws -> Data {
+        guard !snapshot.columns.isEmpty else {
+            throw FinanceError.database("Für die Ausgabe ist keine Spalte sichtbar.")
+        }
+        let portrait = CGSize(width: 595.28, height: 841.89)
+        let size = orientation == .portrait
+            ? portrait
+            : CGSize(width: portrait.height, height: portrait.width)
+        let mutableData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: mutableData as CFMutableData) else {
+            throw FinanceError.database("Der PDF-Datenstrom konnte nicht angelegt werden.")
+        }
+        var mediaBox = CGRect(origin: .zero, size: size)
+        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw FinanceError.database("Der PDF-Kontext konnte nicht angelegt werden.")
+        }
+        RegisterPDFRenderer(
+            context: context,
+            pageSize: size,
+            snapshot: snapshot
+        ).render()
+        context.closePDF()
+        return mutableData as Data
+    }
+}
+
+@MainActor
+enum RegisterPrintService {
+    static func printPDF(_ data: Data) throws {
+        guard let document = PDFDocument(data: data) else {
+            throw FinanceError.database("Das Kontoblatt-PDF ist ungültig.")
+        }
+        guard let operation = document.printOperation(
+            for: NSPrintInfo.shared,
+            scalingMode: .pageScaleDownToFit,
+            autoRotate: true
+        ) else {
+            throw FinanceError.database("Der Druckdialog konnte nicht geöffnet werden.")
+        }
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        operation.run()
+    }
+}
+
+private struct RegisterPDFRenderer {
+    let context: CGContext
+    let pageSize: CGSize
+    let snapshot: RegisterPrintSnapshot
+
+    private let margin: CGFloat = 30
+    private let headerHeight: CGFloat = 86
+    private let footerHeight: CGFloat = 28
+    private let rowHeight: CGFloat = 21
+    private let tableHeaderHeight: CGFloat = 23
+    private let green = CGColor(red: 0.08, green: 0.38, blue: 0.20, alpha: 1)
+    private let dark = CGColor(gray: 0.12, alpha: 1)
+    private let secondary = CGColor(gray: 0.38, alpha: 1)
+    private let stripe = CGColor(gray: 0.96, alpha: 1)
+
+    func render() {
+        let availableHeight = pageSize.height - headerHeight - footerHeight
+            - tableHeaderHeight
+        let rowsPerPage = max(1, Int(floor(availableHeight / rowHeight)))
+        let pageCount = max(
+            1,
+            Int(ceil(Double(snapshot.rows.count) / Double(rowsPerPage)))
+        )
+        for pageIndex in 0..<pageCount {
+            context.beginPDFPage(nil)
+            context.textMatrix = .identity
+            drawPageHeader(pageNumber: pageIndex + 1, pageCount: pageCount)
+            var y = headerHeight
+            drawTableHeader(y: y)
+            y += tableHeaderHeight
+            let start = pageIndex * rowsPerPage
+            let end = min(start + rowsPerPage, snapshot.rows.count)
+            if start < end {
+                for rowIndex in start..<end {
+                    drawRow(
+                        snapshot.rows[rowIndex],
+                        y: y,
+                        striped: rowIndex.isMultiple(of: 2)
+                    )
+                    y += rowHeight
+                }
+            }
+            drawFooter(pageNumber: pageIndex + 1, pageCount: pageCount)
+            context.endPDFPage()
+        }
+    }
+
+    private var columnFrames: [CGRect] {
+        let contentWidth = pageSize.width - 2 * margin
+        let requested = snapshot.columns.map { max($0.minimumWidth, $0.idealWidth) }
+        let scale = contentWidth / max(1, requested.reduce(0, +))
+        var x = margin
+        return requested.map { requestedWidth in
+            let width = requestedWidth * scale
+            defer { x += width }
+            return CGRect(x: x, y: 0, width: width, height: 0)
+        }
+    }
+
+    private func drawPageHeader(pageNumber: Int, pageCount: Int) {
+        drawLine(
+            snapshot.title,
+            x: margin,
+            top: 27,
+            width: pageSize.width - 2 * margin - 160,
+            fontSize: 18,
+            bold: true,
+            color: green
+        )
+        drawRightLine(
+            "Seite \(pageNumber) von \(pageCount)",
+            right: pageSize.width - margin,
+            top: 31,
+            width: 150,
+            fontSize: 8.5,
+            color: secondary
+        )
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        drawLine(
+            "Filter: \(snapshot.filterSummary)",
+            x: margin,
+            top: 55,
+            width: pageSize.width - 2 * margin - 180,
+            fontSize: 8.2,
+            color: secondary
+        )
+        drawRightLine(
+            "Erstellt: \(formatter.string(from: snapshot.generatedAt))",
+            right: pageSize.width - margin,
+            top: 55,
+            width: 175,
+            fontSize: 8.2,
+            color: secondary
+        )
+        context.setStrokeColor(green)
+        context.setLineWidth(1)
+        context.move(to: CGPoint(x: margin, y: pageSize.height - 72))
+        context.addLine(to: CGPoint(x: pageSize.width - margin, y: pageSize.height - 72))
+        context.strokePath()
+    }
+
+    private func drawTableHeader(y: CGFloat) {
+        context.setFillColor(green)
+        context.fill(
+            CGRect(
+                x: margin,
+                y: pageSize.height - y - tableHeaderHeight,
+                width: pageSize.width - 2 * margin,
+                height: tableHeaderHeight
+            )
+        )
+        for (index, column) in snapshot.columns.enumerated() {
+            let frame = columnFrames[index]
+            drawCell(
+                column.title,
+                frame: frame,
+                top: y + 7,
+                fontSize: 7.5,
+                bold: true,
+                color: CGColor(gray: 1, alpha: 1),
+                rightAligned: column == .amount || column == .balance
+            )
+        }
+    }
+
+    private func drawRow(_ row: [String], y: CGFloat, striped: Bool) {
+        if striped {
+            context.setFillColor(stripe)
+            context.fill(
+                CGRect(
+                    x: margin,
+                    y: pageSize.height - y - rowHeight,
+                    width: pageSize.width - 2 * margin,
+                    height: rowHeight
+                )
+            )
+        }
+        for (index, column) in snapshot.columns.enumerated() {
+            drawCell(
+                index < row.count ? row[index] : "",
+                frame: columnFrames[index],
+                top: y + 6,
+                fontSize: 7.2,
+                bold: false,
+                color: dark,
+                rightAligned: column == .amount || column == .balance
+            )
+        }
+    }
+
+    private func drawFooter(pageNumber: Int, pageCount: Int) {
+        let top = pageSize.height - footerHeight + 5
+        context.setStrokeColor(CGColor(gray: 0.78, alpha: 1))
+        context.setLineWidth(0.5)
+        context.move(to: CGPoint(x: margin, y: footerHeight + 5))
+        context.addLine(to: CGPoint(x: pageSize.width - margin, y: footerHeight + 5))
+        context.strokePath()
+        drawLine(
+            "FinanzVerwalter – Kontoblatt",
+            x: margin,
+            top: top,
+            width: 250,
+            fontSize: 7.2,
+            color: secondary
+        )
+        drawRightLine(
+            "Seite \(pageNumber) von \(pageCount)",
+            right: pageSize.width - margin,
+            top: top,
+            width: 100,
+            fontSize: 7.2,
+            color: secondary
+        )
+    }
+
+    private func drawCell(
+        _ text: String,
+        frame: CGRect,
+        top: CGFloat,
+        fontSize: CGFloat,
+        bold: Bool,
+        color: CGColor,
+        rightAligned: Bool
+    ) {
+        if rightAligned {
+            drawRightLine(
+                text,
+                right: frame.maxX - 4,
+                top: top,
+                width: frame.width - 8,
+                fontSize: fontSize,
+                bold: bold,
+                color: color
+            )
+        } else {
+            drawLine(
+                text,
+                x: frame.minX + 4,
+                top: top,
+                width: frame.width - 8,
+                fontSize: fontSize,
+                bold: bold,
+                color: color
+            )
+        }
+    }
+
+    private func drawLine(
+        _ text: String,
+        x: CGFloat,
+        top: CGFloat,
+        width: CGFloat,
+        fontSize: CGFloat,
+        bold: Bool = false,
+        color: CGColor
+    ) {
+        let line = truncatedLine(
+            text,
+            width: width,
+            fontSize: fontSize,
+            bold: bold,
+            color: color
+        )
+        context.textPosition = CGPoint(x: x, y: pageSize.height - top - fontSize)
+        CTLineDraw(line, context)
+    }
+
+    private func drawRightLine(
+        _ text: String,
+        right: CGFloat,
+        top: CGFloat,
+        width: CGFloat,
+        fontSize: CGFloat,
+        bold: Bool = false,
+        color: CGColor
+    ) {
+        let line = truncatedLine(
+            text,
+            width: width,
+            fontSize: fontSize,
+            bold: bold,
+            color: color
+        )
+        let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        context.textPosition = CGPoint(
+            x: max(right - width, right - lineWidth),
+            y: pageSize.height - top - fontSize
+        )
+        CTLineDraw(line, context)
+    }
+
+    private func truncatedLine(
+        _ text: String,
+        width: CGFloat,
+        fontSize: CGFloat,
+        bold: Bool,
+        color: CGColor
+    ) -> CTLine {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: CTFontCreateWithName(
+                (bold ? "Helvetica-Bold" : "Helvetica") as CFString,
+                fontSize,
+                nil
+            ),
+            .foregroundColor: color
+        ]
+        let attributed = NSAttributedString(string: text, attributes: attributes)
+        let original = CTLineCreateWithAttributedString(attributed)
+        let ellipsis = CTLineCreateWithAttributedString(
+            NSAttributedString(string: "…", attributes: attributes)
+        )
+        return CTLineCreateTruncatedLine(
+            original,
+            max(1, width),
+            .end,
+            ellipsis
+        ) ?? original
     }
 }
 

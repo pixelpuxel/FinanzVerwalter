@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
@@ -14,10 +15,16 @@ struct RegisterView: View {
     @State private var selectedSavedViewID: UUID?
     @State private var showSaveView = false
     @State private var savedViewName = ""
+    @State private var showPDFExporter = false
+    @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
+    @AppStorage("registerVisibleColumnsIncludesBalanceV1")
+    private var visibleColumnsIncludesBalance = false
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
+    @AppStorage("registerF3FieldV1")
+    private var f3FieldRaw = RegisterF3Field.payee.rawValue
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
@@ -143,6 +150,8 @@ struct RegisterView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 175)
                 registerViewMenu
+                registerOutputMenu(runningBalances: runningBalances)
+                f3FilterMenu
                 if periodFilter == .custom {
                     DatePicker("Von", selection: $customStart, displayedComponents: .date)
                         .labelsHidden()
@@ -264,6 +273,19 @@ struct RegisterView: View {
             .padding(24)
             .frame(width: 480)
         }
+        .fileExporter(
+            isPresented: $showPDFExporter,
+            document: registerPDFDocument,
+            contentType: .pdf,
+            defaultFilename: registerPDFFilename
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Kontoblatt als PDF exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
         .onChange(of: visibleTransactions.map(\.id)) {
             selection.formIntersection(Set(visibleTransactions.map(\.id)))
         }
@@ -274,8 +296,14 @@ struct RegisterView: View {
             synchronizeAccountTabs()
         }
         .onAppear {
+            migrateBalanceColumnIfNeeded()
             synchronizeAccountTabs()
             addSelectedAccountTabIfNeeded()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .filterRegisterSelection)
+        ) { _ in
+            applyF3SelectionFilter()
         }
     }
 
@@ -364,6 +392,14 @@ struct RegisterView: View {
 
     private var orderedVisibleColumns: [RegisterColumn] {
         RegisterColumn.allCases.filter(visibleColumns.contains)
+    }
+
+    private func migrateBalanceColumnIfNeeded() {
+        guard !visibleColumnsIncludesBalance else { return }
+        visibleColumnsRaw = RegisterPreferencesCodec.addingBalanceColumn(
+            to: visibleColumnsRaw
+        )
+        visibleColumnsIncludesBalance = true
     }
 
     @ViewBuilder
@@ -533,6 +569,191 @@ struct RegisterView: View {
         }
     }
 
+    private var f3FilterMenu: some View {
+        Menu {
+            Picker(
+                "F3 übernimmt",
+                selection: Binding(
+                    get: {
+                        RegisterF3Field(rawValue: f3FieldRaw) ?? .payee
+                    },
+                    set: { f3FieldRaw = $0.rawValue }
+                )
+            ) {
+                ForEach(RegisterF3Field.allCases) { field in
+                    Text(field.title).tag(field)
+                }
+            }
+            Divider()
+            Button("Auswahl als Filter übernehmen") {
+                applyF3SelectionFilter()
+            }
+            .disabled(selection.count != 1)
+        } label: {
+            Label(
+                "F3: \((RegisterF3Field(rawValue: f3FieldRaw) ?? .payee).title)",
+                systemImage: "line.3.horizontal.decrease"
+            )
+        }
+        .help("F3 filtert nach dem gewählten Feld der markierten Buchung")
+    }
+
+    private func registerOutputMenu(
+        runningBalances: [UUID: Int64]
+    ) -> some View {
+        Menu {
+            Button("Drucken …", systemImage: "printer") {
+                do {
+                    let data = try RegisterPDFExporter.data(
+                        snapshot: registerPrintSnapshot(
+                            runningBalances: runningBalances
+                        )
+                    )
+                    try RegisterPrintService.printPDF(data)
+                } catch {
+                    store.errorMessage = error.localizedDescription
+                }
+            }
+            Button("Als PDF exportieren …", systemImage: "doc.richtext") {
+                do {
+                    registerPDFDocument = RegisterPDFDocument(
+                        data: try RegisterPDFExporter.data(
+                            snapshot: registerPrintSnapshot(
+                                runningBalances: runningBalances
+                            )
+                        )
+                    )
+                    showPDFExporter = true
+                } catch {
+                    store.errorMessage = error.localizedDescription
+                }
+            }
+        } label: {
+            Label("Ausgabe", systemImage: "printer")
+        }
+        .help("Druckt oder exportiert die aktuell sichtbaren Buchungen und Spalten")
+    }
+
+    private var registerPDFFilename: String {
+        let account = store.selectedAccount?.name ?? "Alle Konten"
+        return "Kontoblatt \(account)"
+            .replacingOccurrences(of: "/", with: "-")
+    }
+
+    private func registerPrintSnapshot(
+        runningBalances: [UUID: Int64]
+    ) -> RegisterPrintSnapshot {
+        RegisterPrintSnapshot(
+            title: store.selectedAccount.map {
+                "Kontoblatt – \($0.name)"
+            } ?? "Kontoblatt – Alle Konten",
+            filterSummary: registerFilterSummary,
+            generatedAt: .now,
+            columns: orderedVisibleColumns,
+            rows: visibleTransactions.map { transaction in
+                orderedVisibleColumns.map { column in
+                    registerCellText(
+                        transaction,
+                        column: column,
+                        runningBalances: runningBalances
+                    )
+                }
+            }
+        )
+    }
+
+    private var registerFilterSummary: String {
+        var parts: [String] = []
+        if let statusFilter {
+            parts.append("Status: \(statusFilter.title)")
+        }
+        switch categoryFilter {
+        case .all:
+            break
+        case .uncategorized:
+            parts.append("Kategorie: Nicht kategorisiert")
+        case .category(let id):
+            parts.append("Kategorie: \(store.categoryPath(id))")
+        }
+        if periodFilter != .all {
+            parts.append("Zeitraum: \(periodFilter.title)")
+        }
+        let search = store.searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !search.isEmpty {
+            parts.append("Suche: \(search)")
+        }
+        return parts.isEmpty ? "Keine zusätzlichen Filter" : parts.joined(separator: " · ")
+    }
+
+    private func registerCellText(
+        _ value: FinanceTransaction,
+        column: RegisterColumn,
+        runningBalances: [UUID: Int64]
+    ) -> String {
+        switch column {
+        case .date:
+            return value.bookingDate.formatted(date: .numeric, time: .omitted)
+        case .valueDate:
+            return (value.valueDate ?? value.bookingDate)
+                .formatted(date: .numeric, time: .omitted)
+        case .reference:
+            return value.reference.isEmpty ? "–" : value.reference
+        case .status:
+            return value.status.title
+        case .payee:
+            return value.payee
+        case .purpose:
+            return value.purpose
+        case .category:
+            return store.transactionCategoryPath(value)
+        case .tags:
+            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            return tags.isEmpty ? "–" : tags
+        case .account:
+            return store.accountName(value.accountID)
+        case .amount:
+            return Money(
+                minorUnits: value.amountMinor,
+                currency: value.currency
+            ).formatted
+        case .balance:
+            return Money(
+                minorUnits: runningBalances[value.id] ?? 0,
+                currency: value.currency
+            ).formatted
+        }
+    }
+
+    private func applyF3SelectionFilter() {
+        guard selection.count == 1,
+              let transactionID = selection.first,
+              let transaction = store.transactions.first(where: {
+                  $0.id == transactionID
+              })
+        else {
+            store.statusText = "F3: Bitte genau eine Buchung markieren"
+            return
+        }
+        let field = RegisterF3Field(rawValue: f3FieldRaw) ?? .payee
+        guard let filter = field.selection(for: transaction) else {
+            store.statusText = "F3: Das Feld „\(field.title)“ ist leer"
+            return
+        }
+        switch filter {
+        case .search(let text):
+            store.searchText = text
+        case .category(let category):
+            categoryFilter = RegisterCategoryFilter(category)
+        case .account(let accountID):
+            store.selectedAccountID = accountID
+        case .status(let status):
+            statusFilter = status
+        }
+        store.statusText = "F3-Filter „\(field.title)“ übernommen"
+    }
+
     private func toggle(_ column: RegisterColumn) {
         var columns = visibleColumns
         if columns.contains(column), columns.count > 1 {
@@ -655,6 +876,24 @@ struct RegisterView: View {
         case .reconciled: .green
         case .cancelled: .red
         }
+    }
+}
+
+private struct RegisterPDFDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.pdf] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

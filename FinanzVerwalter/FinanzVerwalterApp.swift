@@ -76,6 +76,16 @@ struct FinanzVerwalterApp: App {
                     )
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("Auswahl als Filter übernehmen") {
+                    NotificationCenter.default.post(
+                        name: .filterRegisterSelection,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut(
+                    KeyEquivalent(Character("\u{F706}")),
+                    modifiers: []
+                )
             }
         }
     }
@@ -87,4 +97,7 @@ extension Notification.Name {
     static let reconcileAccount = Notification.Name("FinanzVerwalter.reconcileAccount")
     static let saveCurrentEditor = Notification.Name("FinanzVerwalter.saveCurrentEditor")
     static let openSplitEditor = Notification.Name("FinanzVerwalter.openSplitEditor")
+    static let filterRegisterSelection = Notification.Name(
+        "FinanzVerwalter.filterRegisterSelection"
+    )
 }

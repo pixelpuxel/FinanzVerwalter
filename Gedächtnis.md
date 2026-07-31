@@ -531,3 +531,33 @@ Rechtsberatung.
   signaturgeprüft. Schema 14, 97 Konten, 2.170 Buchungen und Integrität
   `ok` blieben unverändert. Das vorherige App-Bundle liegt ignoriert unter
   `build/FinanzVerwalter-vor-kontoblatt-tabs-20260731-0919.app`.
+- Die vorhandene Saldo-Spalte wird nun per einmaliger Präferenzmigration auch
+  für Nutzer eingeblendet, deren ältere gespeicherte Spaltenliste den später
+  ergänzten Wert noch nicht kannte. Jede Buchungszeile zeigt weiterhin den
+  kontenweisen laufenden Saldo; danach kann die Spalte bewusst wieder
+  ausgeblendet werden.
+- Das Kontoblatt erzeugt aus einem unveränderlichen Ausgabesnapshot ein
+  mehrseitiges A4-Querformat-PDF mit exakt den sichtbaren Spalten,
+  Filterbeschreibung, wiederholtem Tabellenkopf und `Seite x von y`. Das
+  Menü `Ausgabe` öffnet wahlweise den nativen macOS-Druckdialog oder den
+  PDF-Speicherdialog.
+- `F3` übernimmt aus genau einer markierten Buchung das im Kontenblatt
+  gewählte Feld als Filter. Unterstützt sind Empfänger, Verwendungszweck,
+  vollständige Kategorie, Konto und Status; leere Felder oder eine
+  mehrdeutige Auswahl liefern sichtbares Feedback.
+- Zwei neue Tests prüfen F3-Feldabbildung sowie ein mehrseitiges Kontoblatt-
+  PDF semantisch mit PDFKit. Der Präferenztest deckt zusätzlich die
+  Saldo-Migration ab. Die vollständige Suite besteht damit aus 36 regulären
+  Tests; der SHA-256-Wert der Produktivdatei war vor und nach dem Lauf
+  bytegenau identisch.
+- Der optimierte Release wurde unter
+  `~/Applications/FinanzVerwalter.app` installiert und ad hoc
+  signaturgeprüft. Die produktive Datei meldet weiterhin Schema 14,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen und 0 Daueraufträge. Das
+  vorherige Bundle liegt ignoriert unter
+  `build/FinanzVerwalter-vor-saldo-druck-f3-20260731-0929.app`.
+- Der Kontoblatt-/Saldo-Stand wurde im Telegram-Projektthread 894 als
+  Nachricht 937 veröffentlicht. Computer Use lief beim Zugriff auf das
+  installierte App-Fenster erneut in einen Timeout, weil der Mac weiterhin
+  gesperrt ist. Deshalb wurde kein fingierter Screenshot versendet und die
+  echte visuelle Abnahme bleibt ausdrücklich offen.

@@ -1903,6 +1903,12 @@ final class FinanzVerwalterTests: XCTestCase {
             RegisterPreferencesCodec.decodeColumns(""),
             RegisterColumn.defaultSet
         )
+        XCTAssertEqual(
+            RegisterPreferencesCodec.addingBalanceColumn(
+                to: "amount,category,date,payee"
+            ),
+            "amount,balance,category,date,payee"
+        )
         let firstAccountID = UUID()
         let secondAccountID = UUID()
         let missingAccountID = UUID()
@@ -1948,6 +1954,81 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(
             RegisterPreferencesCodec.decodeViews("{nicht-json").isEmpty
         )
+    }
+
+    func testRegisterF3SelectionUsesConfiguredTransactionField() throws {
+        let accountID = UUID()
+        let categoryID = UUID()
+        let transaction = FinanceTransaction(
+            id: UUID(),
+            accountID: accountID,
+            bookingDate: Date(timeIntervalSince1970: 0),
+            valueDate: nil,
+            payee: "  Stadtwerke Nord  ",
+            purpose: "Abschlag Juli",
+            categoryID: categoryID,
+            amountMinor: -12_345,
+            currency: "EUR",
+            status: .cleared,
+            memo: "",
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: []
+        )
+        XCTAssertEqual(
+            RegisterF3Field.payee.selection(for: transaction),
+            .search("Stadtwerke Nord")
+        )
+        XCTAssertEqual(
+            RegisterF3Field.purpose.selection(for: transaction),
+            .search("Abschlag Juli")
+        )
+        XCTAssertEqual(
+            RegisterF3Field.category.selection(for: transaction),
+            .category(.category(categoryID))
+        )
+        XCTAssertEqual(
+            RegisterF3Field.account.selection(for: transaction),
+            .account(accountID)
+        )
+        XCTAssertEqual(
+            RegisterF3Field.status.selection(for: transaction),
+            .status(.cleared)
+        )
+    }
+
+    func testRegisterPDFContainsExactlyVisibleColumnsAndRepeatsHeaders() throws {
+        let rows = (0..<90).map { index in
+            [
+                "01.07.2025",
+                "Empfänger \(index)",
+                index.isMultiple(of: 2) ? "-12,34 EUR" : "45,67 EUR",
+                "\(1_000 + index),00 EUR"
+            ]
+        }
+        let data = try RegisterPDFExporter.data(
+            snapshot: RegisterPrintSnapshot(
+                title: "Kontoblatt – Girokonto",
+                filterSummary: "Kategorie: Immobilie › Haus › Grundsteuer",
+                generatedAt: Date(timeIntervalSince1970: 0),
+                columns: [.date, .payee, .amount, .balance],
+                rows: rows
+            )
+        )
+        XCTAssertTrue(data.starts(with: Data("%PDF".utf8)))
+        let document = try XCTUnwrap(PDFDocument(data: data))
+        XCTAssertGreaterThan(document.pageCount, 2)
+        let pageTexts = (0..<document.pageCount).compactMap {
+            document.page(at: $0)?.string
+        }
+        XCTAssertTrue(pageTexts.allSatisfy { $0.contains("Saldo") })
+        XCTAssertTrue(pageTexts.allSatisfy { $0.contains("Betrag") })
+        let text = pageTexts.joined(separator: "\n")
+        XCTAssertTrue(text.contains("Empfänger 89"))
+        XCTAssertFalse(text.contains("Verwendungszweck"))
+        XCTAssertFalse(text.contains("Kategorie\n"))
+        XCTAssertTrue(text.contains("Seite 1 von \(document.pageCount)"))
     }
 }
 

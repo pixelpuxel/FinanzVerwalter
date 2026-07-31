@@ -492,3 +492,30 @@ Master-Prompt transparent mit Schweregrad dokumentiert sind.
 - Rechtsgrundlage als Arbeitsleitplanke ist § 23 Abs. 1 Nr. 3 in Verbindung
   mit Abs. 2 MarkenG; die Veröffentlichung bleibt einer menschlichen
   Rechtsprüfung vorbehalten.
+# Reproduzierbarer Kontoblatt-Stand: Saldo, Ausgabe und F3
+
+Das Kontoblatt besitzt elf dynamische Spalten. `balance` wird aus der
+kontenweisen laufenden Saldenfolge der Buchungen befüllt, trägt den deutschen
+Titel `Saldo` und steht in der Standardreihenfolge rechts von `Betrag`.
+Bestehende Installationen benötigen eine einmalige, versionierte
+Präferenzmigration: Sie ergänzt `balance` zu einer vorhandenen
+`registerVisibleColumnsV1`-Liste und setzt erst danach den Marker
+`registerVisibleColumnsIncludesBalanceV1`. Anschließend darf der Nutzer die
+Spalte wieder frei ausblenden.
+
+Für Druck und PDF wird zuerst ein unveränderlicher `RegisterPrintSnapshot`
+gebildet. Er enthält Titel, aktuelle Filterbeschreibung, Erstellungszeit,
+die geordnete Liste der tatsächlich sichtbaren `RegisterColumn`-Werte und
+pro sichtbarer Buchung genau eine gleich geordnete Textzeile. Der Renderer
+skaliert nur diese Spalten auf A4 quer, wiederholt den Tabellenkopf auf jeder
+Seite und schreibt `Seite x von y`. Derselbe PDF-Datenstrom geht entweder an
+den nativen PDFKit-/AppKit-Druckdialog oder in einen SwiftUI-`fileExporter`.
+Versteckte Spalten dürfen weder im Kopf noch in den Zeilen auftauchen.
+
+Der F3-Workflow wird über den App-Befehl
+`FinanzVerwalter.filterRegisterSelection` ausgelöst. Im Kontenblatt ist das
+persistierte Zielfeld `registerF3FieldV1` zwischen Empfänger,
+Verwendungszweck, Kategorie, Konto und Status wählbar. Genau eine markierte
+Buchung wird über `RegisterF3Field.selection(for:)` in einen typisierten
+Filterwert übersetzt. Keine oder mehrere Markierungen sowie leere Textfelder
+ändern keinen Filter und melden den Grund in der Statuszeile.

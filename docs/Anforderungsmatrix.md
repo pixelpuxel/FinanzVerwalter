@@ -9,9 +9,9 @@ fertigen Funktionsbereich.
 
 | Priorität | Anforderung | Status | Nachweis / nächste Lücke |
 |---|---|---|---|
-| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–13, Integritätstest, append-only Auditereignisse |
+| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–14, Integritätstest, append-only Auditereignisse |
 | P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; Bankabrufdaten bleiben Adapteraufgabe |
-| P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung, vollständige Kategoriepfade, elf dynamische Standardspalten, benannte Ansichten und persistente Mehrkonto-Tabs vorhanden; direkter Druck, anpassbare Shortcuts und der vollständige F3-Tastaturworkflow fehlen |
+| P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo einschließlich Bestandsmigration, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung, vollständige Kategoriepfade, elf dynamische Standardspalten, benannte Ansichten, persistente Mehrkonto-Tabs, F3-Auswahlfilter und direkter PDF-/Systemdruck exakt der sichtbaren Spalten vorhanden; frei anpassbare Shortcuts fehlen |
 | P0 | Kategorien und Unterkategorien | Erfüllt für Basiskern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade; MwSt.- und Steuerzuordnungen fehlen |
 | P0 | Klassen/Mehrfach-Tags | Teilweise | Hierarchische Tags auf Buchungen und Splits vorhanden; eigenständige Klassenfilter und Massenbearbeitung fehlen |
 | P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten und Vorschläge vorhanden; Mandate und Gläubiger-ID fehlen |
@@ -20,7 +20,7 @@ fertigen Funktionsbereich.
 | P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Idempotenz sowie pain.001.001.09-Export; Profilassistent, OFX/QFX, MT940, camt und ISO-20022-Import fehlen |
 | P0 | Kontoabgleich | Teilweise | Exakter Endsaldo und Sperre vorhanden; Startsaldo, Markierdialog, Rücknahme und explizite Ausgleichsbuchung fehlen |
 | P0 | Sammelkontoblatt | Teilweise | Kontenübergreifende Liste, Zukunft und Summe; benannte Kombinationen, Mehrfachbearbeitung, zwei Ansichten und Export fehlen |
-| P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; zweite Dimension, weitere Standardberichte, direkter Systemdruckdialog sowie XLSX/HTML fehlen |
+| P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; das Kontoblatt besitzt direkten Systemdruck, die Berichtswerkstatt noch nicht; zweite Dimension, weitere Standardberichte sowie XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Offen | Derzeit nur lokaler Zahlungs-/SCA-Simulator; FinTS/PSD2-Verträge, Kontakte, Konto- und Umsatzabruf fehlen |
 | P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA, Idempotenz, versionierter pain.001.001.09-Export sowie lokale Daueraufträge mit Pause/Ende, Wochenendregel, genau-einmaliger Entwurfserzeugung und Historie; Feiertagskalender, Lastschrift, Sammler, EPC-QR sowie pain.001-Import, pain.008 und pain.002 fehlen |
@@ -42,7 +42,7 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
+1. Kontoblatt: frei anpassbare Shortcuts und vollständige Tastatur-/AX-Abnahme.
 2. Kategorien: MwSt.- und Steuerzuordnungen.
 3. Import-/Bankumsatz-Matching mit gestuften Fingerabdrücken.
 4. Kontoabgleich mit markierbaren Buchungen und Rücknahme.

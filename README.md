@@ -75,7 +75,12 @@ einsortiert. Datum, Wertstellung, Belegnummer, Status, Empfänger,
 Verwendungszweck, Kategorie, Klasse/Tags, Konto, Betrag und Saldo lassen sich
 vollständig ein- oder ausblenden. Benannte Ansichten speichern Konto, Filter,
 Zeitraum, Zeilenmodus und Spaltenauswahl und können später wieder geladen
-oder gelöscht werden.
+oder gelöscht werden. Beim ersten Start nach dem Saldo-Update wird die Spalte
+einmalig auch in vorhandene Spalteneinstellungen aufgenommen; anschließend
+bleibt sie wie jede andere Spalte frei schaltbar. Das Menü `Ausgabe` druckt
+das gefilterte Kontoblatt direkt über den macOS-Druckdialog oder exportiert
+es als mehrseitiges PDF. Dabei werden exakt die sichtbaren Spalten mit
+wiederholten Tabellenköpfen, Filterbeschreibung und Seitenzahlen ausgegeben.
 
 Mehrere Konten bleiben als horizontale Kontoblatt-Tabs geöffnet. Jeder Tab
 zeigt Name und aktuellen Saldo, kann direkt gewechselt oder geschlossen
@@ -83,7 +88,9 @@ werden und wird in stabiler Reihenfolge lokal gespeichert; gelöschte Konten
 werden beim Wiederherstellen sicher ignoriert. `⌘N` öffnet eine neue
 Buchung, `⌘S` speichert den geöffneten Buchungsdialog, `⌘F` fokussiert die
 globale Suche, `⌘R` öffnet den Abgleich und `⌘⇧S` startet beziehungsweise
-aktiviert die Splitbuchung.
+aktiviert die Splitbuchung. `F3` übernimmt aus genau einer markierten Buchung
+wahlweise Empfänger, Verwendungszweck, Kategorie, Konto oder Status als
+Filter; das gewünschte Feld wird direkt im Kontenblatt gewählt.
 
 ## Berichtswerkstatt
 
