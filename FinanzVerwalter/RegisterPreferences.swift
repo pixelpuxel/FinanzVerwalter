@@ -83,6 +83,27 @@ struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
 }
 
 enum RegisterPreferencesCodec {
+    static func encodeTabAccountIDs(_ ids: [UUID]) -> String {
+        var seen = Set<UUID>()
+        return ids
+            .filter { seen.insert($0).inserted }
+            .map(\.uuidString)
+            .joined(separator: ",")
+    }
+
+    static func decodeTabAccountIDs(
+        _ value: String,
+        availableAccountIDs: Set<UUID>
+    ) -> [UUID] {
+        var seen = Set<UUID>()
+        return value
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
+            .filter {
+                availableAccountIDs.contains($0) && seen.insert($0).inserted
+            }
+    }
+
     static func encodeColumns(_ columns: Set<RegisterColumn>) -> String {
         normalized(columns).map(\.rawValue).sorted().joined(separator: ",")
     }

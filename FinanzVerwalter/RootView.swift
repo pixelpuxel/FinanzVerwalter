@@ -82,6 +82,8 @@ struct RootView: View {
     @State private var showNewTransaction = false
     @State private var showTransfer = false
     @State private var showReconciliation = false
+    @State private var newTransactionStartsWithSplits = false
+    @FocusState private var searchIsFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,7 +145,11 @@ struct RootView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .sheet(isPresented: $showNewAccount) { AccountEditorView() }
-        .sheet(isPresented: $showNewTransaction) { TransactionEditorView() }
+        .sheet(isPresented: $showNewTransaction) {
+            TransactionEditorView(
+                startWithSplits: newTransactionStartsWithSplits
+            )
+        }
         .sheet(isPresented: $showTransfer) { TransferEditorView() }
         .sheet(isPresented: $showReconciliation) { ReconciliationView() }
         .alert(
@@ -158,10 +164,22 @@ struct RootView: View {
             Text(store.errorMessage ?? "")
         }
         .onReceive(NotificationCenter.default.publisher(for: .newTransaction)) { _ in
-            if !store.accounts.isEmpty { showNewTransaction = true }
+            if !store.accounts.isEmpty {
+                newTransactionStartsWithSplits = false
+                showNewTransaction = true
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .reconcileAccount)) { _ in
             if !store.accounts.isEmpty { showReconciliation = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .focusSearch)) { _ in
+            searchIsFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSplitEditor)) { _ in
+            if !store.accounts.isEmpty, !showNewTransaction {
+                newTransactionStartsWithSplits = true
+                showNewTransaction = true
+            }
         }
     }
 
@@ -194,13 +212,18 @@ struct RootView: View {
                 .padding(.trailing, 12)
             ToolbarButton("Konto", icon: "plus.rectangle.on.folder") { showNewAccount = true }
             ToolbarButton("Buchung", icon: "plus") {
-                if !store.accounts.isEmpty { showNewTransaction = true }
+                if !store.accounts.isEmpty {
+                    newTransactionStartsWithSplits = false
+                    showNewTransaction = true
+                }
             }
             ToolbarButton("Umbuchung", icon: "arrow.left.arrow.right") {
                 if store.accounts.count >= 2 { showTransfer = true }
             }
             Divider().frame(height: 28)
-            ToolbarButton("Speichern", icon: "square.and.arrow.down") { store.reload() }
+            ToolbarButton("Speichern", icon: "square.and.arrow.down") {
+                NotificationCenter.default.post(name: .saveCurrentEditor, object: nil)
+            }
             ToolbarButton("Aktualisieren", icon: "arrow.clockwise") { store.reload() }
             ToolbarButton("Abgleichen", icon: "checkmark.seal") {
                 if !store.accounts.isEmpty { showReconciliation = true }
@@ -212,6 +235,7 @@ struct RootView: View {
                 TextField("Suchen", text: $store.searchText)
                     .textFieldStyle(.plain)
                     .frame(width: 220)
+                    .focused($searchIsFocused)
                     .accessibilityIdentifier("globalSearch")
                 if !store.searchText.isEmpty {
                     Button { store.searchText = "" } label: {

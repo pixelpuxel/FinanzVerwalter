@@ -1903,6 +1903,23 @@ final class FinanzVerwalterTests: XCTestCase {
             RegisterPreferencesCodec.decodeColumns(""),
             RegisterColumn.defaultSet
         )
+        let firstAccountID = UUID()
+        let secondAccountID = UUID()
+        let missingAccountID = UUID()
+        let encodedTabs = RegisterPreferencesCodec.encodeTabAccountIDs([
+            firstAccountID, secondAccountID, firstAccountID
+        ])
+        XCTAssertEqual(
+            encodedTabs,
+            "\(firstAccountID.uuidString),\(secondAccountID.uuidString)"
+        )
+        XCTAssertEqual(
+            RegisterPreferencesCodec.decodeTabAccountIDs(
+                encodedTabs + ",\(missingAccountID.uuidString),ungültig",
+                availableAccountIDs: [firstAccountID, secondAccountID]
+            ),
+            [firstAccountID, secondAccountID]
+        )
 
         let view = SavedRegisterView(
             id: UUID(),

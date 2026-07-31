@@ -17,6 +17,7 @@ struct RegisterView: View {
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
+    @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
@@ -32,6 +33,24 @@ struct RegisterView: View {
 
     private var savedViews: [SavedRegisterView] {
         RegisterPreferencesCodec.decodeViews(savedViewsRaw)
+    }
+
+    private var openAccountTabIDs: [UUID] {
+        get {
+            RegisterPreferencesCodec.decodeTabAccountIDs(
+                openAccountTabsRaw,
+                availableAccountIDs: Set(store.accounts.map(\.id))
+            )
+        }
+        nonmutating set {
+            openAccountTabsRaw = RegisterPreferencesCodec.encodeTabAccountIDs(newValue)
+        }
+    }
+
+    private var openAccountTabs: [FinanceAccount] {
+        openAccountTabIDs.compactMap { id in
+            store.accounts.first { $0.id == id }
+        }
     }
 
     private var visibleTransactions: [FinanceTransaction] {
@@ -85,6 +104,8 @@ struct RegisterView: View {
             }
             .padding(14)
 
+            Divider()
+            accountTabs
             Divider()
 
             HStack(spacing: 12) {
@@ -245,6 +266,99 @@ struct RegisterView: View {
         }
         .onChange(of: visibleTransactions.map(\.id)) {
             selection.formIntersection(Set(visibleTransactions.map(\.id)))
+        }
+        .onChange(of: store.selectedAccountID) {
+            addSelectedAccountTabIfNeeded()
+        }
+        .onChange(of: store.accounts.map(\.id)) {
+            synchronizeAccountTabs()
+        }
+        .onAppear {
+            synchronizeAccountTabs()
+            addSelectedAccountTabIfNeeded()
+        }
+    }
+
+    private var accountTabs: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(openAccountTabs) { account in
+                    RegisterAccountTab(
+                        account: account,
+                        balanceMinor: store.balances[account.id] ?? 0,
+                        isSelected: store.selectedAccountID == account.id,
+                        select: {
+                            store.selectedAccountID = account.id
+                        },
+                        close: {
+                            closeAccountTab(account.id)
+                        }
+                    )
+                }
+                Menu {
+                    let closedAccounts = store.accounts.filter {
+                        !openAccountTabIDs.contains($0.id)
+                    }
+                    if closedAccounts.isEmpty {
+                        Text("Alle Konten sind geöffnet")
+                    } else {
+                        ForEach(closedAccounts) { account in
+                            Button(account.name) {
+                                var ids = openAccountTabIDs
+                                ids.append(account.id)
+                                openAccountTabIDs = ids
+                                store.selectedAccountID = account.id
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Kontoblatt öffnen", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                        .padding(6)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Weiteres Konto als Tab öffnen")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+        }
+        .scrollIndicators(.hidden)
+        .frame(minHeight: 42)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func addSelectedAccountTabIfNeeded() {
+        guard let selectedAccountID = store.selectedAccountID,
+              store.accounts.contains(where: { $0.id == selectedAccountID }),
+              !openAccountTabIDs.contains(selectedAccountID)
+        else { return }
+        openAccountTabIDs = openAccountTabIDs + [selectedAccountID]
+    }
+
+    private func synchronizeAccountTabs() {
+        let valid = RegisterPreferencesCodec.decodeTabAccountIDs(
+            openAccountTabsRaw,
+            availableAccountIDs: Set(store.accounts.map(\.id))
+        )
+        if valid.isEmpty, let selectedAccountID = store.selectedAccountID {
+            openAccountTabIDs = [selectedAccountID]
+        } else if RegisterPreferencesCodec.encodeTabAccountIDs(valid)
+                    != openAccountTabsRaw {
+            openAccountTabIDs = valid
+        }
+    }
+
+    private func closeAccountTab(_ accountID: UUID) {
+        let previous = openAccountTabIDs
+        guard let index = previous.firstIndex(of: accountID) else { return }
+        let remaining = previous.filter { $0 != accountID }
+        openAccountTabIDs = remaining
+        guard store.selectedAccountID == accountID else { return }
+        if remaining.isEmpty {
+            store.selectedAccountID = nil
+        } else {
+            store.selectedAccountID = remaining[min(index, remaining.count - 1)]
         }
     }
 
@@ -605,6 +719,61 @@ private enum RegisterPeriodFilter: String, CaseIterable, Identifiable {
 
 }
 
+private struct RegisterAccountTab: View {
+    let account: FinanceAccount
+    let balanceMinor: Int64
+    let isSelected: Bool
+    let select: () -> Void
+    let close: () -> Void
+
+    private var balanceText: String {
+        Money(
+            minorUnits: balanceMinor,
+            currency: account.currency
+        ).formatted
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Button(action: select) {
+                HStack(spacing: 5) {
+                    Image(systemName: "rectangle.stack")
+                    Text(account.name)
+                        .lineLimit(1)
+                    Text(balanceText)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.caption2.bold())
+            }
+            .buttonStyle(.plain)
+            .help("Kontoblatt schließen")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(0.16)
+                : Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(
+                    isSelected
+                        ? Color.accentColor.opacity(0.55)
+                        : Color.secondary.opacity(0.18)
+                )
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Kontoblatt \(account.name), \(balanceText)")
+    }
+}
+
 private enum RegisterRowMode: String, CaseIterable, Identifiable {
     case single
     case twoLines
@@ -723,6 +892,7 @@ struct TransactionEditorView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
     let transaction: FinanceTransaction?
+    let startWithSplits: Bool
 
     @State private var accountID: UUID?
     @State private var date = Date()
@@ -738,8 +908,12 @@ struct TransactionEditorView: View {
     @State private var splitDrafts: [SplitDraft] = []
     @State private var initialized = false
 
-    init(transaction: FinanceTransaction? = nil) {
+    init(
+        transaction: FinanceTransaction? = nil,
+        startWithSplits: Bool = false
+    ) {
         self.transaction = transaction
+        self.startWithSplits = startWithSplits
     }
 
     var body: some View {
@@ -861,23 +1035,7 @@ struct TransactionEditorView: View {
                 Button("Abbrechen", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Speichern") {
-                    guard let accountID else {
-                        store.errorMessage = FinanceError.missingAccount.localizedDescription
-                        return
-                    }
-                    if useSplits {
-                        saveSplit(accountID: accountID)
-                    } else {
-                        if store.saveTransaction(
-                            id: transaction?.id, accountID: accountID, date: date, payee: payee,
-                            purpose: purpose, categoryID: categoryID, amount: amount,
-                            status: status, memo: memo,
-                            reference: transaction?.reference ?? "",
-                            payeeID: payeeID, tagIDs: Array(selectedTagIDs)
-                        ) {
-                            dismiss()
-                        }
-                    }
+                    save()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(accountID == nil || amount.isEmpty)
@@ -900,7 +1058,7 @@ struct TransactionEditorView: View {
             status = transaction?.status ?? .booked
             memo = transaction?.memo ?? ""
             selectedTagIDs = Set(transaction?.tagIDs ?? [])
-            useSplits = !(transaction?.splits.isEmpty ?? true)
+            useSplits = startWithSplits || !(transaction?.splits.isEmpty ?? true)
             splitDrafts = transaction?.splits.map {
                 SplitDraft(
                     id: $0.id,
@@ -918,6 +1076,13 @@ struct TransactionEditorView: View {
             if useSplits, splitDrafts.isEmpty {
                 splitDrafts = [SplitDraft(), SplitDraft()]
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveCurrentEditor)) { _ in
+            guard accountID != nil, !amount.isEmpty else { return }
+            save()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSplitEditor)) { _ in
+            useSplits = true
         }
     }
 
@@ -941,6 +1106,24 @@ struct TransactionEditorView: View {
         splitDrafts[index].amount = NSDecimalNumber(
             decimal: Decimal(adjusted) / Decimal(100)
         ).stringValue
+    }
+
+    private func save() {
+        guard let accountID else {
+            store.errorMessage = FinanceError.missingAccount.localizedDescription
+            return
+        }
+        if useSplits {
+            saveSplit(accountID: accountID)
+        } else if store.saveTransaction(
+            id: transaction?.id, accountID: accountID, date: date, payee: payee,
+            purpose: purpose, categoryID: categoryID, amount: amount,
+            status: status, memo: memo,
+            reference: transaction?.reference ?? "",
+            payeeID: payeeID, tagIDs: Array(selectedTagIDs)
+        ) {
+            dismiss()
+        }
     }
 
     private func saveSplit(accountID: UUID) {

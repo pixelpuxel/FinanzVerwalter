@@ -77,6 +77,14 @@ vollständig ein- oder ausblenden. Benannte Ansichten speichern Konto, Filter,
 Zeitraum, Zeilenmodus und Spaltenauswahl und können später wieder geladen
 oder gelöscht werden.
 
+Mehrere Konten bleiben als horizontale Kontoblatt-Tabs geöffnet. Jeder Tab
+zeigt Name und aktuellen Saldo, kann direkt gewechselt oder geschlossen
+werden und wird in stabiler Reihenfolge lokal gespeichert; gelöschte Konten
+werden beim Wiederherstellen sicher ignoriert. `⌘N` öffnet eine neue
+Buchung, `⌘S` speichert den geöffneten Buchungsdialog, `⌘F` fokussiert die
+globale Suche, `⌘R` öffnet den Abgleich und `⌘⇧S` startet beziehungsweise
+aktiviert die Splitbuchung.
+
 ## Berichtswerkstatt
 
 Die Berichtswerkstatt wertet Buchungen als unveränderliche Live-Momentaufnahme

@@ -45,6 +45,15 @@ struct FinanzVerwalterApp: App {
         }
         .defaultSize(width: 1380, height: 860)
         .commands {
+            CommandGroup(replacing: .saveItem) {
+                Button("Speichern") {
+                    NotificationCenter.default.post(
+                        name: .saveCurrentEditor,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("s", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Neue Buchung") {
                     NotificationCenter.default.post(name: .newTransaction, object: nil)
@@ -60,6 +69,13 @@ struct FinanzVerwalterApp: App {
                     NotificationCenter.default.post(name: .reconcileAccount, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: .command)
+                Button("Buchung aufteilen") {
+                    NotificationCenter.default.post(
+                        name: .openSplitEditor,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
             }
         }
     }
@@ -69,4 +85,6 @@ extension Notification.Name {
     static let newTransaction = Notification.Name("FinanzVerwalter.newTransaction")
     static let focusSearch = Notification.Name("FinanzVerwalter.focusSearch")
     static let reconcileAccount = Notification.Name("FinanzVerwalter.reconcileAccount")
+    static let saveCurrentEditor = Notification.Name("FinanzVerwalter.saveCurrentEditor")
+    static let openSplitEditor = Notification.Name("FinanzVerwalter.openSplitEditor")
 }

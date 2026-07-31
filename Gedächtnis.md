@@ -512,3 +512,22 @@ Rechtsberatung.
   konnte ihn erwartungsgemäß nicht automatisch entsperren; deshalb wurde
   keine angebliche App-Aufnahme versendet. Der echte Screenshot bleibt bis
   zum manuellen Entsperren offen.
+- Das Kontoblatt besitzt nun geordnete, dauerhaft gespeicherte Kontotabs
+  mit Kontoname, aktuellem Saldo, Wechsel, Schließen und Menü zum Öffnen
+  weiterer Konten. Doppelte IDs werden beim Codieren entfernt; nicht mehr
+  vorhandene Konten werden beim Laden ignoriert. Beim Schließen des aktiven
+  Tabs wird deterministisch der Nachbartab gewählt.
+- Der bestehende Präferenztest prüft zusätzlich Reihenfolge,
+  Deduplizierung, ungültige UUIDs und veraltete Konto-IDs der Tabs.
+- `⌘F` setzt jetzt tatsächlich den Fokus auf die globale Suche. `⌘S`
+  speichert den geöffneten Buchungsdialog, und `⌘⇧S` öffnet beziehungsweise
+  aktiviert eine Splitbuchung. `⌘N` und `⌘R` bleiben für neue Buchung und
+  Kontoabgleich verfügbar.
+- Die vollständige Suite besteht weiterhin mit 34 regulären Tests. Der
+  SHA-256-Wert der produktiven Schema-14-Finanzdatei war vor und nach dem
+  Lauf erneut identisch.
+- Der optimierte Release mit Kontoblatt-Tabs und Tastaturkorrekturen ist
+  unter `~/Applications/FinanzVerwalter.app` installiert und ad hoc
+  signaturgeprüft. Schema 14, 97 Konten, 2.170 Buchungen und Integrität
+  `ok` blieben unverändert. Das vorherige App-Bundle liegt ignoriert unter
+  `build/FinanzVerwalter-vor-kontoblatt-tabs-20260731-0919.app`.

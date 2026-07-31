@@ -426,6 +426,18 @@ Für konfigurierbare Kontoblattansichten gilt reproduzierbar:
   Schlüssel für reproduzierbare Tests.
 - Echte bedingte SwiftUI-Tabellenspalten benötigen macOS 14.4. Das Projekt
   setzt deshalb dieses Mindestziel für App und Tests konsistent.
+- Speichere geöffnete Kontoblatt-Tabs als geordnete, deduplizierte Liste
+  stabiler Konto-UUIDs. Beim Laden werden unbekannte Konten verworfen; die
+  Reihenfolge der verbleibenden Tabs bleibt erhalten.
+- Ein Wechsel aus der Kontenseitenleiste oder dem Kontopicker öffnet das
+  Konto bei Bedarf als Tab. Beim Schließen des aktiven Tabs wird der
+  unmittelbare Nachbar aktiv; nach dem letzten Tab fällt das Kontoblatt auf
+  die kontenübergreifende Auswahl zurück.
+- `⌘F` muss den echten Suchfokus setzen. `⌘S` wird über eine lokale
+  Notification an den geöffneten Buchungseditor geroutet und speichert nur
+  bei erfüllten Pflichtfeldern. `⌘⇧S` öffnet eine neue Splitbuchung oder
+  aktiviert Splits im bereits geöffneten Editor. `⌘N` und `⌘R` bleiben
+  globale Befehle für neue Buchung und Kontoabgleich.
 
 ## Qualitätsschleife
 
