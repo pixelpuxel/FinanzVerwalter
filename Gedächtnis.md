@@ -1726,3 +1726,9 @@ Rechtsberatung.
   Die App läuft als Prozess 62576; die Produktivdatei blieb bytegleich bei
   SHA-256 `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
   und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.
+- Implementierung und Dokumentation sind als Commits `0f316a9` und
+  `4e7f1ae` gepusht; Draft-PR 1 enthält den direkten Systemdruck und seinen
+  gezielten Nachtest. Telegram-Nachricht 974 wurde im Projektthread 894
+  (`/quicken`) mit demselben Stand und dem Zielzählerstand 11.379.062 Tokens
+  veröffentlicht. Wegen der weiterhin bestätigten Bildschirmsperre wurde
+  kein Screenshot angehängt oder vorgetäuscht.
