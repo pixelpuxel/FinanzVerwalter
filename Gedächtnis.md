@@ -1573,3 +1573,61 @@ Rechtsberatung.
   und GitHub-Stand sowie den Zielzählerstand von 10.740.657 Tokens. Wegen der
   bestätigten Bildschirmsperre wurde ausdrücklich kein Screenshot angehängt
   oder vorgetäuscht.
+
+## 2026-07-31 – EPC-QR-Rechnungsdaten und SEPA-Zweckcode
+
+- Die offizielle EPC069-12-Spezifikation wurde in Version 3.1 vom 19.03.2024
+  als verbindliches Rechnungsprofil gewählt. Das separate
+  Point-of-Interaction-Verfahren ist ausdrücklich nicht behauptet.
+- `EPCQRImporter` liest lokale Bilder offline über macOS Vision und verlangt
+  genau einen QR-Code. Bilddateien sind auf 20 MB, Bildkanten auf 12.000 Pixel
+  begrenzt. Der Parser akzeptiert ausschließlich BCD, Version 001/002,
+  Zeichensatz 1–8 und SCT, rekonstruiert den deklarierten Zeichensatz und
+  prüft die offizielle 331-Byte-Grenze.
+- BIC, Empfängername, Mod-97-IBAN, optionaler EUR-Betrag zwischen 0,01 und
+  999.999.999,99 Euro, Zweckcode, strukturierte Referenz oder alternativer
+  Freitext und Empfängerhinweis werden längen- und strukturgeprüft. RF-
+  Referenzen benötigen eine korrekte ISO-11649-Prüfsumme. Steuerzeichen,
+  widersprüchliche Referenz-/Textbelegung und ein abschließender Feldtrenner
+  werden abgewiesen.
+- Der Scan füllt ausschließlich den vorhandenen sichtbaren
+  Überweisungseditor. Er speichert, sendet und bucht nichts. Eine aktive
+  Empfängerbank wird nur bei genau einer exakten Namens-/IBAN-/BIC-
+  Übereinstimmung verknüpft. Die Bildanalyse läuft außerhalb des UI-Threads.
+- Migration 28 ergänzt `payment_orders.purpose_code`. Der optionale
+  vierstellige SEPA-Zweckcode ist Teil der Idempotenzkennung, bleibt im
+  Auftragsdetail sichtbar, wird bei pain.001-Auftragsimporten erhalten und als
+  optionales `Purp/Cd` in Einzel- und Sammler-pain.001 exportiert.
+- Zwei neue Tests prüfen Parser und Negativfälle sowie einen tatsächlich im
+  Test erzeugten PNG-QR-Code, Vision-Decodierung, Persistenz, pain.001-
+  Rundlauf und Integrität. Die Migrationsfixtures decken Schema 14→28 und
+  Schema 22→28 ab. Die vollständige Abnahme unter
+  `/tmp/FinanzVerwalter-FullTests-Schema28-EPCQR.xcresult` führte 81 Tests
+  aus: alle 81 einschließlich des lokalen privaten 2025-QIF-Akzeptanztests
+  bestanden, 0 Fehler. Dessen nur temporäre Kopie wurde danach tatsächlich
+  gelöscht und ihre Abwesenheit geprüft.
+- Der optimierte Release-Build unter
+  `build/DerivedData-Schema28-EPCQR/Build/Products/Release` bestand. Vor der
+  Produktivmigration wurde die App geordnet beendet und die geprüfte
+  Sicherung `Vor Migration 28 EPC-QR und Zweckcode.qbackup` angelegt: Schema
+  27, Integrität `ok`, 97 Konten, 2.170 Buchungen sowie 0 Zahlungsaufträge,
+  0 Auftragsimporte und 0 Importpositionen. Ihr SHA-256-Wert ist
+  `d20ddb6ec34646df9135609d6c59644a6f824707e1c763bcb45935d629808f19`.
+  Die bisherige App liegt reversibel unter
+  `build/FinanzVerwalter-vor-epc-qr-20260731-163051.app`.
+- Der neue Release ist ad hoc signiert, streng signaturgeprüft und unter
+  `~/Applications/FinanzVerwalter.app` installiert. Nach Migration,
+  kontrolliertem Beenden, WAL-Checkpoint und erneutem Start meldet die
+  Produktivdatei Schema 28, Integrität `ok`, unverändert 97 Konten und 2.170
+  Buchungen; die verpflichtende `purpose_code`-Spalte ist vorhanden. Ihr
+  stabiler SHA-256-Wert ist
+  `21785657cc4807d072410e5736d900727b1b5bb3b7c30b187424fc166d07226c`.
+  Nach einer zusätzlichen Normalisierung des Zweckcodes im Sammlerexport
+  bestand der gezielte QR-/Persistenz-/Export-Test erneut, der optimierte
+  Release wurde erneut erfolgreich gebaut und kontrolliert installiert. Das
+  davor installierte Schema-28-Bundle liegt unter
+  `build/FinanzVerwalter-schema28-vor-exportnormalisierung-20260731-163435.app`.
+  Der finale ausführbare Code hat SHA-256
+  `4618e5cd9261b5e0c9e63296c8a04bbf47d0f51eed733d5c58b6f63d1a90dbc7`;
+  die installierte App läuft nach dem finalen Neustart als Prozess 60289 und
+  meldet weiterhin Schema 28, Integrität `ok`, 97 Konten und 2.170 Buchungen.

@@ -121,11 +121,11 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 27 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 28 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 79 ausgeführte XCTest-Fälle: 78
-bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
-Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
+implementiert. Die jüngste vollständige Abnahme umfasst 81 XCTest-Fälle:
+81 bestanden einschließlich des ausschließlich lokal aktivierten privaten
+Real-QIF-Tests, 0 Fehler. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
 Details und frühere Screenshots stehen in `Gedächtnis.md`.
 
@@ -404,7 +404,7 @@ Für Sammelüberweisungen und Sammellastschriften gilt reproduzierbar:
 - Prüfe beide Sammlerarten als Datenbank-Rundlauf einschließlich
   Deduplizierung, Schutz individueller Mitglieder, aller Zustandsübergänge,
   genau-einmaliger Buchung, deterministischem Mehrpositions-XML,
-  Migration 14→27 und Migration 22→27.
+  Migration 14→28 und Migration 22→28.
 
 Für eingehende Zahlungsstatusberichte gilt reproduzierbar:
 
@@ -481,6 +481,32 @@ Für eingehende Überweisungs- und Lastschriftaufträge gilt reproduzierbar:
   Namespace, manipulierte Kontrollsummen, exakte und veraltete
   Stammdatenzuordnung, Lastschriftmandate, Sammlerreihenfolge, Atomarität,
   Idempotenz, Migrationen und SQLite-Integrität ausschließlich synthetisch.
+
+Für EPC-QR-Rechnungsdaten gilt reproduzierbar:
+
+- Verwende das informative Rechnungsprofil EPC069-12 Version 3.1, nicht ein
+  Point-of-Interaction-Verfahren. Lies genau einen QR-Code aus einer lokalen
+  Bilddatei vollständig offline über Vision. Begrenze die Datei auf 20 MB und
+  jede Bildkante auf 12.000 Pixel; kein oder mehrere QR-Codes sind Fehler.
+- Akzeptiere ausschließlich Service-Tag `BCD`, Version `001` oder `002`,
+  Zeichensatzkennung 1 bis 8 und Identifikation `SCT`. Rekonstruiere die
+  deklarierte Codierung und weise Nutzlasten über 331 Byte ab. LF und CRLF
+  sind zulässig, ein Trennzeichen nach dem letzten befüllten Feld nicht.
+- Prüfe BIC-Pflicht in Version 001, BIC-Struktur, Empfängername bis 70,
+  Mod-97-IBAN bis 34, optionalen Betrag `EUR0.01` bis `EUR999999999.99`,
+  optionalen alphanumerischen Zweckcode bis vier Zeichen, strukturierte
+  Referenz bis 35 oder alternativ Freitext bis 140 und Hinweis bis 70.
+  Beginnt eine Referenz mit `RF`, muss ihre ISO-11649-Prüfsumme stimmen.
+- Fülle Empfänger, Bankdaten, Betrag, Zweckcode, Referenz/Freitext und Hinweis
+  ausschließlich in den vorhandenen sichtbaren Überweisungseditor. Speichere,
+  sende und buche durch den Scan niemals automatisch. Verknüpfe eine aktive
+  Empfängerbank nur bei genau einer exakten Namens-/IBAN-/BIC-Übereinstimmung.
+- Migration 28 ergänzt `payment_orders.purpose_code` als leeren oder ein bis
+  vier Zeichen langen Schnappschuss. Beziehe ihn in die Idempotenzkennung ein,
+  zeige ihn im Detail und exportiere ihn optional als `Purp/Cd` in pain.001.
+- Teste reinen Parser, Negativfälle, einen wirklich erzeugten und über Vision
+  wieder gelesenen PNG-QR-Code, Schema-Rundlauf, Altmigrationen,
+  pain.001-Export und SQLite-Integrität.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 

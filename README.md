@@ -165,6 +165,16 @@ enthaltenen Sammler atomar. Der Import sendet nichts an eine Bank, erzeugt
 keine Buchung und ist über den SHA-256-Dateifingerabdruck idempotent. Eine
 persistente Importhistorie hält auch ausgelassene Positionen nachvollziehbar.
 
+Der Überweisungseditor kann außerdem ein lokales Rechnungsbild mit genau
+einem EPC-QR-Code nach EPC069-12 Version 3.1 lesen. Die Auswertung erfolgt
+offline über macOS Vision und füllt Empfänger, IBAN/BIC, optionalen Betrag,
+SEPA-Zweckcode, Gläubigerreferenz oder Verwendungszweck sowie den Hinweis nur
+in den sichtbaren Editor. Sie legt niemals selbst einen Auftrag an. BCD,
+Version 001/002, Zeichensatz, SCT, die 331-Byte-Grenze, Feldlängen,
+IBAN/BIC, EUR-Betragsgrenzen, ISO-11649-RF-Prüfsumme und die alternative
+Referenz-/Freitextbelegung werden validiert. Bilder über 20 MB, sehr große
+Abmessungen, kein oder mehrere QR-Codes werden abgewiesen.
+
 ## Regeln
 
 Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-
