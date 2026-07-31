@@ -357,7 +357,12 @@ wie `Kategorie › Konto` bleiben in Tabelle, Drill-down, CSV, PDF und Druck
 identisch. Jede Gruppe besitzt einen Drill-down bis zu ihren Buchungen und
 Splitzeilen. Währungen werden niemals
 unbemerkt addiert. Filter, Gruppierung und Sortierung lassen sich als
-versionierte Vorlage speichern. CSV-Ausgaben unterstützen Semikolon, Komma
+versionierte Vorlage speichern. Das Menü `Standardberichte` setzt sechs
+sofort nutzbare, weiterhin vollständig editierbare Abfragen für
+Einnahmen/Ausgaben nach Kategorie oder Empfänger, Buchungsbericht, Cashflow,
+Kontobewegungen sowie Kategorie/Klasse auf. Sie beginnen im aktuellen
+Kalenderjahr und verwenden dieselbe Snapshot-, Drill-down- und Exportlogik wie
+freie Berichte. CSV-Ausgaben unterstützen Semikolon, Komma
 oder Tabulator sowie UTF-8 oder ISO-8859-1 und verwenden ein deterministisches
 deutsches Zahlenformat. Druckfertige PDF-Berichte entstehen wahlweise als
 A4-Hoch- oder Querformat mit Titel, Zeitraum, Filterbeschreibung,

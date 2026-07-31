@@ -1777,3 +1777,39 @@ Rechtsberatung.
   auf den exakten Zielzählerstand von 11.462.415 Tokens berichtigt. Wegen der
   weiterhin gesperrten macOS-Sitzung wurde kein Screenshot angehängt oder
   vorgetäuscht.
+
+## 2026-07-31 – Buchungsbasierte Standardberichte
+
+- `TransactionReportStandardPreset` definiert sechs reine, testbare
+  aktuelle-Jahr-Abfragen: Einnahmen/Ausgaben nach Kategorie oder Empfänger,
+  Buchungsbericht, Cashflow nach Konto/Kategorie, Kontobewegungen nach
+  Konto/Empfänger sowie Kategorie/Klasse. Alle verwenden die vorhandene
+  Snapshot-Engine und behaupten keine noch fehlende Stichtags-, Zeitvergleichs-
+  oder Budgetabweichungslogik.
+- Das Menü `Standardberichte` wendet die vollständige Query sichtbar an. Titel
+  und Kurzbeschreibung wechseln mit; Filter bleiben frei bearbeitbar. CSV,
+  PDF und direkter Druck erhalten denselben aktiven Titel, und der Nutzer kann
+  das Ergebnis als normale Definitionsversion-2-Vorlage speichern.
+- Der neue deterministische Test verwendet den gregorianischen Kalender in
+  `Europe/Berlin`, prüft die exakten Grenzen des Jahres 2025, sechs fachlich
+  unterschiedliche Query-Signaturen sowie Buchungsjournal- und
+  Cashflow-Invarianten. Gemeinsam mit Sekundärgruppierung, Vorlagenrundlauf
+  und CSV-Golden-Test bestanden alle vier gezielt ausgeführten Tests.
+- Die vollständige isolierte Suite unter
+  `/tmp/FinanzVerwalter-FullTests-StandardReports.xcresult` führte 84 Tests
+  aus: 83 bestanden, der private opt-in-QIF-Test wurde ohne lokalen Pfad
+  erwartungsgemäß übersprungen, 0 Fehler. Der echte private 2025-QIF-Test
+  bestand danach separat über den dafür vorgesehenen lokalen Akzeptanzpfad;
+  die temporäre Kopie wurde mit `unlink` entfernt und ihr Fehlen geprüft.
+- Der optimierte arm64-Release unter `build/DerivedData-StandardReports`
+  bestand, wurde ad hoc signiert, streng geprüft und kontrolliert installiert.
+  Das vorherige Bundle liegt reversibel unter
+  `build/FinanzVerwalter-vor-standardberichten-20260731-172425.app`. Der neue
+  ausführbare Code hat SHA-256
+  `0fce2cb0b72ec282e74b1f1e5dcb72cc8d3368ee9d43f87faacf4a19487418c3`.
+  Die App läuft als Prozess 64032; die Produktivdatei blieb bytegleich bei
+  SHA-256 `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
+  und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.
+- Die Systemzustandsprüfung meldete trotz `IOConsoleLocked = No` ausdrücklich
+  `CGSSessionScreenIsLocked = Yes`. Eine sichtbare UI-Abnahme oder ein neuer
+  Screenshot ist daher weiterhin nicht möglich und wird nicht vorgetäuscht.

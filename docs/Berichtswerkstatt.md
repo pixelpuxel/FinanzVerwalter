@@ -19,6 +19,12 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   und verhindert die Doppelzählung von Haupt- und Splitbuchung.
 - Gruppierung nach Kategorie, Empfänger, Konto oder Klasse/Tag liefert
   Einnahmen, Ausgaben, Saldo und referenzierte Fakten.
+- Eine optionale zweite, abweichende Gruppierungsdimension bildet stabile
+  kombinierte Gruppen für Bildschirm, Drill-down, CSV, PDF und Druck.
+- Sechs editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
+  Kategorie, Empfänger, Buchungsjournal, Cashflow, Kontobewegungen und
+  Kategorie/Klasse. Dieselben Definitionen sind deterministisch testbar und
+  können als normale Vorlage gespeichert werden.
 - Die SwiftUI-Werkstatt zeigt die Gruppen und einen Buchungs-Drill-down.
 - Zwei Engine-Tests und die vollständige reale 2025-QIF-Abnahme prüfen
   Filterkombinationen und Splitinvarianten.
@@ -35,11 +41,12 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   mehrseitiges Dokument. Zusätzlich wurden Seite 1, eine Buchungsseite und
   die letzte Seite eines fünfseitigen Referenzberichts mit Poppler gerendert
   und visuell geprüft.
+- PDF-Export und direkter macOS-Systemdruck verwenden denselben erzeugten
+  Datenstrom und dieselbe unveränderliche Momentaufnahme.
 
-Noch offen sind zweite Spaltendimensionen, Zwischensummen, Vergleichsspalten,
-weitere Diagramme sowie XLSX, HTML, Zwischenablage und ein direkter
-Systemdruckdialog. Das druckoptimierte PDF lässt sich bereits über Vorschau
-oder einen beliebigen PDF-Betrachter drucken.
+Noch offen sind echte Stichtagsberichte für Kontosalden/Nettovermögen,
+Zwischensummen, Zeit- und Budgetvergleiche, weitere Diagramme sowie XLSX, HTML
+und Zwischenablage.
 
 ## Verifizierte Referenzfunktionen
 
@@ -105,12 +112,12 @@ gezählt werden. Diese Invariante benötigt einen Golden-Test.
 
 P0:
 
-- Einnahmen/Ausgaben nach Kategorie
-- Einnahmen/Ausgaben nach Empfänger
-- Buchungsbericht
-- Cashflow
-- Kontosalden und Nettovermögen
-- Kategorie-, Klassen- und Tagbericht
+- Einnahmen/Ausgaben nach Kategorie *(buchungsbasiertes Preset umgesetzt)*
+- Einnahmen/Ausgaben nach Empfänger *(buchungsbasiertes Preset umgesetzt)*
+- Buchungsbericht *(buchungsbasiertes Preset umgesetzt)*
+- Cashflow *(Konto/Kategorie-Preset umgesetzt)*
+- Kontosalden und Nettovermögen *(Stichtagslogik offen)*
+- Kategorie-, Klassen- und Tagbericht *(Kategorie/Klasse-Preset umgesetzt)*
 - Zeitvergleich und Budgetabweichung
 
 P1:

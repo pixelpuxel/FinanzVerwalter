@@ -358,6 +358,20 @@ Für den Banking-Simulator gilt reproduzierbar:
 
 Für die Berichtswerkstatt gilt zusätzlich:
 
+- Definiere einen reinen, testbaren Katalog aus sechs buchungsbasierten
+  Standardberichten: Einnahmen/Ausgaben nach Kategorie, Einnahmen/Ausgaben
+  nach Empfänger, Buchungsbericht, Cashflow nach Konto/Kategorie,
+  Kontobewegungen nach Konto/Empfänger sowie Kategorie/Klasse. Jede Definition
+  liefert für das aktuelle lokale Kalenderjahr eine vollständige
+  `TransactionReportQuery`; Jahresgrenzen müssen mit dem übergebenen Kalender
+  und dessen Zeitzone berechnet werden.
+- Das UI-Menü `Standardberichte` wendet eine Definition auf alle sichtbaren
+  Filter an, zeigt Titel und Kurzbeschreibung und lässt danach jede Einstellung
+  weiter bearbeiten. CSV, PDF und direkter Druck verwenden den aktiven
+  Standardberichtstitel. Ein Standardbericht kann als normale versionierte
+  Vorlage gespeichert werden. Kontosalden/Nettovermögen, Budgetabweichung und
+  Zeitvergleich dürfen erst als Standardbericht gelten, wenn ihre eigene
+  Stichtags- beziehungsweise Vergleichslogik implementiert und getestet ist.
 - Erlaube neben der Primärgruppierung optional eine davon abweichende zweite
   Dimension aus Kategorie, Empfänger, Konto und Klasse/Tag. `Keine
   Gruppierung` bleibt nur als ausgeschaltete Sekundärdimension beziehungsweise
