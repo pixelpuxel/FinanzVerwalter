@@ -1813,3 +1813,13 @@ Rechtsberatung.
 - Die Systemzustandsprüfung meldete trotz `IOConsoleLocked = No` ausdrücklich
   `CGSSessionScreenIsLocked = Yes`. Eine sichtbare UI-Abnahme oder ein neuer
   Screenshot ist daher weiterhin nicht möglich und wird nicht vorgetäuscht.
+- Implementierung und Tests sind als Commit `74ef237`, die reproduzierbare
+  Dokumentation als `d50c3af` auf `agent/qif-mehrkontenimport`
+  festgeschrieben und nach GitHub gepusht. Draft-PR 1 dokumentiert jetzt die
+  sechs Standardberichte, die 84-Test-Vollsuite und die noch offenen echten
+  Stichtags- sowie Vergleichsberichte. Nach GitHubs kurzer Neuberechnung ist
+  der Draft-PR wieder ausdrücklich `CLEAN` und `MERGEABLE`.
+- Telegram-Nachricht 976 wurde im Projektthread 894 (`/quicken`) mit demselben
+  Funktions-, Test-, Release-, Datenbank- und GitHub-Stand sowie dem exakten
+  Zielzählerstand von 11.617.552 Tokens veröffentlicht. Wegen der bestätigten
+  Bildschirmsperre wurde kein Screenshot angehängt oder vorgetäuscht.
