@@ -690,3 +690,8 @@ Rechtsberatung.
 - Computer Use meldet den Mac weiterhin als gesperrt. Eine echte sichtbare
   Abnahme und ein neuer Screenshot sind deshalb noch offen; es wurde kein
   angeblicher Screenshot erzeugt.
+- Der Funktionsstand ist als Commit `8c14296` auf
+  `agent/qif-mehrkontenimport` gepusht; Draft-PR 1 dokumentiert Schema 18 und
+  44 reguläre Tests. Telegram-Nachricht 940 im Projektthread 894 enthält den
+  gleichen Prüfstand und weist ausdrücklich auf den fehlenden Screenshot
+  wegen der macOS-Sperre hin.
