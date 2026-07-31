@@ -117,16 +117,35 @@ Volltextfilter, Mehrfachauswahl, erwartete Zukunft und Shortcuts.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 10, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
+Migrationen 1 bis 11, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
 Transfers, QIF/CSV, Kontoabgleich, Sammelkontoblatt, Bericht, Backup,
 validierte Wiederherstellung, Kategorisierungsregeln und ein erster
 Serientermin-/Prognose-Slice sowie monatliche Kategorie-Budgets sind
 implementiert. Zusätzlich ist ein rein lokaler Banking-Simulator mit
 Zahlungsaufträgen und SCA-Zustandsautomat vorhanden. Die Testsuite umfasst
-aktuell zwanzig erfolgreiche
+aktuell dreiundzwanzig erfolgreiche
 XCTest-Fälle. Debug- und Release-Build wurden
 erfolgreich ausgeführt; der Release-Stand ist lokal installiert und sichtbar
 geprüft. Details und Screenshots stehen in `Gedächtnis.md`.
+
+Migration 11 ergänzt `account_groups` und erweitert `accounts` um Kurzname,
+Beschreibung, Gruppe, IBAN, BIC, maskierte Kontonummer, Inhaber,
+Eröffnungsdatum, Kreditlimit, Onlinekennzeichen, vier getrennte
+Einbeziehungsregeln, Abrufzeit, Banksaldo und Abrufstatus. Kontonamen sind
+Pflicht, Kreditlimits nicht negativ, IBANs werden normalisiert und mit Mod 97
+validiert, Gruppen müssen existieren. Kontengruppen besitzen Reihenfolge und
+Aktivstatus. Die Kontenübersicht zeigt Gruppensummen, Saldo, verfügbaren Betrag
+und Abrufstatus; der Editor kann bestehende Konten vollständig ändern.
+Vermögenssumme, Budget-Ist, Berichte und Prognose müssen ihren jeweiligen
+Einbeziehungsschalter beachten. Konten- und Gruppensalden sind in ihrer
+jeweiligen Währung zu formatieren. Ohne FX-Tabelle darf das Nettovermögen nur
+Konten in der Basiswährung summieren und muss ausgelassene
+Fremdwährungskonten sichtbar kennzeichnen.
+
+Die verbindliche Soll-Ist-Matrix liegt in `docs/Anforderungsmatrix.md`.
+Architekturentscheidungen liegen als ADRs in `docs/adr/`. Ein anderer Agent
+muss diese Dateien vor der nächsten Implementierung lesen und darf einen
+`Teilweise`- oder `Offen`-Eintrag nicht als fertige Funktion darstellen.
 
 Kategorien sind ein eigener Hauptbereich. Speichere Ober- und
 Unterkategorien über `parent_id`, verhindere Selbstbezug und Zyklen und

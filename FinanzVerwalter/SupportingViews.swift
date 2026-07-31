@@ -20,9 +20,23 @@ struct CockpitView: View {
                         Text("Nettovermögen")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(Money(minorUnits: store.totalBalanceMinor).formatted)
+                        Text(
+                            Money(
+                                minorUnits: store.totalBalanceMinor,
+                                currency: store.fileInfo?.baseCurrency ?? "EUR"
+                            ).formatted
+                        )
                             .font(.system(size: 30, weight: .semibold, design: .rounded))
                             .monospacedDigit()
+                        let foreignCount = store.accounts.filter {
+                            !$0.isHidden && $0.includeNetWorth
+                                && $0.currency != (store.fileInfo?.baseCurrency ?? "EUR")
+                        }.count
+                        if foreignCount > 0 {
+                            Text("\(foreignCount) Fremdwährungskonten nicht ohne FX-Kurs summiert")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
                     }
                 }
 
@@ -32,7 +46,12 @@ struct CockpitView: View {
                             HStack {
                                 Text(account.name)
                                 Spacer()
-                                Text(Money(minorUnits: store.balances[account.id] ?? 0).formatted)
+                                Text(
+                                    Money(
+                                        minorUnits: store.balances[account.id] ?? 0,
+                                        currency: account.currency
+                                    ).formatted
+                                )
                                     .monospacedDigit()
                             }
                             .font(.callout)
@@ -114,93 +133,419 @@ private struct DashboardCard<Content: View>: View {
 struct AccountsView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var showEditor = false
+    @State private var showGroups = false
+    @State private var editingAccount: FinanceAccount?
+    @State private var selectedAccountID: UUID?
+    @State private var selectedGroupID: UUID?
+    @State private var showHidden = false
+
+    private var visibleAccounts: [FinanceAccount] {
+        store.accounts.filter {
+            (showHidden || (!$0.isHidden && !$0.isClosed))
+                && (selectedGroupID == nil || $0.groupID == selectedGroupID)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Kontenübersicht").font(.title2.bold())
                 Spacer()
-                Button("Konto hinzufügen", systemImage: "plus") { showEditor = true }
+                Picker("Gruppe", selection: $selectedGroupID) {
+                    Text("Alle Gruppen").tag(UUID?.none)
+                    ForEach(store.accountGroups.filter(\.isActive)) {
+                        Text($0.name).tag(UUID?.some($0.id))
+                    }
+                }
+                .frame(width: 210)
+                Toggle("Ausgeblendete", isOn: $showHidden)
+                    .toggleStyle(.checkbox)
+                Button("Gruppen …", systemImage: "folder") { showGroups = true }
+                Button("Bearbeiten", systemImage: "pencil") {
+                    editingAccount = store.accounts.first { $0.id == selectedAccountID }
+                    showEditor = editingAccount != nil
+                }
+                .disabled(selectedAccountID == nil)
+                Button("Konto hinzufügen", systemImage: "plus") {
+                    editingAccount = nil
+                    showEditor = true
+                }
             }
             .padding(16)
             Divider()
-            Table(store.accounts) {
-                TableColumn("Konto") { account in
-                    Label(account.name, systemImage: icon(account.type))
+            if !store.accountGroups.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach(store.accountGroups.filter(\.isActive)) { group in
+                            let accounts = store.accounts.filter {
+                                $0.groupID == group.id && !$0.isHidden && !$0.isClosed
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(group.name).font(.headline)
+                                Text("\(accounts.count) Konten")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(groupBalanceText(accounts))
+                                .font(.title3.monospacedDigit())
+                            }
+                            .padding(12)
+                            .frame(width: 190, alignment: .leading)
+                            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                    .padding(12)
                 }
+                Divider()
+            }
+            Table(visibleAccounts, selection: $selectedAccountID) {
+                TableColumn("Konto") { account in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(account.name, systemImage: icon(account.type))
+                        if !account.shortName.isEmpty {
+                            Text(account.shortName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                TableColumn("Gruppe") { Text(store.accountGroupName($0.groupID)) }
                 TableColumn("Institut", value: \.institution)
                 TableColumn("Typ") { Text($0.type.title) }
                 TableColumn("Währung", value: \.currency).width(75)
                 TableColumn("Saldo") { account in
-                    Text(Money(minorUnits: store.balances[account.id] ?? 0).formatted)
+                    Text(
+                        Money(
+                            minorUnits: store.balances[account.id] ?? 0,
+                            currency: account.currency
+                        ).formatted
+                    )
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .monospacedDigit()
                 }
+                TableColumn("Verfügbar") { account in
+                    Text(
+                        Money(
+                            minorUnits: (store.balances[account.id] ?? 0)
+                                + account.creditLimitMinor,
+                            currency: account.currency
+                        ).formatted
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .monospacedDigit()
+                }
+                TableColumn("Abruf") { account in
+                    Label(
+                        account.syncStatus.title,
+                        systemImage: account.isOnline ? "network" : "internaldrive"
+                    )
+                    .foregroundStyle(account.syncStatus == .failed ? .red : .secondary)
+                }
             }
             .overlay {
-                if store.accounts.isEmpty {
+                if visibleAccounts.isEmpty {
                     ContentUnavailableView(
                         "Keine Konten",
                         systemImage: "building.columns",
-                        description: Text("Lege dein erstes Giro-, Spar- oder Bargeldkonto an.")
+                        description: Text(
+                            store.accounts.isEmpty
+                                ? "Lege dein erstes Konto an."
+                                : "Für den gewählten Filter sind keine Konten sichtbar."
+                        )
                     )
                 }
             }
+            .contextMenu(forSelectionType: UUID.self) { selection in
+                if let id = selection.first,
+                   let account = store.accounts.first(where: { $0.id == id }) {
+                    Button("Konto bearbeiten") {
+                        editingAccount = account
+                        showEditor = true
+                    }
+                    Button("Im Kontoblatt öffnen") {
+                        store.selectedAccountID = account.id
+                    }
+                }
+            }
         }
-        .sheet(isPresented: $showEditor) { AccountEditorView() }
+        .sheet(isPresented: $showEditor) {
+            AccountEditorView(account: editingAccount)
+        }
+        .sheet(isPresented: $showGroups) { AccountGroupsEditorView() }
     }
 
     private func icon(_ type: AccountType) -> String {
         switch type {
         case .checking: "building.columns"
         case .savings: "banknote"
+        case .fixedDeposit: "calendar.badge.clock"
         case .cash: "wallet.bifold"
         case .creditCard: "creditcard"
+        case .clearing: "arrow.left.arrow.right"
+        case .foreignCurrency: "eurosign.arrow.circlepath"
         case .investment: "chart.line.uptrend.xyaxis"
         case .loan: "percent"
         case .asset: "house"
         case .liability: "exclamationmark.triangle"
+        case .receivable: "doc.text"
+        case .inventory: "shippingbox"
+        case .rewards: "giftcard"
         }
+    }
+
+    private func groupBalanceText(_ accounts: [FinanceAccount]) -> String {
+        let byCurrency = Dictionary(grouping: accounts, by: \.currency)
+        return byCurrency.keys.sorted().map { currency in
+            Money(
+                minorUnits: byCurrency[currency, default: []].reduce(0) {
+                    $0 + (store.balances[$1.id] ?? 0)
+                },
+                currency: currency
+            ).formatted
+        }
+        .joined(separator: " · ")
     }
 }
 
 struct AccountEditorView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var institution = ""
-    @State private var type: AccountType = .checking
-    @State private var openingBalance = "0,00"
+    private let account: FinanceAccount?
+    @State private var name: String
+    @State private var shortName: String
+    @State private var descriptionText: String
+    @State private var institution: String
+    @State private var type: AccountType
+    @State private var currency: String
+    @State private var groupID: UUID?
+    @State private var openingBalance: String
+    @State private var hasOpeningDate: Bool
+    @State private var openingDate: Date
+    @State private var creditLimit: String
+    @State private var iban: String
+    @State private var bic: String
+    @State private var accountNumberMasked: String
+    @State private var ownerName: String
+    @State private var isOnline: Bool
+    @State private var isHidden: Bool
+    @State private var isClosed: Bool
+    @State private var includeNetWorth: Bool
+    @State private var includeBudget: Bool
+    @State private var includeReports: Bool
+    @State private var includeForecast: Bool
+
+    init(account: FinanceAccount? = nil) {
+        self.account = account
+        _name = State(initialValue: account?.name ?? "")
+        _shortName = State(initialValue: account?.shortName ?? "")
+        _descriptionText = State(initialValue: account?.description ?? "")
+        _institution = State(initialValue: account?.institution ?? "")
+        _type = State(initialValue: account?.type ?? .checking)
+        _currency = State(initialValue: account?.currency ?? "EUR")
+        _groupID = State(initialValue: account?.groupID)
+        _openingBalance = State(
+            initialValue: Money(minorUnits: account?.openingBalanceMinor ?? 0).editingString
+        )
+        _hasOpeningDate = State(initialValue: account?.openingDate != nil)
+        _openingDate = State(initialValue: account?.openingDate ?? Date())
+        _creditLimit = State(
+            initialValue: Money(minorUnits: account?.creditLimitMinor ?? 0).editingString
+        )
+        _iban = State(initialValue: account?.iban ?? "")
+        _bic = State(initialValue: account?.bic ?? "")
+        _accountNumberMasked = State(initialValue: account?.accountNumberMasked ?? "")
+        _ownerName = State(initialValue: account?.ownerName ?? "")
+        _isOnline = State(initialValue: account?.isOnline ?? false)
+        _isHidden = State(initialValue: account?.isHidden ?? false)
+        _isClosed = State(initialValue: account?.isClosed ?? false)
+        _includeNetWorth = State(initialValue: account?.includeNetWorth ?? true)
+        _includeBudget = State(initialValue: account?.includeBudget ?? true)
+        _includeReports = State(initialValue: account?.includeReports ?? true)
+        _includeForecast = State(initialValue: account?.includeForecast ?? true)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Neues Konto").font(.title2.bold())
+            Text(account == nil ? "Neues Konto" : "Konto bearbeiten")
+                .font(.title2.bold())
             Form {
-                TextField("Kontoname", text: $name)
-                TextField("Institut", text: $institution)
-                Picker("Kontotyp", selection: $type) {
-                    ForEach(AccountType.allCases) { Text($0.title).tag($0) }
+                Section("Stammdaten") {
+                    TextField("Kontoname", text: $name)
+                    TextField("Kurzname", text: $shortName)
+                    TextField("Beschreibung", text: $descriptionText, axis: .vertical)
+                        .lineLimit(2...4)
+                    Picker("Kontogruppe", selection: $groupID) {
+                        Text("Ohne Gruppe").tag(UUID?.none)
+                        ForEach(store.accountGroups.filter(\.isActive)) {
+                            Text($0.name).tag(UUID?.some($0.id))
+                        }
+                    }
+                    Picker("Kontotyp", selection: $type) {
+                        ForEach(AccountType.allCases) { Text($0.title).tag($0) }
+                    }
+                    TextField("Währung", text: $currency)
+                    TextField("Kontoinhaber", text: $ownerName)
                 }
-                TextField("Eröffnungssaldo", text: $openingBalance)
+                Section("Bankdaten") {
+                    TextField("Institut", text: $institution)
+                    TextField("IBAN", text: $iban)
+                    TextField("BIC", text: $bic)
+                    TextField("Kontonummer (maskiert)", text: $accountNumberMasked)
+                    Toggle("Onlinekonto", isOn: $isOnline)
+                    if let account {
+                        LabeledContent("Abrufstatus", value: account.syncStatus.title)
+                        if let date = account.lastSyncAt {
+                            LabeledContent("Letzter Abruf") {
+                                Text(date, format: .dateTime.day().month().year().hour().minute())
+                            }
+                        }
+                    }
+                }
+                Section("Saldo und Gültigkeit") {
+                    TextField("Eröffnungssaldo", text: $openingBalance)
+                    TextField("Kreditlimit/Dispo", text: $creditLimit)
+                    Toggle("Eröffnungsdatum festlegen", isOn: $hasOpeningDate)
+                    if hasOpeningDate {
+                        DatePicker("Eröffnungsdatum", selection: $openingDate, displayedComponents: .date)
+                    }
+                    Toggle("Konto ausgeblendet", isOn: $isHidden)
+                    Toggle("Konto geschlossen", isOn: $isClosed)
+                }
+                Section("Einbeziehung") {
+                    Toggle("Im Vermögen berücksichtigen", isOn: $includeNetWorth)
+                    Toggle("Im Budget berücksichtigen", isOn: $includeBudget)
+                    Toggle("In Berichten berücksichtigen", isOn: $includeReports)
+                    Toggle("In der Prognose berücksichtigen", isOn: $includeForecast)
+                }
             }
             HStack {
                 Spacer()
                 Button("Abbrechen", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Anlegen") {
-                    if store.saveAccount(
-                        name: name, institution: institution,
-                        type: type, openingBalance: openingBalance
-                    ) {
-                        dismiss()
+                Button(account == nil ? "Anlegen" : "Speichern") {
+                    do {
+                        let openingMoney = try Money(
+                            parsing: openingBalance,
+                            currency: currency
+                        )
+                        let creditMoney = try Money(
+                            parsing: creditLimit.isEmpty ? "0" : creditLimit,
+                            currency: currency
+                        )
+                        let value = FinanceAccount(
+                            id: account?.id ?? UUID(),
+                            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                            institution: institution.trimmingCharacters(in: .whitespacesAndNewlines),
+                            type: type,
+                            currency: currency.uppercased(),
+                            openingBalanceMinor: openingMoney.minorUnits,
+                            isHidden: isHidden,
+                            isClosed: isClosed,
+                            sortOrder: account?.sortOrder ?? store.accounts.count,
+                            shortName: shortName.trimmingCharacters(in: .whitespacesAndNewlines),
+                            description: descriptionText.trimmingCharacters(in: .whitespacesAndNewlines),
+                            groupID: groupID,
+                            iban: iban,
+                            bic: bic,
+                            accountNumberMasked: accountNumberMasked,
+                            ownerName: ownerName,
+                            openingDate: hasOpeningDate ? openingDate : nil,
+                            creditLimitMinor: creditMoney.minorUnits,
+                            isOnline: isOnline,
+                            includeNetWorth: includeNetWorth,
+                            includeBudget: includeBudget,
+                            includeReports: includeReports,
+                            includeForecast: includeForecast,
+                            lastSyncAt: account?.lastSyncAt,
+                            lastBankBalanceMinor: account?.lastBankBalanceMinor,
+                            syncStatus: isOnline ? (account?.syncStatus ?? .ready) : .offline
+                        )
+                        if store.saveAccount(value) { dismiss() }
+                    } catch {
+                        store.errorMessage = error.localizedDescription
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(
+                    name.trimmingCharacters(in: .whitespaces).isEmpty
+                        || currency.trimmingCharacters(in: .whitespaces).isEmpty
+                )
             }
         }
         .padding(24)
-        .frame(width: 480)
+        .frame(width: 640, height: 760)
+    }
+}
+
+struct AccountGroupsEditorView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Kontengruppen").font(.title2.bold())
+                Spacer()
+                Button("Fertig") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            Text("Gruppen ordnen die Kontenübersicht. Deaktivierte Gruppen bleiben in bestehenden Konten erhalten.")
+                .foregroundStyle(.secondary)
+            List {
+                ForEach(store.accountGroups) { group in
+                    AccountGroupEditorRow(group: group)
+                }
+            }
+            HStack {
+                TextField("Neue Gruppe", text: $newName)
+                Button("Hinzufügen", systemImage: "plus") {
+                    let value = AccountGroup(
+                        id: UUID(),
+                        name: newName.trimmingCharacters(in: .whitespacesAndNewlines),
+                        sortOrder: store.accountGroups.count,
+                        isActive: true
+                    )
+                    if store.saveAccountGroup(value) { newName = "" }
+                }
+                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 560, height: 500)
+    }
+}
+
+private struct AccountGroupEditorRow: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var name: String
+    @State private var sortOrder: Int
+    @State private var isActive: Bool
+    let id: UUID
+
+    init(group: AccountGroup) {
+        id = group.id
+        _name = State(initialValue: group.name)
+        _sortOrder = State(initialValue: group.sortOrder)
+        _isActive = State(initialValue: group.isActive)
+    }
+
+    var body: some View {
+        HStack {
+            TextField("Name", text: $name)
+            Stepper("Position \(sortOrder + 1)", value: $sortOrder, in: 0...999)
+                .frame(width: 135)
+            Toggle("Aktiv", isOn: $isActive)
+                .toggleStyle(.checkbox)
+            Button("Speichern") {
+                _ = store.saveAccountGroup(
+                    AccountGroup(
+                        id: id, name: name,
+                        sortOrder: sortOrder, isActive: isActive
+                    )
+                )
+            }
+            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
     }
 }
 

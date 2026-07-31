@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import FinanzVerwalter
 
 final class FinanzVerwalterTests: XCTestCase {
@@ -868,6 +869,162 @@ final class FinanzVerwalterTests: XCTestCase {
             nil
         )
         XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testRichAccountMetadataGroupsAndValidationRoundTrip() throws {
+        let context = try TestDatabase()
+        XCTAssertEqual(try context.store.accountGroups().count, 4)
+        let group = AccountGroup(
+            id: UUID(), name: "Tägliche Finanzen", sortOrder: 1, isActive: true
+        )
+        try context.store.saveAccountGroup(group)
+        var accountCalendar = Calendar(identifier: .gregorian)
+        accountCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let openingDate = try XCTUnwrap(
+            accountCalendar.date(
+                from: DateComponents(year: 2020, month: 1, day: 15)
+            )
+        )
+        let lastSync = Date(timeIntervalSince1970: 1_700_000_000)
+        let account = FinanceAccount(
+            id: UUID(), name: "Haushaltskonto", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 12_345,
+            isHidden: false, isClosed: false, sortOrder: 2,
+            shortName: "Haushalt", description: "Gemeinsame Ausgaben",
+            groupID: group.id, iban: "DE89 3704 0044 0532 0130 00",
+            bic: "COBADEFFXXX", accountNumberMasked: "•••• 1300",
+            ownerName: "Testhaushalt", openingDate: openingDate,
+            creditLimitMinor: 200_000, isOnline: true,
+            includeNetWorth: true, includeBudget: true,
+            includeReports: false, includeForecast: true,
+            lastSyncAt: lastSync, lastBankBalanceMinor: 54_321,
+            syncStatus: .ready
+        )
+        try context.store.saveAccount(account)
+        let restored = try XCTUnwrap(
+            context.store.accounts().first { $0.id == account.id }
+        )
+        XCTAssertEqual(restored.name, "Haushaltskonto")
+        XCTAssertEqual(restored.groupID, group.id)
+        XCTAssertEqual(restored.iban, "DE89370400440532013000")
+        XCTAssertEqual(restored.creditLimitMinor, 200_000)
+        XCTAssertEqual(restored.lastBankBalanceMinor, 54_321)
+        XCTAssertEqual(restored.syncStatus, .ready)
+        XCTAssertFalse(restored.includeReports)
+        let restoredDate = try XCTUnwrap(restored.openingDate)
+        let restoredComponents = Calendar.current.dateComponents(
+            [.year, .month, .day], from: restoredDate
+        )
+        XCTAssertEqual(restoredComponents.year, 2020)
+        XCTAssertEqual(restoredComponents.month, 1)
+        XCTAssertEqual(restoredComponents.day, 15)
+        let category = try XCTUnwrap(context.store.categories().first)
+        try context.store.saveTransaction(
+            FinanceTransaction(
+                id: UUID(), accountID: account.id, bookingDate: openingDate,
+                valueDate: nil, payee: "Test", purpose: "Auswertung",
+                categoryID: category.id, amountMinor: -1_000, currency: "EUR",
+                status: .booked, memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: []
+            )
+        )
+        XCTAssertTrue(try context.store.categoryReport().isEmpty)
+        var included = restored
+        included.includeReports = true
+        try context.store.saveAccount(included)
+        XCTAssertEqual(try context.store.categoryReport().count, 1)
+
+        var invalid = account
+        invalid.iban = "DE001234"
+        XCTAssertThrowsError(try context.store.saveAccount(invalid)) { error in
+            XCTAssertEqual(error as? FinanceError, .invalidIBAN)
+        }
+        XCTAssertEqual(try context.store.accounts().count, 1)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testMigration10To11PreservesExistingAccountAndAddsDefaults() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-migration-10-11-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.qdata")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        let fileID = UUID()
+        let accountID = UUID()
+        let legacySQL = """
+        CREATE TABLE finance_files (
+            id TEXT PRIMARY KEY,name TEXT NOT NULL,base_currency TEXT NOT NULL,
+            locale TEXT NOT NULL,time_zone TEXT NOT NULL,created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE accounts (
+            id TEXT PRIMARY KEY,
+            finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+            name TEXT NOT NULL,institution TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL,currency TEXT NOT NULL,
+            opening_balance_minor INTEGER NOT NULL,
+            is_hidden INTEGER NOT NULL DEFAULT 0,
+            is_closed INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO finance_files VALUES(
+            '\(fileID.uuidString)','Altbestand','EUR','de-DE','Europe/Berlin',
+            '2025-01-01T00:00:00Z','2025-01-01T00:00:00Z',1
+        );
+        INSERT INTO accounts VALUES(
+            '\(accountID.uuidString)','\(fileID.uuidString)','Bestandskonto',
+            'Altbank','checking','EUR',12345,0,0,4,
+            '2025-01-01T00:00:00Z','2025-01-01T00:00:00Z',1
+        );
+        PRAGMA user_version=10;
+        """
+        var message: UnsafeMutablePointer<CChar>?
+        XCTAssertEqual(sqlite3_exec(database, legacySQL, nil, nil, &message), SQLITE_OK)
+        if let message { sqlite3_free(message) }
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        let account = try XCTUnwrap(migrated.accounts().first)
+        XCTAssertEqual(account.id, accountID)
+        XCTAssertEqual(account.name, "Bestandskonto")
+        XCTAssertEqual(account.openingBalanceMinor, 12_345)
+        XCTAssertEqual(account.creditLimitMinor, 0)
+        XCTAssertTrue(account.includeNetWorth)
+        XCTAssertTrue(account.includeBudget)
+        XCTAssertTrue(account.includeReports)
+        XCTAssertTrue(account.includeForecast)
+        XCTAssertEqual(account.syncStatus, .offline)
+        XCTAssertEqual(try migrated.accountGroups().count, 4)
+        XCTAssertTrue(try migrated.integrityCheck())
+    }
+
+    @MainActor
+    func testNetWorthNeverAddsDifferentCurrenciesWithoutFXRate() throws {
+        let context = try TestDatabase()
+        let euro = FinanceAccount(
+            id: UUID(), name: "Eurokonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "Dollarkonto", institution: "",
+            type: .foreignCurrency, currency: "USD", openingBalanceMinor: 99_999,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(euro)
+        try context.store.saveAccount(dollar)
+        let appStore = FinanceAppStore(repository: context.store)
+        XCTAssertEqual(appStore.fileInfo?.baseCurrency, "EUR")
+        XCTAssertEqual(appStore.totalBalanceMinor, 10_000)
     }
 }
 

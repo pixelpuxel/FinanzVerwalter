@@ -61,6 +61,8 @@ QIF-, OFX- und QFX-Dateien ausdrücklich aus.
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand
 - [PortalPrompt.md](PortalPrompt.md) – reproduzierbare Bauanweisung
+- [Anforderungsmatrix](docs/Anforderungsmatrix.md) – ehrliche Soll-Ist-Prüfung
+- [Architekturentscheidungen](docs/adr/) – begründete technische Leitplanken
 
 ## Kompatibilität und Markenhinweis
 

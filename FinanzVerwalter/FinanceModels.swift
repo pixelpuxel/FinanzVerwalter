@@ -3,26 +3,64 @@ import Foundation
 enum AccountType: String, Codable, CaseIterable, Identifiable, Sendable {
     case checking
     case savings
+    case fixedDeposit
     case cash
     case creditCard
+    case clearing
+    case foreignCurrency
     case investment
     case loan
     case asset
     case liability
+    case receivable
+    case inventory
+    case rewards
 
     var id: Self { self }
     var title: String {
         switch self {
         case .checking: "Girokonto"
         case .savings: "Spar-/Tagesgeld"
+        case .fixedDeposit: "Festgeld"
         case .cash: "Bargeld/Kasse"
         case .creditCard: "Kreditkarte"
+        case .clearing: "Verrechnungskonto"
+        case .foreignCurrency: "Fremdwährungskonto"
         case .investment: "Depot"
         case .loan: "Darlehen"
         case .asset: "Vermögenswert"
         case .liability: "Verbindlichkeit"
+        case .receivable: "Rechnung/Forderung"
+        case .inventory: "Inventarkonto"
+        case .rewards: "Punkte/Bonus/Sonstiges"
         }
     }
+}
+
+enum AccountSyncStatus: String, Codable, CaseIterable, Identifiable, Sendable {
+    case offline
+    case ready
+    case syncing
+    case warning
+    case failed
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .offline: "Offline"
+        case .ready: "Bereit"
+        case .syncing: "Abruf läuft"
+        case .warning: "Hinweis"
+        case .failed: "Fehler"
+        }
+    }
+}
+
+struct AccountGroup: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var name: String
+    var sortOrder: Int
+    var isActive: Bool
 }
 
 struct FinanceFileInfo: Identifiable, Hashable, Sendable {
@@ -43,6 +81,23 @@ struct FinanceAccount: Identifiable, Hashable, Sendable {
     var isHidden: Bool
     var isClosed: Bool
     var sortOrder: Int
+    var shortName: String = ""
+    var description: String = ""
+    var groupID: UUID? = nil
+    var iban: String = ""
+    var bic: String = ""
+    var accountNumberMasked: String = ""
+    var ownerName: String = ""
+    var openingDate: Date? = nil
+    var creditLimitMinor: Int64 = 0
+    var isOnline: Bool = false
+    var includeNetWorth: Bool = true
+    var includeBudget: Bool = true
+    var includeReports: Bool = true
+    var includeForecast: Bool = true
+    var lastSyncAt: Date? = nil
+    var lastBankBalanceMinor: Int64? = nil
+    var syncStatus: AccountSyncStatus = .offline
 }
 
 enum CategoryKind: String, Codable, CaseIterable, Sendable {

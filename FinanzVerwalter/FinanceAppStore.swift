@@ -5,6 +5,7 @@ import Foundation
 final class FinanceAppStore: ObservableObject {
     @Published private(set) var fileInfo: FinanceFileInfo?
     @Published private(set) var accounts: [FinanceAccount] = []
+    @Published private(set) var accountGroups: [AccountGroup] = []
     @Published private(set) var categories: [FinanceCategory] = []
     @Published private(set) var transactions: [FinanceTransaction] = []
     @Published private(set) var balances: [UUID: Int64] = [:]
@@ -75,7 +76,11 @@ final class FinanceAppStore: ObservableObject {
     }
 
     var totalBalanceMinor: Int64 {
-        accounts.filter { !$0.isHidden }.reduce(Int64.zero) { $0 + (balances[$1.id] ?? 0) }
+        let baseCurrency = fileInfo?.baseCurrency ?? "EUR"
+        return accounts.filter {
+            !$0.isHidden && $0.includeNetWorth && $0.currency == baseCurrency
+        }
+            .reduce(Int64.zero) { $0 + (balances[$1.id] ?? 0) }
     }
 
     func reload() {
@@ -117,6 +122,11 @@ final class FinanceAppStore: ObservableObject {
 
     func accountName(_ id: UUID) -> String {
         accounts.first { $0.id == id }?.name ?? "Unbekanntes Konto"
+    }
+
+    func accountGroupName(_ id: UUID?) -> String {
+        guard let id else { return "Ohne Gruppe" }
+        return accountGroups.first { $0.id == id }?.name ?? "Unbekannte Gruppe"
     }
 
     func tagName(_ id: UUID) -> String {
@@ -172,6 +182,33 @@ final class FinanceAppStore: ObservableObject {
             selectedAccountID = account.id
             try load()
             statusText = "Konto „\(account.name)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func saveAccount(_ value: FinanceAccount) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveAccount(value)
+            selectedAccountID = value.id
+            try load()
+            statusText = "Konto „\(value.name)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func saveAccountGroup(_ value: AccountGroup) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveAccountGroup(value)
+            try load()
+            statusText = "Kontengruppe „\(value.name)“ gespeichert"
             return true
         } catch {
             present(error)
@@ -513,7 +550,11 @@ final class FinanceAppStore: ObservableObject {
     func forecastOccurrences(days: Int = 90) -> [FinanceTransaction] {
         let end = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
         let existingReferences = Set(transactions.map(\.reference).filter { !$0.isEmpty })
+        let includedAccounts = Set(
+            accounts.filter { $0.includeForecast && !$0.isClosed }.map(\.id)
+        )
         return scheduledTransactions
+            .filter { includedAccounts.contains($0.accountID) }
             .flatMap { $0.occurrences(until: end, excludingReferences: existingReferences) }
             .sorted {
                 if $0.bookingDate != $1.bookingDate { return $0.bookingDate < $1.bookingDate }
@@ -522,7 +563,9 @@ final class FinanceAppStore: ObservableObject {
     }
 
     func projectedBalanceMinor(accountID: UUID, through date: Date) -> Int64 {
-        guard let account = accounts.first(where: { $0.id == accountID }) else { return 0 }
+        guard let account = accounts.first(where: {
+            $0.id == accountID && $0.includeForecast && !$0.isClosed
+        }) else { return 0 }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let posted = transactions
@@ -582,12 +625,16 @@ final class FinanceAppStore: ObservableObject {
             )
             let linesByCategory = Dictionary(uniqueKeysWithValues: lines.map { ($0.categoryID, $0) })
             let interval = Calendar.current.dateInterval(of: .month, for: month)
+            let includedAccounts = Set(
+                accounts.filter { $0.includeBudget && !$0.isClosed }.map(\.id)
+            )
             return categories
                 .filter { $0.isActive && $0.kind != .transfer }
                 .map { category in
                     let actual = transactions
                         .filter {
                             $0.categoryID == category.id
+                                && includedAccounts.contains($0.accountID)
                                 && $0.status != .cancelled
                                 && interval?.contains($0.bookingDate) == true
                                 && $0.transferID == nil
@@ -999,6 +1046,7 @@ final class FinanceAppStore: ObservableObject {
         guard let repository else { return }
         fileInfo = try repository.financeFileInfo()
         accounts = try repository.accounts()
+        accountGroups = try repository.accountGroups()
         categories = try repository.categories()
         transactions = try repository.transactions()
         reportRows = try repository.categoryReport()
@@ -1026,22 +1074,36 @@ final class FinanceAppStore: ObservableObject {
 
     private func seedDemo() throws {
         guard let repository else { return }
+        let groups = try repository.accountGroups()
+        let bankGroupID = groups.first { $0.name == "Bankkonten" }?.id
+        let cashGroupID = groups.first { $0.name == "Bargeld" }?.id
+        let assetGroupID = groups.first { $0.name == "Vermögen" }?.id
         let checking = FinanceAccount(
             id: UUID(), name: "Girokonto", institution: "Hausbank", type: .checking,
-            currency: "EUR", openingBalanceMinor: 245_000, isHidden: false, isClosed: false, sortOrder: 0
+            currency: "EUR", openingBalanceMinor: 245_000, isHidden: false,
+            isClosed: false, sortOrder: 0, shortName: "Giro",
+            groupID: bankGroupID, accountNumberMasked: "•••• 4711",
+            ownerName: "Privathaushalt", creditLimitMinor: 100_000,
+            isOnline: true, syncStatus: .ready
         )
         let savings = FinanceAccount(
             id: UUID(), name: "Tagesgeld", institution: "Hausbank", type: .savings,
-            currency: "EUR", openingBalanceMinor: 1_250_000, isHidden: false, isClosed: false, sortOrder: 1
+            currency: "EUR", openingBalanceMinor: 1_250_000, isHidden: false,
+            isClosed: false, sortOrder: 1, groupID: bankGroupID,
+            accountNumberMasked: "•••• 0815", ownerName: "Privathaushalt",
+            isOnline: true, syncStatus: .ready
         )
         let cash = FinanceAccount(
             id: UUID(), name: "Bargeld", institution: "", type: .cash,
-            currency: "EUR", openingBalanceMinor: 12_000, isHidden: false, isClosed: false, sortOrder: 2
+            currency: "EUR", openingBalanceMinor: 12_000, isHidden: false,
+            isClosed: false, sortOrder: 2, groupID: cashGroupID
         )
         let depot = FinanceAccount(
             id: UUID(), name: "Wertpapierdepot", institution: "Hausbank",
             type: .investment, currency: "EUR", openingBalanceMinor: 0,
-            isHidden: false, isClosed: false, sortOrder: 3
+            isHidden: false, isClosed: false, sortOrder: 3,
+            groupID: assetGroupID, isOnline: true, includeBudget: false,
+            includeForecast: false, syncStatus: .ready
         )
         try repository.saveAccount(checking)
         try repository.saveAccount(savings)

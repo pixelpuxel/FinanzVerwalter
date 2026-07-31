@@ -101,20 +101,23 @@ struct RootView: View {
                     }
                     if !store.accounts.isEmpty {
                         Section("Konten") {
-                            ForEach(store.accounts.filter { !$0.isHidden }) { account in
-                                Button {
-                                    store.selectedAccountID = account.id
-                                    selectedSection = .register
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(account.name)
-                                        Text(Money(minorUnits: store.balances[account.id] ?? 0).formatted)
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(store.accountGroups.filter(\.isActive)) { group in
+                                let accounts = store.accounts.filter {
+                                    $0.groupID == group.id && !$0.isHidden && !$0.isClosed
                                 }
-                                .buttonStyle(.plain)
+                                if !accounts.isEmpty {
+                                    DisclosureGroup(group.name) {
+                                        ForEach(accounts) { account in
+                                            accountSidebarButton(account)
+                                        }
+                                    }
+                                }
+                            }
+                            let ungrouped = store.accounts.filter {
+                                $0.groupID == nil && !$0.isHidden && !$0.isClosed
+                            }
+                            ForEach(ungrouped) { account in
+                                accountSidebarButton(account)
                             }
                         }
                     }
@@ -160,6 +163,27 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .reconcileAccount)) { _ in
             if !store.accounts.isEmpty { showReconciliation = true }
         }
+    }
+
+    private func accountSidebarButton(_ account: FinanceAccount) -> some View {
+        Button {
+            store.selectedAccountID = account.id
+            selectedSection = .register
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(account.name)
+                Text(
+                    Money(
+                        minorUnits: store.balances[account.id] ?? 0,
+                        currency: account.currency
+                    ).formatted
+                )
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
     }
 
     private var topToolbar: some View {

@@ -52,7 +52,7 @@ Rechtsberatung.
 - Grundmodelle für Finanzdatei, Konten, Kategorien, Buchungen und Splits
 - centgenauer `Money`-Typ mit deutscher Eingabe und Ausgabe
 - Split-Invariante im Domänenmodell
-- versioniertes SQLite-Schema mit WAL, Foreign Keys und zehn Migrationen
+- versioniertes SQLite-Schema mit WAL, Foreign Keys und elf Migrationen
 - Tabellen für Finanzdatei, Konten, Kategorien, Buchungen, Splits,
   Importpakete und append-only Auditereignisse
 - atomare Konto-, Kategorie-, Buchungs-, Import- und Transfer-Use-Cases
@@ -62,7 +62,18 @@ Rechtsberatung.
   Kontenleiste, Arbeitsfläche und Statuszeile
 - Cockpit mit Nettovermögen, Konten, Einnahmen-/Ausgaben-Chart, letzten
   Buchungen und lokalem Systemstatus
-- Kontenübersicht und Kontoanlage
+- Kontenübersicht, Kontoanlage und vollständige Kontobearbeitung
+- frei verwaltbare, sortierbare und deaktivierbare Kontengruppen
+- Kontostammdaten mit Kurzname, Beschreibung, 13 Kontotypen, Währung,
+  Inhaber, Institut, validierter IBAN, BIC, maskierter Kontonummer,
+  Eröffnungsdatum und Kreditlimit
+- lokale/Online-Kennzeichnung, Abrufstatus, letzter Abruf und letzter
+  Banksaldo als vorbereitete Adapterfelder
+- getrennte Einbeziehung eines Kontos in Vermögen, Budget, Berichte und
+  Prognose; die jeweiligen Berechnungen beachten diese Schalter
+- Gruppensummen werden je Währung getrennt dargestellt; das Nettovermögen
+  summiert ohne vorhandene FX-Tabelle ausschließlich die Basiswährung und
+  weist Fremdwährungskonten sichtbar aus
 - dichtes Kontoblatt mit Kontoauswahl, Status, Empfänger, Zweck, Kategorie,
   Konto und Betrag
 - Buchungseditor, Suche, Kontextbearbeitung und Löschen
@@ -158,6 +169,7 @@ Rechtsberatung.
   die weitere Sichtprüfung erfolgt im Light Mode
 - SQLite-Migration 10 für Verträge, Dokumentmetadaten, Inventargegenstände
   und Anhangsmetadaten
+- SQLite-Migration 11 für Kontengruppen und erweiterte Kontostammdaten
 - Verträge mit Anbieter, Nummer, Typ, Beginn, Mindestlaufzeit,
   Verlängerung, Kündigungsfrist, Zahlfrequenz, Konto, Kategorie,
   Erinnerung und erwarteten Jahreskosten
@@ -194,7 +206,7 @@ Rechtsberatung.
 ## Verifikationsstand
 
 - Debug- und optimierter Release-Build am 31.07.2026 erfolgreich
-- 20 XCTest-Fälle erfolgreich, davon ein lokaler Realdatei-Abnahmetest:
+- 23 XCTest-Fälle erfolgreich, davon ein lokaler Realdatei-Abnahmetest:
   - deutsche Geldbeträge und Rundung
   - Split-Invariante
   - Migration, Persistenz und Saldo
@@ -228,6 +240,12 @@ Rechtsberatung.
     persistenter Inventar-/Versicherungswert
   - persistente Unterkategorien sowie Abweisung von Zyklen und
     artfremden Oberkategorien
+  - Kontengruppen, vollständiger Metadaten-Roundtrip, IBAN-Normalisierung
+    und -Abweisung sowie wirksamer Ausschluss aus Berichten
+  - gezielte Migration einer vorhandenen Schema-10-Finanzdatei auf
+    Migration 11 unter Erhalt des Bestandskontos und sicheren Standardwerten
+  - keine unzulässige Addition eines USD-Kontos zum EUR-Nettovermögen ohne
+    dokumentierten Wechselkurs
 - installiert unter `/Users/gabrielschreiber/Applications/FinanzVerwalter.app`
 - installierte App mit `-demo` gestartet
 - Cockpit und Kontoblatt über Accessibility-Struktur und sichtbaren
@@ -290,3 +308,6 @@ Rechtsberatung.
   entfernt. Der Produktionsparser erkannte das Mehrkontenpaket, lehnte keine
   normale Kontobuchung ab, übernahm es in eine wegwerfbare Datenbank und
   bestand anschließend `PRAGMA integrity_check`.
+- vollständige Soll-Ist-Prüfung gegen die Masterdatei liegt in
+  `docs/Anforderungsmatrix.md`; offene Punkte werden nicht als fertig
+  dargestellt. Architekturentscheidungen stehen unter `docs/adr/`.

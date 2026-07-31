@@ -726,6 +726,57 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 10")
             }
         }
+        if version < 11 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE account_groups (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        sort_order INTEGER NOT NULL DEFAULT 0,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute("ALTER TABLE accounts ADD COLUMN short_name TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN group_id TEXT REFERENCES account_groups(id)")
+                try execute("ALTER TABLE accounts ADD COLUMN iban TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN bic TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN account_number_masked TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN owner_name TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN opening_date TEXT")
+                try execute("ALTER TABLE accounts ADD COLUMN credit_limit_minor INTEGER NOT NULL DEFAULT 0")
+                try execute("ALTER TABLE accounts ADD COLUMN is_online INTEGER NOT NULL DEFAULT 0")
+                try execute("ALTER TABLE accounts ADD COLUMN include_net_worth INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN include_budget INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN include_reports INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN include_forecast INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN last_sync_at TEXT")
+                try execute("ALTER TABLE accounts ADD COLUMN last_bank_balance_minor INTEGER")
+                try execute("ALTER TABLE accounts ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'offline'")
+                let now = Self.timestamp(Date())
+                for (index, name) in ["Bankkonten", "Bargeld", "Vermögen", "Verbindlichkeiten"].enumerated() {
+                    try run(
+                        """
+                        INSERT INTO account_groups(id,finance_file_id,name,sort_order,is_active,created_at,updated_at)
+                        SELECT ?,id,?,?,1,?,? FROM finance_files LIMIT 1
+                        """,
+                        [
+                            .text(UUID().uuidString), .text(name), .integer(Int64(index)),
+                            .text(now), .text(now)
+                        ]
+                    )
+                }
+                try execute("CREATE INDEX accounts_group_sort ON accounts(group_id,sort_order,name)")
+                try execute("PRAGMA user_version = 11")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -748,13 +799,17 @@ final class SQLiteFinanceStore {
         var values: [FinanceAccount] = []
         try query(
             """
-            SELECT id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order
+            SELECT id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,
+                   short_name,description,group_id,iban,bic,account_number_masked,owner_name,
+                   opening_date,credit_limit_minor,is_online,include_net_worth,include_budget,
+                   include_reports,include_forecast,last_sync_at,last_bank_balance_minor,sync_status
             FROM accounts ORDER BY sort_order,name COLLATE NOCASE
             """
         ) { statement in
             guard
                 let id = UUID(uuidString: Self.text(statement, 0)),
-                let type = AccountType(rawValue: Self.text(statement, 3))
+                let type = AccountType(rawValue: Self.text(statement, 3)),
+                let syncStatus = AccountSyncStatus(rawValue: Self.text(statement, 25))
             else { return }
             values.append(
                 FinanceAccount(
@@ -766,7 +821,43 @@ final class SQLiteFinanceStore {
                     openingBalanceMinor: sqlite3_column_int64(statement, 5),
                     isHidden: sqlite3_column_int(statement, 6) != 0,
                     isClosed: sqlite3_column_int(statement, 7) != 0,
-                    sortOrder: Int(sqlite3_column_int(statement, 8))
+                    sortOrder: Int(sqlite3_column_int(statement, 8)),
+                    shortName: Self.text(statement, 9),
+                    description: Self.text(statement, 10),
+                    groupID: Self.optionalText(statement, 11).flatMap(UUID.init(uuidString:)),
+                    iban: Self.text(statement, 12),
+                    bic: Self.text(statement, 13),
+                    accountNumberMasked: Self.text(statement, 14),
+                    ownerName: Self.text(statement, 15),
+                    openingDate: Self.optionalText(statement, 16).flatMap(Self.date),
+                    creditLimitMinor: sqlite3_column_int64(statement, 17),
+                    isOnline: sqlite3_column_int(statement, 18) != 0,
+                    includeNetWorth: sqlite3_column_int(statement, 19) != 0,
+                    includeBudget: sqlite3_column_int(statement, 20) != 0,
+                    includeReports: sqlite3_column_int(statement, 21) != 0,
+                    includeForecast: sqlite3_column_int(statement, 22) != 0,
+                    lastSyncAt: Self.optionalText(statement, 23).flatMap(Self.timestampDate),
+                    lastBankBalanceMinor: sqlite3_column_type(statement, 24) == SQLITE_NULL
+                        ? nil
+                        : sqlite3_column_int64(statement, 24),
+                    syncStatus: syncStatus
+                )
+            )
+        }
+        return values
+    }
+
+    func accountGroups() throws -> [AccountGroup] {
+        var values: [AccountGroup] = []
+        try query(
+            "SELECT id,name,sort_order,is_active FROM account_groups ORDER BY sort_order,name COLLATE NOCASE"
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)) else { return }
+            values.append(
+                AccountGroup(
+                    id: id, name: Self.text(statement, 1),
+                    sortOrder: Int(sqlite3_column_int(statement, 2)),
+                    isActive: sqlite3_column_int(statement, 3) != 0
                 )
             )
         }
@@ -2277,27 +2368,96 @@ final class SQLiteFinanceStore {
     }
 
     func saveAccount(_ account: FinanceAccount) throws {
+        let name = account.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Der Kontoname fehlt.")
+        }
+        guard account.creditLimitMinor >= 0 else {
+            throw FinanceError.database("Das Kreditlimit darf nicht negativ sein.")
+        }
+        let normalizedIBAN = account.iban
+            .replacingOccurrences(of: " ", with: "")
+            .uppercased()
+        if !normalizedIBAN.isEmpty, !IBANValidator.isValid(normalizedIBAN) {
+            throw FinanceError.invalidIBAN
+        }
+        if let groupID = account.groupID,
+           try !accountGroups().contains(where: { $0.id == groupID }) {
+            throw FinanceError.database("Die Kontengruppe existiert nicht.")
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
             try run(
                 """
-                INSERT INTO accounts(id,finance_file_id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO accounts(
+                    id,finance_file_id,name,institution,type,currency,opening_balance_minor,
+                    is_hidden,is_closed,sort_order,created_at,updated_at,short_name,description,
+                    group_id,iban,bic,account_number_masked,owner_name,opening_date,
+                    credit_limit_minor,is_online,include_net_worth,include_budget,include_reports,
+                    include_forecast,last_sync_at,last_bank_balance_minor,sync_status
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,institution=excluded.institution,
                     type=excluded.type,currency=excluded.currency,opening_balance_minor=excluded.opening_balance_minor,
                     is_hidden=excluded.is_hidden,is_closed=excluded.is_closed,sort_order=excluded.sort_order,
+                    short_name=excluded.short_name,description=excluded.description,
+                    group_id=excluded.group_id,iban=excluded.iban,bic=excluded.bic,
+                    account_number_masked=excluded.account_number_masked,owner_name=excluded.owner_name,
+                    opening_date=excluded.opening_date,credit_limit_minor=excluded.credit_limit_minor,
+                    is_online=excluded.is_online,include_net_worth=excluded.include_net_worth,
+                    include_budget=excluded.include_budget,include_reports=excluded.include_reports,
+                    include_forecast=excluded.include_forecast,last_sync_at=excluded.last_sync_at,
+                    last_bank_balance_minor=excluded.last_bank_balance_minor,
+                    sync_status=excluded.sync_status,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
-                    .text(account.id.uuidString), .text(info.id.uuidString), .text(account.name),
+                    .text(account.id.uuidString), .text(info.id.uuidString), .text(name),
                     .text(account.institution), .text(account.type.rawValue), .text(account.currency),
                     .integer(account.openingBalanceMinor), .integer(account.isHidden ? 1 : 0),
                     .integer(account.isClosed ? 1 : 0), .integer(Int64(account.sortOrder)),
+                    .text(now), .text(now), .text(account.shortName), .text(account.description),
+                    account.groupID.map { .text($0.uuidString) } ?? .null,
+                    .text(normalizedIBAN), .text(account.bic.uppercased()),
+                    .text(account.accountNumberMasked), .text(account.ownerName),
+                    account.openingDate.map { .text(Self.day($0)) } ?? .null,
+                    .integer(account.creditLimitMinor), .integer(account.isOnline ? 1 : 0),
+                    .integer(account.includeNetWorth ? 1 : 0),
+                    .integer(account.includeBudget ? 1 : 0),
+                    .integer(account.includeReports ? 1 : 0),
+                    .integer(account.includeForecast ? 1 : 0),
+                    account.lastSyncAt.map { .text(Self.timestamp($0)) } ?? .null,
+                    account.lastBankBalanceMinor.map(SQLiteValue.integer) ?? .null,
+                    .text(account.syncStatus.rawValue)
+                ]
+            )
+            try audit(entity: "account", id: account.id, action: "save", details: name)
+        }
+    }
+
+    func saveAccountGroup(_ group: AccountGroup) throws {
+        let name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Der Name der Kontengruppe fehlt.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO account_groups(id,finance_file_id,name,sort_order,is_active,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,
+                    is_active=excluded.is_active,updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(group.id.uuidString), .text(info.id.uuidString), .text(name),
+                    .integer(Int64(group.sortOrder)), .integer(group.isActive ? 1 : 0),
                     .text(now), .text(now)
                 ]
             )
-            try audit(entity: "account", id: account.id, action: "save", details: account.name)
+            try audit(entity: "account-group", id: group.id, action: "save", details: name)
         }
     }
 
@@ -2427,8 +2587,11 @@ final class SQLiteFinanceStore {
             SELECT COALESCE(c.name,'Ohne Kategorie'),
                    COALESCE(SUM(CASE WHEN t.amount_minor > 0 THEN t.amount_minor ELSE 0 END),0),
                    COALESCE(SUM(CASE WHEN t.amount_minor < 0 THEN -t.amount_minor ELSE 0 END),0)
-            FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+            FROM transactions t
+            JOIN accounts a ON a.id=t.account_id
+            LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.status != 'cancelled' AND t.transfer_id IS NULL
+              AND a.include_reports=1
             GROUP BY COALESCE(c.name,'Ohne Kategorie') ORDER BY 1 COLLATE NOCASE
             """
         ) {
