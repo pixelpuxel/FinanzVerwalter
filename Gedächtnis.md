@@ -603,3 +603,11 @@ Rechtsberatung.
   und meldet Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Abgleiche und
   0 Abgleichspositionen. Das vorherige Bundle liegt ignoriert unter
   `build/FinanzVerwalter-vor-kontoabgleich-20260731-0951.app`.
+- Commit `50668af` wurde auf `agent/qif-mehrkontenimport` gepusht und der
+  bestehende Draft-PR 1 auf diesen Kontoabgleichs- und Teststand
+  aktualisiert.
+- Der geprüfte Textstatus wurde als Nachricht 938 im
+  Telegram-Projektthread 894 veröffentlicht. Computer Use meldet weiterhin
+  den gesperrten Mac; deshalb wurde ausdrücklich kein angeblicher
+  App-Screenshot versendet. Die echte visuelle Abnahme bleibt bis zum
+  manuellen Entsperren offen.
