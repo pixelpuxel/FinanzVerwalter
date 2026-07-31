@@ -473,3 +473,42 @@ Rechtsberatung.
   Computer-Use-Abfrage lief bei weiterhin gesperrtem Mac in ein Timeout;
   die visuelle Prüfung des Exportknopfs und Dateidialogs bleibt deshalb
   offen und wird nicht als erledigt behauptet.
+- Migration 14 ergänzt eigenständige Dauerauftragsvorlagen und eine
+  unveränderliche, pro Fälligkeit eindeutige Ausführungshistorie.
+  Auftraggeberkonto, Empfänger, IBAN/BIC, EUR-Betrag, Zweck, Frequenz,
+  optionales Enddatum und Wochenendverschiebung werden validiert.
+- Aktive Daueraufträge können pausiert, fortgesetzt oder terminal beendet
+  werden. Jede offene Fälligkeit wird nach ausdrücklicher Bestätigung
+  atomar als Terminüberweisungsentwurf plus Historienzeile erzeugt oder
+  terminal übersprungen. Ein Retry liefert denselben Entwurf; eine
+  Vorlagenänderung verändert alte Entwürfe nicht, und Zurückdatieren hinter
+  verarbeitete Fälligkeiten ist gesperrt.
+- Der neue Test deckt Samstag-zu-Montag-Verschiebung, genau-einmalige
+  Materialisierung, unveränderte Altinstanz nach Vorlagenänderung,
+  Überspringen, automatisches Ende und Reaktivierungsschutz ab. Damit
+  bestehen 34 reguläre XCTest-Fälle sowie die separate echte QIF-Abnahme
+  mit 97 Konten, 776 Kategorien, 2.170 Buchungen und 0 verworfenen
+  Buchungen.
+- Bei der Abnahme zeigte sich, dass der XCTest-Apphost bislang die
+  Produktivdatei öffnete und dadurch die additive Schema-14-Migration vor
+  der geplanten Sicherung ausführte. Konten- und Buchungsdaten blieben
+  unverändert und die Integrität war `ok`; die neuen Tabellen waren leer.
+  Der Testhost verwendet nun zwingend eine temporäre Datei. Ein kompletter
+  Testlauf ließ den SHA-256-Wert der Produktivdatei bytegenau unverändert.
+- Für den Rückweg wurde aus dem unveränderten Schema-14-Stand ohne
+  Dauerauftragsdaten die validierte Datei
+  `Rollback Schema 13 vor Dauerauftraegen.qbackup` erzeugt: Schema 13,
+  97 Konten, 2.170 Buchungen, Integrität `ok`. Die zusätzliche
+  Schema-14-Sicherung `Vor Migration 14 Dauerauftraege.qbackup` ist
+  ebenfalls valide; beide liegen ausschließlich außerhalb des Repositorys.
+- Der Release mit Daueraufträgen ist unter
+  `~/Applications/FinanzVerwalter.app` installiert und ad hoc
+  signaturgeprüft. Die Produktivdatei meldet Schema 14, 97 Konten,
+  2.170 Buchungen, 0 Daueraufträge und Integrität `ok`. Das vorherige
+  Bundle liegt ignoriert unter
+  `build/FinanzVerwalter-vor-dauerauftraegen-20260731-0907.app`.
+- Der Dauerauftrags-/Teststand wurde als Text im Telegram-Projektthread 894
+  veröffentlicht. Computer Use bestätigte erneut den gesperrten Mac und
+  konnte ihn erwartungsgemäß nicht automatisch entsperren; deshalb wurde
+  keine angebliche App-Aufnahme versendet. Der echte Screenshot bleibt bis
+  zum manuellen Entsperren offen.

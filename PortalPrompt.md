@@ -322,6 +322,28 @@ Für den Banking-Simulator gilt reproduzierbar:
   mit einem nicht geschlossenen Auftraggeberkonto. Ein bereits
   initialisierter, übermittelter, angenommener, abgelehnter oder unbekannter
   Auftrag darf dadurch niemals als vermeintlicher Retry exportiert werden.
+- Speichere Dauerauftragsvorlagen ab Migration 14 getrennt von
+  `payment_orders`. Pflichtfelder sind offenes EUR-Auftraggeberkonto, Name,
+  Empfänger, gültige IBAN, optional gültige BIC, positiver Betrag,
+  Verwendungszweck, nächste Fälligkeit, Frequenz und Wochenendregel.
+- Status sind `active`, `paused` und terminal `cancelled`. Ein beendeter
+  Dauerauftrag darf nicht reaktiviert werden. Bearbeitungen wirken nur auf
+  offene künftige Fälligkeiten und dürfen das Datum nicht hinter die letzte
+  verarbeitete Instanz zurücksetzen.
+- Materialisiere eine Fälligkeit atomar als `scheduledCreditTransfer` im
+  Zustand `draft`, Historienzeile und Fortschreibung des nächsten Termins.
+  Der Idempotenzschlüssel lautet
+  `standing:<Dauerauftrags-UUID>:<yyyy-MM-dd>`. Ein Retry derselben
+  Fälligkeit liefert denselben Auftrag statt eines zweiten.
+- Überspringen erzeugt eine terminale Historienzeile ohne Zahlungsauftrag.
+  Materialisierte und übersprungene Instanzen dürfen nicht umgedeutet
+  werden. Wochenenden können unverändert, auf den nächsten oder den
+  vorherigen Wochentag verschoben werden; Feiertage sind bis zu einem
+  versionierten Kalender ausdrücklich nicht behauptet.
+- Der XCTest-Apphost muss eine pro Prozess temporäre Finanzdatei öffnen.
+  Automatisierte Tests dürfen die Produktivdatei weder migrieren noch
+  verändern; prüfe dies zusätzlich durch identische SHA-256-Werte vor und
+  nach der vollständigen Suite.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 

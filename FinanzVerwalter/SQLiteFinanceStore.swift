@@ -853,6 +853,55 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 13")
             }
         }
+        if version < 14 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE standing_orders (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id) ON DELETE CASCADE,
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        name TEXT NOT NULL,
+                        recipient_name TEXT NOT NULL,
+                        iban TEXT NOT NULL,
+                        bic TEXT NOT NULL DEFAULT '',
+                        amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+                        currency TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        next_execution_date TEXT NOT NULL,
+                        end_date TEXT,
+                        frequency TEXT NOT NULL,
+                        business_day_adjustment TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE standing_order_runs (
+                        id TEXT PRIMARY KEY,
+                        standing_order_id TEXT NOT NULL REFERENCES standing_orders(id),
+                        due_date TEXT NOT NULL,
+                        execution_date TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        payment_order_id TEXT REFERENCES payment_orders(id),
+                        created_at TEXT NOT NULL,
+                        UNIQUE(standing_order_id,due_date)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX standing_orders_due ON standing_orders(status,next_execution_date,id)"
+                )
+                try execute(
+                    "CREATE INDEX standing_order_runs_order ON standing_order_runs(standing_order_id,due_date DESC,id)"
+                )
+                try execute("PRAGMA user_version = 14")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -1211,6 +1260,74 @@ final class SQLiteFinanceStore {
                     status: status, idempotencyKey: Self.text($0, 12),
                     bankReference: Self.text($0, 13),
                     createdAt: createdAt, updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func standingOrders() throws -> [StandingOrder] {
+        var values: [StandingOrder] = []
+        try query(
+            """
+            SELECT id,account_id,name,recipient_name,iban,bic,amount_minor,currency,
+                   purpose,next_execution_date,end_date,frequency,
+                   business_day_adjustment,status,created_at,updated_at
+            FROM standing_orders
+            ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                     next_execution_date,name COLLATE NOCASE,id
+            """
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let accountID = UUID(uuidString: Self.text($0, 1)),
+                let nextExecutionDate = Self.date(Self.text($0, 9)),
+                let frequency = RecurrenceFrequency(rawValue: Self.text($0, 11)),
+                let adjustment = BusinessDayAdjustment(rawValue: Self.text($0, 12)),
+                let status = StandingOrderStatus(rawValue: Self.text($0, 13)),
+                let createdAt = Self.timestampDate(Self.text($0, 14)),
+                let updatedAt = Self.timestampDate(Self.text($0, 15))
+            else { return }
+            values.append(
+                StandingOrder(
+                    id: id, accountID: accountID, name: Self.text($0, 2),
+                    recipientName: Self.text($0, 3), iban: Self.text($0, 4),
+                    bic: Self.text($0, 5), amountMinor: sqlite3_column_int64($0, 6),
+                    currency: Self.text($0, 7), purpose: Self.text($0, 8),
+                    nextExecutionDate: nextExecutionDate,
+                    endDate: Self.optionalText($0, 10).flatMap(Self.date),
+                    frequency: frequency, businessDayAdjustment: adjustment,
+                    status: status, createdAt: createdAt, updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func standingOrderRuns(standingOrderID: UUID) throws -> [StandingOrderRun] {
+        var values: [StandingOrderRun] = []
+        try query(
+            """
+            SELECT id,due_date,execution_date,status,payment_order_id,created_at
+            FROM standing_order_runs
+            WHERE standing_order_id=?
+            ORDER BY due_date DESC,id DESC
+            """,
+            [.text(standingOrderID.uuidString)]
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let dueDate = Self.date(Self.text($0, 1)),
+                let executionDate = Self.date(Self.text($0, 2)),
+                let status = StandingOrderRunStatus(rawValue: Self.text($0, 3)),
+                let createdAt = Self.timestampDate(Self.text($0, 5))
+            else { return }
+            values.append(
+                StandingOrderRun(
+                    id: id, standingOrderID: standingOrderID,
+                    dueDate: dueDate, executionDate: executionDate, status: status,
+                    paymentOrderID: Self.optionalText($0, 4).flatMap(UUID.init(uuidString:)),
+                    createdAt: createdAt
                 )
             )
         }
@@ -2246,6 +2363,276 @@ final class SQLiteFinanceStore {
                 ]
             )
             try audit(entity: "inventory_item", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func saveStandingOrder(_ value: StandingOrder) throws {
+        try value.validate()
+        guard let account = try accounts().first(where: { $0.id == value.accountID }) else {
+            throw FinanceError.missingAccount
+        }
+        guard !account.isClosed else {
+            throw FinanceError.invalidStandingOrder("Das Auftraggeberkonto ist geschlossen.")
+        }
+        guard account.currency == value.currency else {
+            throw FinanceError.invalidStandingOrder(
+                "Konto- und Dauerauftragswährung stimmen nicht überein."
+            )
+        }
+        var existingStatus: StandingOrderStatus?
+        try query(
+            "SELECT status FROM standing_orders WHERE id=?",
+            [.text(value.id.uuidString)]
+        ) {
+            existingStatus = StandingOrderStatus(rawValue: Self.text($0, 0))
+        }
+        if existingStatus == .cancelled, value.status != .cancelled {
+            throw FinanceError.invalidStandingOrder(
+                "Ein beendeter Dauerauftrag kann nicht reaktiviert werden."
+            )
+        }
+        var latestRunDay: String?
+        try query(
+            "SELECT MAX(due_date) FROM standing_order_runs WHERE standing_order_id=?",
+            [.text(value.id.uuidString)]
+        ) {
+            latestRunDay = Self.optionalText($0, 0)
+        }
+        if let latestRunDay, Self.day(value.nextExecutionDate) <= latestRunDay {
+            throw FinanceError.invalidStandingOrder(
+                "Die nächste Fälligkeit muss nach allen bereits verarbeiteten Terminen liegen."
+            )
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        let createdAt = existingStatus == nil ? Self.timestamp(value.createdAt) : now
+        try transaction {
+            try run(
+                """
+                INSERT INTO standing_orders(
+                    id,finance_file_id,account_id,name,recipient_name,iban,bic,
+                    amount_minor,currency,purpose,next_execution_date,end_date,
+                    frequency,business_day_adjustment,status,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    account_id=excluded.account_id,name=excluded.name,
+                    recipient_name=excluded.recipient_name,iban=excluded.iban,
+                    bic=excluded.bic,amount_minor=excluded.amount_minor,
+                    currency=excluded.currency,purpose=excluded.purpose,
+                    next_execution_date=excluded.next_execution_date,
+                    end_date=excluded.end_date,frequency=excluded.frequency,
+                    business_day_adjustment=excluded.business_day_adjustment,
+                    status=excluded.status,updated_at=excluded.updated_at,
+                    version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(value.accountID.uuidString),
+                    .text(value.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.recipientName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(IBANValidator.normalized(value.iban)),
+                    .text(value.bic.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()),
+                    .integer(value.amountMinor), .text(value.currency),
+                    .text(value.purpose.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(Self.day(value.nextExecutionDate)),
+                    value.endDate.map { .text(Self.day($0)) } ?? .null,
+                    .text(value.frequency.rawValue),
+                    .text(value.businessDayAdjustment.rawValue),
+                    .text(value.status.rawValue), .text(createdAt), .text(now)
+                ]
+            )
+            try audit(
+                entity: "standing_order", id: value.id, action: "save",
+                details: value.name
+            )
+        }
+    }
+
+    func setStandingOrderStatus(id: UUID, to target: StandingOrderStatus) throws {
+        guard let current = try standingOrders().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Dauerauftrag nicht gefunden.")
+        }
+        if current.status == .cancelled, target != .cancelled {
+            throw FinanceError.invalidStandingOrder(
+                "Ein beendeter Dauerauftrag kann nicht reaktiviert werden."
+            )
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                UPDATE standing_orders
+                SET status=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [.text(target.rawValue), .text(now), .text(id.uuidString)]
+            )
+            try audit(
+                entity: "standing_order", id: id, action: "status",
+                details: "\(current.status.rawValue)->\(target.rawValue)"
+            )
+        }
+    }
+
+    func materializeStandingOrder(id: UUID, dueDate: Date) throws -> PaymentOrder {
+        guard let standingOrder = try standingOrders().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Dauerauftrag nicht gefunden.")
+        }
+        let dueDay = Self.day(dueDate)
+        if let existing = try standingOrderRuns(standingOrderID: id).first(where: {
+            Self.day($0.dueDate) == dueDay
+        }) {
+            guard
+                existing.status == .materialized,
+                let paymentOrderID = existing.paymentOrderID,
+                let payment = try paymentOrders().first(where: { $0.id == paymentOrderID })
+            else { throw FinanceError.standingOrderRunFinalized }
+            return payment
+        }
+        guard standingOrder.status == .active else {
+            throw FinanceError.inactiveStandingOrder
+        }
+        guard Self.day(standingOrder.nextExecutionDate) == dueDay else {
+            throw FinanceError.invalidStandingOrder(
+                "Nur die nächste offene Fälligkeit kann vorbereitet werden."
+            )
+        }
+        if let endDate = standingOrder.endDate, dueDay > Self.day(endDate) {
+            throw FinanceError.invalidStandingOrder("Die Fälligkeit liegt nach dem Enddatum.")
+        }
+        try standingOrder.validate()
+        guard let account = try accounts().first(where: { $0.id == standingOrder.accountID }),
+              !account.isClosed, account.currency == standingOrder.currency
+        else {
+            throw FinanceError.invalidStandingOrder(
+                "Das Auftraggeberkonto ist nicht verfügbar."
+            )
+        }
+
+        let now = Date()
+        let executionDate = standingOrder.businessDayAdjustment.adjusted(dueDate)
+        let payment = PaymentOrder(
+            id: UUID(), accountID: standingOrder.accountID,
+            type: .scheduledCreditTransfer,
+            recipientName: standingOrder.recipientName,
+            iban: standingOrder.iban, bic: standingOrder.bic,
+            amountMinor: standingOrder.amountMinor, currency: standingOrder.currency,
+            executionDate: executionDate, purpose: standingOrder.purpose,
+            endToEndID: "NOTPROVIDED", status: .draft,
+            idempotencyKey: "standing:\(standingOrder.id.uuidString):\(dueDay)",
+            bankReference: "", createdAt: now, updatedAt: now
+        )
+        try payment.validate()
+        let nextDate = standingOrder.frequency.next(after: dueDate)
+        let nextStatus: StandingOrderStatus = standingOrder.endDate.map {
+            Self.day(nextDate) > Self.day($0) ? .cancelled : .active
+        } ?? .active
+        let info = try financeFileInfo()
+        let timestamp = Self.timestamp(now)
+        let runID = UUID()
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_orders(
+                    id,finance_file_id,account_id,type,recipient_name,iban,bic,amount_minor,
+                    currency,execution_date,purpose,end_to_end_id,status,idempotency_key,
+                    bank_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(payment.id.uuidString), .text(info.id.uuidString),
+                    .text(payment.accountID.uuidString), .text(payment.type.rawValue),
+                    .text(payment.recipientName), .text(IBANValidator.normalized(payment.iban)),
+                    .text(payment.bic.uppercased()), .integer(payment.amountMinor),
+                    .text(payment.currency), .text(Self.day(payment.executionDate)),
+                    .text(payment.purpose), .text(payment.endToEndID),
+                    .text(payment.status.rawValue), .text(payment.idempotencyKey),
+                    .text(payment.bankReference), .text(timestamp), .text(timestamp)
+                ]
+            )
+            try run(
+                """
+                INSERT INTO standing_order_runs(
+                    id,standing_order_id,due_date,execution_date,status,
+                    payment_order_id,created_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(runID.uuidString), .text(id.uuidString), .text(dueDay),
+                    .text(Self.day(executionDate)),
+                    .text(StandingOrderRunStatus.materialized.rawValue),
+                    .text(payment.id.uuidString), .text(timestamp)
+                ]
+            )
+            try run(
+                """
+                UPDATE standing_orders
+                SET next_execution_date=?,status=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [
+                    .text(Self.day(nextDate)), .text(nextStatus.rawValue),
+                    .text(timestamp), .text(id.uuidString)
+                ]
+            )
+            try audit(
+                entity: "standing_order", id: id, action: "materialize",
+                details: "\(dueDay):\(payment.id.uuidString)"
+            )
+        }
+        return payment
+    }
+
+    func skipStandingOrder(id: UUID, dueDate: Date) throws {
+        guard let standingOrder = try standingOrders().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Dauerauftrag nicht gefunden.")
+        }
+        guard standingOrder.status == .active else {
+            throw FinanceError.inactiveStandingOrder
+        }
+        let dueDay = Self.day(dueDate)
+        guard Self.day(standingOrder.nextExecutionDate) == dueDay else {
+            throw FinanceError.standingOrderRunFinalized
+        }
+        guard try standingOrderRuns(standingOrderID: id).allSatisfy({
+            Self.day($0.dueDate) != dueDay
+        }) else {
+            throw FinanceError.standingOrderRunFinalized
+        }
+        let executionDate = standingOrder.businessDayAdjustment.adjusted(dueDate)
+        let nextDate = standingOrder.frequency.next(after: dueDate)
+        let nextStatus: StandingOrderStatus = standingOrder.endDate.map {
+            Self.day(nextDate) > Self.day($0) ? .cancelled : .active
+        } ?? .active
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO standing_order_runs(
+                    id,standing_order_id,due_date,execution_date,status,
+                    payment_order_id,created_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(UUID().uuidString), .text(id.uuidString), .text(dueDay),
+                    .text(Self.day(executionDate)),
+                    .text(StandingOrderRunStatus.skipped.rawValue), .null, .text(now)
+                ]
+            )
+            try run(
+                """
+                UPDATE standing_orders
+                SET next_execution_date=?,status=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [
+                    .text(Self.day(nextDate)), .text(nextStatus.rawValue),
+                    .text(now), .text(id.uuidString)
+                ]
+            )
+            try audit(
+                entity: "standing_order", id: id, action: "skip", details: dueDay
+            )
         }
     }
 

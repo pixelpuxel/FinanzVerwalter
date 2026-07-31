@@ -640,6 +640,111 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testStandingOrderMaterializationIsIdempotentAuditedAndWeekendSafe() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let saturday = try XCTUnwrap(
+            calendar.date(
+                from: DateComponents(year: 2026, month: 8, day: 1, hour: 12)
+            )
+        )
+        let septemberFirst = try XCTUnwrap(
+            calendar.date(
+                from: DateComponents(year: 2026, month: 9, day: 1, hour: 12)
+            )
+        )
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 100_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.iban = "DE89370400440532013000"
+        account.ownerName = "Testperson"
+        try context.store.saveAccount(account)
+        let now = Date()
+        let standingOrder = StandingOrder(
+            id: UUID(), accountID: account.id, name: "Monatlicher Abschlag",
+            recipientName: "Stadtwerke", iban: "DE12500105170648489890",
+            bic: "", amountMinor: 9_850, currency: "EUR",
+            purpose: "Energieabschlag", nextExecutionDate: saturday,
+            endDate: septemberFirst, frequency: .monthly,
+            businessDayAdjustment: .nextWeekday, status: .active,
+            createdAt: now, updatedAt: now
+        )
+        try context.store.saveStandingOrder(standingOrder)
+
+        let persisted = try XCTUnwrap(context.store.standingOrders().first)
+        XCTAssertEqual(persisted.id, standingOrder.id)
+        XCTAssertEqual(persisted.status, .active)
+
+        let first = try context.store.materializeStandingOrder(
+            id: standingOrder.id, dueDate: saturday
+        )
+        XCTAssertEqual(first.type, .scheduledCreditTransfer)
+        XCTAssertEqual(first.status, .draft)
+        XCTAssertEqual(first.idempotencyKey, "standing:\(standingOrder.id.uuidString):2026-08-01")
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: first.executionDate),
+            DateComponents(year: 2026, month: 8, day: 3)
+        )
+        let retry = try context.store.materializeStandingOrder(
+            id: standingOrder.id, dueDate: saturday
+        )
+        XCTAssertEqual(retry.id, first.id)
+        XCTAssertEqual(try context.store.paymentOrders().count, 1)
+
+        var advanced = try XCTUnwrap(context.store.standingOrders().first)
+        XCTAssertEqual(
+            calendar.dateComponents(
+                [.year, .month, .day], from: advanced.nextExecutionDate
+            ),
+            DateComponents(year: 2026, month: 9, day: 1)
+        )
+        advanced.amountMinor = 10_500
+        advanced.purpose = "Neuer Abschlag"
+        try context.store.saveStandingOrder(advanced)
+        let unchangedFirst = try XCTUnwrap(
+            context.store.paymentOrders().first { $0.id == first.id }
+        )
+        XCTAssertEqual(unchangedFirst.amountMinor, 9_850)
+        XCTAssertEqual(unchangedFirst.purpose, "Energieabschlag")
+
+        var rewound = advanced
+        rewound.nextExecutionDate = saturday
+        XCTAssertThrowsError(try context.store.saveStandingOrder(rewound)) {
+            XCTAssertEqual(
+                $0 as? FinanceError,
+                .invalidStandingOrder(
+                    "Die nächste Fälligkeit muss nach allen bereits verarbeiteten Terminen liegen."
+                )
+            )
+        }
+        try context.store.skipStandingOrder(
+            id: standingOrder.id, dueDate: advanced.nextExecutionDate
+        )
+        let completed = try XCTUnwrap(context.store.standingOrders().first)
+        XCTAssertEqual(completed.status, .cancelled)
+        let runs = try context.store.standingOrderRuns(
+            standingOrderID: standingOrder.id
+        )
+        XCTAssertEqual(runs.count, 2)
+        XCTAssertEqual(runs.map(\.status), [.skipped, .materialized])
+        XCTAssertEqual(try context.store.paymentOrders().count, 1)
+        XCTAssertThrowsError(
+            try context.store.materializeStandingOrder(
+                id: standingOrder.id, dueDate: septemberFirst
+            )
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .standingOrderRunFinalized)
+        }
+        XCTAssertThrowsError(
+            try context.store.setStandingOrderStatus(
+                id: standingOrder.id, to: .active
+            )
+        )
+    }
+
     func testPain001ExportIsDeterministicEscapedAndUsesEPC2025Rules() throws {
         let accountID = UUID(uuidString: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")!
         let orderID = UUID(uuidString: "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB")!

@@ -593,6 +593,116 @@ struct PaymentOrder: Identifiable, Hashable, Sendable {
     }
 }
 
+enum StandingOrderStatus: String, Codable, CaseIterable, Identifiable, Sendable {
+    case active
+    case paused
+    case cancelled
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .active: "Aktiv"
+        case .paused: "Pausiert"
+        case .cancelled: "Beendet"
+        }
+    }
+}
+
+enum BusinessDayAdjustment: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
+    case nextWeekday
+    case previousWeekday
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .none: "Nicht verschieben"
+        case .nextWeekday: "Nächster Werktag"
+        case .previousWeekday: "Vorheriger Werktag"
+        }
+    }
+
+    func adjusted(_ date: Date, calendar: Calendar = .current) -> Date {
+        guard self != .none else { return date }
+        var result = date
+        let step = self == .nextWeekday ? 1 : -1
+        while calendar.isDateInWeekend(result) {
+            result = calendar.date(byAdding: .day, value: step, to: result) ?? result
+        }
+        return result
+    }
+}
+
+enum StandingOrderRunStatus: String, Codable, Sendable {
+    case materialized
+    case skipped
+
+    var title: String {
+        switch self {
+        case .materialized: "Entwurf erzeugt"
+        case .skipped: "Übersprungen"
+        }
+    }
+}
+
+struct StandingOrder: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var accountID: UUID
+    var name: String
+    var recipientName: String
+    var iban: String
+    var bic: String
+    var amountMinor: Int64
+    var currency: String
+    var purpose: String
+    var nextExecutionDate: Date
+    var endDate: Date?
+    var frequency: RecurrenceFrequency
+    var businessDayAdjustment: BusinessDayAdjustment
+    var status: StandingOrderStatus
+    var createdAt: Date
+    var updatedAt: Date
+
+    func validate() throws {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !recipientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              amountMinor > 0 else {
+            throw FinanceError.invalidStandingOrder(
+                "Name, Empfänger, Verwendungszweck und positiver Betrag sind erforderlich."
+            )
+        }
+        guard currency == "EUR" else {
+            throw FinanceError.invalidStandingOrder("SEPA-Daueraufträge erfordern EUR.")
+        }
+        guard IBANValidator.isValid(iban) else { throw FinanceError.invalidIBAN }
+        let normalizedBIC = bic.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !normalizedBIC.isEmpty {
+            let pattern = #"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$"#
+            guard normalizedBIC.range(of: pattern, options: .regularExpression) != nil else {
+                throw FinanceError.invalidStandingOrder("Die BIC muss 8 oder 11 gültige Zeichen enthalten.")
+            }
+        }
+        if let endDate,
+           Calendar.current.startOfDay(for: endDate)
+            < Calendar.current.startOfDay(for: nextExecutionDate) {
+            throw FinanceError.invalidStandingOrder(
+                "Das Enddatum liegt vor der nächsten Ausführung."
+            )
+        }
+    }
+}
+
+struct StandingOrderRun: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var standingOrderID: UUID
+    var dueDate: Date
+    var executionDate: Date
+    var status: StandingOrderRunStatus
+    var paymentOrderID: UUID?
+    var createdAt: Date
+}
+
 enum IBANValidator {
     static func normalized(_ value: String) -> String {
         value.uppercased().filter { $0.isLetter || $0.isNumber }

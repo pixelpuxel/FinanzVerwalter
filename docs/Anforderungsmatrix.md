@@ -23,7 +23,7 @@ fertigen Funktionsbereich.
 | P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; zweite Dimension, weitere Standardberichte, direkter Systemdruckdialog sowie XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Offen | Derzeit nur lokaler Zahlungs-/SCA-Simulator; FinTS/PSD2-Verträge, Kontakte, Konto- und Umsatzabruf fehlen |
-| P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA, Idempotenz und versionierter pain.001.001.09-Export nach EPC-SCT-2025-V1.0 mit XSD-Prüfung; Dauerauftrag, Lastschrift, Sammler, EPC-QR sowie pain.001-Import, pain.008 und pain.002 fehlen |
+| P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA, Idempotenz, versionierter pain.001.001.09-Export sowie lokale Daueraufträge mit Pause/Ende, Wochenendregel, genau-einmaliger Entwurfserzeugung und Historie; Feiertagskalender, Lastschrift, Sammler, EPC-QR sowie pain.001-Import, pain.008 und pain.002 fehlen |
 | P1 | Kalender und Prognose | Teilweise | Regelmäßige Vorgänge, Monatsende und 30/90/180/365-Tage-Prognose; Wochenansicht, Ausnahmen, Feiertage, Drag-and-drop und Szenarien fehlen |
 | P1 | Budgets | Teilweise | Mehrere Budgets, Geschäftsjahr, Monatsplan, Ist/Abweichung, Roll-over-Schalter; Jahreswerte, Reserve, Kopie und Berichte fehlen |
 | P1 | Wertpapiere und Depots | Teilweise | Stammdaten, Mikroeinheiten, FIFO-Lots, Allokation und Kurse; weitere Transaktionen, Lotmethoden, Performance und Import fehlen |
@@ -42,10 +42,8 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Zahlungsverkehr: Dauerauftrag mit sicherer Materialisierung und Bearbeitung.
-2. Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
-3. Kategorien: MwSt.- und Steuerzuordnungen.
-2. P0-Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
+1. Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
+2. Kategorien: MwSt.- und Steuerzuordnungen.
 3. Import-/Bankumsatz-Matching mit gestuften Fingerabdrücken.
 4. Kontoabgleich mit markierbaren Buchungen und Rücknahme.
 5. Regelketten und Vorlagen.

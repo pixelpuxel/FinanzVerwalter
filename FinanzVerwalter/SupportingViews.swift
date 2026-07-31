@@ -3019,12 +3019,25 @@ private struct BudgetLineEditor: View {
 }
 
 struct PaymentsView: View {
+    private enum PaymentSection: String, CaseIterable, Identifiable {
+        case payments = "Überweisungen"
+        case standingOrders = "Daueraufträge"
+        var id: Self { self }
+    }
+
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selectedID: UUID?
+    @State private var selectedStandingOrderID: UUID?
+    @State private var section: PaymentSection = .payments
     @State private var showNewPayment = false
+    @State private var editedStandingOrder: StandingOrder?
 
     private var selectedOrder: PaymentOrder? {
         store.paymentOrders.first { $0.id == selectedID }
+    }
+
+    private var selectedStandingOrder: StandingOrder? {
+        store.standingOrders.first { $0.id == selectedStandingOrderID }
     }
 
     var body: some View {
@@ -3043,77 +3056,193 @@ struct PaymentsView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(.orange.opacity(0.12), in: Capsule())
+                Picker("Bereich", selection: $section) {
+                    ForEach(PaymentSection.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 260)
                 Button {
-                    showNewPayment = true
+                    switch section {
+                    case .payments:
+                        showNewPayment = true
+                    case .standingOrders:
+                        guard let account = store.accounts.first(where: {
+                            !$0.isClosed && $0.currency == "EUR"
+                        }) else {
+                            return
+                        }
+                        let now = Date()
+                        editedStandingOrder = StandingOrder(
+                            id: UUID(), accountID: account.id,
+                            name: "Neuer Dauerauftrag", recipientName: "",
+                            iban: "", bic: "", amountMinor: 0,
+                            currency: account.currency, purpose: "",
+                            nextExecutionDate: now, endDate: nil,
+                            frequency: .monthly,
+                            businessDayAdjustment: .nextWeekday,
+                            status: .active, createdAt: now, updatedAt: now
+                        )
+                    }
                 } label: {
-                    Label("Überweisung", systemImage: "plus")
+                    Label(
+                        section == .payments ? "Überweisung" : "Dauerauftrag",
+                        systemImage: "plus"
+                    )
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.accounts.isEmpty)
+                .disabled(
+                    section == PaymentSection.payments
+                        ? store.accounts.isEmpty
+                        : !store.accounts.contains(where: {
+                            !$0.isClosed && $0.currency == "EUR"
+                        })
+                )
             }
             .padding(12)
             Divider()
-            HSplitView {
-                VStack(spacing: 0) {
-                    HStack {
-                        Text("Aufträge").font(.headline)
-                        Spacer()
-                        Text("\(store.paymentOrders.count)")
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                    Divider()
-                    if store.paymentOrders.isEmpty {
-                        ContentUnavailableView(
-                            "Keine Zahlungsaufträge",
-                            systemImage: "eurosign.arrow.circlepath",
-                            description: Text("Lege eine simulierte SEPA-Überweisung an.")
-                        )
-                    } else {
-                        List(selection: $selectedID) {
-                            ForEach(store.paymentOrders) { order in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text(order.recipientName).fontWeight(.medium)
-                                        Spacer()
-                                        Text(Money(minorUnits: order.amountMinor).formatted)
-                                            .monospacedDigit()
-                                    }
-                                    HStack {
-                                        PaymentStatusBadge(status: order.status)
-                                        Text(order.executionDate, format: .dateTime.day().month().year())
-                                        Spacer()
-                                        Text(order.type.title)
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                }
-                                .tag(order.id)
-                            }
-                        }
-                    }
-                }
-                .frame(minWidth: 390, idealWidth: 470)
-
-                if let selectedOrder {
-                    PaymentOrderDetail(order: selectedOrder)
-                        .id(selectedOrder)
-                        .frame(minWidth: 520)
-                } else {
-                    ContentUnavailableView(
-                        "Kein Auftrag ausgewählt",
-                        systemImage: "doc.text.magnifyingglass",
-                        description: Text("Wähle links einen Zahlungsauftrag.")
-                    )
-                    .frame(minWidth: 520)
-                }
+            switch section {
+            case .payments:
+                paymentOrdersContent
+            case .standingOrders:
+                standingOrdersContent
             }
         }
         .onAppear {
             if selectedID == nil { selectedID = store.paymentOrders.first?.id }
+            if selectedStandingOrderID == nil {
+                selectedStandingOrderID = store.standingOrders.first?.id
+            }
         }
         .sheet(isPresented: $showNewPayment) {
             PaymentDraftEditor()
+        }
+        .sheet(item: $editedStandingOrder) {
+            StandingOrderEditor(value: $0)
+        }
+    }
+
+    private var paymentOrdersContent: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Aufträge").font(.headline)
+                    Spacer()
+                    Text("\(store.paymentOrders.count)")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                Divider()
+                if store.paymentOrders.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Zahlungsaufträge",
+                        systemImage: "eurosign.arrow.circlepath",
+                        description: Text("Lege eine simulierte SEPA-Überweisung an.")
+                    )
+                } else {
+                    List(selection: $selectedID) {
+                        ForEach(store.paymentOrders) { order in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(order.recipientName).fontWeight(.medium)
+                                    Spacer()
+                                    Text(Money(minorUnits: order.amountMinor).formatted)
+                                        .monospacedDigit()
+                                }
+                                HStack {
+                                    PaymentStatusBadge(status: order.status)
+                                    Text(order.executionDate, format: .dateTime.day().month().year())
+                                    Spacer()
+                                    Text(order.type.title)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .tag(order.id)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 390, idealWidth: 470)
+
+            if let selectedOrder {
+                PaymentOrderDetail(order: selectedOrder)
+                    .id(selectedOrder)
+                    .frame(minWidth: 520)
+            } else {
+                ContentUnavailableView(
+                    "Kein Auftrag ausgewählt",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Wähle links einen Zahlungsauftrag.")
+                )
+                .frame(minWidth: 520)
+            }
+        }
+    }
+
+    private var standingOrdersContent: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Daueraufträge").font(.headline)
+                    Spacer()
+                    Text("\(store.standingOrders.filter { $0.status == .active }.count) aktiv")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                Divider()
+                if store.standingOrders.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Daueraufträge",
+                        systemImage: "repeat.circle",
+                        description: Text(
+                            "Regelmäßige Zahlungstermine werden kontrolliert als einzelne Entwürfe vorbereitet."
+                        )
+                    )
+                } else {
+                    List(selection: $selectedStandingOrderID) {
+                        ForEach(store.standingOrders) { value in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(value.name).fontWeight(.medium)
+                                    Spacer()
+                                    Text(Money(minorUnits: value.amountMinor).formatted)
+                                        .monospacedDigit()
+                                }
+                                HStack {
+                                    Text(value.status.title)
+                                    Text("·")
+                                    Text(value.frequency.title)
+                                    Spacer()
+                                    Text(
+                                        value.nextExecutionDate,
+                                        format: .dateTime.day().month().year()
+                                    )
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .tag(value.id)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 390, idealWidth: 470)
+
+            if let selectedStandingOrder {
+                StandingOrderDetail(
+                    value: selectedStandingOrder,
+                    edit: { editedStandingOrder = selectedStandingOrder }
+                )
+                .id(selectedStandingOrder)
+                .frame(minWidth: 520)
+            } else {
+                ContentUnavailableView(
+                    "Kein Dauerauftrag ausgewählt",
+                    systemImage: "repeat.circle",
+                    description: Text("Wähle links einen Dauerauftrag.")
+                )
+                .frame(minWidth: 520)
+            }
         }
     }
 }
@@ -3138,6 +3267,300 @@ private struct PaymentStatusBadge: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct StandingOrderDetail: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let value: StandingOrder
+    let edit: () -> Void
+    @State private var runs: [StandingOrderRun] = []
+    @State private var confirmMaterialization = false
+    @State private var confirmSkip = false
+    @State private var confirmCancellation = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(value.name).font(.title2.bold())
+                        Text(value.recipientName).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(value.status.title)
+                        .font(.caption.bold())
+                        .foregroundStyle(value.status == .active ? .green : .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.secondary.opacity(0.12), in: Capsule())
+                }
+
+                GroupBox("Dauerauftragsvorlage") {
+                    Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Auftraggeber").foregroundStyle(.secondary)
+                            Text(store.accountName(value.accountID))
+                        }
+                        GridRow {
+                            Text("Empfänger").foregroundStyle(.secondary)
+                            Text(value.recipientName)
+                        }
+                        GridRow {
+                            Text("IBAN").foregroundStyle(.secondary)
+                            Text(value.iban).monospaced()
+                        }
+                        GridRow {
+                            Text("Betrag").foregroundStyle(.secondary)
+                            Text(Money(minorUnits: value.amountMinor).formatted).bold()
+                        }
+                        GridRow {
+                            Text("Nächste Fälligkeit").foregroundStyle(.secondary)
+                            Text(
+                                value.nextExecutionDate,
+                                format: .dateTime.day().month().year()
+                            )
+                        }
+                        GridRow {
+                            Text("Rhythmus").foregroundStyle(.secondary)
+                            Text(value.frequency.title)
+                        }
+                        GridRow {
+                            Text("Wochenende").foregroundStyle(.secondary)
+                            Text(value.businessDayAdjustment.title)
+                        }
+                        GridRow {
+                            Text("Verwendungszweck").foregroundStyle(.secondary)
+                            Text(value.purpose)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+
+                HStack {
+                    Button("Bearbeiten", action: edit)
+                        .disabled(value.status == .cancelled)
+                    if value.status == .active {
+                        Button("Nächsten Entwurf vorbereiten …") {
+                            confirmMaterialization = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("Fälligkeit überspringen …") {
+                            confirmSkip = true
+                        }
+                        Button("Pausieren") {
+                            _ = store.setStandingOrderStatus(value, to: .paused)
+                        }
+                    } else if value.status == .paused {
+                        Button("Fortsetzen") {
+                            _ = store.setStandingOrderStatus(value, to: .active)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Spacer()
+                    if value.status != .cancelled {
+                        Button("Beenden …", role: .destructive) {
+                            confirmCancellation = true
+                        }
+                    }
+                }
+
+                Label(
+                    "Jede Fälligkeit erhält genau eine dauerhafte Historienzeile. Ein erneuter Aufruf liefert denselben Zahlungsentwurf; übersprungene Termine können nicht nachträglich versendet werden.",
+                    systemImage: "lock.shield"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                GroupBox("Ausführungshistorie") {
+                    if runs.isEmpty {
+                        Text("Noch keine Fälligkeit verarbeitet")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(runs) { run in
+                                HStack {
+                                    Image(
+                                        systemName: run.status == .materialized
+                                            ? "doc.badge.plus" : "forward.end"
+                                    )
+                                    Text(run.dueDate, format: .dateTime.day().month().year())
+                                    if run.executionDate != run.dueDate {
+                                        Text("→")
+                                        Text(
+                                            run.executionDate,
+                                            format: .dateTime.day().month().year()
+                                        )
+                                    }
+                                    Spacer()
+                                    Text(run.status.title)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 6)
+                                if run.id != runs.last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .onAppear { runs = store.standingOrderRuns(value) }
+        .alert("Zahlungsentwurf vorbereiten?", isPresented: $confirmMaterialization) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Entwurf erzeugen") {
+                _ = store.materializeStandingOrder(value)
+            }
+        } message: {
+            Text(
+                "Für \(value.recipientName) wird ein einzelner Terminüberweisungsentwurf über \(Money(minorUnits: value.amountMinor).formatted) erzeugt. Es erfolgt keine Bankübermittlung."
+            )
+        }
+        .alert("Fälligkeit überspringen?", isPresented: $confirmSkip) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Überspringen", role: .destructive) {
+                _ = store.skipStandingOrder(value)
+            }
+        } message: {
+            Text("Der Termin wird dauerhaft als übersprungen protokolliert.")
+        }
+        .alert("Dauerauftrag beenden?", isPresented: $confirmCancellation) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Endgültig beenden", role: .destructive) {
+                _ = store.setStandingOrderStatus(value, to: .cancelled)
+            }
+        } message: {
+            Text("Bereits erzeugte Zahlungsentwürfe bleiben unverändert erhalten.")
+        }
+    }
+}
+
+private struct StandingOrderEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var value: StandingOrder
+    @State private var amountText: String
+    @State private var hasEndDate: Bool
+
+    init(value: StandingOrder) {
+        _value = State(initialValue: value)
+        _amountText = State(
+            initialValue: Money(
+                minorUnits: value.amountMinor, currency: value.currency
+            ).editingString
+        )
+        _hasEndDate = State(initialValue: value.endDate != nil)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Dauerauftrag bearbeiten").font(.title2.bold())
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Speichern") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || value.recipientName.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                            || value.purpose.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                            || amountText.isEmpty
+                    )
+            }
+            .padding(14)
+            Divider()
+            Form {
+                Section("Vorlage") {
+                    TextField("Name", text: $value.name)
+                    Picker("Auftraggeberkonto", selection: $value.accountID) {
+                        ForEach(store.accounts.filter { !$0.isClosed && $0.currency == "EUR" }) {
+                            Text($0.name).tag($0.id)
+                        }
+                    }
+                    .onChange(of: value.accountID) {
+                        if let account = store.accounts.first(where: {
+                            $0.id == value.accountID
+                        }) {
+                            value.currency = account.currency
+                        }
+                    }
+                    TextField("Empfänger", text: $value.recipientName)
+                    TextField("IBAN", text: $value.iban)
+                    TextField("BIC (optional)", text: $value.bic)
+                    TextField("Betrag", text: $amountText)
+                        .multilineTextAlignment(.trailing)
+                    TextField("Verwendungszweck", text: $value.purpose)
+                }
+                Section("Zeitplan") {
+                    DatePicker(
+                        "Nächste Fälligkeit",
+                        selection: $value.nextExecutionDate,
+                        displayedComponents: .date
+                    )
+                    Picker("Rhythmus", selection: $value.frequency) {
+                        ForEach(RecurrenceFrequency.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Picker("Wochenendregel", selection: $value.businessDayAdjustment) {
+                        ForEach(BusinessDayAdjustment.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Toggle("Enddatum verwenden", isOn: $hasEndDate)
+                    if hasEndDate {
+                        DatePicker(
+                            "Enddatum",
+                            selection: Binding(
+                                get: { value.endDate ?? value.nextExecutionDate },
+                                set: { value.endDate = $0 }
+                            ),
+                            in: value.nextExecutionDate...,
+                            displayedComponents: .date
+                        )
+                    }
+                    if value.status != .cancelled {
+                        Picker("Status", selection: $value.status) {
+                            Text(StandingOrderStatus.active.title)
+                                .tag(StandingOrderStatus.active)
+                            Text(StandingOrderStatus.paused.title)
+                                .tag(StandingOrderStatus.paused)
+                        }
+                    }
+                }
+                Section {
+                    Label(
+                        "Speichern ändert nur künftige Fälligkeiten. Bereits vorbereitete Entwürfe und Historieneinträge bleiben unverändert.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 680, height: 720)
+    }
+
+    private func save() {
+        do {
+            value.amountMinor = abs(
+                try Money(parsing: amountText, currency: value.currency).minorUnits
+            )
+            if !hasEndDate { value.endDate = nil }
+            value.updatedAt = Date()
+            if store.saveStandingOrder(value) {
+                dismiss()
+            }
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
     }
 }
 

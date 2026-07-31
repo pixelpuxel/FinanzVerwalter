@@ -15,6 +15,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
+    @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
     @Published private(set) var tags: [FinanceTag] = []
     @Published private(set) var securities: [Security] = []
@@ -41,6 +42,14 @@ final class FinanceAppStore: ObservableObject {
                 let demoURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent("finanzverwalter-ui-demo-\(ProcessInfo.processInfo.processIdentifier).qdata")
                 self.repository = try SQLiteFinanceStore(fileURL: demoURL)
+            } else if ProcessInfo.processInfo.environment[
+                "XCTestConfigurationFilePath"
+            ] != nil {
+                let testHostURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(
+                        "finanzverwalter-test-host-\(ProcessInfo.processInfo.processIdentifier).qdata"
+                    )
+                self.repository = try SQLiteFinanceStore(fileURL: testHostURL)
             } else {
                 self.repository = try SQLiteFinanceStore()
             }
@@ -867,6 +876,70 @@ final class FinanceAppStore: ObservableObject {
         transitionPayment(order, to: outcome.paymentStatus)
     }
 
+    func saveStandingOrder(_ value: StandingOrder) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveStandingOrder(value)
+            try load()
+            statusText = "Dauerauftrag „\(value.name)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func setStandingOrderStatus(_ value: StandingOrder, to target: StandingOrderStatus) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.setStandingOrderStatus(id: value.id, to: target)
+            try load()
+            statusText = "Dauerauftrag: \(target.title)"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func materializeStandingOrder(_ value: StandingOrder) -> Bool {
+        guard let repository else { return false }
+        do {
+            let payment = try repository.materializeStandingOrder(
+                id: value.id, dueDate: value.nextExecutionDate
+            )
+            try load()
+            statusText = "Termin als Zahlungsentwurf vorbereitet: \(payment.recipientName)"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func skipStandingOrder(_ value: StandingOrder) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.skipStandingOrder(id: value.id, dueDate: value.nextExecutionDate)
+            try load()
+            statusText = "Dauerauftragsfälligkeit übersprungen"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func standingOrderRuns(_ value: StandingOrder) -> [StandingOrderRun] {
+        guard let repository else { return [] }
+        do {
+            return try repository.standingOrderRuns(standingOrderID: value.id)
+        } catch {
+            present(error)
+            return []
+        }
+    }
+
     func saveSecurity(_ value: Security) -> Bool {
         guard let repository else { return false }
         do {
@@ -1147,6 +1220,7 @@ final class FinanceAppStore: ObservableObject {
         scheduledTransactions = try repository.scheduledTransactions()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()
+        standingOrders = try repository.standingOrders()
         payees = try repository.payees()
         tags = try repository.tags()
         securities = try repository.securities()

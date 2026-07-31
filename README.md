@@ -111,6 +111,15 @@ Nur unveränderte Entwürfe können initiiert werden; terminale oder bereits
 übermittelte Aufträge sind gegen erneuten Export gesperrt. Die Funktion sendet
 die Datei nicht und behauptet keine bankseitige Annahme.
 
+Daueraufträge besitzen eine eigene, lokale Verwaltung mit Empfänger,
+IBAN/BIC, Betrag, Rhythmus, optionalem Enddatum und Wochenendregel. Sie
+können pausiert, fortgesetzt oder endgültig beendet werden. Eine Fälligkeit
+wird nur nach Bestätigung als einzelner Terminüberweisungsentwurf
+materialisiert oder dauerhaft übersprungen. Die eindeutige Kombination aus
+Dauerauftrag und Fälligkeitsdatum sowie eine unveränderliche Historie
+verhindern Doppelentwürfe; spätere Vorlagenänderungen verändern bereits
+erzeugte Aufträge nicht.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand
