@@ -113,6 +113,13 @@ werden. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen auch
 Splits und Tags, aber niemals altes Datum, Belegnummer, Transfer- oder
 Importidentität. Eine einzelne Umbuchungsseite ist keine zulässige Vorlage.
 
+Kontoblatt, zweites Kontoblatt und Sammelkontoblatt besitzen stabile
+Accessibility-Bezeichner. VoiceOver erhält für jede dynamische Zelle den
+Spaltentitel und den vollständigen Wert – insbesondere den ungekürzten
+Kategoriepfad und Saldo. Konto-Tabs bieten Auswahl und Schließen als getrennte
+Aktionen. Eingabe und Escape bleiben außerhalb geöffneter Dialoge der
+Tabellen- beziehungsweise Systembedienung vorbehalten.
+
 ## Regeln
 
 Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-

@@ -115,12 +115,22 @@ struct RegisterView: View {
                     }
                 }
                 .frame(width: 220)
+                .accessibilityIdentifier("register.accountPicker")
                 if let account = store.selectedAccount {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text("Aktueller Saldo").font(.caption).foregroundStyle(.secondary)
                         Text(Money(minorUnits: store.balances[account.id] ?? 0).formatted)
                             .font(.title3.bold().monospacedDigit())
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Aktueller Saldo \(account.name)")
+                    .accessibilityValue(
+                        Money(
+                            minorUnits: store.balances[account.id] ?? 0,
+                            currency: account.currency
+                        ).formatted
+                    )
+                    .accessibilityIdentifier("register.currentBalance")
                 }
             }
             .padding(14)
@@ -137,6 +147,7 @@ struct RegisterView: View {
                     }
                 }
                 .frame(width: 150)
+                .accessibilityIdentifier("register.statusFilter")
                 Picker("Kategorie", selection: $categoryFilter) {
                     Text("Alle Kategorien").tag(RegisterCategoryFilter.all)
                     Text("Nicht kategorisiert").tag(RegisterCategoryFilter.uncategorized)
@@ -147,12 +158,14 @@ struct RegisterView: View {
                     }
                 }
                 .frame(width: 210)
+                .accessibilityIdentifier("register.categoryFilter")
                 Picker("Zeitraum", selection: $periodFilter) {
                     ForEach(RegisterPeriodFilter.allCases) {
                         Text($0.title).tag($0)
                     }
                 }
                 .frame(width: 150)
+                .accessibilityIdentifier("register.periodFilter")
                 Picker(
                     "Zeilen",
                     selection: Binding(get: { rowMode }, set: { rowMode = $0 })
@@ -163,6 +176,7 @@ struct RegisterView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 175)
+                .accessibilityIdentifier("register.rowMode")
                 registerViewMenu
                 transactionTemplateMenu
                 registerOutputMenu(runningBalances: runningBalances)
@@ -229,10 +243,31 @@ struct RegisterView: View {
                                 column: column,
                                 runningBalances: runningBalances
                             )
+                            .accessibilityLabel(
+                                RegisterAccessibility.cellLabel(
+                                    column: column,
+                                    value: registerCellText(
+                                        value,
+                                        column: column,
+                                        runningBalances: runningBalances
+                                    )
+                                )
+                            )
                         }
                         .width(min: column.minimumWidth, ideal: column.idealWidth)
                     }
                 }
+                .accessibilityLabel("Kontoblatt Buchungstabelle")
+                .accessibilityValue(
+                    RegisterAccessibility.tableValue(
+                        visibleCount: visibleTransactions.count,
+                        selectedCount: selection.count
+                    )
+                )
+                .accessibilityHint(
+                    "Mit den Pfeiltasten navigieren; Eingabe öffnet die markierte Buchung."
+                )
+                .accessibilityIdentifier("register.transactionTable")
                 .contextMenu(forSelectionType: UUID.self) { ids in
                     if ids.count == 1 {
                         Button("Bearbeiten") {
@@ -1301,12 +1336,17 @@ private struct RegisterAccountTab: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Kontoblatt \(account.name)")
+            .accessibilityValue(
+                "Saldo \(balanceText)\(isSelected ? ", ausgewählt" : "")"
+            )
             Button(action: close) {
                 Image(systemName: "xmark")
                     .font(.caption2.bold())
             }
             .buttonStyle(.plain)
             .help("Kontoblatt schließen")
+            .accessibilityLabel("Kontoblatt \(account.name) schließen")
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
@@ -1324,8 +1364,7 @@ private struct RegisterAccountTab: View {
                         : Color.secondary.opacity(0.18)
                 )
         )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Kontoblatt \(account.name), \(balanceText)")
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -2191,6 +2230,14 @@ private struct SecondaryRegisterPane: View {
                 }
                 .width(min: 85, ideal: 105)
             }
+            .accessibilityLabel("Zweites Kontoblatt Buchungstabelle")
+            .accessibilityValue(
+                RegisterAccessibility.tableValue(
+                    visibleCount: visibleTransactions.count,
+                    selectedCount: selection.count
+                )
+            )
+            .accessibilityIdentifier("register.secondaryTransactionTable")
             .contextMenu(forSelectionType: UUID.self) { ids in
                 if ids.count == 1,
                    let transaction = store.transactions.first(where: {
@@ -3124,10 +3171,28 @@ struct CombinedRegisterView: View {
                                 column: column,
                                 runningBalances: runningBalances
                             )
+                            .accessibilityLabel(
+                                RegisterAccessibility.cellLabel(
+                                    column: column,
+                                    value: combinedCellText(
+                                        value,
+                                        column: column,
+                                        runningBalances: runningBalances
+                                    )
+                                )
+                            )
                         }
                         .width(min: column.minimumWidth, ideal: column.idealWidth)
                     }
                 }
+                .accessibilityLabel("Sammelkontoblatt Buchungstabelle")
+                .accessibilityValue(
+                    RegisterAccessibility.tableValue(
+                        visibleCount: queryResult.rows.count,
+                        selectedCount: selection.count
+                    )
+                )
+                .accessibilityIdentifier("combinedRegister.transactionTable")
                 .contextMenu(forSelectionType: UUID.self) { ids in
                     Button("Kategorie für Auswahl ändern …") {
                         selection = ids

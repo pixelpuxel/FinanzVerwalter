@@ -123,7 +123,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 Migrationen 1 bis 21 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 60 ausgeführte XCTest-Fälle: 59
+implementiert. Die Suite umfasst aktuell 62 ausgeführte XCTest-Fälle: 61
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -516,6 +516,28 @@ Verwendungszweck, Kategorie, Konto und Status wählbar. Genau eine markierte
 Buchung wird über `RegisterF3Field.selection(for:)` in einen typisierten
 Filterwert übersetzt. Keine oder mehrere Markierungen sowie leere Textfelder
 ändern keinen Filter und melden den Grund in der Statuszeile.
+
+# Reproduzierbare Kontoblatt-Accessibility und Tastaturkontexte
+
+Vergib stabile Accessibility-Identifier für Kontoauswahl, Status-,
+Kategorie- und Zeitraumfilter, Zeilenmodus, aktuellen Saldo sowie Haupt-,
+zweite und Sammel-Buchungstabelle. Tabellen nennen sichtbar gefilterte und
+ausgewählte Buchungszahlen. Jede dynamische Zelle erhält eine explizite
+Beschriftung `Spaltentitel: Wert`; leere Werte werden als `Leer` gesprochen.
+Kategorie und Saldo müssen den vollständigen sichtbaren Wert verwenden,
+nicht den gekürzten Bildschirmtext.
+
+Kontoblatt-Tabs bleiben als Container mit zwei getrennten Bedienelementen
+zugänglich: Konto auswählen einschließlich Saldo/Auswahlstatus und genau
+dieses Konto schließen. Kombiniere die Kinder nicht zu einem Element, weil
+dadurch die Schließen-Aktion verloren gehen kann.
+
+Der globale Kontextmonitor darf Löschen niemals während Texteingabe
+verarbeiten. `Übernehmen` und `Abbrechen` dürfen nur bei tatsächlich
+präsentiertem Sheet konsumiert werden; ohne Sheet müssen Eingabe und Escape
+an Tabelle beziehungsweise normales AppKit-Key-Handling weiterlaufen. Teste
+vollständigen Kategoriepfad, Saldo, Leerwert, Singular/Plural/Auswahl und die
+Kontextentscheidung als reine deterministische Funktionen.
 
 # Reproduzierbarer Kontoabgleich
 

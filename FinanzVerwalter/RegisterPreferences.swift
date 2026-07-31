@@ -63,6 +63,19 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
     static let defaultSet = Set(allCases)
 }
 
+enum RegisterAccessibility {
+    static func cellLabel(column: RegisterColumn, value: String) -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(column.title): \(normalized.isEmpty ? "Leer" : normalized)"
+    }
+
+    static func tableValue(visibleCount: Int, selectedCount: Int) -> String {
+        let visible = "\(visibleCount) Buchung\(visibleCount == 1 ? "" : "en")"
+        guard selectedCount > 0 else { return visible }
+        return "\(visible), \(selectedCount) ausgewählt"
+    }
+}
+
 enum RegisterCategorySelection: Codable, Equatable, Sendable {
     case all
     case uncategorized

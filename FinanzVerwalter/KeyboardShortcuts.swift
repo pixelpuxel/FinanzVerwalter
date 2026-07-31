@@ -319,8 +319,11 @@ final class ContextualShortcutMonitor {
         }) else {
             return event
         }
-        if action == .deleteSelection,
-           event.window?.firstResponder is NSTextView {
+        guard Self.shouldConsume(
+            action: action,
+            hasPresentedSheet: event.window?.attachedSheet != nil,
+            isTextEditing: event.window?.firstResponder is NSTextView
+        ) else {
             return event
         }
         let name: Notification.Name
@@ -332,6 +335,18 @@ final class ContextualShortcutMonitor {
         }
         NotificationCenter.default.post(name: name, object: nil)
         return nil
+    }
+
+    nonisolated static func shouldConsume(
+        action: AppShortcutAction,
+        hasPresentedSheet: Bool,
+        isTextEditing: Bool
+    ) -> Bool {
+        if action == .deleteSelection, isTextEditing { return false }
+        if action == .accept || action == .cancel {
+            return hasPresentedSheet
+        }
+        return true
     }
 
     private func shortcutModifiers(

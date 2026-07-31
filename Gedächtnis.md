@@ -1044,3 +1044,37 @@ Rechtsberatung.
   Datenbank- und GitHub-Status sowie den exakten Zielzählerstand von
   7.606.790 Tokens; wegen des gesperrten Macs ausdrücklich keinen
   vorgetäuschten Screenshot.
+
+## 2026-07-31 – Kontoblatt-Accessibility und Tastaturkontext
+
+- Kontoauswahl, Status-/Kategorie-/Zeitraumfilter, Zeilenmodus, aktueller
+  Saldo sowie Haupt-, zweites und Sammelkontoblatt besitzen jetzt stabile
+  Accessibility-Identifier. Tabellen sprechen sichtbare und ausgewählte
+  Buchungszahlen.
+- Jede dynamische Kontoblattzelle liefert `Spaltentitel: Wert` als explizite
+  Accessibility-Beschriftung. Damit bleiben insbesondere der vollständige
+  Kategoriepfad und der laufende Saldo unabhängig von visueller Kürzung
+  hörbar; echte Leerwerte werden als `Leer` benannt.
+- Kontoblatt-Tabs kombinieren Auswahl und Schließen nicht länger zu einem
+  untrennbaren AX-Element. Kontoauswahl mit Saldo/Auswahlstatus und die
+  kontospezifische Schließen-Schaltfläche sind getrennt zugänglich.
+- Der globale Kontextmonitor gibt Eingabe und Escape ohne geöffnetes Sheet
+  wieder an Tabelle beziehungsweise AppKit zurück. Löschen wird während
+  Texteingabe nicht abgefangen. Damit blockiert die konfigurierbare
+  Dialogsteuerung nicht mehr die normale Tastaturnavigation.
+- Zwei neue Tests prüfen vollständigen Kategorie-/Saldotext, Leerwerte,
+  Singular/Plural und Auswahlstatus sowie die Kontextentscheidung für
+  Eingabe, Escape und Löschen. Die frische vollständige Abnahme führte 62
+  Tests aus: 61 bestanden, der private opt-in-Real-QIF-Test wurde
+  erwartungsgemäß übersprungen, 0 Fehler.
+- Der optimierte Release-Build besteht, ist ad hoc signiert, unter
+  `~/Applications/FinanzVerwalter.app` installiert und gestartet. Der
+  Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-ax-20260731-1303.app`.
+- Die Produktivdatei blieb vor und nach Installation bytegenau bei SHA-256
+  `0a8d6dd9695ccbace6155c05b82f9367c9621904bf9a68ef7bbb073f4d1bd77e`,
+  Schema 21, Integrität `ok`, 97 Konten, 2.170 Buchungen, einer
+  Berichtsvorlage und 0 Banking-Verbindungen.
+- Die sichtbare VoiceOver-/Tastatur-/Screenshot-Abnahme bleibt wegen des
+  nachweislich gesperrten Macs offen. Der neue statische AX-Test ersetzt
+  diese Sichtprüfung ausdrücklich nicht.

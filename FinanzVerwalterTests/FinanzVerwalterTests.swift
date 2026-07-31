@@ -3002,6 +3002,32 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testRegisterAccessibilityLabelsPreserveFullValuesAndSelection() {
+        XCTAssertEqual(
+            RegisterAccessibility.cellLabel(
+                column: .category,
+                value: "Immobilien:Berlin:Grundsteuer"
+            ),
+            "Kategorie: Immobilien:Berlin:Grundsteuer"
+        )
+        XCTAssertEqual(
+            RegisterAccessibility.cellLabel(column: .balance, value: "1.234,56 €"),
+            "Saldo: 1.234,56 €"
+        )
+        XCTAssertEqual(
+            RegisterAccessibility.cellLabel(column: .purpose, value: "  \n"),
+            "Verwendungszweck: Leer"
+        )
+        XCTAssertEqual(
+            RegisterAccessibility.tableValue(visibleCount: 1, selectedCount: 0),
+            "1 Buchung"
+        )
+        XCTAssertEqual(
+            RegisterAccessibility.tableValue(visibleCount: 27, selectedCount: 3),
+            "27 Buchungen, 3 ausgewählt"
+        )
+    }
+
     func testRegisterPDFContainsExactlyVisibleColumnsAndRepeatsHeaders() throws {
         let rows = (0..<90).map { index in
             [
@@ -3074,6 +3100,44 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(unsafe.barePrintableActions, [.search])
         XCTAssertFalse(unsafe.isValid)
         XCTAssertTrue(AppShortcutCodec.encode(unsafe).isEmpty)
+    }
+
+    func testContextualShortcutsDoNotStealTableOrTextEditingKeys() {
+        XCTAssertFalse(
+            ContextualShortcutMonitor.shouldConsume(
+                action: .accept,
+                hasPresentedSheet: false,
+                isTextEditing: false
+            )
+        )
+        XCTAssertFalse(
+            ContextualShortcutMonitor.shouldConsume(
+                action: .cancel,
+                hasPresentedSheet: false,
+                isTextEditing: false
+            )
+        )
+        XCTAssertTrue(
+            ContextualShortcutMonitor.shouldConsume(
+                action: .accept,
+                hasPresentedSheet: true,
+                isTextEditing: false
+            )
+        )
+        XCTAssertFalse(
+            ContextualShortcutMonitor.shouldConsume(
+                action: .deleteSelection,
+                hasPresentedSheet: false,
+                isTextEditing: true
+            )
+        )
+        XCTAssertTrue(
+            ContextualShortcutMonitor.shouldConsume(
+                action: .deleteSelection,
+                hasPresentedSheet: false,
+                isTextEditing: false
+            )
+        )
     }
 
     func testTransactionTemplatePersistsSplitsAndCreatesFreshDraft() throws {
