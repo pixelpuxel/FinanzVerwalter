@@ -1036,3 +1036,11 @@ Rechtsberatung.
   Mac weiterhin gesperrt ist und sich nicht automatisch entsperren lässt.
   Die echte UI-/Screenshot-Abnahme bleibt deshalb offen und wird nicht durch
   ein Ersatzbild vorgetäuscht.
+- Der vollständige MT940-/camt-Stand wurde als Commit `a60b7c3` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 nennt nun 60 ausgeführte
+  Tests, den XML-Schutz und die geprüfte Release-Installation.
+- Der textliche Zwischenstand wurde im Telegram-Projektthread 894
+  (`/quicken`) veröffentlicht. Er enthält Import-, Test-, Release-,
+  Datenbank- und GitHub-Status sowie den exakten Zielzählerstand von
+  7.606.790 Tokens; wegen des gesperrten Macs ausdrücklich keinen
+  vorgetäuschten Screenshot.
