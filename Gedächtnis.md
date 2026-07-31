@@ -74,7 +74,17 @@ Rechtsberatung.
 - SQLite-Migration 2 mit dokumentierten Kontoabgleichen
 - Splitdialog mit beliebig ergänzbaren Zeilen, Kategorie, Notiz,
   Restbetragsanzeige und „Rest zuweisen“
-- QIF-Import mit Empfänger, Memo, Referenz, Kategorien und exakten Splits
+- QIF-Einzelkontoimport mit Empfänger, Memo, Referenz, Kategorien und
+  exakten Splits
+- automatische Erkennung vollständiger Mehrkonten-QIF-Pakete; solche
+  Dateien können nicht mehr versehentlich in ein einzelnes Zielkonto
+  importiert werden
+- Paketvorschau mit Konten, neuen Ober-/Unterkategorien, Buchungsanzahl,
+  Warnungen und den ersten 100 Buchungen
+- atomarer QIF-Paketimport von Konten, hierarchischen Kategorien,
+  Buchungen und Splits mit SHA-256-Idempotenz
+- Depot-, Klassen- und Merkpostenbereiche werden gezählt und sichtbar
+  ausgelassen, bis ihr jeweiliges Fachmodell verlustfrei unterstützt wird
 - Kontoabgleich nur bei centgenau passendem Auszugssaldo
 - abgeglichene Buchungen gegen unbeabsichtigte Änderungen geschützt
 - Sammelkontoblatt mit allen Konten, Status, Heute-Grenze und Summe ohne
@@ -177,14 +187,14 @@ Rechtsberatung.
 - weitere Wertpapierarten, spezifische Lot-Auswahl, Durchschnittsmethode,
   Short-Positionen, Kapitalmaßnahmen, Dividenden, TWR/IRR und Kursimport
 - automatische Ratensplitbuchung und Ist-Abgleich, Kredit-Szenarien,
-  Debt-Reduction-Planner, Verträge, Inventar und Freistellungsaufträge
+  Debt-Reduction-Planner und Freistellungsaufträge
 - vollständige Accessibility-, Performance-, Security- und UI-Testabdeckung
 - Release-Build, signierte Auslieferung und finale Abweichungsdokumentation
 
 ## Verifikationsstand
 
 - Debug- und optimierter Release-Build am 31.07.2026 erfolgreich
-- 18 XCTest-Fälle erfolgreich:
+- 20 XCTest-Fälle erfolgreich, davon ein lokaler Realdatei-Abnahmetest:
   - deutsche Geldbeträge und Rundung
   - Split-Invariante
   - Migration, Persistenz und Saldo
@@ -192,6 +202,11 @@ Rechtsberatung.
   - idempotenter CSV-Import
   - unabhängiges, valides Backup
   - QIF-Import mit exakten Splits
+  - QIF-Mehrkontenpaket mit Konten, Kategoriehierarchie, normalen
+    Buchungen, sichtbar ausgelassenem Depotbereich, atomarem Commit und
+    Dublettenabwehr
+  - externe QIF-Realdatei: Mehrkontenerkennung, keine abgelehnte normale
+    Kontobuchung, vollständiger temporärer Commit und SQLite-Integrität
   - Kontoabgleich und Schutz abgeglichener Buchungen
   - Abweisung ungültiger Sicherungen
   - deterministische Kategorisierungsregel mit Schutz abgeglichener Buchungen
@@ -231,7 +246,8 @@ Rechtsberatung.
   - `build/Screenshots/11-kredite-vermoegen.png`
 - Zwischenstände samt Screenshots im Telegram-Projektthread
   (Thread-ID 894) gepostet
-- lokales Git-Repository auf Branch `main`; erster Commit `ddad814`
+- lokales Git-Repository auf Branch `main`; öffentlicher bereinigter
+  Stammcommit `0ce0c89`
 - Splitdialog über die installierte Release-App mit einem Betrag von
   -100,00 EUR und zwei Zeilen von -60,00/-40,00 EUR funktional geprüft;
   Rest 0,00 EUR und Speicherung erfolgreich
@@ -262,12 +278,15 @@ Rechtsberatung.
   berechneten Raten und einer datierten Sondertilgung; die Vermögensansicht
   zeigt 455.000,00 EUR aktuellen Immobilienwert und 185.588,63 EUR
   kreditbereinigten Nettoanteil
-- GitHub-Repository `https://github.com/pixelpuxel/FinanzVerwalter` ist als
-  `origin` eingerichtet. Vor der öffentlichen Freigabe wird die erreichbare
-  Historie auf den bereinigten FinanzVerwalter-Stand verdichtet; Zugangsdaten
-  stehen weder in Remote-URL noch Projektdateien.
+- GitHub-Repository `https://github.com/pixelpuxel/FinanzVerwalter` ist
+  öffentlich und als `origin` eingerichtet. Die erreichbare Historie enthält
+  ausschließlich den bereinigten FinanzVerwalter-Stand; Zugangsdaten stehen
+  weder in Remote-URL noch Projektdateien.
 - reale, ausschließlich extern gelesene ISO-8859-QIF-Datei als
   Migrations-Use-Case analysiert: Mehrkontenpaket mit 4.565 Datensätzen,
   97 Kontoblöcken, Kategorien, Klassen, Vorlagen und mehreren Kontotypen.
-  Die Datei wird nicht kopiert oder versioniert; ein solcher Export darf
-  nicht durch den bisherigen Ein-Konto-Import vermischt werden.
+  Die Datei wird nicht versioniert. Für die lokale Xcode-Abnahme wurde eine
+  zugriffsbeschränkte Kopie ausschließlich unter `/tmp` verwendet und danach
+  entfernt. Der Produktionsparser erkannte das Mehrkontenpaket, lehnte keine
+  normale Kontobuchung ab, übernahm es in eine wegwerfbare Datenbank und
+  bestand anschließend `PRAGMA integrity_check`.

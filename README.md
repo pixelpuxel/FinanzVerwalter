@@ -44,6 +44,19 @@ Der normale Start verwendet die lokale Finanzdatei:
 
 `~/Library/Application Support/FinanzVerwalter/Meine Finanzen.qdata`
 
+## QIF-Import
+
+Einzelne Kontoblätter und vollständige Mehrkontenpakete werden unterschieden.
+Bei einem Paket zeigt FinanzVerwalter vor der ausdrücklichen Übernahme die
+erkannten Konten, neuen Kategorien, Buchungen und nicht unterstützten Bereiche
+an. Konten, hierarchische Kategorien und normale Kontobuchungen werden
+anschließend atomar und idempotent gespeichert. Depot-, Klassen- und
+Merkpostenbereiche werden derzeit sichtbar ausgelassen, statt sie in ein
+unpassendes Kontoblatt zu schreiben.
+
+Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
+QIF-, OFX- und QFX-Dateien ausdrücklich aus.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand

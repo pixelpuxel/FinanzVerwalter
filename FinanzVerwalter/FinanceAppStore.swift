@@ -351,12 +351,39 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func previewQIFPackage(data: Data) -> QIFPackagePreview? {
+        do {
+            return try QIFPackageImporter.preview(
+                data: data,
+                existingAccounts: accounts,
+                existingCategories: categories,
+                currency: fileInfo?.baseCurrency ?? "EUR"
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
     func commitImport(_ preview: ImportPreview) -> Bool {
         guard let repository else { return false }
         do {
             try repository.commitImport(preview)
             try load()
             statusText = "\(preview.rows.count) Buchungen importiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func commitQIFPackage(_ package: QIFPackagePreview) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.commitQIFPackage(package)
+            try load()
+            statusText = "\(package.importPreview.rows.count) Buchungen aus dem QIF-Paket importiert"
             return true
         } catch {
             present(error)

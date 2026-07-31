@@ -139,6 +139,148 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertNoThrow(try preview.rows[0].validate())
     }
 
+    func testQIFPackageCreatesAccountsHierarchyAndTransactionsAtomically() throws {
+        let context = try TestDatabase()
+        let data = Data(
+            """
+            !Type:Cat
+            NHaushalt:Strom
+            E
+            ^
+            NEinkommen:Honorar
+            I
+            ^
+            !Account
+            NAlltagskonto
+            TBank
+            DTestinstitut
+            ^
+            !Type:Bank
+            D7/30/2026
+            T-82.45
+            PEnergieversorger
+            MAbschlag
+            LHaushalt:Strom
+            ^
+            !Account
+            NKasse
+            TCash
+            ^
+            !Type:Cash
+            D7/31/2026
+            T125.00
+            PKundschaft
+            MProjekt
+            LEinkommen:Honorar
+            ^
+            !Account
+            NDepot
+            TInvst
+            ^
+            !Type:Invst
+            D7/31/2026
+            NBuy
+            T100.00
+            ^
+            """.utf8
+        )
+
+        XCTAssertTrue(QIFPackageImporter.isPackage(data: data))
+        XCTAssertThrowsError(
+            try QIFFinanceImporter.preview(
+                data: data,
+                account: FinanceAccount(
+                    id: UUID(), name: "Falsch", institution: "", type: .checking,
+                    currency: "EUR", openingBalanceMinor: 0,
+                    isHidden: false, isClosed: false, sortOrder: 0
+                ),
+                categories: []
+            )
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .qifPackageRequiresPackageImport)
+        }
+
+        let package = try QIFPackageImporter.preview(
+            data: data,
+            existingAccounts: try context.store.accounts(),
+            existingCategories: try context.store.categories()
+        )
+        XCTAssertEqual(package.summary.accountDefinitions, 3)
+        XCTAssertEqual(package.accountsToCreate.count, 3)
+        XCTAssertEqual(package.importPreview.rows.count, 2)
+        XCTAssertEqual(package.summary.unsupportedSectionCounts["Invst"], 1)
+        XCTAssertTrue(package.importPreview.rejectedRows.isEmpty)
+        XCTAssertTrue(
+            package.categoriesToCreate.contains {
+                $0.name == "Strom" && $0.parentID != nil
+            }
+        )
+
+        try context.store.commitQIFPackage(package)
+        XCTAssertEqual(try context.store.accounts().count, 3)
+        XCTAssertEqual(try context.store.transactions().count, 2)
+        let categories = try context.store.categories()
+        let electricity = try XCTUnwrap(categories.first { $0.name == "Strom" })
+        XCTAssertEqual(
+            categories.first { $0.id == electricity.parentID }?.name,
+            "Haushalt"
+        )
+        XCTAssertThrowsError(try context.store.commitQIFPackage(package)) { error in
+            XCTAssertEqual(error as? FinanceError, .duplicateImport)
+        }
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testExternalQIFPackageWhenConfigured() throws {
+        let configuredPath = ProcessInfo.processInfo.environment["FINANZVERWALTER_REAL_QIF"]
+        let localAcceptanceLink = "/tmp/finanzverwalter-real-qif-acceptance.qif"
+        let path = configuredPath.flatMap { $0.isEmpty ? nil : $0 }
+            ?? (FileManager.default.fileExists(atPath: localAcceptanceLink)
+                ? localAcceptanceLink
+                : nil)
+        guard let path else {
+            throw XCTSkip("Nur für die lokale Abnahme mit einer externen QIF-Datei.")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let context = try TestDatabase()
+        let package = try QIFPackageImporter.preview(
+            data: data,
+            existingAccounts: try context.store.accounts(),
+            existingCategories: try context.store.categories()
+        )
+        NSLog(
+            "REAL_QIF_SAFE_SUMMARY accounts=%d categories=%d rows=%d rejected=%d unsupported=%d",
+            package.summary.accountDefinitions,
+            package.summary.categoryRecords,
+            package.importPreview.rows.count,
+            package.importPreview.rejectedRows.count,
+            package.summary.unsupportedSectionCounts.values.reduce(0, +)
+        )
+        XCTContext.runActivity(
+            named: "QIF-Strukturabnahme: \(package.summary.accountDefinitions) Konten, "
+                + "\(package.summary.categoryRecords) Kategorien, "
+                + "\(package.importPreview.rows.count) Buchungen, "
+                + "\(package.importPreview.rejectedRows.count) abgelehnt, "
+                + "\(package.summary.unsupportedSectionCounts.values.reduce(0, +)) nicht unterstützt"
+        ) { _ in }
+        XCTAssertGreaterThan(package.summary.accountDefinitions, 1)
+        XCTAssertGreaterThan(package.importPreview.rows.count, 0)
+        XCTAssertEqual(
+            package.importPreview.rejectedRows.count, 0,
+            "Der reale QIF-Import hat Buchungen abgelehnt."
+        )
+        try context.store.commitQIFPackage(package)
+        XCTAssertEqual(
+            try context.store.transactions().count,
+            package.importPreview.rows.count
+        )
+        XCTAssertGreaterThanOrEqual(
+            try context.store.accounts().count,
+            package.accountsToCreate.count
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testReconciliationRequiresExactBalanceAndProtectsTransactions() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(

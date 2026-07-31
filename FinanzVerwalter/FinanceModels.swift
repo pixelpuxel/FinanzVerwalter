@@ -162,6 +162,23 @@ struct ImportPreview: Sendable {
     let fingerprint: String
 }
 
+struct QIFPackageSummary: Sendable {
+    let accountDefinitions: Int
+    let categoryRecords: Int
+    let transactionRecords: Int
+    let supportedTransactionRecords: Int
+    let sectionCounts: [String: Int]
+    let unsupportedSectionCounts: [String: Int]
+}
+
+struct QIFPackagePreview: Sendable {
+    let accountsToCreate: [FinanceAccount]
+    let categoriesToCreate: [FinanceCategory]
+    let importPreview: ImportPreview
+    let summary: QIFPackageSummary
+    let warnings: [String]
+}
+
 struct CategorizationRule: Identifiable, Hashable, Sendable {
     let id: UUID
     var name: String

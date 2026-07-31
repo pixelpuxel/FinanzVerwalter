@@ -2514,6 +2514,61 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func commitQIFPackage(_ package: QIFPackagePreview) throws {
+        let preview = package.importPreview
+        if try scalarInt(
+            "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
+            [.text(preview.fingerprint)]
+        ) > 0 {
+            throw FinanceError.duplicateImport
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            for account in package.accountsToCreate {
+                try run(
+                    """
+                    INSERT INTO accounts(id,finance_file_id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(account.id.uuidString), .text(info.id.uuidString),
+                        .text(account.name), .text(account.institution), .text(account.type.rawValue),
+                        .text(account.currency), .integer(account.openingBalanceMinor),
+                        .integer(account.isHidden ? 1 : 0), .integer(account.isClosed ? 1 : 0),
+                        .integer(Int64(account.sortOrder)), .text(now), .text(now)
+                    ]
+                )
+            }
+            for category in package.categoriesToCreate {
+                try run(
+                    """
+                    INSERT INTO categories(id,finance_file_id,parent_id,name,kind,color,is_active,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(category.id.uuidString), .text(info.id.uuidString),
+                        category.parentID.map { .text($0.uuidString) } ?? .null,
+                        .text(category.name), .text(category.kind.rawValue), .text(category.color),
+                        .integer(category.isActive ? 1 : 0), .text(now), .text(now)
+                    ]
+                )
+            }
+            for value in preview.rows {
+                try value.validate()
+                try writeTransaction(value, now: now)
+            }
+            try run(
+                "INSERT INTO import_packages(fingerprint,imported_at,row_count) VALUES(?,?,?)",
+                [.text(preview.fingerprint), .text(now), .integer(Int64(preview.rows.count))]
+            )
+            try audit(
+                entity: "import", id: UUID(), action: "commit-qif-package",
+                details: "\(preview.fingerprint):\(package.accountsToCreate.count):\(package.categoriesToCreate.count):\(preview.rows.count)"
+            )
+        }
+    }
+
     func backup(to target: URL) throws {
         var targetDatabase: OpaquePointer?
         guard sqlite3_open(target.path, &targetDatabase) == SQLITE_OK else {
@@ -2883,8 +2938,21 @@ enum QIFFinanceImporter {
         let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1)
             ?? ""
+        let normalizedText = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let accountDirectiveCount = normalizedText
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces) == "!Account" }
+            .count
+        let typeDirectives = normalizedText
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("!Type:") }
+        if accountDirectiveCount > 0 || Set(typeDirectives).count > 1 {
+            throw FinanceError.qifPackageRequiresPackageImport
+        }
         let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let records = text.components(separatedBy: "\n^")
+        let records = normalizedText.components(separatedBy: "\n^")
         var rows: [FinanceTransaction] = []
         var rejected: [String] = []
         for (offset, rawRecord) in records.enumerated() {
@@ -2977,6 +3045,442 @@ enum QIFFinanceImporter {
             formatter.timeZone = TimeZone.current
             formatter.dateFormat = format
             if let date = formatter.date(from: cleaned) { return date }
+        }
+        return nil
+    }
+}
+
+enum QIFPackageImporter {
+    private struct RawRecord {
+        let section: String
+        let lines: [String]
+    }
+
+    private struct AccountRecord {
+        let account: FinanceAccount
+    }
+
+    private struct CategoryDraft {
+        let path: String
+        let kind: CategoryKind
+    }
+
+    static func isPackage(data: Data) -> Bool {
+        let text = decodedText(data)
+        let lines = normalizedLines(text)
+        return lines.contains("!Account")
+            || Set(lines.filter { $0.hasPrefix("!Type:") }).count > 1
+    }
+
+    static func preview(
+        data: Data,
+        existingAccounts: [FinanceAccount],
+        existingCategories: [FinanceCategory],
+        currency: String = "EUR"
+    ) throws -> QIFPackagePreview {
+        let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let records = records(in: decodedText(data))
+        var sectionCounts: [String: Int] = [:]
+        for record in records {
+            sectionCounts[displaySection(record.section), default: 0] += 1
+        }
+
+        var accountRecords: [AccountRecord] = []
+        var accountByKey: [String: FinanceAccount] = [:]
+        for record in records where normalizedSection(record.section) == "account" {
+            let fields = firstValues(record.lines)
+            guard let rawName = fields["N"], !rawName.trimmingCharacters(in: .whitespaces).isEmpty else {
+                continue
+            }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let type = accountType(fields["T"] ?? "")
+            let key = accountKey(name)
+            if accountByKey[key] != nil { continue }
+            let existing = existingAccounts.first {
+                accountKey($0.name) == key
+            }
+            let account = existing ?? FinanceAccount(
+                id: UUID(), name: name,
+                institution: (fields["D"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                type: type, currency: currency, openingBalanceMinor: 0,
+                isHidden: false, isClosed: false,
+                sortOrder: existingAccounts.count + accountRecords.count
+            )
+            accountByKey[key] = account
+            accountRecords.append(AccountRecord(account: account))
+        }
+        guard !accountRecords.isEmpty else { throw FinanceError.invalidQIFPackage }
+
+        let explicitCategoryDrafts = records
+            .filter { normalizedSection($0.section) == "cat" }
+            .compactMap(categoryDraft)
+        var inferredCategoryDrafts: [CategoryDraft] = []
+        var currentAccountName: String?
+        for record in records {
+            let section = normalizedSection(record.section)
+            if section == "account" {
+                currentAccountName = firstValues(record.lines)["N"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                continue
+            }
+            guard isTransactionSection(section), currentAccountName != nil else { continue }
+            let amount = try? transactionAmount(record.lines, currency: currency)
+            let kind: CategoryKind = (amount?.minorUnits ?? 0) >= 0 ? .income : .expense
+            for line in record.lines where line.first == "L" || line.first == "S" {
+                if let path = categoryPath(String(line.dropFirst())) {
+                    inferredCategoryDrafts.append(CategoryDraft(path: path, kind: kind))
+                }
+            }
+        }
+
+        let categories = categoryMapping(
+            existing: existingCategories,
+            drafts: explicitCategoryDrafts + inferredCategoryDrafts
+        )
+        let existingCategoryIDs = Set(existingCategories.map(\.id))
+        let categoriesToCreate = categories.ordered.filter { !existingCategoryIDs.contains($0.id) }
+
+        var rows: [FinanceTransaction] = []
+        var rejected: [String] = []
+        var unsupportedSectionCounts: [String: Int] = [:]
+        var supportedRecordCount = 0
+        currentAccountName = nil
+        for record in records {
+            let section = normalizedSection(record.section)
+            if section == "account" {
+                currentAccountName = firstValues(record.lines)["N"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                continue
+            }
+            guard !["cat", "class", "memorized"].contains(section) else {
+                if section != "cat" {
+                    unsupportedSectionCounts[displaySection(record.section), default: 0] += 1
+                }
+                continue
+            }
+            guard isTransactionSection(section) else { continue }
+            guard
+                let currentAccountName,
+                let account = accountByKey[accountKey(currentAccountName)]
+            else {
+                unsupportedSectionCounts[displaySection(record.section), default: 0] += 1
+                continue
+            }
+            if account.type == .investment || section == "invst" {
+                unsupportedSectionCounts[displaySection(record.section), default: 0] += 1
+                continue
+            }
+            supportedRecordCount += 1
+            do {
+                rows.append(
+                    try transaction(
+                        record.lines,
+                        account: account,
+                        categoryIDs: categories.idsByPath,
+                        fingerprint: fingerprint
+                    )
+                )
+            } catch {
+                rejected.append(
+                    "\(displaySection(record.section))-Datensatz \(supportedRecordCount): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        let newAccountIDs = Set(existingAccounts.map(\.id))
+        let accountsToCreate = accountRecords.map(\.account).filter { !newAccountIDs.contains($0.id) }
+        let unsupportedCount = unsupportedSectionCounts.values.reduce(0, +)
+        var warnings: [String] = []
+        if unsupportedCount > 0 {
+            warnings.append(
+                "\(unsupportedCount) Datensätze aus Depot-, Klassen- oder Merkpostenbereichen werden nicht übernommen."
+            )
+        }
+        if !rejected.isEmpty {
+            warnings.append("\(rejected.count) Buchungen müssen wegen unvollständiger oder widersprüchlicher Felder ausgelassen werden.")
+        }
+        return QIFPackagePreview(
+            accountsToCreate: accountsToCreate,
+            categoriesToCreate: categoriesToCreate,
+            importPreview: ImportPreview(
+                rows: rows, rejectedRows: rejected, fingerprint: fingerprint
+            ),
+            summary: QIFPackageSummary(
+                accountDefinitions: accountRecords.count,
+                categoryRecords: explicitCategoryDrafts.count,
+                transactionRecords: supportedRecordCount + unsupportedCount,
+                supportedTransactionRecords: rows.count,
+                sectionCounts: sectionCounts,
+                unsupportedSectionCounts: unsupportedSectionCounts
+            ),
+            warnings: warnings
+        )
+    }
+
+    private static func decodedText(_ data: Data) -> String {
+        String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? ""
+    }
+
+    private static func normalizedLines(_ text: String) -> [String] {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private static func records(in text: String) -> [RawRecord] {
+        var section = ""
+        var pendingLines: [String] = []
+        var values: [RawRecord] = []
+        func flush() {
+            guard !pendingLines.isEmpty else { return }
+            values.append(RawRecord(section: section, lines: pendingLines))
+            pendingLines.removeAll(keepingCapacity: true)
+        }
+        for line in normalizedLines(text) where !line.isEmpty {
+            if line == "^" {
+                flush()
+            } else if line.hasPrefix("!") {
+                flush()
+                if line == "!Account" {
+                    section = "Account"
+                } else if line.hasPrefix("!Type:") {
+                    section = String(line.dropFirst("!Type:".count))
+                }
+            } else {
+                pendingLines.append(line)
+            }
+        }
+        flush()
+        return values
+    }
+
+    private static func normalizedSection(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func displaySection(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Unbekannt" : trimmed
+    }
+
+    private static func firstValues(_ lines: [String]) -> [String: String] {
+        var values: [String: String] = [:]
+        for line in lines {
+            guard let code = line.first, values[String(code)] == nil else { continue }
+            values[String(code)] = String(line.dropFirst())
+        }
+        return values
+    }
+
+    private static func accountKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private static func accountType(_ value: String) -> AccountType {
+        switch normalizedSection(value) {
+        case "bank": .checking
+        case "cash": .cash
+        case "ccard": .creditCard
+        case "invst": .investment
+        case "oth l": .liability
+        case "loan": .loan
+        default: .asset
+        }
+    }
+
+    private static func isTransactionSection(_ section: String) -> Bool {
+        !section.isEmpty
+            && !["account", "cat", "class", "memorized"].contains(section)
+    }
+
+    private static func categoryDraft(_ record: RawRecord) -> CategoryDraft? {
+        let fields = firstValues(record.lines)
+        guard let rawName = fields["N"], let path = categoryPath(rawName) else { return nil }
+        let kind: CategoryKind = fields["I"] != nil ? .income : .expense
+        return CategoryDraft(path: path, kind: kind)
+    }
+
+    private static func categoryPath(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("[") else { return nil }
+        let withoutClass = trimmed.components(separatedBy: "/").first ?? trimmed
+        let parts = withoutClass
+            .components(separatedBy: ":")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: ":")
+    }
+
+    private static func categoryKey(_ path: String) -> String {
+        path.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private static func categoryMapping(
+        existing: [FinanceCategory],
+        drafts: [CategoryDraft]
+    ) -> (ordered: [FinanceCategory], idsByPath: [String: UUID]) {
+        var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        func path(for category: FinanceCategory) -> String {
+            var names = [category.name]
+            var parentID = category.parentID
+            var visited = Set([category.id])
+            while let id = parentID,
+                  visited.insert(id).inserted,
+                  let parent = byID[id] {
+                names.insert(parent.name, at: 0)
+                parentID = parent.parentID
+            }
+            return names.joined(separator: ":")
+        }
+        var idsByPath: [String: UUID] = [:]
+        for category in existing {
+            idsByPath[categoryKey(path(for: category))] = category.id
+        }
+        var ordered = existing
+        let sortedDrafts = drafts.sorted {
+            $0.path.components(separatedBy: ":").count
+                < $1.path.components(separatedBy: ":").count
+        }
+        for draft in sortedDrafts {
+            let parts = draft.path.components(separatedBy: ":")
+            var accumulated: [String] = []
+            var parentID: UUID?
+            for part in parts {
+                accumulated.append(part)
+                let fullPath = accumulated.joined(separator: ":")
+                let key = categoryKey(fullPath)
+                if let existingID = idsByPath[key] {
+                    parentID = existingID
+                    continue
+                }
+                let category = FinanceCategory(
+                    id: UUID(), parentID: parentID, name: part, kind: draft.kind,
+                    color: draft.kind == .income ? "green" : "blue", isActive: true
+                )
+                byID[category.id] = category
+                idsByPath[key] = category.id
+                ordered.append(category)
+                parentID = category.id
+            }
+        }
+        return (ordered, idsByPath)
+    }
+
+    private static func transactionAmount(_ lines: [String], currency: String) throws -> Money {
+        for line in lines where line.first == "T" || line.first == "U" {
+            return try qifMoney(String(line.dropFirst()), currency: currency)
+        }
+        throw FinanceError.invalidAmount("")
+    }
+
+    private static func transaction(
+        _ lines: [String],
+        account: FinanceAccount,
+        categoryIDs: [String: UUID],
+        fingerprint: String
+    ) throws -> FinanceTransaction {
+        var date: Date?
+        var amount: Money?
+        var payee = ""
+        var memo = ""
+        var reference = ""
+        var categoryID: UUID?
+        var splitDrafts: [(categoryID: UUID?, memo: String, amount: Money)] = []
+        var pendingSplitCategoryID: UUID?
+        var pendingSplitMemo = ""
+        for line in lines {
+            guard let code = line.first else { continue }
+            let value = String(line.dropFirst())
+            switch code {
+            case "D": date = parseDate(value)
+            case "T", "U":
+                if amount == nil { amount = try qifMoney(value, currency: account.currency) }
+            case "P": payee = value
+            case "M": memo = value
+            case "N": reference = value
+            case "L":
+                categoryID = categoryPath(value).flatMap { categoryIDs[categoryKey($0)] }
+            case "S":
+                pendingSplitCategoryID = categoryPath(value).flatMap { categoryIDs[categoryKey($0)] }
+            case "E": pendingSplitMemo = value
+            case "$":
+                splitDrafts.append(
+                    (
+                        pendingSplitCategoryID,
+                        pendingSplitMemo,
+                        try qifMoney(value, currency: account.currency)
+                    )
+                )
+                pendingSplitCategoryID = nil
+                pendingSplitMemo = ""
+            default: break
+            }
+        }
+        guard let date, let amount else { throw FinanceError.invalidAmount("") }
+        let splits = splitDrafts.enumerated().map {
+            FinanceSplit(
+                id: UUID(), categoryID: $0.element.categoryID,
+                amountMinor: $0.element.amount.minorUnits,
+                memo: $0.element.memo, sortOrder: $0.offset
+            )
+        }
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: date, valueDate: nil,
+            payee: payee, purpose: memo, categoryID: splits.isEmpty ? categoryID : nil,
+            amountMinor: amount.minorUnits, currency: account.currency,
+            status: .booked, memo: "", reference: reference,
+            transferID: nil, importFingerprint: fingerprint, splits: splits
+        )
+        try value.validate()
+        return value
+    }
+
+    private static func qifMoney(_ text: String, currency: String) throws -> Money {
+        var normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\u{00a0}", with: "")
+            .replacingOccurrences(of: "€", with: "")
+        let negativeParentheses = normalized.hasPrefix("(") && normalized.hasSuffix(")")
+        if negativeParentheses {
+            normalized.removeFirst()
+            normalized.removeLast()
+        }
+        if let comma = normalized.lastIndex(of: ","),
+           let dot = normalized.lastIndex(of: ".") {
+            if comma < dot {
+                normalized = normalized.replacingOccurrences(of: ",", with: "")
+            } else {
+                normalized = normalized.replacingOccurrences(of: ".", with: "")
+                    .replacingOccurrences(of: ",", with: ".")
+            }
+        } else if let comma = normalized.lastIndex(of: ",") {
+            let decimals = normalized.distance(from: comma, to: normalized.endIndex) - 1
+            normalized = decimals <= 2
+                ? normalized.replacingOccurrences(of: ",", with: ".")
+                : normalized.replacingOccurrences(of: ",", with: "")
+        }
+        if negativeParentheses { normalized = "-" + normalized }
+        return try Money(parsing: normalized, currency: currency)
+    }
+
+    private static func parseDate(_ text: String) -> Date? {
+        let cleaned = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "'", with: "/")
+            .replacingOccurrences(of: ".", with: "/")
+        for format in ["M/d/yyyy", "M/d/yy", "MM/dd/yyyy", "MM/dd/yy", "dd/MM/yyyy"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = format
+            if let value = formatter.date(from: cleaned) { return value }
         }
         return nil
     }

@@ -111,6 +111,8 @@ enum FinanceError: LocalizedError, Equatable {
     case missingAccount
     case database(String)
     case duplicateImport
+    case qifPackageRequiresPackageImport
+    case invalidQIFPackage
     case invalidBackup
     case protectedTransaction
     case reconciliationDifference(Int64)
@@ -130,6 +132,9 @@ enum FinanceError: LocalizedError, Equatable {
         case .missingAccount: "Bitte wähle ein Konto."
         case .database(let message): "Datenbankfehler: \(message)"
         case .duplicateImport: "Diese Importdatei wurde bereits übernommen."
+        case .qifPackageRequiresPackageImport:
+            "Die Datei enthält mehrere Konten oder zusätzliche QIF-Bereiche. Bitte verwende den Mehrkonten-Paketimport."
+        case .invalidQIFPackage: "Das QIF-Paket enthält keine importierbaren Konten."
         case .invalidBackup: "Die Sicherungsdatei ist ungültig."
         case .protectedTransaction: "Eine abgeglichene Buchung ist gegen unbeabsichtigte Änderungen geschützt."
         case .reconciliationDifference(let value):

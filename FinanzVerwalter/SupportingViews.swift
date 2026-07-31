@@ -376,6 +376,7 @@ struct ImportExportView: View {
     @State private var selectedAccountID: UUID?
     @State private var showImporter = false
     @State private var preview: ImportPreview?
+    @State private var qifPackagePreview: QIFPackagePreview?
     @State private var showBackupExporter = false
     @State private var backupDocument = BackupDocument(data: Data())
     @State private var showRestoreImporter = false
@@ -387,22 +388,89 @@ struct ImportExportView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Import, Export & Sicherung").font(.largeTitle.bold())
 
-                GroupBox("CSV-/TSV-Import") {
+                GroupBox("CSV-/TSV- und QIF-Import") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("CSV/TSV mit Datum, Betrag, Empfänger, Verwendungszweck, Notiz und Referenz sowie QIF mit Kategorien und Splits.")
+                        Text("CSV/TSV und einzelne QIF-Kontoblätter benötigen ein Zielkonto. Vollständige QIF-Pakete werden automatisch erkannt und kontoweise vorbereitet.")
                             .foregroundStyle(.secondary)
-                        Picker("Zielkonto", selection: $selectedAccountID) {
-                            Text("Bitte wählen").tag(UUID?.none)
-                            ForEach(store.accounts) { Text($0.name).tag(UUID?.some($0.id)) }
+                        HStack {
+                            Picker("Zielkonto für Einzeldatei", selection: $selectedAccountID) {
+                                Text("Bitte wählen").tag(UUID?.none)
+                                ForEach(store.accounts) { Text($0.name).tag(UUID?.some($0.id)) }
+                            }
+                            .frame(maxWidth: 360)
+                            Button("Datei auswählen …", systemImage: "doc.badge.plus") {
+                                showImporter = true
+                            }
                         }
-                        .frame(maxWidth: 360)
-                        Button("Datei auswählen …", systemImage: "doc.badge.plus") {
-                            showImporter = true
-                        }
-                        .disabled(selectedAccountID == nil)
+                        Text("Bei einem Mehrkonten-QIF ist keine vorherige Kontoauswahl nötig.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
+                }
+
+                if let package = qifPackagePreview {
+                    GroupBox("QIF-Paketvorschau") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 20) {
+                                Label(
+                                    "\(package.summary.accountDefinitions) Konten erkannt",
+                                    systemImage: "building.columns"
+                                )
+                                Label(
+                                    "\(package.categoriesToCreate.count) neue Kategorien",
+                                    systemImage: "tag"
+                                )
+                                Label(
+                                    "\(package.importPreview.rows.count) Buchungen",
+                                    systemImage: "list.bullet.rectangle"
+                                )
+                            }
+                            if !package.accountsToCreate.isEmpty {
+                                Text("Neu anzulegende Konten")
+                                    .font(.headline)
+                                Text(package.accountsToCreate.map(\.name).joined(separator: " · "))
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                                    .lineLimit(3)
+                            }
+                            ForEach(package.warnings, id: \.self) { warning in
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                            }
+                            Table(package.importPreview.rows.prefix(100)) {
+                                TableColumn("Datum") {
+                                    Text($0.bookingDate, format: .dateTime.day().month().year())
+                                }
+                                TableColumn("Konto") { transaction in
+                                    Text(
+                                        package.accountsToCreate.first { account in
+                                            account.id == transaction.accountID
+                                        }?.name ?? store.accountName(transaction.accountID)
+                                    )
+                                }
+                                TableColumn("Empfänger", value: \.payee)
+                                TableColumn("Zweck", value: \.purpose)
+                                TableColumn("Betrag") {
+                                    Text(Money(minorUnits: $0.amountMinor).formatted)
+                                        .monospacedDigit()
+                                }
+                            }
+                            .frame(height: 260)
+                            HStack {
+                                Button("Verwerfen") { qifPackagePreview = nil }
+                                Button("Paket ausdrücklich übernehmen") {
+                                    if store.commitQIFPackage(package) {
+                                        qifPackagePreview = nil
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(package.importPreview.rows.isEmpty)
+                            }
+                        }
+                        .padding(8)
+                    }
                 }
 
                 if let preview {
@@ -467,11 +535,22 @@ struct ImportExportView: View {
                 url.startAccessingSecurityScopedResource()
             else { return }
             defer { url.stopAccessingSecurityScopedResource() }
-            guard let data = try? Data(contentsOf: url), let selectedAccountID else { return }
+            guard let data = try? Data(contentsOf: url) else { return }
             if url.pathExtension.lowercased() == "qif" {
-                preview = store.importQIF(data: data, accountID: selectedAccountID)
-            } else {
+                if QIFPackageImporter.isPackage(data: data) {
+                    qifPackagePreview = store.previewQIFPackage(data: data)
+                    preview = nil
+                } else if let selectedAccountID {
+                    preview = store.importQIF(data: data, accountID: selectedAccountID)
+                    qifPackagePreview = nil
+                } else {
+                    store.errorMessage = FinanceError.missingAccount.localizedDescription
+                }
+            } else if let selectedAccountID {
                 preview = store.importCSV(data: data, accountID: selectedAccountID)
+                qifPackagePreview = nil
+            } else {
+                store.errorMessage = FinanceError.missingAccount.localizedDescription
             }
         }
         .fileExporter(

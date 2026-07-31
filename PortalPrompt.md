@@ -123,7 +123,7 @@ validierte Wiederherstellung, Kategorisierungsregeln und ein erster
 Serientermin-/Prognose-Slice sowie monatliche Kategorie-Budgets sind
 implementiert. Zusätzlich ist ein rein lokaler Banking-Simulator mit
 Zahlungsaufträgen und SCA-Zustandsautomat vorhanden. Die Testsuite umfasst
-aktuell achtzehn erfolgreiche
+aktuell zwanzig erfolgreiche
 XCTest-Fälle. Debug- und Release-Build wurden
 erfolgreich ausgeführt; der Release-Stand ist lokal installiert und sichtbar
 geprüft. Details und Screenshots stehen in `Gedächtnis.md`.
@@ -139,6 +139,31 @@ still in ein einzelnes Zielkonto importiert werden. Analysiere zuerst
 Encoding, Header und Kontoblöcke, zeige eine Zuordnungsvorschau und übernimm
 erst nach ausdrücklicher Bestätigung. Reale Referenzdateien bleiben außerhalb
 des Repositorys; Tests verwenden nur synthetische oder anonymisierte Daten.
+
+Der reproduzierbare Paketimport arbeitet so:
+
+- Text als UTF-8 oder ISO-8859-1 lesen und CRLF/CR zu LF normalisieren.
+- `!Account`-Datensätze und `!Type:`-Abschnitte als Zustandsfolge parsen.
+- Konten anhand des normalisierten Namens vorhandenen Konten zuordnen oder
+  als neue `FinanceAccount`-Objekte vorbereiten.
+- Kategorien am Doppelpunkt in eine Hierarchie zerlegen; Eltern immer vor
+  Kindern anlegen und vorhandene vollständige Pfade wiederverwenden.
+- `Bank`, `Cash`, `CCard` und sonstige normale Kontoblätter mit Datum,
+  Betrag, Empfänger, Memo, Referenz, Kategorie und Splits parsen.
+- Beträge mit deutschem oder US-Dezimal-/Tausendertrennzeichen ohne
+  binäre Fließkommazahlen in `Int64`-Minor-Units umwandeln.
+- Depot-, Klassen- und Merkpostendatensätze in der Vorschau quantifizieren,
+  aber nicht in ein unpassendes Kontobuchungsmodell zwingen.
+- Neue Konten, neue Kategorien, Buchungen, Splits, Paketfingerabdruck und
+  Auditereignis in genau einer SQLite-Transaktion schreiben.
+- SHA-256 des Originalpakets verhindert eine zweite Übernahme.
+
+Der Test `testQIFPackageCreatesAccountsHierarchyAndTransactionsAtomically`
+nutzt ausschließlich synthetische Daten. Eine reale lokale Abnahme kann über
+`FINANZVERWALTER_REAL_QIF` oder eine nur lokal vorhandene Datei
+`/tmp/finanzverwalter-real-qif-acceptance.qif` aktiviert werden; ohne Datei
+wird dieser Test übersprungen. Nie einen realen Finanzexport, seinen Inhalt
+oder persönliche Pfade committen.
 
 Für Serientermine gilt reproduzierbar:
 
