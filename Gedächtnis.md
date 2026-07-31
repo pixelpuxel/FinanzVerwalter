@@ -1307,3 +1307,12 @@ Rechtsberatung.
 - Die geprüfte Implementierung einschließlich Migration 23, Empfänger- und
   Zahlungsoberfläche sowie der neuen Migrations-/Sicherheitstests ist als
   Commit `13153dc` festgeschrieben.
+- Dokumentationscommit `c1b1e15` wurde zusammen mit `13153dc` auf GitHub
+  gepusht. Draft-PR 1 trägt nun den Schema-23-, Empfänger-Bankverbindungs-,
+  Sicherheits-, Release- und 67-Test-Stand.
+- Telegram-Nachricht 962 wurde im Projektthread 894 (`/quicken`)
+  veröffentlicht. Sie enthält denselben verifizierten Zwischenstand und den
+  Zielzählerstand von 9.203.212 Tokens; wegen des gesperrten Macs bewusst
+  ohne Screenshot.
+- Der Zielzählerstand vor diesem Veröffentlichungsprotokoll beträgt
+  9.207.144 Tokens.
