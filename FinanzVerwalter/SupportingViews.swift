@@ -1155,6 +1155,9 @@ struct ReportsView: View {
                             }
                         }
                         Divider()
+                        Button("Drucken …", systemImage: "printer.fill") {
+                            printReport(snapshot)
+                        }
                         Button("PDF exportieren …", systemImage: "doc.richtext") {
                             preparePDFExport(snapshot)
                         }
@@ -1769,17 +1772,27 @@ struct ReportsView: View {
 
     private func preparePDFExport(_ snapshot: TransactionReportSnapshot) {
         do {
-            pdfDocument = ReportPDFDocument(
-                data: try TransactionReportPDFExporter.data(
-                    snapshot: snapshot,
-                    metadata: reportExportMetadata,
-                    options: ReportPDFOptions(orientation: pdfOrientation)
-                )
-            )
+            pdfDocument = ReportPDFDocument(data: try reportPDFData(snapshot))
             showPDFExporter = true
         } catch {
             store.errorMessage = error.localizedDescription
         }
+    }
+
+    private func printReport(_ snapshot: TransactionReportSnapshot) {
+        do {
+            try RegisterPrintService.printPDF(try reportPDFData(snapshot))
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reportPDFData(_ snapshot: TransactionReportSnapshot) throws -> Data {
+        try TransactionReportPDFExporter.data(
+            snapshot: snapshot,
+            metadata: reportExportMetadata,
+            options: ReportPDFOptions(orientation: pdfOrientation)
+        )
     }
 
     private var reportExportMetadata: ReportExportMetadata {
