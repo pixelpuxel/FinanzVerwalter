@@ -4576,6 +4576,165 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(cashFlow.expandSplits)
     }
 
+    func testAccountBalanceReportUsesHistoricalCutoffAndSeparatesCurrencies() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let cutoff = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 6, day: 30, hour: 12))
+        )
+        let group = AccountGroup(id: UUID(), name: "Liquidität", sortOrder: 0, isActive: true)
+        let euro = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0, groupID: group.id,
+            openingDate: calendar.date(byAdding: .day, value: -4, to: cutoff)
+        )
+        let debt = FinanceAccount(
+            id: UUID(), name: "Karte", institution: "", type: .creditCard,
+            currency: "EUR", openingBalanceMinor: -2_000,
+            isHidden: false, isClosed: false, sortOrder: 1, groupID: group.id
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "Dollar", institution: "", type: .foreignCurrency,
+            currency: "USD", openingBalanceMinor: 5_000,
+            isHidden: false, isClosed: false, sortOrder: 2
+        )
+        let excluded = FinanceAccount(
+            id: UUID(), name: "Privat", institution: "", type: .cash,
+            currency: "EUR", openingBalanceMinor: 99_999,
+            isHidden: false, isClosed: false, sortOrder: 3, includeNetWorth: false
+        )
+        func transaction(
+            account: FinanceAccount, amount: Int64, day: Int,
+            status: TransactionStatus = .booked, currency: String? = nil
+        ) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: account.id,
+                bookingDate: calendar.date(byAdding: .day, value: day, to: cutoff)!,
+                valueDate: nil, payee: "", purpose: "", categoryID: nil,
+                amountMinor: amount, currency: currency ?? account.currency,
+                status: status, memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: []
+            )
+        }
+        let snapshot = AccountBalanceReportEngine.snapshot(
+            query: AccountBalanceReportQuery(asOf: cutoff),
+            accounts: [excluded, dollar, debt, euro], accountGroups: [group],
+            transactions: [
+                transaction(account: euro, amount: 2_500, day: -1),
+                transaction(account: euro, amount: 4_000, day: -5),
+                transaction(account: euro, amount: 8_000, day: 1),
+                transaction(account: euro, amount: 7_000, day: -2, status: .cancelled),
+                transaction(account: euro, amount: 6_000, day: -3, currency: "USD"),
+                transaction(account: debt, amount: -1_000, day: 0),
+                transaction(account: dollar, amount: 500, day: 0)
+            ],
+            calendar: calendar
+        )
+        XCTAssertEqual(snapshot.rows.map(\.accountName), ["Dollar", "Giro", "Karte"])
+        XCTAssertEqual(snapshot.rows.first { $0.accountID == euro.id }?.movementMinor, 2_500)
+        XCTAssertEqual(snapshot.rows.first { $0.accountID == euro.id }?.balanceMinor, 12_500)
+        XCTAssertEqual(snapshot.rows.first { $0.accountID == debt.id }?.balanceMinor, -3_000)
+        XCTAssertEqual(snapshot.rows.first { $0.accountID == dollar.id }?.balanceMinor, 5_500)
+        XCTAssertEqual(
+            snapshot.totals,
+            [
+                AccountBalanceReportCurrencyTotal(
+                    currency: "EUR", assetsMinor: 12_500,
+                    liabilitiesMinor: 3_000, netWorthMinor: 9_500
+                ),
+                AccountBalanceReportCurrencyTotal(
+                    currency: "USD", assetsMinor: 5_500,
+                    liabilitiesMinor: 0, netWorthMinor: 5_500
+                )
+            ]
+        )
+    }
+
+    func testAccountBalanceReportCSVIsDeterministicAndGermanFormatted() throws {
+        let snapshot = AccountBalanceReportSnapshot(
+            asOf: Date(timeIntervalSince1970: 1_735_689_599),
+            rows: [
+                AccountBalanceReportRow(
+                    accountID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+                    groupName: "Bank;Privat", accountName: "Giro \"Nord\"",
+                    accountType: .checking, currency: "EUR",
+                    openingBalanceMinor: 12_345, movementMinor: -345,
+                    balanceMinor: 12_000, isHidden: false, isClosed: false,
+                    includeNetWorth: true
+                )
+            ],
+            totals: [
+                AccountBalanceReportCurrencyTotal(
+                    currency: "EUR", assetsMinor: 12_000,
+                    liabilitiesMinor: 0, netWorthMinor: 12_000
+                )
+            ]
+        )
+        let data = AccountBalanceReportCSVExporter.data(
+            snapshot: snapshot,
+            metadata: AccountBalanceReportExportMetadata(
+                title: "Kontosalden", filterSummary: "alle Vermögenskonten",
+                generatedAt: Date(timeIntervalSince1970: 0)
+            )
+        )
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(text.contains("\"Bank;Privat\";\"Giro \"\"Nord\"\"\""))
+        XCTAssertTrue(text.contains("123,45;-3,45;120,00;EUR"))
+        XCTAssertTrue(text.contains("EUR;120,00;0,00;120,00"))
+        XCTAssertEqual(
+            data,
+            AccountBalanceReportCSVExporter.data(
+                snapshot: snapshot,
+                metadata: AccountBalanceReportExportMetadata(
+                    title: "Kontosalden", filterSummary: "alle Vermögenskonten",
+                    generatedAt: Date(timeIntervalSince1970: 0)
+                )
+            )
+        )
+    }
+
+    func testAccountBalanceReportPDFIsReadableAndMultipage() throws {
+        let rows = (0..<80).map { index in
+            AccountBalanceReportRow(
+                accountID: UUID(), groupName: "Bankkonten",
+                accountName: "Konto \(index)", accountType: .checking,
+                currency: "EUR", openingBalanceMinor: 10_000,
+                movementMinor: Int64(index), balanceMinor: 10_000 + Int64(index),
+                isHidden: false, isClosed: false, includeNetWorth: true
+            )
+        }
+        let snapshot = AccountBalanceReportSnapshot(
+            asOf: Date(timeIntervalSince1970: 1_735_689_599),
+            rows: rows,
+            totals: [
+                AccountBalanceReportCurrencyTotal(
+                    currency: "EUR",
+                    assetsMinor: rows.reduce(0) { $0 + $1.balanceMinor },
+                    liabilitiesMinor: 0,
+                    netWorthMinor: rows.reduce(0) { $0 + $1.balanceMinor }
+                )
+            ]
+        )
+        let data = try AccountBalanceReportPDFExporter.data(
+            snapshot: snapshot,
+            metadata: AccountBalanceReportExportMetadata(
+                title: "Kontosalden und Nettovermögen",
+                filterSummary: "alle Vermögenskonten",
+                generatedAt: Date(timeIntervalSince1970: 0)
+            )
+        )
+        let document = try XCTUnwrap(PDFDocument(data: data))
+        XCTAssertGreaterThan(document.pageCount, 1)
+        let text = (0..<document.pageCount).compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+        XCTAssertTrue(text.contains("Kontosalden und Nettovermögen"))
+        XCTAssertTrue(text.contains("Konto 0"))
+        XCTAssertTrue(text.contains("Konto 79"))
+        XCTAssertTrue(text.contains("Nettovermögen EUR"))
+        XCTAssertTrue(text.contains("Seite 1 von"))
+    }
+
     func testReportCSVExportIsDeterministicEscapedAndUsesGermanMinorUnits() throws {
         let fact = TransactionReportFact(
             id: "fact-1",

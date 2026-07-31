@@ -1017,6 +1017,7 @@ struct ReportsView: View {
     @State private var selectedStandardReport: TransactionReportStandardPreset?
     @State private var selectedTemplateID: UUID?
     @State private var showTemplateSave = false
+    @State private var showAccountBalanceReport = false
     @State private var templateName = ""
     @State private var csvSeparator: ReportCSVSeparator = .semicolon
     @State private var csvEncoding: ReportCSVEncoding = .utf8
@@ -1126,6 +1127,12 @@ struct ReportsView: View {
                                 Label(preset.title, systemImage: preset.systemImage)
                             }
                             .help(preset.summary)
+                        }
+                        Divider()
+                        Button {
+                            showAccountBalanceReport = true
+                        } label: {
+                            Label("Kontosalden und Nettovermögen …", systemImage: "scalemass")
                         }
                     } label: {
                         Label("Standardberichte", systemImage: "chart.bar.doc.horizontal")
@@ -1345,6 +1352,10 @@ struct ReportsView: View {
             }
             .padding(24)
             .frame(width: 480)
+        }
+        .sheet(isPresented: $showAccountBalanceReport) {
+            AccountBalanceReportView()
+                .environmentObject(store)
         }
         .fileExporter(
             isPresented: $showCSVExporter,
@@ -1895,6 +1906,248 @@ struct ReportsView: View {
     private func decimalAmount(_ minorUnits: Int64) -> String {
         let magnitude = minorUnits.magnitude
         return "\(magnitude / 100),\(magnitude % 100 < 10 ? "0" : "")\(magnitude % 100)"
+    }
+}
+
+private struct AccountBalanceReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var asOf = Date.now
+    @State private var accountIDs = Set<UUID>()
+    @State private var groupIDs = Set<UUID>()
+    @State private var currencies = Set<String>()
+    @State private var includeHidden = false
+    @State private var includeClosed = false
+    @State private var includeExcluded = false
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    private var query: AccountBalanceReportQuery {
+        AccountBalanceReportQuery(
+            asOf: asOf,
+            accountIDs: accountIDs,
+            accountGroupIDs: groupIDs,
+            currencies: currencies,
+            includeHiddenAccounts: includeHidden,
+            includeClosedAccounts: includeClosed,
+            includeAccountsExcludedFromNetWorth: includeExcluded
+        )
+    }
+
+    var body: some View {
+        let snapshot = store.accountBalanceReport(query)
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Kontosalden und Nettovermögen")
+                        .font(.title2.bold())
+                    Text("Historischer Tagesabschluss mit getrennten Währungssummen")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Schließen") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            HStack(spacing: 12) {
+                DatePicker("Stichtag", selection: $asOf, displayedComponents: .date)
+                balanceAccountMenu
+                balanceCurrencyMenu
+                Menu {
+                    Toggle("Ausgeblendete Konten", isOn: $includeHidden)
+                    Toggle("Geschlossene Konten", isOn: $includeClosed)
+                    Toggle("Nicht im Vermögen enthaltene Konten", isOn: $includeExcluded)
+                } label: {
+                    Label("Optionen", systemImage: "slider.horizontal.3")
+                }
+                Spacer()
+                Button("CSV exportieren …", systemImage: "tablecells") {
+                    csvDocument = ReportCSVDocument(
+                        data: AccountBalanceReportCSVExporter.data(
+                            snapshot: snapshot, metadata: metadata
+                        )
+                    )
+                    showCSVExporter = true
+                }
+                Menu {
+                    Picker("Papierausrichtung", selection: $orientation) {
+                        ForEach(ReportPDFOrientation.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Divider()
+                    Button("Drucken …", systemImage: "printer.fill") {
+                        printReport(snapshot)
+                    }
+                    Button("PDF exportieren …", systemImage: "doc.richtext") {
+                        exportPDF(snapshot)
+                    }
+                } label: {
+                    Label("PDF · \(orientation.title)", systemImage: "printer")
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            Table(snapshot.rows) {
+                TableColumn("Gruppe") { Text($0.groupName).lineLimit(1) }
+                    .width(min: 110, ideal: 145)
+                TableColumn("Konto") { Text($0.accountName).lineLimit(1) }
+                    .width(min: 130, ideal: 180)
+                TableColumn("Kontotyp") { Text($0.accountType.title).lineLimit(1) }
+                    .width(min: 115, ideal: 145)
+                TableColumn("Eröffnung") { row in balanceMoney(row.openingBalanceMinor, row.currency) }
+                    .width(125)
+                TableColumn("Bewegungen") { row in balanceMoney(row.movementMinor, row.currency) }
+                    .width(125)
+                TableColumn("Saldo") { row in balanceMoney(row.balanceMinor, row.currency) }
+                    .width(125)
+                TableColumn("Währung") { Text($0.currency) }
+                    .width(70)
+            }
+            .overlay {
+                if snapshot.rows.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Kontosalden",
+                        systemImage: "scalemass",
+                        description: Text("Die gewählten Filter enthalten am Stichtag keine Konten.")
+                    )
+                }
+            }
+            Divider()
+            ScrollView(.horizontal) {
+                HStack(spacing: 18) {
+                    Text("Summen").fontWeight(.semibold)
+                    ForEach(snapshot.totals) { total in
+                        Text(
+                            "\(total.currency): Aktiva "
+                                + Money(minorUnits: total.assetsMinor, currency: total.currency).formatted
+                                + " · Passiva "
+                                + Money(minorUnits: total.liabilitiesMinor, currency: total.currency).formatted
+                                + " · Netto "
+                                + Money(minorUnits: total.netWorthMinor, currency: total.currency).formatted
+                        )
+                        .monospacedDigit()
+                    }
+                    if snapshot.totals.count > 1 {
+                        Label("Keine Addition ohne FX-Kurs", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            }
+        }
+        .frame(minWidth: 1_050, minHeight: 650)
+        .fileExporter(
+            isPresented: $showCSVExporter,
+            document: csvDocument,
+            contentType: .commaSeparatedText,
+            defaultFilename: filename
+        ) { result in
+            if case .failure(let error) = result { store.errorMessage = error.localizedDescription }
+        }
+        .fileExporter(
+            isPresented: $showPDFExporter,
+            document: pdfDocument,
+            contentType: .pdf,
+            defaultFilename: filename
+        ) { result in
+            if case .failure(let error) = result { store.errorMessage = error.localizedDescription }
+        }
+    }
+
+    private var balanceAccountMenu: some View {
+        Menu {
+            Button("Alle Vermögenskonten") { accountIDs.removeAll(); groupIDs.removeAll() }
+            Section("Kontengruppen") {
+                ForEach(store.accountGroups.filter(\.isActive)) { group in
+                    Toggle(group.name, isOn: member(group.id, in: $groupIDs))
+                }
+            }
+            Section("Einzelkonten") {
+                ForEach(store.accounts) { account in
+                    Toggle(account.name, isOn: member(account.id, in: $accountIDs))
+                }
+            }
+        } label: {
+            Label(
+                accountIDs.isEmpty && groupIDs.isEmpty
+                    ? "Alle Konten" : "Konten (\(accountIDs.count + groupIDs.count))",
+                systemImage: "building.columns"
+            )
+        }
+    }
+
+    private var balanceCurrencyMenu: some View {
+        Menu {
+            Button("Alle Währungen") { currencies.removeAll() }
+            ForEach(Set(store.accounts.map { $0.currency.uppercased() }).sorted(), id: \.self) {
+                currency in
+                Toggle(currency, isOn: member(currency, in: $currencies))
+            }
+        } label: {
+            Label(currencies.isEmpty ? "Alle Währungen" : "Währungen (\(currencies.count))",
+                  systemImage: "eurosign.arrow.circlepath")
+        }
+    }
+
+    private func member<Value: Hashable>(
+        _ value: Value, in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { included in
+                if included { selection.wrappedValue.insert(value) }
+                else { selection.wrappedValue.remove(value) }
+            }
+        )
+    }
+
+    private func balanceMoney(_ minor: Int64, _ currency: String) -> some View {
+        Text(Money(minorUnits: minor, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+    }
+
+    private var metadata: AccountBalanceReportExportMetadata {
+        AccountBalanceReportExportMetadata(
+            title: "Kontosalden und Nettovermögen",
+            filterSummary: accountIDs.isEmpty && groupIDs.isEmpty
+                ? "alle Vermögenskonten" : "\(accountIDs.count) Konten, \(groupIDs.count) Gruppen",
+            generatedAt: .now
+        )
+    }
+
+    private func pdfData(_ snapshot: AccountBalanceReportSnapshot) throws -> Data {
+        try AccountBalanceReportPDFExporter.data(
+            snapshot: snapshot, metadata: metadata, orientation: orientation
+        )
+    }
+
+    private func printReport(_ snapshot: AccountBalanceReportSnapshot) {
+        do { try RegisterPrintService.printPDF(try pdfData(snapshot)) }
+        catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private func exportPDF(_ snapshot: AccountBalanceReportSnapshot) {
+        do {
+            pdfDocument = ReportPDFDocument(data: try pdfData(snapshot))
+            showPDFExporter = true
+        } catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private var filename: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "FinanzVerwalter-Kontosalden-\(formatter.string(from: asOf))"
     }
 }
 

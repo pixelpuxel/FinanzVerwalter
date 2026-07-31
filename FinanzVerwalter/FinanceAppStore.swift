@@ -213,6 +213,19 @@ final class FinanceAppStore: ObservableObject {
         )
     }
 
+    func accountBalanceReport(
+        _ query: AccountBalanceReportQuery,
+        calendar: Calendar = .current
+    ) -> AccountBalanceReportSnapshot {
+        AccountBalanceReportEngine.snapshot(
+            query: query,
+            accounts: accounts,
+            accountGroups: accountGroups,
+            transactions: transactions,
+            calendar: calendar
+        )
+    }
+
     func saveReportTemplate(_ template: SavedReportTemplate) -> Bool {
         guard let repository else { return false }
         do {
