@@ -1691,3 +1691,14 @@ Rechtsberatung.
   vorhanden. Ihr stabiler SHA-256-Wert ist
   `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`.
   Die installierte App läuft nach dem Neustart als Prozess 62072.
+- Implementierung und Tests sind als Commit `1982ebc`, die reproduzierbare
+  Dokumentation als `e66910c` auf `agent/qif-mehrkontenimport`
+  festgeschrieben und nach GitHub gepusht. Draft-PR 1 dokumentiert jetzt
+  Schema 29, TARGET-Kalender, 24/7-Ausnahme, Vollsuite, privaten QIF-Test und
+  Produktivmigration.
+- Die Computersteuerung bestätigte unmittelbar vor der Statusmeldung erneut
+  die gesperrte macOS-Sitzung; ein aktueller Screenshot war deshalb nicht
+  möglich und wurde nicht vorgetäuscht. Telegram-Nachricht 973 wurde im
+  Projektthread 894 (`/quicken`) veröffentlicht. Sie enthält denselben
+  Kalender-, Test-, Release-, Datenbank- und GitHub-Stand sowie den
+  Zielzählerstand von 11.325.105 Tokens.
