@@ -877,3 +877,10 @@ Rechtsberatung.
 - Computer Use meldet auch für diesen Release den gesperrten Mac. Eine
   sichtbare Minireport-/Zwei-Konten-/Saldo-Abnahme und ein echter Screenshot
   sind daher weiterhin offen und werden nicht als bestanden behauptet.
+- Der Kontenblatt-Slice ist als Commit `13b36aa` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 zeigt auf diesen Commit
+  und dokumentiert nun Minireport, geteilte Ansicht und 51 ausgeführte Tests.
+- Telegram-Nachricht 944 wurde im Projektthread 894 veröffentlicht. Sie
+  enthält denselben geprüften Kontenblatt-, Saldo-, Release-, GitHub- und
+  Teststatus, bittet um manuelles Entsperren für die echte Sichtabnahme und
+  nennt den Zielzählerstand von 6.898.694 verbrauchten Tokens.
