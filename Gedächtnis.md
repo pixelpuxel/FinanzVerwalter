@@ -1927,3 +1927,12 @@ Rechtsberatung.
   Systemzustandsprüfung meldet weiterhin ausdrücklich
   `CGSSessionScreenIsLocked = Yes`; deshalb sind eine sichtbare UI-Abnahme und
   ein neuer ehrlicher Screenshot in diesem Lauf nicht möglich.
+- Die reproduzierbare Dokumentation ist in Commit `90d90c7` festgeschrieben;
+  beide Commits wurden auf `agent/qif-mehrkontenimport` nach GitHub gepusht.
+  Draft-PR 1 beschreibt Zeit- und Budgetvergleich, 90-Test-Suite,
+  Release-/Datenbankstand und den blockierten externen QIF-Dateizugriff und ist
+  `CLEAN` sowie `MERGEABLE`.
+- Telegram-Nachricht 979 wurde im Projektthread 894 (`/quicken`) mit demselben
+  Funktions-, Test-, Release-, Datenbank- und GitHub-Stand sowie dem exakten
+  Messwert von 12.312.056 Tokens veröffentlicht. Wegen der bestätigten
+  Bildschirmsperre wurde kein Screenshot angehängt oder vorgetäuscht.
