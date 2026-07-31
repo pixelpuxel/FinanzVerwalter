@@ -17,6 +17,30 @@ enum AccountType: String, Codable, CaseIterable, Identifiable, Sendable {
     case rewards
 
     var id: Self { self }
+
+    var defaultGroupName: String {
+        switch self {
+        case .checking, .savings, .fixedDeposit, .clearing, .foreignCurrency:
+            "Bankkonten"
+        case .creditCard:
+            "Kreditkarten"
+        case .cash:
+            "Bargeld"
+        case .investment:
+            "Depots"
+        case .loan:
+            "Kredite"
+        case .asset, .inventory:
+            "Vermögen"
+        case .liability:
+            "Verbindlichkeiten"
+        case .receivable:
+            "Forderungen"
+        case .rewards:
+            "Sonstige"
+        }
+    }
+
     var title: String {
         switch self {
         case .checking: "Girokonto"
@@ -178,6 +202,11 @@ struct FinanceTransaction: Identifiable, Hashable, Sendable {
             throw FinanceError.splitMismatch(expected: amountMinor, actual: sum)
         }
     }
+}
+
+struct BulkCategoryUpdateResult: Equatable, Sendable {
+    let updatedCount: Int
+    let totalsByCurrency: [String: Int64]
 }
 
 struct FinanceTag: Identifiable, Hashable, Sendable {

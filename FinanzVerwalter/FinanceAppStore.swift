@@ -83,6 +83,28 @@ final class FinanceAppStore: ObservableObject {
             .reduce(Int64.zero) { $0 + (balances[$1.id] ?? 0) }
     }
 
+    func runningBalances(accountID: UUID? = nil) -> [UUID: Int64] {
+        var result: [UUID: Int64] = [:]
+        for account in accounts where accountID == nil || account.id == accountID {
+            var balance = account.openingBalanceMinor
+            let accountTransactions = transactions
+                .filter { $0.accountID == account.id }
+                .sorted {
+                    if $0.bookingDate != $1.bookingDate {
+                        return $0.bookingDate < $1.bookingDate
+                    }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+            for transaction in accountTransactions {
+                if transaction.status != .cancelled {
+                    balance += transaction.amountMinor
+                }
+                result[transaction.id] = balance
+            }
+        }
+        return result
+    }
+
     func reload() {
         do {
             try load()
@@ -111,6 +133,23 @@ final class FinanceAppStore: ObservableObject {
             parentID = parent.parentID
         }
         return names.joined(separator: " › ")
+    }
+
+    func transactionCategoryPath(_ transaction: FinanceTransaction) -> String {
+        if transaction.transferID != nil {
+            return "Umbuchung"
+        }
+        guard !transaction.splits.isEmpty else {
+            return categoryPath(transaction.categoryID)
+        }
+        let paths = transaction.splits
+            .map { categoryPath($0.categoryID) }
+            .reduce(into: [String]()) { result, path in
+                if !result.contains(path) {
+                    result.append(path)
+                }
+            }
+        return "Split: " + paths.joined(separator: " · ")
     }
 
     var categoriesByPath: [FinanceCategory] {
@@ -315,6 +354,22 @@ final class FinanceAppStore: ObservableObject {
             try repository.saveTransaction(value)
             try load()
             statusText = "Splitbuchung gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func bulkAssignCategory(transactionIDs: Set<UUID>, categoryID: UUID?) -> Bool {
+        guard let repository else { return false }
+        do {
+            let result = try repository.bulkUpdateTransactionCategory(
+                ids: transactionIDs,
+                categoryID: categoryID
+            )
+            try load()
+            statusText = "\(result.updatedCount) Buchungen kategorisiert"
             return true
         } catch {
             present(error)

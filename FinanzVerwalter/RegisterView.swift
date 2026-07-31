@@ -4,9 +4,43 @@ struct RegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selection = Set<UUID>()
     @State private var showEditor = false
+    @State private var showBulkEditor = false
     @State private var editingTransaction: FinanceTransaction?
+    @State private var statusFilter: TransactionStatus?
+    @State private var categoryFilter: RegisterCategoryFilter = .all
+    @State private var periodFilter: RegisterPeriodFilter = .all
+    @State private var customStart = Calendar.current.date(byAdding: .month, value: -1, to: .now) ?? .now
+    @State private var customEnd = Date.now
+    @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
+
+    private var rowMode: RegisterRowMode {
+        get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
+        nonmutating set { rowModeRaw = newValue.rawValue }
+    }
+
+    private var visibleTransactions: [FinanceTransaction] {
+        store.filteredTransactions.filter { transaction in
+            let statusMatches = statusFilter == nil || transaction.status == statusFilter
+            let categoryMatches: Bool
+            switch categoryFilter {
+            case .all:
+                categoryMatches = true
+            case .uncategorized:
+                categoryMatches = transaction.categoryID == nil && transaction.transferID == nil
+            case .category(let id):
+                categoryMatches = transaction.categoryID == id
+                    || transaction.splits.contains { $0.categoryID == id }
+            }
+            return statusMatches && categoryMatches && periodFilter.contains(
+                transaction.bookingDate,
+                customStart: customStart,
+                customEnd: customEnd
+            )
+        }
+    }
 
     var body: some View {
+        let runningBalances = store.runningBalances(accountID: store.selectedAccountID)
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -37,40 +71,151 @@ struct RegisterView: View {
 
             Divider()
 
-            Table(store.filteredTransactions, selection: $selection) {
+            HStack(spacing: 12) {
+                Picker("Status", selection: $statusFilter) {
+                    Text("Alle Status").tag(TransactionStatus?.none)
+                    ForEach(TransactionStatus.allCases, id: \.self) {
+                        Text($0.title).tag(Optional($0))
+                    }
+                }
+                .frame(width: 150)
+                Picker("Kategorie", selection: $categoryFilter) {
+                    Text("Alle Kategorien").tag(RegisterCategoryFilter.all)
+                    Text("Nicht kategorisiert").tag(RegisterCategoryFilter.uncategorized)
+                    Divider()
+                    ForEach(store.categoriesByPath.filter(\.isActive)) {
+                        Text(store.categoryPath($0.id))
+                            .tag(RegisterCategoryFilter.category($0.id))
+                    }
+                }
+                .frame(width: 210)
+                Picker("Zeitraum", selection: $periodFilter) {
+                    ForEach(RegisterPeriodFilter.allCases) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .frame(width: 150)
+                Picker(
+                    "Zeilen",
+                    selection: Binding(get: { rowMode }, set: { rowMode = $0 })
+                ) {
+                    ForEach(RegisterRowMode.allCases) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 175)
+                if periodFilter == .custom {
+                    DatePicker("Von", selection: $customStart, displayedComponents: .date)
+                        .labelsHidden()
+                    Text("bis").foregroundStyle(.secondary)
+                    DatePicker("Bis", selection: $customEnd, displayedComponents: .date)
+                        .labelsHidden()
+                }
+                Spacer()
+                Button("Filter zurücksetzen", systemImage: "line.3.horizontal.decrease.circle") {
+                    statusFilter = nil
+                    categoryFilter = .all
+                    periodFilter = .all
+                }
+                .disabled(statusFilter == nil && categoryFilter == .all && periodFilter == .all)
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            Table(visibleTransactions, selection: $selection) {
                 TableColumn("Datum") { value in
                     Text(value.bookingDate, format: .dateTime.day().month(.twoDigits).year())
                         .monospacedDigit()
+                        .frame(height: rowMode.rowHeight)
                 }
                 .width(min: 82, ideal: 92)
                 TableColumn("Status") { value in
                     Image(systemName: statusIcon(value.status))
                         .foregroundStyle(statusColor(value.status))
                         .help(value.status.title)
+                        .frame(height: rowMode.rowHeight)
                 }
                 .width(44)
-                TableColumn("Empfänger") { value in Text(value.payee) }
+                TableColumn("Empfänger") { value in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(value.payee)
+                            .lineLimit(rowMode == .twoLines ? 2 : 1)
+                        if rowMode == .twoLines,
+                           let valueDate = value.valueDate,
+                           !Calendar.current.isDate(valueDate, inSameDayAs: value.bookingDate) {
+                            Text("Wertstellung \(valueDate.formatted(date: .numeric, time: .omitted))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
                     .width(min: 130, ideal: 180)
-                TableColumn("Verwendungszweck") { value in Text(value.purpose) }
+                TableColumn("Verwendungszweck") { value in
+                    let detail = transactionDetail(value)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(value.purpose)
+                            .lineLimit(rowMode == .twoLines && detail.isEmpty ? 2 : 1)
+                        if rowMode == .twoLines, !detail.isEmpty {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                    .help([value.purpose, detail].filter { !$0.isEmpty }.joined(separator: "\n"))
+                }
                     .width(min: 170, ideal: 260)
                 TableColumn("Kategorie") { value in
-                    Text(value.transferID == nil ? store.categoryName(value.categoryID) : "Umbuchung")
+                    let path = store.transactionCategoryPath(value)
+                    Text(path)
+                        .lineLimit(rowMode == .twoLines ? 2 : 1)
+                        .truncationMode(.middle)
+                        .help(path)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
                 }
-                .width(min: 120, ideal: 160)
-                TableColumn("Konto") { value in Text(store.accountName(value.accountID)) }
+                .width(min: 150, ideal: 220)
+                TableColumn("Konto") { value in
+                    Text(store.accountName(value.accountID))
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
                     .width(min: 100, ideal: 140)
                 TableColumn("Betrag") { value in
                     Text(Money(minorUnits: value.amountMinor, currency: value.currency).formatted)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .monospacedDigit()
                         .foregroundStyle(value.amountMinor < 0 ? .primary : Color.green)
+                        .frame(height: rowMode.rowHeight)
                 }
                 .width(min: 105, ideal: 120)
+                TableColumn("Saldo") { value in
+                    Text(
+                        Money(
+                            minorUnits: runningBalances[value.id] ?? 0,
+                            currency: value.currency
+                        ).formatted
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .monospacedDigit()
+                    .frame(height: rowMode.rowHeight)
+                }
+                .width(min: 105, ideal: 125)
             }
             .contextMenu(forSelectionType: UUID.self) { ids in
-                Button("Bearbeiten") {
-                    editingTransaction = store.transactions.first { ids.contains($0.id) }
-                    showEditor = editingTransaction != nil
+                if ids.count == 1 {
+                    Button("Bearbeiten") {
+                        editingTransaction = store.transactions.first { ids.contains($0.id) }
+                        showEditor = editingTransaction != nil
+                    }
+                }
+                Button("Kategorie für Auswahl ändern …") {
+                    selection = ids
+                    showBulkEditor = true
                 }
                 Button("Löschen", role: .destructive) {
                     ids.compactMap { id in store.transactions.first { $0.id == id } }
@@ -82,18 +227,71 @@ struct RegisterView: View {
                 showEditor = editingTransaction != nil
             }
             .overlay {
-                if store.filteredTransactions.isEmpty {
+                if visibleTransactions.isEmpty {
                     ContentUnavailableView(
                         "Keine Buchungen",
                         systemImage: "list.bullet.rectangle",
-                        description: Text("Lege eine Buchung an oder importiere Umsätze.")
+                        description: Text(
+                            store.transactions.isEmpty
+                                ? "Lege eine Buchung an oder importiere Umsätze."
+                                : "Die gewählten Filter liefern keine Treffer."
+                        )
                     )
                 }
             }
+            Divider()
+            HStack {
+                Text("\(visibleTransactions.count) Buchungen")
+                if !selection.isEmpty {
+                    Divider().frame(height: 14)
+                    Text("\(selection.count) ausgewählt")
+                        .fontWeight(.semibold)
+                    Button("Kategorie ändern …", systemImage: "tag") {
+                        showBulkEditor = true
+                    }
+                }
+                Spacer()
+                Text(filteredTotalsText)
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
         }
         .sheet(isPresented: $showEditor) {
             TransactionEditorView(transaction: editingTransaction)
         }
+        .sheet(isPresented: $showBulkEditor) {
+            BulkCategoryEditorView(transactionIDs: selection) {
+                selection.removeAll()
+            }
+        }
+        .onChange(of: visibleTransactions.map(\.id)) {
+            selection.formIntersection(Set(visibleTransactions.map(\.id)))
+        }
+    }
+
+    private var filteredTotalsText: String {
+        let totals = Dictionary(grouping: visibleTransactions, by: \.currency)
+            .mapValues { $0.reduce(Int64.zero) { $0 + $1.amountMinor } }
+        return totals.keys.sorted().map {
+            Money(minorUnits: totals[$0] ?? 0, currency: $0).formatted
+        }.joined(separator: " · ")
+    }
+
+    private func transactionDetail(_ value: FinanceTransaction) -> String {
+        var parts: [String] = []
+        if !value.memo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(value.memo)
+        }
+        if !value.reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("Ref. \(value.reference)")
+        }
+        if !value.tagIDs.isEmpty {
+            parts.append(value.tagIDs.map(store.tagName).joined(separator: ", "))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func statusIcon(_ status: TransactionStatus) -> String {
@@ -115,6 +313,165 @@ struct RegisterView: View {
         case .cleared: .green
         case .reconciled: .green
         case .cancelled: .red
+        }
+    }
+}
+
+private enum RegisterCategoryFilter: Hashable {
+    case all
+    case uncategorized
+    case category(UUID)
+}
+
+private enum RegisterPeriodFilter: String, CaseIterable, Identifiable {
+    case all
+    case currentMonth
+    case currentYear
+    case custom
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: "Gesamter Zeitraum"
+        case .currentMonth: "Dieser Monat"
+        case .currentYear: "Dieses Jahr"
+        case .custom: "Benutzerdefiniert"
+        }
+    }
+
+    func contains(_ date: Date, customStart: Date, customEnd: Date) -> Bool {
+        let calendar = Calendar.current
+        switch self {
+        case .all:
+            return true
+        case .currentMonth:
+            return calendar.isDate(date, equalTo: .now, toGranularity: .month)
+        case .currentYear:
+            return calendar.isDate(date, equalTo: .now, toGranularity: .year)
+        case .custom:
+            let start = calendar.startOfDay(for: min(customStart, customEnd))
+            let end = calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: calendar.startOfDay(for: max(customStart, customEnd))
+            ) ?? max(customStart, customEnd)
+            return date >= start && date < end
+        }
+    }
+
+}
+
+private enum RegisterRowMode: String, CaseIterable, Identifiable {
+    case single
+    case twoLines
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .single: "Einzeilig"
+        case .twoLines: "Zweizeilig"
+        }
+    }
+
+    var rowHeight: CGFloat {
+        self == .twoLines ? 38 : 20
+    }
+}
+
+private struct BulkCategoryEditorView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let transactionIDs: Set<UUID>
+    let onCompletion: () -> Void
+
+    @State private var categoryID: UUID?
+    @State private var showConfirmation = false
+
+    private var transactions: [FinanceTransaction] {
+        store.transactions.filter { transactionIDs.contains($0.id) }
+    }
+
+    private var protectedTransactions: [FinanceTransaction] {
+        transactions.filter {
+            $0.status == .reconciled || $0.transferID != nil || !$0.splits.isEmpty
+        }
+    }
+
+    private var totals: [(currency: String, amount: Int64)] {
+        Dictionary(grouping: transactions, by: \.currency)
+            .map { ($0.key, $0.value.reduce(Int64.zero) { $0 + $1.amountMinor }) }
+            .sorted { $0.currency < $1.currency }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Kategorie für Auswahl ändern")
+                .font(.title2.bold())
+            Text("\(transactions.count) Buchungen werden gemeinsam geprüft und atomar geändert.")
+                .foregroundStyle(.secondary)
+
+            LabeledContent("Ausgewählte Summe") {
+                VStack(alignment: .trailing) {
+                    ForEach(totals, id: \.currency) {
+                        Text(Money(minorUnits: $0.amount, currency: $0.currency).formatted)
+                            .monospacedDigit()
+                    }
+                }
+            }
+
+            Picker("Neue Kategorie", selection: $categoryID) {
+                Text("Nicht kategorisiert").tag(UUID?.none)
+                ForEach(store.categoriesByPath.filter(\.isActive)) {
+                    Text(store.categoryPath($0.id)).tag(UUID?.some($0.id))
+                }
+            }
+
+            if !protectedTransactions.isEmpty {
+                Label(
+                    "\(protectedTransactions.count) geschützte Buchungen in der Auswahl. "
+                        + "Abgeglichene Buchungen, Umbuchungen und Splitbuchungen werden nicht massenweise geändert.",
+                    systemImage: "lock.trianglebadge.exclamationmark"
+                )
+                .foregroundStyle(.orange)
+            } else {
+                Label(
+                    "Die Änderung betrifft ausschließlich die Kategorie. Beträge, Konten und Status bleiben unverändert.",
+                    systemImage: "checkmark.shield"
+                )
+                .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Abbrechen", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Änderung prüfen …") {
+                    showConfirmation = true
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(transactions.isEmpty || !protectedTransactions.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+        .confirmationDialog(
+            "Kategorie wirklich für \(transactions.count) Buchungen ändern?",
+            isPresented: $showConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Für \(transactions.count) Buchungen anwenden") {
+                if store.bulkAssignCategory(
+                    transactionIDs: transactionIDs,
+                    categoryID: categoryID
+                ) {
+                    onCompletion()
+                    dismiss()
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Die Änderung wird in einem Datenbankvorgang durchgeführt und protokolliert.")
         }
     }
 }
@@ -409,6 +766,12 @@ private struct SplitDraft: Identifiable {
 struct CombinedRegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selection = Set<UUID>()
+    @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
+
+    private var rowMode: RegisterRowMode {
+        get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
+        nonmutating set { rowModeRaw = newValue.rawValue }
+    }
 
     private var visible: [FinanceTransaction] {
         store.transactions.filter {
@@ -424,6 +787,7 @@ struct CombinedRegisterView: View {
     }
 
     var body: some View {
+        let runningBalances = store.runningBalances()
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -432,6 +796,16 @@ struct CombinedRegisterView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Picker(
+                    "Zeilen",
+                    selection: Binding(get: { rowMode }, set: { rowMode = $0 })
+                ) {
+                    ForEach(RegisterRowMode.allCases) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 175)
                 VStack(alignment: .trailing) {
                     Text(store.searchText.isEmpty ? "Summe ohne Umbuchungen" : "Gefilterte Summe")
                         .font(.caption).foregroundStyle(.secondary)
@@ -445,21 +819,63 @@ struct CombinedRegisterView: View {
                 TableColumn("Datum") {
                     Text($0.bookingDate, format: .dateTime.day().month(.twoDigits).year())
                         .foregroundStyle($0.bookingDate > Date() ? .blue : .primary)
+                        .frame(height: rowMode.rowHeight)
                 }
                 .width(90)
-                TableColumn("Konto") { Text(store.accountName($0.accountID)) }
-                TableColumn("Empfänger", value: \.payee)
-                TableColumn("Verwendungszweck", value: \.purpose)
-                TableColumn("Kategorie") {
-                    Text($0.transferID == nil ? store.categoryName($0.categoryID) : "Umbuchung")
+                TableColumn("Konto") {
+                    Text(store.accountName($0.accountID))
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
                 }
-                TableColumn("Status") { Text($0.status.title) }.width(90)
+                TableColumn("Empfänger") { value in
+                    Text(value.payee)
+                        .lineLimit(rowMode == .twoLines ? 2 : 1)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                TableColumn("Verwendungszweck") { value in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(value.purpose).lineLimit(rowMode == .twoLines ? 2 : 1)
+                        if rowMode == .twoLines,
+                           !value.memo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(value.memo)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                TableColumn("Kategorie") {
+                    let path = store.transactionCategoryPath($0)
+                    Text(path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(path)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                TableColumn("Status") {
+                    Text($0.status.title)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                .width(90)
                 TableColumn("Betrag") {
-                    Text(Money(minorUnits: $0.amountMinor).formatted)
+                    Text(Money(minorUnits: $0.amountMinor, currency: $0.currency).formatted)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .monospacedDigit()
+                        .frame(height: rowMode.rowHeight)
                 }
                 .width(115)
+                TableColumn("Saldo") {
+                    Text(
+                        Money(
+                            minorUnits: runningBalances[$0.id] ?? 0,
+                            currency: $0.currency
+                        ).formatted
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .monospacedDigit()
+                    .frame(height: rowMode.rowHeight)
+                }
+                .width(125)
             }
             HStack {
                 Rectangle().fill(.blue).frame(width: 36, height: 2)

@@ -777,6 +777,59 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 11")
             }
         }
+        if version < 12 {
+            try transaction {
+                let groupNames = [
+                    "Bankkonten", "Kreditkarten", "Bargeld", "Depots", "Kredite",
+                    "Vermögen", "Verbindlichkeiten", "Forderungen", "Sonstige"
+                ]
+                let now = Self.timestamp(Date())
+                for (index, name) in groupNames.enumerated() {
+                    try run(
+                        """
+                        INSERT INTO account_groups(
+                            id,finance_file_id,name,sort_order,is_active,created_at,updated_at
+                        )
+                        SELECT ?,id,?,?,1,?,? FROM finance_files LIMIT 1
+                        ON CONFLICT(finance_file_id,name)
+                        DO UPDATE SET sort_order=excluded.sort_order,is_active=1,
+                                      updated_at=excluded.updated_at,version=version+1
+                        """,
+                        [
+                            .text(UUID().uuidString), .text(name), .integer(Int64(index)),
+                            .text(now), .text(now)
+                        ]
+                    )
+                }
+                try execute(
+                    """
+                    UPDATE accounts
+                    SET group_id=(
+                        SELECT id FROM account_groups
+                        WHERE finance_file_id=accounts.finance_file_id
+                          AND name=CASE
+                            WHEN accounts.type IN (
+                                'checking','savings','fixedDeposit','clearing','foreignCurrency'
+                            ) THEN 'Bankkonten'
+                            WHEN accounts.type='creditCard' THEN 'Kreditkarten'
+                            WHEN accounts.type='cash' THEN 'Bargeld'
+                            WHEN accounts.type='investment' THEN 'Depots'
+                            WHEN accounts.type='loan' THEN 'Kredite'
+                            WHEN accounts.type IN ('asset','inventory') THEN 'Vermögen'
+                            WHEN accounts.type='liability' THEN 'Verbindlichkeiten'
+                            WHEN accounts.type='receivable' THEN 'Forderungen'
+                            ELSE 'Sonstige'
+                          END
+                        LIMIT 1
+                    ),
+                    updated_at='\(now)',
+                    version=version+1
+                    WHERE group_id IS NULL
+                    """
+                )
+                try execute("PRAGMA user_version = 12")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2527,6 +2580,86 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func bulkUpdateTransactionCategory(
+        ids: Set<UUID>,
+        categoryID: UUID?
+    ) throws -> BulkCategoryUpdateResult {
+        guard !ids.isEmpty else {
+            return BulkCategoryUpdateResult(updatedCount: 0, totalsByCurrency: [:])
+        }
+        if let categoryID {
+            var categoryExists = false
+            try query(
+                "SELECT 1 FROM categories WHERE id=? AND is_active=1 LIMIT 1",
+                [.text(categoryID.uuidString)]
+            ) { _ in categoryExists = true }
+            guard categoryExists else {
+                throw FinanceError.database("Die gewählte Kategorie existiert nicht oder ist inaktiv.")
+            }
+        }
+
+        var selected: [(id: UUID, status: String, transferID: String?, splitCount: Int, amount: Int64, currency: String)] = []
+        for id in ids.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try query(
+                """
+                SELECT t.status,t.transfer_id,
+                       (SELECT COUNT(*) FROM transaction_splits s WHERE s.transaction_id=t.id),
+                       t.amount_minor,t.currency
+                FROM transactions t WHERE t.id=?
+                """,
+                [.text(id.uuidString)]
+            ) { statement in
+                selected.append(
+                    (
+                        id,
+                        Self.text(statement, 0),
+                        Self.optionalText(statement, 1),
+                        Int(sqlite3_column_int64(statement, 2)),
+                        sqlite3_column_int64(statement, 3),
+                        Self.text(statement, 4)
+                    )
+                )
+            }
+        }
+        guard selected.count == ids.count else {
+            throw FinanceError.database("Mindestens eine ausgewählte Buchung wurde nicht gefunden.")
+        }
+        guard selected.allSatisfy({
+            $0.status != TransactionStatus.reconciled.rawValue
+                && $0.transferID == nil
+                && $0.splitCount == 0
+        }) else {
+            throw FinanceError.protectedBulkEdit
+        }
+
+        let now = Self.timestamp(Date())
+        try transaction {
+            for value in selected {
+                try run(
+                    """
+                    UPDATE transactions
+                    SET category_id=?,updated_at=?,version=version+1
+                    WHERE id=?
+                    """,
+                    [
+                        categoryID.map { .text($0.uuidString) } ?? .null,
+                        .text(now),
+                        .text(value.id.uuidString)
+                    ]
+                )
+                try audit(
+                    entity: "transaction",
+                    id: value.id,
+                    action: "bulk-category",
+                    details: categoryID?.uuidString ?? "uncategorized"
+                )
+            }
+        }
+        let totals = Dictionary(grouping: selected, by: \.currency)
+            .mapValues { values in values.reduce(Int64.zero) { $0 + $1.amount } }
+        return BulkCategoryUpdateResult(updatedCount: selected.count, totalsByCurrency: totals)
+    }
+
     func deleteTransaction(id: UUID) throws {
         try transaction {
             var transferID: String?
@@ -2686,20 +2819,29 @@ final class SQLiteFinanceStore {
             throw FinanceError.duplicateImport
         }
         let info = try financeFileInfo()
+        let groupIDs = Dictionary(
+            uniqueKeysWithValues: try accountGroups().map { ($0.name, $0.id) }
+        )
         let now = Self.timestamp(Date())
         try transaction {
             for account in package.accountsToCreate {
                 try run(
                     """
-                    INSERT INTO accounts(id,finance_file_id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,created_at,updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO accounts(
+                        id,finance_file_id,name,institution,type,currency,
+                        opening_balance_minor,is_hidden,is_closed,sort_order,
+                        created_at,updated_at,group_id
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     [
                         .text(account.id.uuidString), .text(info.id.uuidString),
                         .text(account.name), .text(account.institution), .text(account.type.rawValue),
                         .text(account.currency), .integer(account.openingBalanceMinor),
                         .integer(account.isHidden ? 1 : 0), .integer(account.isClosed ? 1 : 0),
-                        .integer(Int64(account.sortOrder)), .text(now), .text(now)
+                        .integer(Int64(account.sortOrder)), .text(now), .text(now),
+                        groupIDs[account.type.defaultGroupName]
+                            .map { .text($0.uuidString) } ?? .null
                     ]
                 )
             }

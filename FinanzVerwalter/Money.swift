@@ -115,6 +115,7 @@ enum FinanceError: LocalizedError, Equatable {
     case invalidQIFPackage
     case invalidBackup
     case protectedTransaction
+    case protectedBulkEdit
     case reconciliationDifference(Int64)
     case invalidIBAN
     case invalidPaymentTransition
@@ -137,6 +138,8 @@ enum FinanceError: LocalizedError, Equatable {
         case .invalidQIFPackage: "Das QIF-Paket enthält keine importierbaren Konten."
         case .invalidBackup: "Die Sicherungsdatei ist ungültig."
         case .protectedTransaction: "Eine abgeglichene Buchung ist gegen unbeabsichtigte Änderungen geschützt."
+        case .protectedBulkEdit:
+            "Die Auswahl enthält abgeglichene Buchungen, Umbuchungen oder Splitbuchungen. Es wurde nichts geändert."
         case .reconciliationDifference(let value):
             "Der Kontoabgleich hat noch eine Differenz von \(Money(minorUnits: value).formatted)."
         case .invalidIBAN: "Die IBAN-Prüfsumme ist ungültig."

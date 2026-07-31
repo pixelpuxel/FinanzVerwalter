@@ -57,11 +57,28 @@ unpassendes Kontoblatt zu schreiben.
 Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
 QIF-, OFX- und QFX-Dateien ausdrücklich aus.
 
+## Kontoblatt
+
+Das Kontoblatt filtert nach Konto, Status, vollständigem Kategoriepfad und
+Zeitraum. Mehrere Buchungen können ausgewählt und nach einer Vorschau mit
+währungsgetrennten Summen gemeinsam kategorisiert werden. Die Änderung läuft
+atomar; enthält die Auswahl abgeglichene Buchungen, Umbuchungen oder
+Splitbuchungen, wird sie vollständig abgewiesen. Kategoriepfade erscheinen
+einzeilig mit mittiger Kürzung und vollständig im Tooltip.
+
+Direkt rechts neben dem Betrag steht der kontenweise laufende Saldo. Die
+Darstellung kann dauerhaft zwischen einer kompakten Einzeile und einer
+zweizeiligen Ansicht mit Wertstellung, Memo, Referenz und Tags umgeschaltet
+werden. Bestands- und QIF-Konten werden in Bankkonten, Kreditkarten, Bargeld,
+Depots, Kredite, Vermögen, Verbindlichkeiten, Forderungen oder Sonstige
+einsortiert.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand
 - [PortalPrompt.md](PortalPrompt.md) – reproduzierbare Bauanweisung
 - [Anforderungsmatrix](docs/Anforderungsmatrix.md) – ehrliche Soll-Ist-Prüfung
+- [Berichtswerkstatt](docs/Berichtswerkstatt.md) – recherchierter Sollentwurf
 - [Architekturentscheidungen](docs/adr/) – begründete technische Leitplanken
 
 ## Kompatibilität und Markenhinweis

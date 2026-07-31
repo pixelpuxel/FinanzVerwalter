@@ -218,8 +218,24 @@ final class FinanzVerwalterTests: XCTestCase {
         )
 
         try context.store.commitQIFPackage(package)
-        XCTAssertEqual(try context.store.accounts().count, 3)
+        let importedAccounts = try context.store.accounts()
+        XCTAssertEqual(importedAccounts.count, 3)
         XCTAssertEqual(try context.store.transactions().count, 2)
+        let groupsByID = Dictionary(
+            uniqueKeysWithValues: try context.store.accountGroups().map { ($0.id, $0.name) }
+        )
+        XCTAssertEqual(
+            groupsByID[importedAccounts.first { $0.name == "Alltagskonto" }?.groupID ?? UUID()],
+            "Bankkonten"
+        )
+        XCTAssertEqual(
+            groupsByID[importedAccounts.first { $0.name == "Kasse" }?.groupID ?? UUID()],
+            "Bargeld"
+        )
+        XCTAssertEqual(
+            groupsByID[importedAccounts.first { $0.name == "Depot" }?.groupID ?? UUID()],
+            "Depots"
+        )
         let categories = try context.store.categories()
         let electricity = try XCTUnwrap(categories.first { $0.name == "Strom" })
         XCTAssertEqual(
@@ -306,6 +322,86 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertThrowsError(try context.store.saveTransaction(transaction)) { error in
             XCTAssertEqual(error as? FinanceError, .protectedTransaction)
         }
+    }
+
+    func testBulkCategorizationIsAtomicAndProtectsReconciledAndStructuredTransactions() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking, currency: "EUR",
+            openingBalanceMinor: 0, isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let category = try XCTUnwrap(try context.store.categories().first(where: \.isActive))
+        let editable = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
+            payee: "Markt", purpose: "Einkauf", categoryID: nil,
+            amountMinor: -2_500, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        let reconciled = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
+            payee: "Versorger", purpose: "Abgeglichen", categoryID: nil,
+            amountMinor: -4_000, currency: "EUR", status: .reconciled,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        let split = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
+            payee: "Kaufhaus", purpose: "Aufgeteilt", categoryID: nil,
+            amountMinor: -1_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: category.id, amountMinor: -1_000,
+                    memo: "", sortOrder: 0
+                )
+            ]
+        )
+        try context.store.saveTransaction(editable)
+        try context.store.saveTransaction(reconciled)
+        try context.store.saveTransaction(split)
+
+        XCTAssertThrowsError(
+            try context.store.bulkUpdateTransactionCategory(
+                ids: [editable.id, reconciled.id],
+                categoryID: category.id
+            )
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .protectedBulkEdit)
+        }
+        XCTAssertNil(
+            try context.store.transactions().first(where: { $0.id == editable.id })?.categoryID
+        )
+        XCTAssertThrowsError(
+            try context.store.bulkUpdateTransactionCategory(
+                ids: [editable.id, split.id],
+                categoryID: category.id
+            )
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .protectedBulkEdit)
+        }
+
+        let result = try context.store.bulkUpdateTransactionCategory(
+            ids: [editable.id],
+            categoryID: category.id
+        )
+        XCTAssertEqual(result.updatedCount, 1)
+        XCTAssertEqual(result.totalsByCurrency, ["EUR": -2_500])
+        XCTAssertEqual(
+            try context.store.transactions().first(where: { $0.id == editable.id })?.categoryID,
+            category.id
+        )
+
+        XCTAssertThrowsError(
+            try context.store.bulkUpdateTransactionCategory(
+                ids: [editable.id],
+                categoryID: UUID()
+            )
+        )
+        XCTAssertEqual(
+            try context.store.transactions().first(where: { $0.id == editable.id })?.categoryID,
+            category.id
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
     }
 
     func testInvalidBackupIsRejectedBeforeRestore() throws {
@@ -871,9 +967,55 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    @MainActor
+    func testRegisterCategoryDisplayUsesCompletePathAndAllSplitPaths() throws {
+        let context = try TestDatabase()
+        let root = try XCTUnwrap(
+            context.store.categories().first { $0.name == "Lebensmittel" }
+        )
+        let child = FinanceCategory(
+            id: UUID(), parentID: root.id, name: "Supermarkt",
+            kind: root.kind, color: "green", isActive: true
+        )
+        let leaf = FinanceCategory(
+            id: UUID(), parentID: child.id, name: "Bio",
+            kind: root.kind, color: "teal", isActive: true
+        )
+        try context.store.saveCategory(child)
+        try context.store.saveCategory(leaf)
+        let appStore = FinanceAppStore(repository: context.store)
+        let plain = FinanceTransaction(
+            id: UUID(), accountID: UUID(), bookingDate: .now, valueDate: nil,
+            payee: "", purpose: "", categoryID: leaf.id,
+            amountMinor: -1_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        XCTAssertEqual(
+            appStore.transactionCategoryPath(plain),
+            "Lebensmittel › Supermarkt › Bio"
+        )
+
+        var split = plain
+        split.categoryID = nil
+        split.splits = [
+            FinanceSplit(
+                id: UUID(), categoryID: leaf.id, amountMinor: -700,
+                memo: "", sortOrder: 0
+            ),
+            FinanceSplit(
+                id: UUID(), categoryID: root.id, amountMinor: -300,
+                memo: "", sortOrder: 1
+            )
+        ]
+        XCTAssertEqual(
+            appStore.transactionCategoryPath(split),
+            "Split: Lebensmittel › Supermarkt › Bio · Lebensmittel"
+        )
+    }
+
     func testRichAccountMetadataGroupsAndValidationRoundTrip() throws {
         let context = try TestDatabase()
-        XCTAssertEqual(try context.store.accountGroups().count, 4)
+        XCTAssertEqual(try context.store.accountGroups().count, 9)
         let group = AccountGroup(
             id: UUID(), name: "Tägliche Finanzen", sortOrder: 1, isActive: true
         )
@@ -1003,7 +1145,12 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(account.includeReports)
         XCTAssertTrue(account.includeForecast)
         XCTAssertEqual(account.syncStatus, .offline)
-        XCTAssertEqual(try migrated.accountGroups().count, 4)
+        let groups = try migrated.accountGroups()
+        XCTAssertEqual(groups.count, 9)
+        XCTAssertEqual(
+            groups.first { $0.id == account.groupID }?.name,
+            "Bankkonten"
+        )
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -1025,6 +1172,51 @@ final class FinanzVerwalterTests: XCTestCase {
         let appStore = FinanceAppStore(repository: context.store)
         XCTAssertEqual(appStore.fileInfo?.baseCurrency, "EUR")
         XCTAssertEqual(appStore.totalBalanceMinor, 10_000)
+    }
+
+    @MainActor
+    func testRunningBalancesStayPerAccountAndIgnoreCancelledTransactions() throws {
+        let context = try TestDatabase()
+        let euro = FinanceAccount(
+            id: UUID(), name: "Eurokonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "Dollarkonto", institution: "",
+            type: .foreignCurrency, currency: "USD", openingBalanceMinor: 20_000,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(euro)
+        try context.store.saveAccount(dollar)
+        let firstDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let secondDate = Date(timeIntervalSince1970: 1_700_086_400)
+        let euroFirst = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: firstDate, valueDate: nil,
+            payee: "", purpose: "", categoryID: nil,
+            amountMinor: -1_500, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        let euroCancelled = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: secondDate, valueDate: nil,
+            payee: "", purpose: "", categoryID: nil,
+            amountMinor: -9_999, currency: "EUR", status: .cancelled,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        let dollarValue = FinanceTransaction(
+            id: UUID(), accountID: dollar.id, bookingDate: firstDate, valueDate: nil,
+            payee: "", purpose: "", categoryID: nil,
+            amountMinor: 2_500, currency: "USD", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(euroFirst)
+        try context.store.saveTransaction(euroCancelled)
+        try context.store.saveTransaction(dollarValue)
+        let appStore = FinanceAppStore(repository: context.store)
+        let balances = appStore.runningBalances()
+        XCTAssertEqual(balances[euroFirst.id], 8_500)
+        XCTAssertEqual(balances[euroCancelled.id], 8_500)
+        XCTAssertEqual(balances[dollarValue.id], 22_500)
     }
 }
 

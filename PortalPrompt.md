@@ -100,6 +100,10 @@ Das Kontoblatt ist der primäre Bildschirm. Es zeigt Datum, Wertstellung,
 Belegnummer, Empfänger, Verwendungszweck, Kategorie, Klasse/Tags, Betrag,
 Status und laufenden Saldo. Es unterstützt Inline-Eingabe, Splitdialog,
 Volltextfilter, Mehrfachauswahl, erwartete Zukunft und Shortcuts.
+Kategoriepfade müssen in der Tabelle vollständig aus dem Hierarchiebaum
+gebildet werden. Zeige sie einzeilig, kürze bei Platzmangel in der Mitte und
+lege den vollständigen Pfad als Tooltip ab. Bei Splits sind alle
+unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Umsetzungsreihenfolge
 
@@ -117,13 +121,13 @@ Volltextfilter, Mehrfachauswahl, erwartete Zukunft und Shortcuts.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 11, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
+Migrationen 1 bis 12, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
 Transfers, QIF/CSV, Kontoabgleich, Sammelkontoblatt, Bericht, Backup,
 validierte Wiederherstellung, Kategorisierungsregeln und ein erster
 Serientermin-/Prognose-Slice sowie monatliche Kategorie-Budgets sind
 implementiert. Zusätzlich ist ein rein lokaler Banking-Simulator mit
 Zahlungsaufträgen und SCA-Zustandsautomat vorhanden. Die Testsuite umfasst
-aktuell dreiundzwanzig erfolgreiche
+aktuell sechsundzwanzig erfolgreiche
 XCTest-Fälle. Debug- und Release-Build wurden
 erfolgreich ausgeführt; der Release-Stand ist lokal installiert und sichtbar
 geprüft. Details und Screenshots stehen in `Gedächtnis.md`.
@@ -142,6 +146,14 @@ jeweiligen Währung zu formatieren. Ohne FX-Tabelle darf das Nettovermögen nur
 Konten in der Basiswährung summieren und muss ausgelassene
 Fremdwährungskonten sichtbar kennzeichnen.
 
+Migration 12 stellt neun fachliche Standardkontengruppen sicher:
+Bankkonten, Kreditkarten, Bargeld, Depots, Kredite, Vermögen,
+Verbindlichkeiten, Forderungen und Sonstige. Sie ordnet jedes vorhandene
+Konto ohne Gruppe anhand seines `AccountType` zu. Der Mehrkonten-QIF-Commit
+weist dieselben Gruppen neuen Konten sofort zu. Der Kontoeditor schlägt bei
+einem neuen Konto die typgerechte Gruppe vor, lässt aber eine bewusste
+abweichende Zuordnung zu.
+
 Die verbindliche Soll-Ist-Matrix liegt in `docs/Anforderungsmatrix.md`.
 Architekturentscheidungen liegen als ADRs in `docs/adr/`. Ein anderer Agent
 muss diese Dateien vor der nächsten Implementierung lesen und darf einen
@@ -150,7 +162,28 @@ muss diese Dateien vor der nächsten Implementierung lesen und darf einen
 Kategorien sind ein eigener Hauptbereich. Speichere Ober- und
 Unterkategorien über `parent_id`, verhindere Selbstbezug und Zyklen und
 erlaube nur Eltern derselben Einnahmen-/Ausgabenart. In allen Auswahlfeldern
-ist der vollständige Pfad (`Oberkategorie › Unterkategorie`) anzuzeigen.
+und Kontoblattspalten ist der vollständige Pfad
+(`Oberkategorie › Unterkategorie`) anzuzeigen.
+
+Das Kontoblatt berechnet einen laufenden Saldo getrennt je Konto und Währung.
+Beginne mit dem Eröffnungssaldo, sortiere nach Buchungsdatum und UUID und
+ignoriere stornierte Beträge. Zeige `Saldo` unmittelbar rechts von `Betrag`.
+Ein gemeinsamer persistierter Zeilenmodus schaltet Konto- und
+Sammelkontoblatt zwischen einer festen 20-Pixel-Einzeile und einer festen
+38-Pixel-Zweizeile um. Die Zweizeile darf Wertstellung, Memo, Referenz und
+Tags ergänzen; die feste Höhe verhindert Layoutflattern bei großen Dateien.
+
+Der bestehende Kategoriebericht ist ausdrücklich kein vollständiges
+Berichtssystem. Die verbindliche Query-, Snapshot-, Drill-down-, Vorlagen-,
+Druck- und Exportarchitektur sowie die recherchierten offiziellen
+Referenzfunktionen stehen in `docs/Berichtswerkstatt.md`.
+
+Die Massenkategorisierung erhält eine Menge Buchungs-UUIDs und eine optionale
+Zielkategorie. Prüfe vor jeder Mutation, dass alle UUIDs existieren, die
+Kategorie aktiv ist und keine ausgewählte Buchung abgeglichen, umgebucht oder
+gesplittet ist. Führe anschließend alle Kategorieänderungen samt Audit in
+genau einer SQLite-Transaktion aus. Die Oberfläche zeigt zuvor Anzahl und
+Summen getrennt nach Währung und verlangt eine zweite Bestätigung.
 
 Ein vollständiger QIF-Export kann viele Konten, Kategorien, Klassen,
 Vorlagen und Wertpapierabschnitte enthalten. Solche Pakete dürfen niemals

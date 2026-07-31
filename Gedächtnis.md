@@ -311,3 +311,47 @@ Rechtsberatung.
 - vollständige Soll-Ist-Prüfung gegen die Masterdatei liegt in
   `docs/Anforderungsmatrix.md`; offene Punkte werden nicht als fertig
   dargestellt. Architekturentscheidungen stehen unter `docs/adr/`.
+- Kontoblatt um Konto-, Status-, Kategorie- und Zeitraumfilter,
+  Mehrfachauswahl, währungsgetrennte sichtbare Summen und eine zweistufig
+  bestätigte Massenkategorisierung erweitert. Die Persistenz prüft die
+  gesamte Auswahl vorab und ändert atomar nichts, sobald eine abgeglichene
+  Buchung, Umbuchung oder Splitbuchung enthalten ist.
+- Kategorieanzeigen im Konto- und Sammelkontoblatt verwenden den vollständigen
+  Hierarchiepfad. Lange Pfade bleiben einzeilig, werden in der Mitte gekürzt
+  und sind vollständig als Tooltip verfügbar; Splitbuchungen führen alle
+  unterschiedlichen Splitpfade auf.
+- 25 XCTest-Fälle einschließlich Atomaritäts- und Kategoriepfadtest bestehen
+  ohne Fehler. Die vollständige Abnahme mit der externen realen QIF-Datei
+  besteht ebenfalls 25/25.
+- Der reale QIF-Bestand wurde auf ausdrücklichen Wunsch ausschließlich in die
+  lokale normale Finanzdatei importiert: 97 Konten, 782 Kategorien und 2.170
+  Buchungen; `PRAGMA integrity_check` meldet `ok`. Vor dem Erstimport entstand
+  lokal `Vor QIF-Erstimport 2025.qbackup`. Weder Quelldatei noch lokale
+  Finanzdatei oder Sicherung liegen im Repository.
+- SQLite-Migration 12 legt neun fachliche Standardkontengruppen an und ordnet
+  jedes bisher ungruppierte Konto anhand seines Kontotyps zu. Der
+  Mehrkonten-QIF-Import weist dieselben Gruppen bereits beim Commit zu.
+  Die lokale Realdatei wurde vor der Migration gesichert und danach mit
+  Schema 12 geprüft: 97 von 97 Konten gruppiert, Integrität `ok`.
+- Konto- und Sammelkontoblatt zeigen direkt rechts neben dem Betrag einen
+  laufenden, kontenweisen Saldo. Die Berechnung beginnt mit dem
+  Konto-Eröffnungssaldo, sortiert deterministisch nach Buchungsdatum und UUID
+  und verändert sich durch stornierte Buchungen nicht.
+- Der gemeinsame, persistierte Zeilenmodus schaltet zwischen 20 Pixel hoher
+  Einzeile und 38 Pixel hoher Zweizeile um. Die Zweizeile kann Wertstellung,
+  Memo, Referenz und Tags aufnehmen; feste Höhen verhindern Layoutflattern
+  bei großen realen Kontenblättern.
+- Build-for-testing und Release-Build bestehen. 26 XCTest-Fälle einschließlich
+  laufender-Saldo-, Migration-, QIF-, Atomaritäts- und Kategoriepfadtest
+  laufen fehlerfrei; die externe echte QIF-Datei besteht ebenfalls 26/26.
+- Die installierte Release-App wurde im Light Mode sichtbar geprüft. Der
+  Spaltenkopf `Saldo` steht rechts von `Betrag`, Einzeilig und Zweizeilig
+  lassen sich umschalten, und die Sidebar enthält unter anderem die neue
+  Gruppe `Kreditkarten`. Screenshot:
+  `build/kontenblatt-saldo-zweizeilig.png`.
+- Dieser verifizierte Zwischenstand wurde mit dem Screenshot im vereinbarten
+  Telegram-Projektthread 894 als Nachricht 931 veröffentlicht.
+- Die offizielle Funktionsrecherche zu Berichten und Drucken ist in
+  `docs/Berichtswerkstatt.md` in ein reproduzierbares Query-, Snapshot-,
+  Drill-down- und Ausgabeziel überführt. Der bestehende Kategoriebericht
+  bleibt ausdrücklich nur ein Teilstand.

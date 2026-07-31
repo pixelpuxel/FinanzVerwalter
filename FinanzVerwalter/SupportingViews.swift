@@ -473,6 +473,20 @@ struct AccountEditorView: View {
         }
         .padding(24)
         .frame(width: 640, height: 760)
+        .onAppear {
+            if account == nil, groupID == nil {
+                groupID = store.accountGroups.first {
+                    $0.name == type.defaultGroupName
+                }?.id
+            }
+        }
+        .onChange(of: type) {
+            if account == nil {
+                groupID = store.accountGroups.first {
+                    $0.name == type.defaultGroupName
+                }?.id
+            }
+        }
     }
 }
 
