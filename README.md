@@ -379,13 +379,25 @@ Nur unveränderte Entwürfe können initiiert werden; terminale oder bereits
 die Datei nicht und behauptet keine bankseitige Annahme.
 
 Daueraufträge besitzen eine eigene, lokale Verwaltung mit Empfänger,
-IBAN/BIC, Betrag, Rhythmus, optionalem Enddatum und Wochenendregel. Sie
+IBAN/BIC, Betrag, Rhythmus, optionalem Enddatum, Verschiebungsregel und
+versioniertem Bankkalender. `TARGET-Euro-Kalender v1` berücksichtigt neben
+Wochenenden Neujahr, Karfreitag, Ostermontag, den 1. Mai sowie den 25. und
+26. Dezember; das bisherige reine Montag-bis-Freitag-Verhalten bleibt als
+explizites Profil verfügbar. Kalenderkennung und Version werden im Auftrag
+und in jeder Ausführungshistorie gespeichert. Sie
 können pausiert, fortgesetzt oder endgültig beendet werden. Eine Fälligkeit
 wird nur nach Bestätigung als einzelner Terminüberweisungsentwurf
 materialisiert oder dauerhaft übersprungen. Die eindeutige Kombination aus
 Dauerauftrag und Fälligkeitsdatum sowie eine unveränderliche Historie
 verhindern Doppelentwürfe; spätere Vorlagenänderungen verändern bereits
 erzeugte Aufträge nicht.
+
+Überweisungs- und Lastschriftentwürfe warnen sichtbar vor einem gewählten
+TARGET-Schließtag, bleiben aber bewusst editierbare lokale Entwürfe.
+Echtzeitüberweisungen werden getrennt als 24/7-Verfahren gekennzeichnet. Die
+Kalenderregeln folgen dem aktuellen Merkblatt der Deutschen Bundesbank und
+dem TARGET-Betriebskalender der EZB; eine spätere Regeländerung erhält eine
+neue Profilkennung statt bestehende Historie umzudeuten.
 
 SEPA-Core-Lastschriften verwenden ein offenes EUR-Gläubigerkonto, eine
 aktive Empfänger-Bankverbindung und ein aktives unterschriebenes Mandat.

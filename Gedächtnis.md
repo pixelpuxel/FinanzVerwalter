@@ -1641,3 +1641,53 @@ Rechtsberatung.
   Projektthread 894 (`/quicken`) veröffentlicht. Sie enthält den Schema-28-,
   Test-, Release-, Datenbank- und GitHub-Stand sowie den Zielzählerstand von
   11.074.428 Tokens und weist ausdrücklich auf den fehlenden Screenshot hin.
+
+## 2026-07-31 – Versionierter TARGET-Bankarbeitstagskalender
+
+- Als fachliche Primärquellen wurden das aktuelle Bundesbank-Merkblatt
+  „Unbarer Zahlungsverkehr an Feiertagen“ und der T2-Betriebskalender der EZB
+  verwendet. Beide nennen für Euro-TARGET neben Wochenenden den 1. Januar,
+  Karfreitag, Ostermontag, 1. Mai sowie 25. und 26. Dezember. Die Bundesbank
+  bestätigt zugleich SEPA-Echtzeitüberweisungen als 24/7-Verfahren.
+- `BankingCalendarProfile` stellt `target-euro-v1` und das bisherige
+  Montag-bis-Freitag-Verhalten als `weekdays-v1` bereit. Ostersonntag wird
+  deterministisch nach dem gregorianischen Kalender berechnet; daraus folgen
+  Karfreitag und Ostermontag. Eine Fälligkeit kann unverändert, vorwärts oder
+  rückwärts auf einen Bankarbeitstag verschoben werden.
+- Migration 29 ergänzt jede Dauerauftragsvorlage um die stabile
+  Kalenderkennung und jede materialisierte oder übersprungene Historienzeile
+  um Kennung und Version. Damit verändern künftige Regelpakete bestehende
+  Historie nicht still. Editor, Detail und Historie zeigen Profil und Version.
+- Überweisungs- und Lastschrifteditor warnen sichtbar bei TARGET-Schließtagen,
+  lassen den lokalen Entwurf aber editierbar. Echtzeitüberweisungen zeigen die
+  getrennte 24/7-Semantik. Es entsteht weiterhin weder Versand noch Buchung.
+- Ein neuer Test prüft feste und bewegliche Schließtage 2026/2027,
+  Osterwochenende in beide Richtungen, Weihnachten, Kompatibilitätsprofil und
+  „nicht verschieben“. Der Dauerauftragstest prüft zusätzlich die persistente
+  Kalenderkennung/-version. Die Migrationsfixtures decken Schema 14→29 und
+  Schema 22→29 ab.
+- Die vollständige isolierte Suite unter
+  `/tmp/FinanzVerwalter-FullTests-Schema29-BankCalendar.xcresult` führte 82
+  Tests aus: 81 bestanden, der private opt-in-Real-QIF-Test wurde ohne
+  temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der private echte
+  2025-QIF-Test bestand anschließend separat mit einer ausschließlich
+  temporären Kopie; sie wurde danach gelöscht und ihre Abwesenheit geprüft.
+- Der optimierte Release-Build unter
+  `build/DerivedData-Schema29-BankCalendar/Build/Products/Release` bestand.
+  Vor der Produktivmigration wurde die App geordnet beendet und die geprüfte
+  Sicherung `Vor Migration 29 TARGET-Bankkalender.qbackup` angelegt: Schema
+  28, Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Daueraufträge und 0
+  Ausführungshistorienzeilen. Ihr SHA-256-Wert ist
+  `4506497ed2bd53b5171b1f7301e6871644be2a1a7746e49fd7bf58d64ed27e73`.
+  Die bisherige App liegt reversibel unter
+  `build/FinanzVerwalter-vor-bankkalender-20260731-165836.app`.
+- Der neue Release ist ad hoc signiert, streng signaturgeprüft und unter
+  `~/Applications/FinanzVerwalter.app` installiert. Sein ausführbarer Code
+  hat SHA-256
+  `8a91e52b4a808ae90310141e20c2b611a1177cf455d30e4c330fbbdcd0d216c7`.
+  Nach Migration, kontrolliertem Beenden, WAL-Checkpoint und erneutem Start
+  meldet die Produktivdatei Schema 29, Integrität `ok`, unverändert 97 Konten
+  und 2.170 Buchungen; alle drei neuen Kalenderfelder sind verpflichtend
+  vorhanden. Ihr stabiler SHA-256-Wert ist
+  `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`.
+  Die installierte App läuft nach dem Neustart als Prozess 62072.

@@ -121,11 +121,13 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 28 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 29 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die jüngste vollständige Abnahme umfasst 81 XCTest-Fälle:
-81 bestanden einschließlich des ausschließlich lokal aktivierten privaten
-Real-QIF-Tests, 0 Fehler. Die Release-App ist lokal
+implementiert. Die jüngste vollständige isolierte Abnahme umfasst 82
+XCTest-Fälle: 81 bestanden, der private opt-in-Real-QIF-Test wurde ohne
+temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der private echte
+2025-QIF-Test bestand zusätzlich separat mit einer danach gelöschten
+temporären Kopie. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
 Details und frühere Screenshots stehen in `Gedächtnis.md`.
 
@@ -338,9 +340,17 @@ Für den Banking-Simulator gilt reproduzierbar:
   Fälligkeit liefert denselben Auftrag statt eines zweiten.
 - Überspringen erzeugt eine terminale Historienzeile ohne Zahlungsauftrag.
   Materialisierte und übersprungene Instanzen dürfen nicht umgedeutet
-  werden. Wochenenden können unverändert, auf den nächsten oder den
-  vorherigen Wochentag verschoben werden; Feiertage sind bis zu einem
-  versionierten Kalender ausdrücklich nicht behauptet.
+  werden. Migration 29 speichert pro Vorlage ein unveränderlich benanntes
+  Bankkalenderprofil und pro Historienzeile dessen Kennung und Version.
+  `target-euro-v1` schließt neben Wochenenden den 1. Januar, Karfreitag,
+  Ostermontag, 1. Mai sowie 25. und 26. Dezember; `weekdays-v1` erhält das
+  frühere reine Montag-bis-Freitag-Verhalten. Verschiebe je nach Auswahl auf
+  den nächsten oder vorherigen Bankarbeitstag oder gar nicht. Berechne Ostern
+  deterministisch gregorianisch; spätere Regeländerungen benötigen eine neue
+  Profilkennung. Zeige TARGET-Schließtage auch im Überweisungs- und
+  Lastschriftentwurf an, behandle Echtzeitüberweisungen aber ausdrücklich als
+  24/7-Verfahren. Quelle sind der TARGET-Betriebskalender der EZB und das
+  Merkblatt zum unbaren Zahlungsverkehr der Deutschen Bundesbank.
 - Der XCTest-Apphost muss eine pro Prozess temporäre Finanzdatei öffnen.
   Automatisierte Tests dürfen die Produktivdatei weder migrieren noch
   verändern; prüfe dies zusätzlich durch identische SHA-256-Werte vor und
@@ -404,7 +414,7 @@ Für Sammelüberweisungen und Sammellastschriften gilt reproduzierbar:
 - Prüfe beide Sammlerarten als Datenbank-Rundlauf einschließlich
   Deduplizierung, Schutz individueller Mitglieder, aller Zustandsübergänge,
   genau-einmaliger Buchung, deterministischem Mehrpositions-XML,
-  Migration 14→28 und Migration 22→28.
+  Migration 14→29 und Migration 22→29.
 
 Für eingehende Zahlungsstatusberichte gilt reproduzierbar:
 
