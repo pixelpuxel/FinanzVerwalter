@@ -1062,19 +1062,17 @@ enum BusinessDayAdjustment: String, Codable, CaseIterable, Identifiable, Sendabl
     var title: String {
         switch self {
         case .none: "Nicht verschieben"
-        case .nextWeekday: "Nächster Werktag"
-        case .previousWeekday: "Vorheriger Werktag"
+        case .nextWeekday: "Nächster Bankarbeitstag"
+        case .previousWeekday: "Vorheriger Bankarbeitstag"
         }
     }
 
-    func adjusted(_ date: Date, calendar: Calendar = .current) -> Date {
-        guard self != .none else { return date }
-        var result = date
-        let step = self == .nextWeekday ? 1 : -1
-        while calendar.isDateInWeekend(result) {
-            result = calendar.date(byAdding: .day, value: step, to: result) ?? result
-        }
-        return result
+    func adjusted(
+        _ date: Date,
+        bankingCalendar: BankingCalendarProfile = .targetEuroV1,
+        calendar: Calendar = .current
+    ) -> Date {
+        bankingCalendar.adjusted(date, direction: self, calendar: calendar)
     }
 }
 
@@ -1104,6 +1102,7 @@ struct StandingOrder: Identifiable, Hashable, Sendable {
     var endDate: Date?
     var frequency: RecurrenceFrequency
     var businessDayAdjustment: BusinessDayAdjustment
+    var bankingCalendar: BankingCalendarProfile = .targetEuroV1
     var status: StandingOrderStatus
     var createdAt: Date
     var updatedAt: Date
@@ -1146,6 +1145,8 @@ struct StandingOrderRun: Identifiable, Hashable, Sendable {
     var status: StandingOrderRunStatus
     var paymentOrderID: UUID?
     var createdAt: Date
+    var bankingCalendarID: String = BankingCalendarProfile.targetEuroV1.rawValue
+    var bankingCalendarVersion: Int = BankingCalendarProfile.targetEuroV1.version
 }
 
 enum IBANValidator {

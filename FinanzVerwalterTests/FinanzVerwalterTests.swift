@@ -3069,6 +3069,12 @@ final class FinanzVerwalterTests: XCTestCase {
         )
         XCTAssertEqual(runs.count, 2)
         XCTAssertEqual(runs.map(\.status), [.skipped, .materialized])
+        XCTAssertEqual(
+            runs.map(\.bankingCalendarID),
+            [BankingCalendarProfile.targetEuroV1.rawValue,
+             BankingCalendarProfile.targetEuroV1.rawValue]
+        )
+        XCTAssertEqual(runs.map(\.bankingCalendarVersion), [1, 1])
         XCTAssertEqual(try context.store.paymentOrders().count, 1)
         XCTAssertThrowsError(
             try context.store.materializeStandingOrder(
@@ -3081,6 +3087,62 @@ final class FinanzVerwalterTests: XCTestCase {
             try context.store.setStandingOrderStatus(
                 id: standingOrder.id, to: .active
             )
+        )
+    }
+
+    func testVersionedTARGETCalendarHandlesMovableHolidaysAndBoundaries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ year: Int, _ month: Int, _ day: Int) throws -> Date {
+            try XCTUnwrap(calendar.date(from: DateComponents(
+                year: year, month: month, day: day, hour: 12
+            )))
+        }
+        func components(_ value: Date) -> DateComponents {
+            calendar.dateComponents([.year, .month, .day], from: value)
+        }
+
+        let profile = BankingCalendarProfile.targetEuroV1
+        XCTAssertEqual(profile.version, 1)
+        XCTAssertEqual(profile.closureName(on: try date(2026, 4, 3), calendar: calendar), "Karfreitag")
+        XCTAssertEqual(profile.closureName(on: try date(2026, 4, 6), calendar: calendar), "Ostermontag")
+        XCTAssertEqual(profile.closureName(on: try date(2027, 3, 26), calendar: calendar), "Karfreitag")
+        XCTAssertEqual(profile.closureName(on: try date(2026, 5, 1), calendar: calendar), "Tag der Arbeit")
+        XCTAssertEqual(profile.closureName(on: try date(2026, 12, 25), calendar: calendar), "1. Weihnachtstag")
+        XCTAssertNil(profile.closureName(on: try date(2026, 4, 7), calendar: calendar))
+
+        XCTAssertEqual(
+            components(BusinessDayAdjustment.nextWeekday.adjusted(
+                try date(2026, 4, 3), bankingCalendar: profile, calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 4, day: 7)
+        )
+        XCTAssertEqual(
+            components(BusinessDayAdjustment.previousWeekday.adjusted(
+                try date(2026, 4, 6), bankingCalendar: profile, calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 4, day: 2)
+        )
+        XCTAssertEqual(
+            components(BusinessDayAdjustment.nextWeekday.adjusted(
+                try date(2026, 12, 25), bankingCalendar: profile, calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 12, day: 28)
+        )
+        XCTAssertEqual(
+            components(BusinessDayAdjustment.nextWeekday.adjusted(
+                try date(2026, 4, 3), bankingCalendar: .weekdaysV1,
+                calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 4, day: 3)
+        )
+        XCTAssertEqual(
+            components(BusinessDayAdjustment.none.adjusted(
+                try date(2026, 12, 25), bankingCalendar: profile,
+                calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 12, day: 25)
         )
     }
 
@@ -3911,7 +3973,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To28PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To29PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -3940,6 +4002,8 @@ final class FinanzVerwalterTests: XCTestCase {
         );
         CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
         CREATE TABLE payment_orders (id TEXT PRIMARY KEY);
+        CREATE TABLE standing_orders (id TEXT PRIMARY KEY);
+        CREATE TABLE standing_order_runs (id TEXT PRIMARY KEY);
         CREATE TABLE reconciliations (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -4026,11 +4090,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 28)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 29)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To28PromotesLegacyPayeeBankData() throws {
+    func testMigration22To29PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -4064,6 +4128,9 @@ final class FinanzVerwalterTests: XCTestCase {
         DROP TABLE payment_batch_items;
         DROP TABLE payment_batches;
         DROP TABLE direct_debit_orders;
+        ALTER TABLE standing_order_runs DROP COLUMN banking_calendar_version;
+        ALTER TABLE standing_order_runs DROP COLUMN banking_calendar_id;
+        ALTER TABLE standing_orders DROP COLUMN banking_calendar_id;
         ALTER TABLE payment_orders DROP COLUMN purpose_code;
         ALTER TABLE payment_orders DROP COLUMN payee_bank_account_id;
         ALTER TABLE payment_orders DROP COLUMN payee_id;

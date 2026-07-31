@@ -6646,8 +6646,12 @@ private struct StandingOrderDetail: View {
                             Text(value.frequency.title)
                         }
                         GridRow {
-                            Text("Wochenende").foregroundStyle(.secondary)
+                            Text("Verschiebung").foregroundStyle(.secondary)
                             Text(value.businessDayAdjustment.title)
+                        }
+                        GridRow {
+                            Text("Bankkalender").foregroundStyle(.secondary)
+                            Text(value.bankingCalendar.title)
                         }
                         GridRow {
                             Text("Verwendungszweck").foregroundStyle(.secondary)
@@ -6715,8 +6719,13 @@ private struct StandingOrderDetail: View {
                                         )
                                     }
                                     Spacer()
-                                    Text(run.status.title)
-                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(run.status.title)
+                                            .foregroundStyle(.secondary)
+                                        Text("\(run.bankingCalendarID) · v\(run.bankingCalendarVersion)")
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(.tertiary)
+                                    }
                                 }
                                 .padding(.vertical, 6)
                                 if run.id != runs.last?.id { Divider() }
@@ -6828,11 +6837,19 @@ private struct StandingOrderEditor: View {
                             Text($0.title).tag($0)
                         }
                     }
-                    Picker("Wochenendregel", selection: $value.businessDayAdjustment) {
+                    Picker("Verschiebungsregel", selection: $value.businessDayAdjustment) {
                         ForEach(BusinessDayAdjustment.allCases) {
                             Text($0.title).tag($0)
                         }
                     }
+                    Picker("Bankkalender", selection: $value.bankingCalendar) {
+                        ForEach(BankingCalendarProfile.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Text(value.bankingCalendar.sourceDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Toggle("Enddatum verwenden", isOn: $hasEndDate)
                     if hasEndDate {
                         DatePicker(
@@ -7224,6 +7241,16 @@ private struct DirectDebitDraftEditor: View {
                         "Fälligkeit", selection: $collectionDate,
                         displayedComponents: .date
                     )
+                    if let closure = BankingCalendarProfile.targetEuroV1.closureName(
+                        on: collectionDate
+                    ) {
+                        Label(
+                            "Am gewählten Tag ist TARGET wegen \(closure) geschlossen. Bitte einen Bankarbeitstag wählen.",
+                            systemImage: "calendar.badge.exclamationmark"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
                     TextField("Verwendungszweck", text: $purpose)
                     TextField("End-to-End-ID", text: $endToEndID)
                 }
@@ -7603,6 +7630,11 @@ private struct PaymentDraftEditor: View {
                     TextField("Verwendungszweck", text: $purpose)
                     TextField("SEPA-Zweckcode (optional)", text: $purposeCode)
                     TextField("End-to-End-ID", text: $endToEndID)
+                    if let executionCalendarNotice {
+                        Label(executionCalendarNotice, systemImage: "calendar.badge.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 if !epcInformation.isEmpty {
                     Section("Hinweis aus dem EPC-QR-Code") {
@@ -7651,6 +7683,16 @@ private struct PaymentDraftEditor: View {
         return store.payeeBankAccounts.filter {
             $0.payeeID == payeeID && $0.isActive
         }
+    }
+
+    private var executionCalendarNotice: String? {
+        if type == .instantCreditTransfer {
+            return "Echtzeitüberweisungen sind laut Bundesbank unabhängig von TARGET-Schließtagen rund um die Uhr möglich."
+        }
+        guard let closure = BankingCalendarProfile.targetEuroV1.closureName(
+            on: executionDate
+        ) else { return nil }
+        return "Am gewählten Tag ist TARGET wegen \(closure) geschlossen. Bitte einen Bankarbeitstag wählen."
     }
 
     private func applySelectedPayee() {

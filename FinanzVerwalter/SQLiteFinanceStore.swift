@@ -1611,6 +1611,20 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 28")
             }
         }
+        if version < 29 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE standing_orders ADD COLUMN banking_calendar_id TEXT NOT NULL DEFAULT 'target-euro-v1' CHECK(banking_calendar_id IN ('target-euro-v1','weekdays-v1'))"
+                )
+                try execute(
+                    "ALTER TABLE standing_order_runs ADD COLUMN banking_calendar_id TEXT NOT NULL DEFAULT 'target-euro-v1' CHECK(banking_calendar_id IN ('target-euro-v1','weekdays-v1'))"
+                )
+                try execute(
+                    "ALTER TABLE standing_order_runs ADD COLUMN banking_calendar_version INTEGER NOT NULL DEFAULT 1 CHECK(banking_calendar_version > 0)"
+                )
+                try execute("PRAGMA user_version = 29")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2886,7 +2900,8 @@ final class SQLiteFinanceStore {
             """
             SELECT id,account_id,name,recipient_name,iban,bic,amount_minor,currency,
                    purpose,next_execution_date,end_date,frequency,
-                   business_day_adjustment,status,created_at,updated_at
+                   business_day_adjustment,status,created_at,updated_at,
+                   banking_calendar_id
             FROM standing_orders
             ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
                      next_execution_date,name COLLATE NOCASE,id
@@ -2900,7 +2915,8 @@ final class SQLiteFinanceStore {
                 let adjustment = BusinessDayAdjustment(rawValue: Self.text($0, 12)),
                 let status = StandingOrderStatus(rawValue: Self.text($0, 13)),
                 let createdAt = Self.timestampDate(Self.text($0, 14)),
-                let updatedAt = Self.timestampDate(Self.text($0, 15))
+                let updatedAt = Self.timestampDate(Self.text($0, 15)),
+                let bankingCalendar = BankingCalendarProfile(rawValue: Self.text($0, 16))
             else { return }
             values.append(
                 StandingOrder(
@@ -2911,6 +2927,7 @@ final class SQLiteFinanceStore {
                     nextExecutionDate: nextExecutionDate,
                     endDate: Self.optionalText($0, 10).flatMap(Self.date),
                     frequency: frequency, businessDayAdjustment: adjustment,
+                    bankingCalendar: bankingCalendar,
                     status: status, createdAt: createdAt, updatedAt: updatedAt
                 )
             )
@@ -2922,7 +2939,8 @@ final class SQLiteFinanceStore {
         var values: [StandingOrderRun] = []
         try query(
             """
-            SELECT id,due_date,execution_date,status,payment_order_id,created_at
+            SELECT id,due_date,execution_date,status,payment_order_id,created_at,
+                   banking_calendar_id,banking_calendar_version
             FROM standing_order_runs
             WHERE standing_order_id=?
             ORDER BY due_date DESC,id DESC
@@ -2941,7 +2959,8 @@ final class SQLiteFinanceStore {
                     id: id, standingOrderID: standingOrderID,
                     dueDate: dueDate, executionDate: executionDate, status: status,
                     paymentOrderID: Self.optionalText($0, 4).flatMap(UUID.init(uuidString:)),
-                    createdAt: createdAt
+                    createdAt: createdAt, bankingCalendarID: Self.text($0, 6),
+                    bankingCalendarVersion: Int(sqlite3_column_int64($0, 7))
                 )
             )
         }
@@ -4330,8 +4349,9 @@ final class SQLiteFinanceStore {
                 INSERT INTO standing_orders(
                     id,finance_file_id,account_id,name,recipient_name,iban,bic,
                     amount_minor,currency,purpose,next_execution_date,end_date,
-                    frequency,business_day_adjustment,status,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    frequency,business_day_adjustment,status,created_at,updated_at,
+                    banking_calendar_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     account_id=excluded.account_id,name=excluded.name,
                     recipient_name=excluded.recipient_name,iban=excluded.iban,
@@ -4340,6 +4360,7 @@ final class SQLiteFinanceStore {
                     next_execution_date=excluded.next_execution_date,
                     end_date=excluded.end_date,frequency=excluded.frequency,
                     business_day_adjustment=excluded.business_day_adjustment,
+                    banking_calendar_id=excluded.banking_calendar_id,
                     status=excluded.status,updated_at=excluded.updated_at,
                     version=version+1
                 """,
@@ -4356,7 +4377,8 @@ final class SQLiteFinanceStore {
                     value.endDate.map { .text(Self.day($0)) } ?? .null,
                     .text(value.frequency.rawValue),
                     .text(value.businessDayAdjustment.rawValue),
-                    .text(value.status.rawValue), .text(createdAt), .text(now)
+                    .text(value.status.rawValue), .text(createdAt), .text(now),
+                    .text(value.bankingCalendar.rawValue)
                 ]
             )
             try audit(
@@ -4428,7 +4450,9 @@ final class SQLiteFinanceStore {
         }
 
         let now = Date()
-        let executionDate = standingOrder.businessDayAdjustment.adjusted(dueDate)
+        let executionDate = standingOrder.businessDayAdjustment.adjusted(
+            dueDate, bankingCalendar: standingOrder.bankingCalendar
+        )
         let payment = PaymentOrder(
             id: UUID(), accountID: standingOrder.accountID,
             type: .scheduledCreditTransfer,
@@ -4472,14 +4496,17 @@ final class SQLiteFinanceStore {
                 """
                 INSERT INTO standing_order_runs(
                     id,standing_order_id,due_date,execution_date,status,
-                    payment_order_id,created_at
-                ) VALUES(?,?,?,?,?,?,?)
+                    payment_order_id,created_at,banking_calendar_id,
+                    banking_calendar_version
+                ) VALUES(?,?,?,?,?,?,?,?,?)
                 """,
                 [
                     .text(runID.uuidString), .text(id.uuidString), .text(dueDay),
                     .text(Self.day(executionDate)),
                     .text(StandingOrderRunStatus.materialized.rawValue),
-                    .text(payment.id.uuidString), .text(timestamp)
+                    .text(payment.id.uuidString), .text(timestamp),
+                    .text(standingOrder.bankingCalendar.rawValue),
+                    .integer(Int64(standingOrder.bankingCalendar.version))
                 ]
             )
             try run(
@@ -4517,7 +4544,9 @@ final class SQLiteFinanceStore {
         }) else {
             throw FinanceError.standingOrderRunFinalized
         }
-        let executionDate = standingOrder.businessDayAdjustment.adjusted(dueDate)
+        let executionDate = standingOrder.businessDayAdjustment.adjusted(
+            dueDate, bankingCalendar: standingOrder.bankingCalendar
+        )
         let nextDate = standingOrder.frequency.next(after: dueDate)
         let nextStatus: StandingOrderStatus = standingOrder.endDate.map {
             Self.day(nextDate) > Self.day($0) ? .cancelled : .active
@@ -4528,13 +4557,16 @@ final class SQLiteFinanceStore {
                 """
                 INSERT INTO standing_order_runs(
                     id,standing_order_id,due_date,execution_date,status,
-                    payment_order_id,created_at
-                ) VALUES(?,?,?,?,?,?,?)
+                    payment_order_id,created_at,banking_calendar_id,
+                    banking_calendar_version
+                ) VALUES(?,?,?,?,?,?,?,?,?)
                 """,
                 [
                     .text(UUID().uuidString), .text(id.uuidString), .text(dueDay),
                     .text(Self.day(executionDate)),
-                    .text(StandingOrderRunStatus.skipped.rawValue), .null, .text(now)
+                    .text(StandingOrderRunStatus.skipped.rawValue), .null, .text(now),
+                    .text(standingOrder.bankingCalendar.rawValue),
+                    .integer(Int64(standingOrder.bankingCalendar.version))
                 ]
             )
             try run(
