@@ -1988,9 +1988,9 @@ struct ImportExportView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Import, Export & Sicherung").font(.largeTitle.bold())
 
-                GroupBox("CSV-/TSV-, QIF- und OFX/QFX-Import") {
+                GroupBox("CSV-/TSV-, QIF- und Kontoauszugsimport") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("CSV/TSV und einzelne QIF-Kontoblätter benötigen ein Zielkonto. Vollständige QIF-Pakete sowie OFX/QFX-Kontoauszüge werden kontoweise vorbereitet.")
+                        Text("CSV/TSV und einzelne QIF-Kontoblätter benötigen ein Zielkonto. Vollständige QIF-Pakete sowie OFX/QFX-, MT940- und camt-Kontoauszüge werden kontoweise vorbereitet.")
                             .foregroundStyle(.secondary)
                         HStack {
                             Picker("Zielkonto für Einzeldatei", selection: $selectedAccountID) {
@@ -2013,7 +2013,7 @@ struct ImportExportView: View {
                                 + "Wertstellungsdatum werden nur innerhalb "
                                 + "dieses Fensters als mögliche Treffer gezeigt."
                         )
-                        Text("Bei einem Mehrkonten-QIF oder OFX/QFX ist keine vorherige Kontoauswahl nötig.")
+                        Text("Bei Mehrkonten-QIF und Kontoauszugsformaten ist keine vorherige Kontoauswahl nötig.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -2253,7 +2253,12 @@ struct ImportExportView: View {
                 .commaSeparatedText, .tabSeparatedText, .plainText,
                 UTType(filenameExtension: "qif") ?? .data,
                 UTType(filenameExtension: "ofx") ?? .data,
-                UTType(filenameExtension: "qfx") ?? .data
+                UTType(filenameExtension: "qfx") ?? .data,
+                UTType(filenameExtension: "sta") ?? .data,
+                UTType(filenameExtension: "mt940") ?? .data,
+                UTType(filenameExtension: "c53") ?? .data,
+                UTType(filenameExtension: "c54") ?? .data,
+                .xml
             ]
         ) { result in
             guard
@@ -2263,8 +2268,15 @@ struct ImportExportView: View {
             defer { url.stopAccessingSecurityScopedResource() }
             guard let data = try? Data(contentsOf: url) else { return }
             let fileExtension = url.pathExtension.lowercased()
-            if fileExtension == "ofx" || fileExtension == "qfx" {
-                let format: BankStatementFormat = fileExtension == "qfx" ? .qfx : .ofx
+            if ["ofx", "qfx", "sta", "mt940", "c53", "c54", "xml"]
+                .contains(fileExtension) {
+                let format: BankStatementFormat
+                switch fileExtension {
+                case "qfx": format = .qfx
+                case "sta", "mt940": format = .mt940
+                case "c53", "c54", "xml": format = .camt
+                default: format = .ofx
+                }
                 bankStatementPackage = store.parseBankStatement(
                     data: data,
                     format: format

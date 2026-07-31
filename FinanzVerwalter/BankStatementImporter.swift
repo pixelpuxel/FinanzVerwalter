@@ -4,6 +4,8 @@ import Foundation
 enum BankStatementFormat: String, Sendable {
     case ofx = "OFX"
     case qfx = "QFX"
+    case mt940 = "MT940"
+    case camt = "camt.05x"
 }
 
 struct BankStatementAccount: Identifiable, Hashable, Sendable {
@@ -34,6 +36,45 @@ struct BankStatementRecord: Hashable, Sendable {
     let memo: String
     let checkNumber: String
     let reference: String
+    let counterpartyIBAN: String
+    let counterpartyBIC: String
+    let endToEndID: String
+    let mandateReference: String
+    let creditorID: String
+
+    init(
+        accountID: String,
+        bookingDate: Date,
+        valueDate: Date?,
+        amountMinor: Int64,
+        transactionType: String,
+        externalID: String,
+        name: String,
+        memo: String,
+        checkNumber: String,
+        reference: String,
+        counterpartyIBAN: String = "",
+        counterpartyBIC: String = "",
+        endToEndID: String = "",
+        mandateReference: String = "",
+        creditorID: String = ""
+    ) {
+        self.accountID = accountID
+        self.bookingDate = bookingDate
+        self.valueDate = valueDate
+        self.amountMinor = amountMinor
+        self.transactionType = transactionType
+        self.externalID = externalID
+        self.name = name
+        self.memo = memo
+        self.checkNumber = checkNumber
+        self.reference = reference
+        self.counterpartyIBAN = counterpartyIBAN
+        self.counterpartyBIC = counterpartyBIC
+        self.endToEndID = endToEndID
+        self.mandateReference = mandateReference
+        self.creditorID = creditorID
+    }
 }
 
 struct BankStatementPackage: Sendable {
@@ -90,6 +131,11 @@ struct BankStatementPackage: Sendable {
                 origin: .fileImport,
                 externalProvider: format.rawValue,
                 externalTransactionID: record.externalID,
+                counterpartyIBAN: record.counterpartyIBAN,
+                endToEndID: record.endToEndID,
+                mandateReference: record.mandateReference,
+                counterpartyBIC: record.counterpartyBIC,
+                creditorID: record.creditorID,
                 bookingText: record.transactionType
             )
             try transaction.validate()
@@ -115,6 +161,20 @@ enum BankStatementImporter {
     private static let maximumRecords = 200_000
 
     static func parse(data: Data, format: BankStatementFormat) throws -> BankStatementPackage {
+        switch format {
+        case .mt940:
+            return try MT940StatementImporter.parse(data: data)
+        case .camt:
+            return try CamtStatementImporter.parse(data: data)
+        case .ofx, .qfx:
+            return try parseOFX(data: data, format: format)
+        }
+    }
+
+    private static func parseOFX(
+        data: Data,
+        format: BankStatementFormat
+    ) throws -> BankStatementPackage {
         guard !data.isEmpty, data.count <= maximumBytes else {
             throw FinanceError.invalidBankStatement("Die Datei ist leer oder größer als 50 MB.")
         }

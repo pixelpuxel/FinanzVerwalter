@@ -123,7 +123,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 Migrationen 1 bis 21 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 57 ausgeführte XCTest-Fälle: 56
+implementiert. Die Suite umfasst aktuell 60 ausgeführte XCTest-Fälle: 59
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -843,3 +843,35 @@ den atomaren `commitImport`; erfinde keinen zweiten Commitpfad. Teste
 Mehrkonten-XML, SGML-Blatt-Tags, Kreditkarte, Valuta, Cent-Rundung,
 beschädigte Zeilen, fehlende Zuordnung, Währungsabweichung, erneuten
 Paketimport und SQLite-Integrität ausschließlich mit synthetischen Daten.
+
+# Reproduzierbarer MT940-/camt.05x-Kontoauszugsimport
+
+Erweitere denselben Kontoauszugsimport ohne neue Abhängigkeit um MT940 sowie
+camt.052, camt.053 und camt.054. Akzeptiere für MT940 `.sta` und `.mt940`,
+für camt `.xml`, `.c53` und `.c54`. Behalte die zentralen Grenzen von 50 MB
+und 200.000 Buchungen, den SHA-256-Paketfingerabdruck, deterministische UUIDs,
+die explizite Mehrkontenzuordnung, das bestehende Matching und ausschließlich
+den atomaren `commitImport` bei.
+
+Segmentiere MT940 an `:20:` und erfasse mindestens `:25:`, `:60F:`/`:60M:`,
+`:61:`, fortgesetzte `:86:`-Zeilen sowie `:62F:`/`:62M:`. Interpretiere
+Buchungsdatum, optionales Valutadatum, Storno-/Soll-/Habenkennzeichen,
+deutschen Dezimalbetrag, Geschäftsvorfallcode, Kunden- und Bankreferenz.
+Zerlege strukturierte `:86:`-Unterfelder und übernimm Empfänger,
+Verwendungszweck, Gegenkonto-IBAN und BIC. Mehrere Konten einer Datei müssen
+getrennte externe Kontoschlüssel erhalten.
+
+Parse camt namespacebewusst mit `XMLParser`. Deaktiviere externe Entitäten
+und weise jedes Dokument mit `<!DOCTYPE` oder `<!ENTITY` vor dem Parser als
+Ganzes ab. Unterstütze `Stmt` und `Ntfctn`, IBAN oder sonstige Kontokennung,
+Kontowährung/BIC, `Ntry` und optional mehrere `TxDtls`. Übernimm pro Detail
+Betrag/Soll-Haben, Buchungs-/Valutadatum, Bank-, Transaktions- und
+End-to-End-Referenz, Mandatsreferenz, Empfänger, IBAN/BIC, Buchungstext und
+unstrukturierten Verwendungszweck. Bei Sammelbuchungen ist der Detailbetrag
+maßgeblich.
+
+Fehlerhafte Einzelbuchungen erscheinen nummeriert in der Vorschau; eine
+fehlende Kontokennung verwirft nur den betroffenen Auszug. Teste synthetisch
+mehrere MT940-Auszüge, strukturierte `:86:`-Felder, camt-Sammelbuchungen,
+Bankidentität, Metadatenpersistenz, DTD-/ENTITY-Abweisung, fehlerhafte Daten,
+atomaren SQLite-Commit, Paket-Idempotenz und Integrität.

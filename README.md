@@ -68,9 +68,24 @@ Datensätze werden mit Begründung abgewiesen. Erst die ausdrückliche
 Bestätigung schreibt alle gewählten Buchungen gemeinsam; Paket-Hash,
 Bank-ID-Matching und der bestehende atomare Commit schützen vor Dubletten.
 
+## MT940- und camt.05x-Kontoauszüge
+
+Der Kontoauszugsdialog von FinanzVerwalter liest außerdem MT940 (`.sta`, `.mt940`)
+sowie ISO-20022-camt.052/053/054 (`.xml`, `.c53`, `.c54`). MT940 unterstützt
+mehrere Auszüge, `:61:`-Buchungen und strukturierte `:86:`-Unterfelder. Der
+camt-Import löst Sammelbuchungen über `TxDtls` auf und übernimmt Valuta,
+Bankreferenz, End-to-End-ID, Mandatsreferenz, Gegenkonto-IBAN/-BIC und
+Verwendungszweck.
+
+Beide Formate verwenden dieselbe explizite Mehrkontenzuordnung, Vorschau,
+Matchinglogik, 50-MB-/200.000-Datensatz-Grenze und atomare Übernahme wie
+OFX/QFX. Fehlerhafte Buchungen bleiben einzeln sichtbar. camt-Dateien mit
+DTD- oder ENTITY-Deklarationen werden vor dem XML-Parsing vollständig
+abgewiesen; externe Entitäten werden nie aufgelöst.
+
 ### Sicherer Abgleich mit vorhandenen Buchungen
 
-CSV-/TSV-, QIF- und OFX/QFX-Vorschauen vergleichen jede importierte Buchung gestuft mit
+CSV-/TSV-, QIF-, OFX/QFX-, MT940- und camt-Vorschauen vergleichen jede importierte Buchung gestuft mit
 vorhandenen Umsätzen desselben Kontos. Exakte Bank-IDs, Betrag/Währung,
 Buchungs- beziehungsweise Wertstellungsdatum, Referenzen, IBAN, Empfänger und
 Verwendungszweck fließen in einen nachvollziehbaren Trefferwert ein. Das
@@ -140,7 +155,7 @@ oder ein einziger fehlgeschlagener Vorgang verändern keine Fachdaten; rohe
 Bankantworten werden nicht gespeichert, nur ihr SHA-256-Hash.
 
 Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
-QIF-, OFX- und QFX-Dateien ausdrücklich aus.
+QIF-, OFX-, QFX-, STA-, MT940-, C53- und C54-Dateien ausdrücklich aus.
 
 ## Kontoblatt
 

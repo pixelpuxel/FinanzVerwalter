@@ -3833,6 +3833,132 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(mismatch.rejectedRows[0].contains("Währung USD"))
     }
 
+    func testMT940ParsesMultipleStatementsAndStructured86Data() throws {
+        let mt940 = """
+        :20:START-1
+        :25:10020030/12345678
+        :28C:00001/001
+        :60F:C250101EUR0,00
+        :61:2501020103D12,34NTRFNONREF//BANK-1
+        :86:105?20RECHNUNG 2025?21KUNDENNUMMER 7?30GENODEF1XXX?31DE021002003012345678?32MUSTER GMBH
+        :62F:C250102EUR-12,34
+        :20:START-2
+        :25:50050000/87654321
+        :28C:00002/001
+        :60F:C250103EUR100,00
+        :61:2501040104C50,00NMSCREFUND//BANK-2
+        :86:105?20ERSTATTUNG?32VERSICHERUNG AG
+        :62F:C250104EUR150,00
+        """
+        let package = try BankStatementImporter.parse(
+            data: Data(mt940.utf8),
+            format: .mt940
+        )
+        XCTAssertEqual(package.accounts.count, 2)
+        XCTAssertEqual(package.records.count, 2)
+        XCTAssertTrue(package.rejectedRows.isEmpty)
+        let debit = try XCTUnwrap(package.records.first { $0.externalID == "BANK-1" })
+        XCTAssertEqual(debit.amountMinor, -1_234)
+        XCTAssertEqual(debit.name, "MUSTER GMBH")
+        XCTAssertEqual(debit.counterpartyIBAN, "DE021002003012345678")
+        XCTAssertEqual(debit.counterpartyBIC, "GENODEF1XXX")
+        XCTAssertTrue(debit.memo.contains("RECHNUNG 2025"))
+        XCTAssertEqual(Calendar(identifier: .gregorian).component(.day, from: debit.bookingDate), 3)
+        XCTAssertEqual(
+            Calendar(identifier: .gregorian).component(.day, from: try XCTUnwrap(debit.valueDate)),
+            2
+        )
+        XCTAssertEqual(package.records.first { $0.externalID == "BANK-2" }?.amountMinor, 5_000)
+    }
+
+    func testCamt053ParsesBatchDetailsAndBankIdentity() throws {
+        let camt = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+          <BkToCstmrStmt><Stmt>
+            <Id>STMT-1</Id>
+            <Acct><Id><IBAN>DE021002003012345678</IBAN></Id><Ccy>EUR</Ccy><Svcr><FinInstnId><BICFI>TESTDEFFXXX</BICFI></FinInstnId></Svcr></Acct>
+            <Ntry>
+              <Amt Ccy="EUR">30.00</Amt><CdtDbtInd>DBIT</CdtDbtInd><Sts><Cd>BOOK</Cd></Sts>
+              <BookgDt><Dt>2025-07-20</Dt></BookgDt><ValDt><Dt>2025-07-21</Dt></ValDt>
+              <BkTxCd><Prtry><Cd>SEPA-ÜBERWEISUNG</Cd></Prtry></BkTxCd>
+              <NtryDtls>
+                <TxDtls><Refs><AcctSvcrRef>svc-1</AcctSvcrRef><EndToEndId>e2e-1</EndToEndId><MndtId>mandat-1</MndtId></Refs><AmtDtls><TxAmt><Amt Ccy="EUR">10.00</Amt></TxAmt></AmtDtls><RltdPties><Cdtr><Nm>Empfänger Eins</Nm></Cdtr><CdtrAcct><Id><IBAN>DE11111111111111111111</IBAN></Id></CdtrAcct></RltdPties><RltdAgts><CdtrAgt><FinInstnId><BICFI>BICONE11</BICFI></FinInstnId></CdtrAgt></RltdAgts><RmtInf><Ustrd>Zweck eins</Ustrd></RmtInf></TxDtls>
+                <TxDtls><Refs><AcctSvcrRef>svc-2</AcctSvcrRef><EndToEndId>e2e-2</EndToEndId></Refs><AmtDtls><TxAmt><Amt Ccy="EUR">20.00</Amt></TxAmt></AmtDtls><RltdPties><Cdtr><Nm>Empfänger Zwei</Nm></Cdtr></RltdPties><RmtInf><Ustrd>Zweck zwei</Ustrd></RmtInf></TxDtls>
+              </NtryDtls>
+            </Ntry>
+          </Stmt></BkToCstmrStmt>
+        </Document>
+        """
+        let package = try BankStatementImporter.parse(
+            data: Data(camt.utf8),
+            format: .camt
+        )
+        XCTAssertEqual(package.accounts.count, 1)
+        XCTAssertEqual(package.accounts[0].bankID, "TESTDEFFXXX")
+        XCTAssertEqual(package.records.count, 2)
+        XCTAssertEqual(package.records.map(\.amountMinor).sorted(), [-2_000, -1_000])
+        let first = try XCTUnwrap(package.records.first { $0.externalID == "svc-1" })
+        XCTAssertEqual(first.name, "Empfänger Eins")
+        XCTAssertEqual(first.endToEndID, "e2e-1")
+        XCTAssertEqual(first.mandateReference, "mandat-1")
+        XCTAssertEqual(first.counterpartyIBAN, "DE11111111111111111111")
+        XCTAssertEqual(first.counterpartyBIC, "BICONE11")
+        XCTAssertEqual(
+            Calendar(identifier: .gregorian).component(.day, from: try XCTUnwrap(first.valueDate)),
+            21
+        )
+
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "camt-Giro", institution: "Testbank", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let preview = try package.preview(
+            mappings: [package.accounts[0].id: account.id],
+            localAccounts: [account]
+        )
+        XCTAssertEqual(preview.rows.count, 2)
+        XCTAssertEqual(preview.rows.first { $0.externalTransactionID == "svc-1" }?.endToEndID, "e2e-1")
+        XCTAssertEqual(try context.store.commitImport(preview).importedCount, 2)
+        XCTAssertThrowsError(try context.store.commitImport(preview)) { error in
+            XCTAssertEqual(error as? FinanceError, .duplicateImport)
+        }
+        XCTAssertEqual(try context.store.transactions().count, 2)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testCamtRejectsExternalEntitiesAndMalformedEntriesWithoutPartialCommit() throws {
+        let externalEntity = """
+        <?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+        <Document><BkToCstmrStmt><Stmt><Acct><Id><IBAN>DE00</IBAN></Id><Ccy>EUR</Ccy></Acct>
+        <Ntry><Amt Ccy="EUR">1.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><BookgDt><Dt>2025-01-01</Dt></BookgDt><AddtlNtryInf>&xxe;</AddtlNtryInf></Ntry>
+        </Stmt></BkToCstmrStmt></Document>
+        """
+        XCTAssertThrowsError(
+            try BankStatementImporter.parse(data: Data(externalEntity.utf8), format: .camt)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Sicherheitsgründen"))
+            XCTAssertFalse(error.localizedDescription.contains("root:"))
+        }
+
+        let malformed = """
+        <?xml version="1.0"?>
+        <Document><BkToCstmrStmt><Stmt><Acct><Id><IBAN>DE00</IBAN></Id><Ccy>EUR</Ccy></Acct>
+        <Ntry><Amt Ccy="EUR">1.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><BookgDt><Dt>kaputt</Dt></BookgDt></Ntry>
+        </Stmt></BkToCstmrStmt></Document>
+        """
+        let package = try BankStatementImporter.parse(
+            data: Data(malformed.utf8),
+            format: .camt
+        )
+        XCTAssertTrue(package.records.isEmpty)
+        XCTAssertEqual(package.rejectedRows.count, 1)
+        XCTAssertFalse(package.rejectedRows[0].contains("root:"))
+    }
+
     func testConfirmedBulkDeleteIsAtomicAndProtectsReconciledTransactions() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(

@@ -998,3 +998,41 @@ Rechtsberatung.
   GitHub-Status sowie den exakten Zielzählerstand von 7.383.816 Tokens. Ein
   neuer Screenshot bleibt wegen des gesperrten Macs ausdrücklich offen und
   wurde nicht durch ein Ersatzbild vorgetäuscht.
+
+## 2026-07-31 – MT940 und camt.052/053/054
+
+- Der bestehende Kontoauszugsimport liest nun zusätzlich MT940 aus `.sta`
+  und `.mt940` sowie namespacebewusst camt.052, camt.053 und camt.054 aus
+  `.xml`, `.c53` und `.c54`. Mehrere externe Konten werden weiterhin vor der
+  Vorschau ausdrücklich vorhandenen lokalen Konten zugeordnet.
+- MT940 verarbeitet mehrere `:20:`-Segmente, Konto/Währung, `:61:` mit
+  getrenntem Buchungs- und Valutadatum einschließlich Jahreswechsel,
+  Soll/Haben/Storno, Geschäftsvorfall, Kunden-/Bankreferenz sowie
+  strukturierte `:86:`-Felder für Empfänger, Zweck, IBAN und BIC.
+- camt verarbeitet `Stmt` und `Ntfctn`, Bankidentität, einzelne `Ntry` und
+  aufgelöste Sammelbuchungen aus mehreren `TxDtls`. Valuta, Bank-,
+  Transaktions-, End-to-End- und Mandatsreferenz, Empfänger, Gegenkonto,
+  Buchungstext und Verwendungszweck bleiben in den normalisierten Buchungen
+  erhalten.
+- Beide Parser behalten die 50-MB-/200.000-Buchungsgrenze, SHA-256-
+  Paketidentität, deterministische IDs, sichtbare Einzelablehnungen, das
+  gestufte Matching und exakt den vorhandenen atomaren SQLite-Commitpfad.
+  camt-Dateien mit DTD- oder ENTITY-Deklarationen werden vor dem Parser als
+  Ganzes abgewiesen; externe Entitäten werden nicht aufgelöst.
+- Drei neue Tests prüfen MT940-Mehrkonto-/`:86:`-Daten, camt-Batchdetails,
+  Metadaten, atomaren SQLite-Commit, Paket-Idempotenz, Integrität,
+  DTD-/ENTITY-Abweisung und eine separat fehlerhafte Buchung. Die frische
+  vollständige Abnahme führte 60 Tests aus: 59 bestanden, der private
+  opt-in-Real-QIF-Test wurde erwartungsgemäß übersprungen, 0 Fehler.
+- Der optimierte Release-Build besteht, ist ad hoc signiert, unter
+  `~/Applications/FinanzVerwalter.app` installiert und gestartet. Der zuvor
+  installierte Bundle-Stand liegt ignoriert unter
+  `build/FinanzVerwalter-vor-mt940-camt-20260731-1253.app`.
+- Die Produktivdatei blieb vor und nach Installation bytegenau bei SHA-256
+  `0a8d6dd9695ccbace6155c05b82f9367c9621904bf9a68ef7bbb073f4d1bd77e`,
+  Schema 21, Integrität `ok`, 97 Konten, 2.170 Buchungen, einer
+  Berichtsvorlage und 0 Banking-Verbindungen.
+- Computer Use fand auch den installierten Release nicht sichtbar, weil der
+  Mac weiterhin gesperrt ist und sich nicht automatisch entsperren lässt.
+  Die echte UI-/Screenshot-Abnahme bleibt deshalb offen und wird nicht durch
+  ein Ersatzbild vorgetäuscht.
