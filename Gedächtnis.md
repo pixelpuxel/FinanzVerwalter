@@ -912,3 +912,9 @@ Rechtsberatung.
   Konten, 2.170 Buchungen, 0 Banking-Verbindungen und 0 Abrufläufe blieben
   unverändert. Der Vorgänger liegt ignoriert unter
   `build/FinanzVerwalter-vor-sammelkontoblatt-20260731-1212.app`.
+- Der Sammelkontoblatt-Stand ist als Commit `0430a89` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 zeigt auf diesen Commit
+  und dokumentiert 52 ausgeführte Tests.
+- Telegram-Nachricht 945 wurde im Projektthread 894 veröffentlicht. Sie
+  enthält denselben geprüften Sammelkontoblatt-, Zukunfts-, Saldo-, Release-,
+  GitHub- und Teststatus sowie den Zielzählerstand von 7.006.958 Tokens.
