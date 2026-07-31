@@ -356,6 +356,16 @@ Für den Banking-Simulator gilt reproduzierbar:
   verändern; prüfe dies zusätzlich durch identische SHA-256-Werte vor und
   nach der vollständigen Suite.
 
+Für die Berichtswerkstatt gilt zusätzlich:
+
+- PDF-Export und direkter Systemdruck müssen denselben unveränderlichen
+  `TransactionReportSnapshot`, dieselben Filtermetadaten und dieselbe gewählte
+  Hoch-/Querformatausrichtung verwenden. Erzeuge den PDF-Datenstrom genau
+  einmal über `TransactionReportPDFExporter`; der Druckpfad darf keine zweite
+  fachliche Auswertung oder abweichende Seitengestaltung besitzen.
+- Öffne den macOS-Druckdialog erst nach ausdrücklichem Klick auf `Drucken …`.
+  Der Vorgang verändert weder Buchungen noch Berichtsvorlagen.
+
 Für SEPA-Core-Lastschriften gilt reproduzierbar:
 
 - Migration 24 erzeugt `direct_debit_orders`. Ein Auftrag referenziert ein

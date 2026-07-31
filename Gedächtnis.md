@@ -1702,3 +1702,27 @@ Rechtsberatung.
   Projektthread 894 (`/quicken`) veröffentlicht. Sie enthält denselben
   Kalender-, Test-, Release-, Datenbank- und GitHub-Stand sowie den
   Zielzählerstand von 11.325.105 Tokens.
+
+## 2026-07-31 – Direkter Systemdruck der Berichtswerkstatt
+
+- Das vorhandene PDF-Menü der Berichtswerkstatt bietet zusätzlich
+  `Drucken …`. Der Weg erzeugt über dieselbe Hilfsfunktion wie der PDF-Export
+  exakt den aktuellen gefilterten `TransactionReportSnapshot`, dieselben
+  Metadaten und dieselbe Hoch-/Querformatausrichtung und übergibt ihn erst
+  nach dem Klick an den macOS-Systemdruckdialog.
+- Der Druckpfad besitzt keine zweite Auswertungslogik und verändert keine
+  Buchung oder Berichtsvorlage. Fehler werden über die vorhandene sichtbare
+  Fehlermeldung der App gemeldet.
+- Der gezielte mehrseitige PDF-Semantiktest
+  `testReportPDFExportCreatesReadableMultipagePrintLayout` bestand nach der
+  UI- und Datenstromänderung erneut. Der vollständige 82-Test-Lauf von Schema
+  29 bleibt der unmittelbar vorausgehende Baseline-Nachweis.
+- Der optimierte Release unter `build/DerivedData-ReportPrint` bestand, wurde
+  ad hoc signiert, streng geprüft und kontrolliert installiert. Das vorherige
+  Schema-29-Bundle liegt reversibel unter
+  `build/FinanzVerwalter-vor-berichtsdruck-20260731-170553.app`. Der neue
+  ausführbare Code hat SHA-256
+  `546c04a0ebcc3be49998862737473d61a7b9b4b6ef54694b2ce85d859f370db4`.
+  Die App läuft als Prozess 62576; die Produktivdatei blieb bytegleich bei
+  SHA-256 `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
+  und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.

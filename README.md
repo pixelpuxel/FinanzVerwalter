@@ -358,7 +358,9 @@ versionierte Vorlage speichern. CSV-Ausgaben unterstützen Semikolon, Komma
 oder Tabulator sowie UTF-8 oder ISO-8859-1 und verwenden ein deterministisches
 deutsches Zahlenformat. Druckfertige PDF-Berichte entstehen wahlweise als
 A4-Hoch- oder Querformat mit Titel, Zeitraum, Filterbeschreibung,
-Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen.
+Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen. Dieselbe aktuelle
+Momentaufnahme kann entweder als PDF gespeichert oder direkt über den
+macOS-Systemdruckdialog ausgegeben werden.
 
 ## Zahlungsverkehr
 
