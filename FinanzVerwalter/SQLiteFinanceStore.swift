@@ -1080,6 +1080,49 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 18")
             }
         }
+        if version < 19 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN external_provider TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN external_transaction_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN counterparty_iban TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN end_to_end_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN mandate_reference TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN duplicate_fingerprint TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN bank_balance_after_minor INTEGER"
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX transactions_external_identity
+                    ON transactions(account_id,external_provider,external_transaction_id)
+                    WHERE external_provider<>'' AND external_transaction_id<>''
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX transactions_duplicate_fingerprint
+                    ON transactions(account_id,duplicate_fingerprint)
+                    WHERE duplicate_fingerprint<>''
+                    """
+                )
+                try execute("PRAGMA user_version = 19")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -3038,7 +3081,10 @@ final class SQLiteFinanceStore {
         let sql = """
             SELECT id,account_id,booking_date,value_date,payee,purpose,category_id,
                    amount_minor,currency,status,memo,reference,transfer_id,
-                   import_fingerprint,payee_id,vat_code_id,vat_mode,net_minor,tax_minor
+                   import_fingerprint,payee_id,vat_code_id,vat_mode,net_minor,tax_minor,
+                   origin,external_provider,external_transaction_id,counterparty_iban,
+                   end_to_end_id,mandate_reference,duplicate_fingerprint,
+                   bank_balance_after_minor
             FROM transactions
             \(accountID == nil ? "" : "WHERE account_id = ?")
             ORDER BY booking_date DESC,id DESC
@@ -3049,7 +3095,8 @@ final class SQLiteFinanceStore {
                 let account = UUID(uuidString: Self.text(statement, 1)),
                 let date = Self.date(Self.text(statement, 2)),
                 let status = TransactionStatus(rawValue: Self.text(statement, 9)),
-                let vatMode = VATMode(rawValue: Self.text(statement, 16))
+                let vatMode = VATMode(rawValue: Self.text(statement, 16)),
+                let origin = TransactionOrigin(rawValue: Self.text(statement, 19))
             else { return }
             values.append(
                 FinanceTransaction(
@@ -3073,7 +3120,17 @@ final class SQLiteFinanceStore {
                     vatCodeID: Self.optionalText(statement, 15).flatMap(UUID.init(uuidString:)),
                     vatMode: vatMode,
                     netMinor: sqlite3_column_int64(statement, 17),
-                    taxMinor: sqlite3_column_int64(statement, 18)
+                    taxMinor: sqlite3_column_int64(statement, 18),
+                    origin: origin,
+                    externalProvider: Self.text(statement, 20),
+                    externalTransactionID: Self.text(statement, 21),
+                    counterpartyIBAN: Self.text(statement, 22),
+                    endToEndID: Self.text(statement, 23),
+                    mandateReference: Self.text(statement, 24),
+                    duplicateFingerprint: Self.text(statement, 25),
+                    bankBalanceAfterMinor: sqlite3_column_type(statement, 26)
+                        == SQLITE_NULL
+                        ? nil : sqlite3_column_int64(statement, 26)
                 )
             )
         }
@@ -4032,18 +4089,42 @@ final class SQLiteFinanceStore {
         )
     }
 
-    func commitImport(_ preview: ImportPreview) throws {
+    func commitImport(
+        _ preview: ImportPreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) throws -> ImportCommitResult {
         if try scalarInt(
             "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
             [.text(preview.fingerprint)]
         ) > 0 {
             throw FinanceError.duplicateImport
         }
+        let plan = try validatedImportPlan(
+            preview,
+            resolutions: resolutions
+        )
         let now = Self.timestamp(Date())
+        var importedCount = 0
+        var matchedCount = 0
+        var skippedCount = 0
         try transaction {
-            for value in preview.rows {
-                try value.validate()
-                try writeTransaction(value, now: now)
+            for item in plan {
+                switch item.resolution {
+                case .importNew:
+                    try item.row.validate()
+                    try writeTransaction(item.row, now: now)
+                    importedCount += 1
+                case .skip:
+                    skippedCount += 1
+                case .match(let existingID):
+                    try mergeImportedTransaction(
+                        item.row,
+                        into: existingID,
+                        existing: item.existing,
+                        now: now
+                    )
+                    matchedCount += 1
+                }
             }
             try run(
                 "INSERT INTO import_packages(fingerprint,imported_at,row_count) VALUES(?,?,?)",
@@ -4053,12 +4134,20 @@ final class SQLiteFinanceStore {
                 entity: "import",
                 id: UUID(),
                 action: "commit",
-                details: "\(preview.fingerprint):\(preview.rows.count)"
+                details: "\(preview.fingerprint):neu=\(importedCount):abgeglichen=\(matchedCount):übersprungen=\(skippedCount)"
             )
         }
+        return ImportCommitResult(
+            importedCount: importedCount,
+            matchedCount: matchedCount,
+            skippedCount: skippedCount
+        )
     }
 
-    func commitQIFPackage(_ package: QIFPackagePreview) throws {
+    func commitQIFPackage(
+        _ package: QIFPackagePreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) throws -> ImportCommitResult {
         let preview = package.importPreview
         if try scalarInt(
             "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
@@ -4070,7 +4159,14 @@ final class SQLiteFinanceStore {
         let groupIDs = Dictionary(
             uniqueKeysWithValues: try accountGroups().map { ($0.name, $0.id) }
         )
+        let plan = try validatedImportPlan(
+            preview,
+            resolutions: resolutions
+        )
         let now = Self.timestamp(Date())
+        var importedCount = 0
+        var matchedCount = 0
+        var skippedCount = 0
         try transaction {
             for account in package.accountsToCreate {
                 try run(
@@ -4107,9 +4203,23 @@ final class SQLiteFinanceStore {
                     ]
                 )
             }
-            for value in preview.rows {
-                try value.validate()
-                try writeTransaction(value, now: now)
+            for item in plan {
+                switch item.resolution {
+                case .importNew:
+                    try item.row.validate()
+                    try writeTransaction(item.row, now: now)
+                    importedCount += 1
+                case .skip:
+                    skippedCount += 1
+                case .match(let existingID):
+                    try mergeImportedTransaction(
+                        item.row,
+                        into: existingID,
+                        existing: item.existing,
+                        now: now
+                    )
+                    matchedCount += 1
+                }
             }
             try run(
                 "INSERT INTO import_packages(fingerprint,imported_at,row_count) VALUES(?,?,?)",
@@ -4117,9 +4227,128 @@ final class SQLiteFinanceStore {
             )
             try audit(
                 entity: "import", id: UUID(), action: "commit-qif-package",
-                details: "\(preview.fingerprint):\(package.accountsToCreate.count):\(package.categoriesToCreate.count):\(preview.rows.count)"
+                details: "\(preview.fingerprint):konten=\(package.accountsToCreate.count):kategorien=\(package.categoriesToCreate.count):neu=\(importedCount):abgeglichen=\(matchedCount):übersprungen=\(skippedCount)"
             )
         }
+        return ImportCommitResult(
+            importedCount: importedCount,
+            matchedCount: matchedCount,
+            skippedCount: skippedCount
+        )
+    }
+
+    private struct ValidatedImportItem {
+        let row: FinanceTransaction
+        let resolution: ImportResolution
+        let existing: FinanceTransaction?
+    }
+
+    private func validatedImportPlan(
+        _ preview: ImportPreview,
+        resolutions: [UUID: ImportResolution]
+    ) throws -> [ValidatedImportItem] {
+        let existing = try transactions()
+        let existingByID = Dictionary(
+            uniqueKeysWithValues: existing.map { ($0.id, $0) }
+        )
+        let currentAssessments = ImportMatcher.assess(
+            rows: preview.rows,
+            against: existing,
+            dateWindowDays: preview.matchDateWindowDays
+        )
+        return try preview.rows.map { row in
+            let resolution = resolutions[row.id]
+                ?? preview.matches[row.id]?.suggestedResolution
+                ?? .importNew
+            switch resolution {
+            case .skip:
+                return ValidatedImportItem(
+                    row: row,
+                    resolution: .skip,
+                    existing: nil
+                )
+            case .importNew:
+                if currentAssessments[row.id]?.candidates.contains(where: {
+                    $0.tier == .exactExternalID
+                }) == true {
+                    throw FinanceError.invalidImportResolution(
+                        "Eine bereits vorhandene externe Transaktions-ID kann nicht erneut importiert werden."
+                    )
+                }
+                return ValidatedImportItem(
+                    row: row,
+                    resolution: .importNew,
+                    existing: nil
+                )
+            case .match(let existingID):
+                guard
+                    let candidate = currentAssessments[row.id]?.candidates.first(
+                        where: { $0.transactionID == existingID }
+                    ),
+                    candidate.isFinanciallyCompatible,
+                    let existingValue = existingByID[existingID]
+                else {
+                    throw FinanceError.invalidImportResolution(
+                        "Der gewählte Treffer ist verschwunden oder Betrag und Währung stimmen nicht mehr überein."
+                    )
+                }
+                return ValidatedImportItem(
+                    row: row,
+                    resolution: .match(existingID),
+                    existing: existingValue
+                )
+            }
+        }
+    }
+
+    private func mergeImportedTransaction(
+        _ imported: FinanceTransaction,
+        into existingID: UUID,
+        existing: FinanceTransaction?,
+        now: String
+    ) throws {
+        guard var merged = existing, merged.id == existingID else {
+            throw FinanceError.invalidImportResolution(
+                "Die vorhandene Buchung wurde zwischen Vorschau und Import gelöscht."
+            )
+        }
+        guard merged.amountMinor == imported.amountMinor,
+              merged.currency.caseInsensitiveCompare(imported.currency)
+                == .orderedSame
+        else {
+            throw FinanceError.invalidImportResolution(
+                "Betrag oder Währung des Treffers wurden zwischenzeitlich geändert."
+            )
+        }
+        if merged.status != .reconciled {
+            merged.bookingDate = imported.bookingDate
+            merged.valueDate = imported.valueDate ?? merged.valueDate
+            if !imported.payee.isEmpty { merged.payee = imported.payee }
+            if !imported.purpose.isEmpty { merged.purpose = imported.purpose }
+            if !imported.reference.isEmpty {
+                merged.reference = imported.reference
+            }
+            if merged.status == .expected || merged.status == .pending {
+                merged.status = .booked
+            }
+        }
+        merged.importFingerprint = imported.importFingerprint
+        merged.origin = imported.externalTransactionID.isEmpty
+            ? .fileImport : .bankDownload
+        merged.externalProvider = imported.externalProvider
+        merged.externalTransactionID = imported.externalTransactionID
+        merged.counterpartyIBAN = imported.counterpartyIBAN
+        merged.endToEndID = imported.endToEndID
+        merged.mandateReference = imported.mandateReference
+        merged.duplicateFingerprint = ImportMatcher.strongFingerprint(imported)
+        merged.bankBalanceAfterMinor = imported.bankBalanceAfterMinor
+        try writeTransaction(merged, now: now)
+        try audit(
+            entity: "transaction",
+            id: merged.id,
+            action: "match-import",
+            details: imported.importFingerprint ?? "ohne Paketfingerabdruck"
+        )
     }
 
     func backup(to target: URL) throws {
@@ -4158,15 +4387,26 @@ final class SQLiteFinanceStore {
                 id,account_id,booking_date,value_date,payee,purpose,category_id,
                 amount_minor,currency,status,memo,reference,transfer_id,
                 import_fingerprint,payee_id,created_at,updated_at,
-                vat_code_id,vat_mode,net_minor,tax_minor
+                vat_code_id,vat_mode,net_minor,tax_minor,
+                origin,external_provider,external_transaction_id,
+                counterparty_iban,end_to_end_id,mandate_reference,
+                duplicate_fingerprint,bank_balance_after_minor
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET booking_date=excluded.booking_date,value_date=excluded.value_date,
                 payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                 amount_minor=excluded.amount_minor,currency=excluded.currency,status=excluded.status,
                 memo=excluded.memo,reference=excluded.reference,payee_id=excluded.payee_id,
                 vat_code_id=excluded.vat_code_id,vat_mode=excluded.vat_mode,
                 net_minor=excluded.net_minor,tax_minor=excluded.tax_minor,
+                origin=excluded.origin,
+                external_provider=excluded.external_provider,
+                external_transaction_id=excluded.external_transaction_id,
+                counterparty_iban=excluded.counterparty_iban,
+                end_to_end_id=excluded.end_to_end_id,
+                mandate_reference=excluded.mandate_reference,
+                duplicate_fingerprint=excluded.duplicate_fingerprint,
+                bank_balance_after_minor=excluded.bank_balance_after_minor,
                 updated_at=excluded.updated_at,version=version+1
             """,
             [
@@ -4183,7 +4423,19 @@ final class SQLiteFinanceStore {
                 value.vatCodeID.map { .text($0.uuidString) } ?? .null,
                 .text(value.vatMode.rawValue),
                 .integer(value.netMinor),
-                .integer(value.taxMinor)
+                .integer(value.taxMinor),
+                .text(value.origin.rawValue),
+                .text(value.externalProvider),
+                .text(value.externalTransactionID),
+                .text(value.counterpartyIBAN),
+                .text(value.endToEndID),
+                .text(value.mandateReference),
+                .text(
+                    value.duplicateFingerprint.isEmpty
+                        ? ImportMatcher.strongFingerprint(value)
+                        : value.duplicateFingerprint
+                ),
+                value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null
             ]
         )
         try run("DELETE FROM transaction_tags WHERE transaction_id=?", [.text(value.id.uuidString)])
@@ -4470,15 +4722,58 @@ enum CSVFinanceImporter {
                     let amountText = record["betrag"] ?? record["amount"]
                 else { throw FinanceError.invalidAmount(line) }
                 let amount = try Money(parsing: amountText, currency: account.currency)
+                let valueDate = (
+                    record["wertstellung"]
+                        ?? record["valuta"]
+                        ?? record["value date"]
+                        ?? record["value_date"]
+                ).flatMap(parseDate)
+                let externalID = record["transaktions-id"]
+                    ?? record["transaktionsid"]
+                    ?? record["bank-id"]
+                    ?? record["transaction id"]
+                    ?? record["transaction_id"]
+                    ?? ""
+                let provider = record["provider"]
+                    ?? record["anbieter"]
+                    ?? record["bank"]
+                    ?? (externalID.isEmpty ? "" : "CSV")
+                let bankBalance = try (
+                    record["saldo danach"]
+                        ?? record["banksaldo"]
+                        ?? record["balance after"]
+                ).map {
+                    try Money(
+                        parsing: $0,
+                        currency: account.currency
+                    ).minorUnits
+                }
                 rows.append(
                     FinanceTransaction(
-                        id: UUID(), accountID: account.id, bookingDate: date, valueDate: nil,
+                        id: UUID(), accountID: account.id, bookingDate: date,
+                        valueDate: valueDate,
                         payee: record["empfänger"] ?? record["empfaenger"] ?? record["payee"] ?? "",
                         purpose: record["verwendungszweck"] ?? record["purpose"] ?? "",
                         categoryID: nil, amountMinor: amount.minorUnits, currency: account.currency,
                         status: .booked, memo: record["notiz"] ?? record["memo"] ?? "",
                         reference: record["referenz"] ?? record["reference"] ?? "",
-                        transferID: nil, importFingerprint: fingerprint, splits: []
+                        transferID: nil, importFingerprint: fingerprint, splits: [],
+                        origin: .fileImport,
+                        externalProvider: provider,
+                        externalTransactionID: externalID,
+                        counterpartyIBAN: record["iban"]
+                            ?? record["gegenkonto iban"]
+                            ?? record["counterparty iban"]
+                            ?? "",
+                        endToEndID: record["end-to-end-id"]
+                            ?? record["endtoendid"]
+                            ?? record["end_to_end_id"]
+                            ?? "",
+                        mandateReference: record["mandatsreferenz"]
+                            ?? record["mandate reference"]
+                            ?? record["mandate_reference"]
+                            ?? "",
+                        bankBalanceAfterMinor: bankBalance
                     )
                 )
             } catch {
@@ -4618,7 +4913,8 @@ enum QIFFinanceImporter {
                     payee: payee, purpose: memo, categoryID: splits.isEmpty ? categoryID : nil,
                     amountMinor: amount.minorUnits, currency: account.currency, status: .booked,
                     memo: "", reference: reference, transferID: nil,
-                    importFingerprint: fingerprint, splits: splits
+                    importFingerprint: fingerprint, splits: splits,
+                    origin: .fileImport
                 )
                 try transaction.validate()
                 rows.append(transaction)
@@ -5036,7 +5332,8 @@ enum QIFPackageImporter {
             payee: payee, purpose: memo, categoryID: splits.isEmpty ? categoryID : nil,
             amountMinor: amount.minorUnits, currency: account.currency,
             status: .booked, memo: "", reference: reference,
-            transferID: nil, importFingerprint: fingerprint, splits: splits
+            transferID: nil, importFingerprint: fingerprint, splits: splits,
+            origin: .fileImport
         )
         try value.validate()
         return value

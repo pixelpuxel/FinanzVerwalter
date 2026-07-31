@@ -224,6 +224,14 @@ struct FinanceTransaction: Identifiable, Hashable, Sendable {
     var vatMode: VATMode = .none
     var netMinor: Int64 = 0
     var taxMinor: Int64 = 0
+    var origin: TransactionOrigin = .manual
+    var externalProvider: String = ""
+    var externalTransactionID: String = ""
+    var counterpartyIBAN: String = ""
+    var endToEndID: String = ""
+    var mandateReference: String = ""
+    var duplicateFingerprint: String = ""
+    var bankBalanceAfterMinor: Int64? = nil
 
     func validate() throws {
         if splits.isEmpty {
@@ -461,6 +469,51 @@ struct ImportPreview: Sendable {
     let rows: [FinanceTransaction]
     let rejectedRows: [String]
     let fingerprint: String
+    let matches: [UUID: ImportMatchAssessment]
+    let matchDateWindowDays: Int
+
+    init(
+        rows: [FinanceTransaction],
+        rejectedRows: [String],
+        fingerprint: String,
+        matches: [UUID: ImportMatchAssessment] = [:],
+        matchDateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) {
+        self.rows = rows
+        self.rejectedRows = rejectedRows
+        self.fingerprint = fingerprint
+        self.matches = matches
+        self.matchDateWindowDays = max(0, matchDateWindowDays)
+    }
+
+    func matched(
+        against existing: [FinanceTransaction],
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) -> Self {
+        Self(
+            rows: rows,
+            rejectedRows: rejectedRows,
+            fingerprint: fingerprint,
+            matches: ImportMatcher.assess(
+                rows: rows,
+                against: existing,
+                dateWindowDays: dateWindowDays
+            ),
+            matchDateWindowDays: dateWindowDays
+        )
+    }
+}
+
+struct ImportCommitResult: Equatable, Sendable {
+    let importedCount: Int
+    let matchedCount: Int
+    let skippedCount: Int
+
+    var statusText: String {
+        "\(importedCount) neu importiert · "
+            + "\(matchedCount) abgeglichen · "
+            + "\(skippedCount) übersprungen"
+    }
 }
 
 struct QIFPackageSummary: Sendable {

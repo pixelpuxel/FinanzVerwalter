@@ -1917,10 +1917,14 @@ private struct ReportPDFDocument: FileDocument {
 
 struct ImportExportView: View {
     @EnvironmentObject private var store: FinanceAppStore
+    @AppStorage("importMatchDateWindowDaysV1")
+    private var importMatchDateWindowDays =
+        ImportMatcher.defaultDateWindowDays
     @State private var selectedAccountID: UUID?
     @State private var showImporter = false
     @State private var preview: ImportPreview?
     @State private var qifPackagePreview: QIFPackagePreview?
+    @State private var importResolutions: [UUID: ImportResolution] = [:]
     @State private var showBackupExporter = false
     @State private var backupDocument = BackupDocument(data: Data())
     @State private var showRestoreImporter = false
@@ -1946,6 +1950,17 @@ struct ImportExportView: View {
                                 showImporter = true
                             }
                         }
+                        Stepper(
+                            "Abgleichsfenster: \(importMatchDateWindowDays) "
+                                + "Tag\(importMatchDateWindowDays == 1 ? "" : "e")",
+                            value: $importMatchDateWindowDays,
+                            in: 0...14
+                        )
+                        .help(
+                            "Buchungen mit abweichendem Buchungs- oder "
+                                + "Wertstellungsdatum werden nur innerhalb "
+                                + "dieses Fensters als mögliche Treffer gezeigt."
+                        )
                         Text("Bei einem Mehrkonten-QIF ist keine vorherige Kontoauswahl nötig.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1983,6 +1998,7 @@ struct ImportExportView: View {
                                 Label(warning, systemImage: "exclamationmark.triangle")
                                     .foregroundStyle(.orange)
                             }
+                            matchingSummary(package.importPreview)
                             Table(package.importPreview.rows.prefix(100)) {
                                 TableColumn("Datum") {
                                     Text($0.bookingDate, format: .dateTime.day().month().year())
@@ -2000,12 +2016,27 @@ struct ImportExportView: View {
                                     Text(Money(minorUnits: $0.amountMinor).formatted)
                                         .monospacedDigit()
                                 }
+                                TableColumn("Importentscheidung") { transaction in
+                                    importResolutionPicker(
+                                        transaction,
+                                        preview: package.importPreview
+                                    )
+                                }
+                                .width(min: 190, ideal: 260)
                             }
                             .frame(height: 260)
                             HStack {
                                 Button("Verwerfen") { qifPackagePreview = nil }
+                                Button("Alle weichen Treffer als neu") {
+                                    markSoftCandidatesAsNew(
+                                        package.importPreview
+                                    )
+                                }
                                 Button("Paket ausdrücklich übernehmen") {
-                                    if store.commitQIFPackage(package) {
+                                    if store.commitQIFPackage(
+                                        package,
+                                        resolutions: importResolutions
+                                    ) {
                                         qifPackagePreview = nil
                                     }
                                 }
@@ -2021,6 +2052,7 @@ struct ImportExportView: View {
                     GroupBox("Importvorschau") {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("\(preview.rows.count) gültige · \(preview.rejectedRows.count) fehlerhafte Zeilen")
+                            matchingSummary(preview)
                             Table(preview.rows.prefix(100)) {
                                 TableColumn("Datum") {
                                     Text($0.bookingDate, format: .dateTime.day().month().year())
@@ -2031,12 +2063,27 @@ struct ImportExportView: View {
                                     Text(Money(minorUnits: $0.amountMinor).formatted)
                                         .monospacedDigit()
                                 }
+                                TableColumn("Importentscheidung") { transaction in
+                                    importResolutionPicker(
+                                        transaction,
+                                        preview: preview
+                                    )
+                                }
+                                .width(min: 190, ideal: 260)
                             }
                             .frame(height: 220)
                             HStack {
                                 Button("Verwerfen") { self.preview = nil }
+                                Button("Alle weichen Treffer als neu") {
+                                    markSoftCandidatesAsNew(preview)
+                                }
                                 Button("Import ausdrücklich übernehmen") {
-                                    if store.commitImport(preview) { self.preview = nil }
+                                    if store.commitImport(
+                                        preview,
+                                        resolutions: importResolutions
+                                    ) {
+                                        self.preview = nil
+                                    }
                                 }
                                 .buttonStyle(.borderedProminent)
                             }
@@ -2082,17 +2129,33 @@ struct ImportExportView: View {
             guard let data = try? Data(contentsOf: url) else { return }
             if url.pathExtension.lowercased() == "qif" {
                 if QIFPackageImporter.isPackage(data: data) {
-                    qifPackagePreview = store.previewQIFPackage(data: data)
+                    qifPackagePreview = store.previewQIFPackage(
+                        data: data,
+                        dateWindowDays: importMatchDateWindowDays
+                    )
                     preview = nil
+                    if let qifPackagePreview {
+                        prepareResolutions(qifPackagePreview.importPreview)
+                    }
                 } else if let selectedAccountID {
-                    preview = store.importQIF(data: data, accountID: selectedAccountID)
+                    preview = store.importQIF(
+                        data: data,
+                        accountID: selectedAccountID,
+                        dateWindowDays: importMatchDateWindowDays
+                    )
                     qifPackagePreview = nil
+                    if let preview { prepareResolutions(preview) }
                 } else {
                     store.errorMessage = FinanceError.missingAccount.localizedDescription
                 }
             } else if let selectedAccountID {
-                preview = store.importCSV(data: data, accountID: selectedAccountID)
+                preview = store.importCSV(
+                    data: data,
+                    accountID: selectedAccountID,
+                    dateWindowDays: importMatchDateWindowDays
+                )
                 qifPackagePreview = nil
+                if let preview { prepareResolutions(preview) }
             } else {
                 store.errorMessage = FinanceError.missingAccount.localizedDescription
             }
@@ -2133,6 +2196,98 @@ struct ImportExportView: View {
             }
         } message: {
             Text("Vor dem Austausch wird automatisch eine geprüfte Sicherung der aktuellen Finanzdatei angelegt.")
+        }
+    }
+
+    @ViewBuilder
+    private func matchingSummary(_ preview: ImportPreview) -> some View {
+        let assessments = Array(preview.matches.values)
+        let exact = assessments.filter {
+            $0.bestCandidate?.tier == .exactExternalID
+        }.count
+        let suggested = assessments.filter {
+            if case .match = importResolutions[$0.rowID]
+                ?? $0.suggestedResolution {
+                return true
+            }
+            return false
+        }.count
+        let candidates = assessments.filter { !$0.candidates.isEmpty }.count
+        HStack(spacing: 18) {
+            Label("\(exact) bereits vorhanden", systemImage: "checkmark.shield")
+            Label("\(suggested) zum Abgleich", systemImage: "arrow.triangle.merge")
+            Label("\(candidates) mit Kandidaten", systemImage: "person.2.crop.square.stack")
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+
+    private func importResolutionPicker(
+        _ transaction: FinanceTransaction,
+        preview: ImportPreview
+    ) -> some View {
+        let assessment = preview.matches[transaction.id]
+        return Picker(
+            "Importentscheidung",
+            selection: Binding(
+                get: {
+                    importResolutions[transaction.id]
+                        ?? assessment?.suggestedResolution
+                        ?? .importNew
+                },
+                set: { importResolutions[transaction.id] = $0 }
+            )
+        ) {
+            Text("Neu importieren").tag(ImportResolution.importNew)
+            Text("Überspringen").tag(ImportResolution.skip)
+            ForEach(
+                assessment?.candidates.filter(\.isFinanciallyCompatible)
+                    ?? []
+            ) { candidate in
+                Text(candidateLabel(candidate))
+                    .tag(ImportResolution.match(candidate.transactionID))
+            }
+        }
+        .labelsHidden()
+        .help(
+            assessment?.bestCandidate?.reasons.joined(separator: "\n")
+                ?? "Kein ähnlicher bestehender Umsatz gefunden"
+        )
+    }
+
+    private func candidateLabel(_ candidate: ImportMatchCandidate) -> String {
+        guard let value = store.transactions.first(where: {
+            $0.id == candidate.transactionID
+        }) else {
+            return "\(candidate.tier.title) · \(candidate.score) Punkte"
+        }
+        let payee = value.payee.isEmpty ? value.purpose : value.payee
+        let date = value.bookingDate.formatted(
+            .dateTime.day().month().year()
+        )
+        let amount = Money(minorUnits: value.amountMinor).formatted
+        return "Abgleichen: \(payee) · \(date) · \(amount) · "
+            + "\(candidate.score)"
+    }
+
+    private func prepareResolutions(_ preview: ImportPreview) {
+        importResolutions = Dictionary(
+            uniqueKeysWithValues: preview.rows.map {
+                (
+                    $0.id,
+                    preview.matches[$0.id]?.suggestedResolution
+                        ?? .importNew
+                )
+            }
+        )
+    }
+
+    private func markSoftCandidatesAsNew(_ preview: ImportPreview) {
+        for row in preview.rows {
+            let hasExactExternalID = preview.matches[row.id]?.candidates
+                .contains { $0.tier == .exactExternalID } == true
+            importResolutions[row.id] = hasExactExternalID
+                ? .skip : .importNew
         }
     }
 }

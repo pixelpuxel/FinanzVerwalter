@@ -426,6 +426,9 @@ final class FinanceAppStore: ObservableObject {
         guard let repository else { return false }
         do {
             let money = try Money(parsing: amount)
+            let existing = id.flatMap { transactionID in
+                transactions.first { $0.id == transactionID }
+            }
             let value = FinanceTransaction(
                 id: id ?? UUID(), accountID: accountID, bookingDate: date, valueDate: date,
                 payee: payee.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -435,7 +438,15 @@ final class FinanceAppStore: ObservableObject {
                 transferID: nil, importFingerprint: nil, splits: [],
                 payeeID: payeeID, tagIDs: tagIDs,
                 vatCodeID: vatCodeID, vatMode: vatMode,
-                netMinor: netMinor, taxMinor: taxMinor
+                netMinor: netMinor, taxMinor: taxMinor,
+                origin: existing?.origin ?? .manual,
+                externalProvider: existing?.externalProvider ?? "",
+                externalTransactionID: existing?.externalTransactionID ?? "",
+                counterpartyIBAN: existing?.counterpartyIBAN ?? "",
+                endToEndID: existing?.endToEndID ?? "",
+                mandateReference: existing?.mandateReference ?? "",
+                duplicateFingerprint: existing?.duplicateFingerprint ?? "",
+                bankBalanceAfterMinor: existing?.bankBalanceAfterMinor
             )
             try repository.saveTransaction(value)
             try load()
@@ -523,20 +534,34 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
-    func importCSV(data: Data, accountID: UUID) -> ImportPreview? {
+    func importCSV(
+        data: Data,
+        accountID: UUID,
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) -> ImportPreview? {
         guard let account = accounts.first(where: { $0.id == accountID }) else {
             present(FinanceError.missingAccount)
             return nil
         }
         do {
-            return try CSVFinanceImporter.preview(data: data, account: account)
+            return try CSVFinanceImporter.preview(
+                data: data,
+                account: account
+            ).matched(
+                against: transactions,
+                dateWindowDays: dateWindowDays
+            )
         } catch {
             present(error)
             return nil
         }
     }
 
-    func importQIF(data: Data, accountID: UUID) -> ImportPreview? {
+    func importQIF(
+        data: Data,
+        accountID: UUID,
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) -> ImportPreview? {
         guard let account = accounts.first(where: { $0.id == accountID }) else {
             present(FinanceError.missingAccount)
             return nil
@@ -544,6 +569,9 @@ final class FinanceAppStore: ObservableObject {
         do {
             return try QIFFinanceImporter.preview(
                 data: data, account: account, categories: categories
+            ).matched(
+                against: transactions,
+                dateWindowDays: dateWindowDays
             )
         } catch {
             present(error)
@@ -551,26 +579,45 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
-    func previewQIFPackage(data: Data) -> QIFPackagePreview? {
+    func previewQIFPackage(
+        data: Data,
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) -> QIFPackagePreview? {
         do {
-            return try QIFPackageImporter.preview(
+            let package = try QIFPackageImporter.preview(
                 data: data,
                 existingAccounts: accounts,
                 existingCategories: categories,
                 currency: fileInfo?.baseCurrency ?? "EUR"
             )
+            return QIFPackagePreview(
+                accountsToCreate: package.accountsToCreate,
+                categoriesToCreate: package.categoriesToCreate,
+                importPreview: package.importPreview.matched(
+                    against: transactions,
+                    dateWindowDays: dateWindowDays
+                ),
+                summary: package.summary,
+                warnings: package.warnings
+            )
         } catch {
             present(error)
             return nil
         }
     }
 
-    func commitImport(_ preview: ImportPreview) -> Bool {
+    func commitImport(
+        _ preview: ImportPreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) -> Bool {
         guard let repository else { return false }
         do {
-            try repository.commitImport(preview)
+            let result = try repository.commitImport(
+                preview,
+                resolutions: resolutions
+            )
             try load()
-            statusText = "\(preview.rows.count) Buchungen importiert"
+            statusText = result.statusText
             return true
         } catch {
             present(error)
@@ -578,12 +625,18 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
-    func commitQIFPackage(_ package: QIFPackagePreview) -> Bool {
+    func commitQIFPackage(
+        _ package: QIFPackagePreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) -> Bool {
         guard let repository else { return false }
         do {
-            try repository.commitQIFPackage(package)
+            let result = try repository.commitQIFPackage(
+                package,
+                resolutions: resolutions
+            )
             try load()
-            statusText = "\(package.importPreview.rows.count) Buchungen aus dem QIF-Paket importiert"
+            statusText = result.statusText
             return true
         } catch {
             present(error)

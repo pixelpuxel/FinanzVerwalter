@@ -695,3 +695,44 @@ Rechtsberatung.
   44 reguläre Tests. Telegram-Nachricht 940 im Projektthread 894 enthält den
   gleichen Prüfstand und weist ausdrücklich auf den fehlenden Screenshot
   wegen der macOS-Sperre hin.
+- Migration 19 ergänzt Buchungen um Herkunft, externen Provider,
+  externe Transaktions-ID, Gegenkonto-IBAN, End-to-End-ID,
+  Mandatsreferenz, starken Dublettenfingerabdruck und optionalen Banksaldo
+  nach der Buchung. Ein partieller eindeutiger Index schützt die Kombination
+  aus Konto, Provider und nicht leerer externer Transaktions-ID.
+- CSV-/TSV-, Einzel-QIF- und Mehrkonten-QIF-Vorschauen führen nun einen
+  gestuften, deterministischen Abgleich gegen vorhandene Buchungen desselben
+  Kontos aus. Betrag/Währung sind zwingend, das Datumsfenster ist zwischen
+  0 und 14 Tagen einstellbar; Referenzen, IBAN, Empfänger und Zweck bilden
+  den Score. Nur ein eindeutiger Treffer ab 90 Punkten wird vorgeschlagen.
+  Gleichstände und weiche Kandidaten werden nie still zusammengeführt.
+- Jede Vorschauzeile bietet `Neu importieren`, `Überspringen` oder einen
+  konkreten vorhandenen Umsatz mit Empfänger, Datum, Betrag und Score. Das
+  benutzte Datumsfenster gehört unveränderlich zur Vorschau und wird beim
+  Commit gegen den aktuellen Datenbestand erneut angewandt. Eine vorhandene
+  harte Bank-ID kann auch durch eine erzwungene Auswahl nicht dupliziert
+  werden.
+- Beim bestätigten Match bleiben lokale Kategorie, Memo, Splits, Tags,
+  Mehrwertsteuer und Transferstruktur erhalten; Bankmetadaten werden
+  ergänzt und erwartete/vorgemerkte Umsätze können zu gebuchten Umsätzen
+  werden. Abgeglichene Buchungen behalten ihre geschützten Fachfelder.
+- Zwei neue Tests prüfen Scoring, Mehrdeutigkeits- und Datumsfensterschutz
+  sowie den atomaren CSV-Merge mit erhaltener lokaler Anreicherung und
+  verbotener Bank-ID-Dublette. Die vollständige direkte XCTest-Abnahme
+  führte 47 Tests aus: 46 bestanden, ein opt-in-Real-QIF-Test wurde
+  erwartungsgemäß übersprungen, 0 Fehler.
+- Vor Migration 19 wurde ausschließlich lokal die validierte Sicherung
+  `Vor Migration 19 Import-Matching.qbackup` angelegt: Schema 18,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, drei MwSt.-Schlüssel,
+  0 Buchungsvorlagen, SHA-256
+  `b10e46a202099ac5130c4ad4e25f2c5412cee099d1bef455a10003594b09eca3`.
+- Der finale Release-Build ist unter
+  `~/Applications/FinanzVerwalter.app` installiert, ad hoc
+  signaturgeprüft und gestartet. Die produktive Datei meldet Schema 19,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, drei MwSt.-Schlüssel und
+  keine unbeabsichtigt gesetzte externe Identität in Altdaten. Der
+  Schema-18-Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-import-matching-20260731-1057.app`.
+- Computer Use meldet auch beim finalen Schema-19-Release den gesperrten
+  Mac. Deshalb bleibt die visuelle Importdialog-Abnahme offen und es wird
+  ausdrücklich kein angeblicher Screenshot veröffentlicht.

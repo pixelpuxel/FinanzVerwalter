@@ -54,6 +54,22 @@ anschließend atomar und idempotent gespeichert. Depot-, Klassen- und
 Merkpostenbereiche werden derzeit sichtbar ausgelassen, statt sie in ein
 unpassendes Kontoblatt zu schreiben.
 
+### Sicherer Abgleich mit vorhandenen Buchungen
+
+CSV-/TSV- und QIF-Vorschauen vergleichen jede importierte Buchung gestuft mit
+vorhandenen Umsätzen desselben Kontos. Exakte Bank-IDs, Betrag/Währung,
+Buchungs- beziehungsweise Wertstellungsdatum, Referenzen, IBAN, Empfänger und
+Verwendungszweck fließen in einen nachvollziehbaren Trefferwert ein. Das
+Datumsfenster ist im Importdialog von 0 bis 14 Tagen einstellbar.
+
+Jede Zeile bleibt vor dem Commit sichtbar und bietet `Neu importieren`,
+`Überspringen` oder den konkreten vorhandenen Umsatz mit Datum, Betrag und
+Score. Nur ein eindeutiger starker Treffer wird vorgeschlagen; mehrdeutige
+oder schwache Kandidaten werden niemals still zusammengeführt. Beim
+bestätigten Abgleich bleiben lokale Kategorien, Notizen, Splits, Tags und
+Mehrwertsteuer erhalten. Eine externe Transaktions-ID ist je Konto und
+Provider eindeutig.
+
 ## Tastatur und Buchungsvorlagen
 
 Unter `Einstellungen › Tastaturkurzbefehle` sind neue Buchung, Speichern,

@@ -262,11 +262,256 @@ final class FinanzVerwalterTests: XCTestCase {
         let preview = try CSVFinanceImporter.preview(data: data, account: account)
         XCTAssertEqual(preview.rows.count, 2)
         XCTAssertTrue(preview.rejectedRows.isEmpty)
-        try context.store.commitImport(preview)
+        _ = try context.store.commitImport(preview)
         XCTAssertThrowsError(try context.store.commitImport(preview)) { error in
             XCTAssertEqual(error as? FinanceError, .duplicateImport)
         }
         XCTAssertEqual(try context.store.transactions().count, 2)
+    }
+
+    func testImportMatcherUsesTieredEvidenceAndAvoidsAmbiguousAutoMatch() throws {
+        let accountID = UUID()
+        let calendar = Calendar(identifier: .gregorian)
+        let date = try XCTUnwrap(
+            calendar.date(
+                from: DateComponents(year: 2026, month: 7, day: 30)
+            )
+        )
+        let later = try XCTUnwrap(
+            calendar.date(byAdding: .day, value: 1, to: date)
+        )
+        let existing = FinanceTransaction(
+            id: UUID(), accountID: accountID, bookingDate: date,
+            valueDate: date, payee: "Stadtwerke München",
+            purpose: "Abschlag Strom Juli", categoryID: nil,
+            amountMinor: -12_345, currency: "EUR", status: .expected,
+            memo: "", reference: "RE-4711", transferID: nil,
+            importFingerprint: nil, splits: [],
+            counterpartyIBAN: "DE89370400440532013000",
+            endToEndID: "E2E-2026-4711"
+        )
+        let imported = FinanceTransaction(
+            id: UUID(), accountID: accountID, bookingDate: later,
+            valueDate: date, payee: "STADTWERKE MUENCHEN",
+            purpose: "Strom Abschlag 07 2026", categoryID: nil,
+            amountMinor: -12_345, currency: "EUR", status: .booked,
+            memo: "", reference: "RE-4711", transferID: nil,
+            importFingerprint: "paket-a", splits: [],
+            origin: .fileImport,
+            externalProvider: "DemoBank",
+            externalTransactionID: "TX-1",
+            counterpartyIBAN: "DE89 3704 0044 0532 0130 00",
+            endToEndID: "E2E-2026-4711"
+        )
+        let assessment = try XCTUnwrap(
+            ImportMatcher.assess(
+                rows: [imported],
+                against: [existing]
+            )[imported.id]
+        )
+        let candidate = try XCTUnwrap(assessment.bestCandidate)
+        XCTAssertGreaterThanOrEqual(
+            candidate.score,
+            ImportMatcher.automaticThreshold
+        )
+        XCTAssertEqual(candidate.tier, .strongFingerprint)
+        XCTAssertEqual(
+            assessment.suggestedResolution,
+            .match(existing.id)
+        )
+
+        var equallyStrong = existing
+        equallyStrong = FinanceTransaction(
+            id: UUID(), accountID: equallyStrong.accountID,
+            bookingDate: equallyStrong.bookingDate,
+            valueDate: equallyStrong.valueDate,
+            payee: equallyStrong.payee, purpose: equallyStrong.purpose,
+            categoryID: nil, amountMinor: equallyStrong.amountMinor,
+            currency: equallyStrong.currency, status: .expected,
+            memo: "", reference: equallyStrong.reference,
+            transferID: nil, importFingerprint: nil, splits: [],
+            counterpartyIBAN: equallyStrong.counterpartyIBAN,
+            endToEndID: equallyStrong.endToEndID
+        )
+        let ambiguous = try XCTUnwrap(
+            ImportMatcher.assess(
+                rows: [imported],
+                against: [existing, equallyStrong]
+            )[imported.id]
+        )
+        XCTAssertEqual(ambiguous.candidates.count, 2)
+        XCTAssertEqual(ambiguous.suggestedResolution, .importNew)
+
+        var outsideDefaultWindow = imported
+        outsideDefaultWindow.bookingDate = try XCTUnwrap(
+            calendar.date(byAdding: .day, value: 6, to: date)
+        )
+        outsideDefaultWindow.valueDate = outsideDefaultWindow.bookingDate
+        XCTAssertTrue(
+            try XCTUnwrap(
+                ImportMatcher.assess(
+                    rows: [outsideDefaultWindow],
+                    against: [existing]
+                )[outsideDefaultWindow.id]
+            ).candidates.isEmpty
+        )
+        let configuredPreview = ImportPreview(
+            rows: [outsideDefaultWindow],
+            rejectedRows: [],
+            fingerprint: "konfiguriertes-fenster"
+        ).matched(
+            against: [existing],
+            dateWindowDays: 7
+        )
+        XCTAssertEqual(configuredPreview.matchDateWindowDays, 7)
+        XCTAssertFalse(
+            try XCTUnwrap(
+                configuredPreview.matches[outsideDefaultWindow.id]
+            ).candidates.isEmpty
+        )
+
+        var exactDuplicate = existing
+        exactDuplicate.externalProvider = "DemoBank"
+        exactDuplicate.externalTransactionID = "TX-1"
+        let incompatible = FinanceTransaction(
+            id: UUID(), accountID: accountID, bookingDate: later,
+            valueDate: later, payee: "Abweichend", purpose: "",
+            categoryID: nil, amountMinor: -99, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: "paket-b", splits: [],
+            origin: .fileImport, externalProvider: "DemoBank",
+            externalTransactionID: "TX-1"
+        )
+        let exactAssessment = try XCTUnwrap(
+            ImportMatcher.assess(
+                rows: [incompatible],
+                against: [exactDuplicate]
+            )[incompatible.id]
+        )
+        XCTAssertEqual(exactAssessment.bestCandidate?.score, 100)
+        XCTAssertEqual(
+            exactAssessment.bestCandidate?.tier,
+            .exactExternalID
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(exactAssessment.bestCandidate)
+                .isFinanciallyCompatible
+        )
+        XCTAssertEqual(exactAssessment.suggestedResolution, .skip)
+    }
+
+    func testCSVMatchingMergesBankIdentityWithoutLosingLocalEnrichment() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "Testbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let category = try XCTUnwrap(
+            try context.store.categories().first
+        )
+        let date = try XCTUnwrap(
+            Calendar(identifier: .gregorian).date(
+                from: DateComponents(year: 2026, month: 7, day: 30)
+            )
+        )
+        let existing = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: date,
+            valueDate: date, payee: "Stadtwerke",
+            purpose: "Erwarteter Abschlag", categoryID: category.id,
+            amountMinor: -12_345, currency: "EUR", status: .expected,
+            memo: "Lokale Notiz bleibt", reference: "RE-4711",
+            transferID: nil, importFingerprint: nil, splits: [],
+            counterpartyIBAN: "DE89370400440532013000",
+            endToEndID: "E2E-4711"
+        )
+        try context.store.saveTransaction(existing)
+
+        let firstData = Data(
+            """
+            Datum;Wertstellung;Empfänger;Verwendungszweck;Betrag;Referenz;Provider;Transaktions-ID;IBAN;End-to-End-ID;Saldo danach
+            31.07.2026;31.07.2026;Stadtwerke München;Abschlag Strom Juli;-123,45;RE-4711;Testbank;TX-4711;DE89370400440532013000;E2E-4711;987,65
+            """.utf8
+        )
+        let rawPreview = try CSVFinanceImporter.preview(
+            data: firstData,
+            account: account
+        )
+        let preview = rawPreview.matched(
+            against: try context.store.transactions()
+        )
+        XCTAssertEqual(
+            preview.matches[rawPreview.rows[0].id]?.suggestedResolution,
+            .match(existing.id)
+        )
+        let result = try context.store.commitImport(preview)
+        XCTAssertEqual(
+            result,
+            ImportCommitResult(
+                importedCount: 0,
+                matchedCount: 1,
+                skippedCount: 0
+            )
+        )
+        var restored = try XCTUnwrap(
+            try context.store.transactions().first
+        )
+        XCTAssertEqual(try context.store.transactions().count, 1)
+        XCTAssertEqual(restored.id, existing.id)
+        XCTAssertEqual(restored.categoryID, category.id)
+        XCTAssertEqual(restored.memo, "Lokale Notiz bleibt")
+        XCTAssertEqual(restored.status, .booked)
+        XCTAssertEqual(restored.origin, .bankDownload)
+        XCTAssertEqual(restored.externalProvider, "Testbank")
+        XCTAssertEqual(restored.externalTransactionID, "TX-4711")
+        XCTAssertEqual(restored.endToEndID, "E2E-4711")
+        XCTAssertEqual(restored.bankBalanceAfterMinor, 98_765)
+
+        let changedPackage = Data(
+            """
+            Datum;Empfänger;Verwendungszweck;Betrag;Provider;Transaktions-ID
+            31.07.2026;Stadtwerke München;Gleicher Umsatz, andere Datei;-123,45;Testbank;TX-4711
+            """.utf8
+        )
+        let duplicateRaw = try CSVFinanceImporter.preview(
+            data: changedPackage,
+            account: account
+        )
+        let duplicate = duplicateRaw.matched(
+            against: try context.store.transactions()
+        )
+        XCTAssertEqual(
+            duplicate.matches[duplicateRaw.rows[0].id]?.suggestedResolution,
+            .skip
+        )
+        let skipped = try context.store.commitImport(duplicate)
+        XCTAssertEqual(skipped.skippedCount, 1)
+        XCTAssertEqual(try context.store.transactions().count, 1)
+
+        let forcedRaw = try CSVFinanceImporter.preview(
+            data: changedPackage + Data("\n".utf8),
+            account: account
+        )
+        let forced = forcedRaw.matched(
+            against: try context.store.transactions()
+        )
+        XCTAssertThrowsError(
+            try context.store.commitImport(
+                forced,
+                resolutions: [forced.rows[0].id: .importNew]
+            )
+        ) { error in
+            guard
+                let financeError = error as? FinanceError,
+                case .invalidImportResolution = financeError
+            else {
+                return XCTFail("Unerwarteter Fehler: \(error)")
+            }
+        }
+        restored = try XCTUnwrap(try context.store.transactions().first)
+        XCTAssertEqual(restored.externalTransactionID, "TX-4711")
+        XCTAssertTrue(try context.store.integrityCheck())
     }
 
     func testBackupIsIndependentAndPassesIntegrityCheck() throws {
@@ -389,7 +634,7 @@ final class FinanzVerwalterTests: XCTestCase {
             }
         )
 
-        try context.store.commitQIFPackage(package)
+        _ = try context.store.commitQIFPackage(package)
         let importedAccounts = try context.store.accounts()
         XCTAssertEqual(importedAccounts.count, 3)
         XCTAssertEqual(try context.store.transactions().count, 2)
@@ -458,7 +703,7 @@ final class FinanzVerwalterTests: XCTestCase {
             package.importPreview.rejectedRows.count, 0,
             "Der reale QIF-Import hat Buchungen abgelehnt."
         )
-        try context.store.commitQIFPackage(package)
+        _ = try context.store.commitQIFPackage(package)
         XCTAssertEqual(
             try context.store.transactions().count,
             package.importPreview.rows.count
@@ -1769,6 +2014,7 @@ final class FinanzVerwalterTests: XCTestCase {
         );
         CREATE TABLE transactions (
             id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT '',
             booking_date TEXT NOT NULL
         );
         CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
@@ -1816,7 +2062,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To18PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To19PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -1838,6 +2084,7 @@ final class FinanzVerwalterTests: XCTestCase {
         CREATE TABLE categories (id TEXT PRIMARY KEY);
         CREATE TABLE transactions (
             id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT '',
             booking_date TEXT NOT NULL DEFAULT '2025-01-01'
         );
         CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
@@ -1927,7 +2174,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 18)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 19)
         sqlite3_finalize(statement)
     }
 

@@ -603,3 +603,43 @@ Der Buchungsdialog schlägt den Kategorie-Standard vor, erlaubt die
 und Steuer vor dem Speichern. Die zweizeilige Kontenblattansicht nennt
 Schlüssel, Netto und Steuer. Buchungsvorlagen müssen alle MwSt.-Felder
 verlustfrei übernehmen.
+
+# Reproduzierbares Import- und Bankumsatz-Matching
+
+Migration 19 ergänzt jede Buchung um Herkunft (`manual`, `fileImport`,
+`bankDownload`, `rule`, `scheduled`, `transfer`), externen Provider,
+externe Transaktions-ID, Gegenkonto-IBAN, End-to-End-ID, Mandatsreferenz,
+starken Dublettenfingerabdruck und optionalen Banksaldo nach der Buchung.
+Erzwinge mit einem partiellen eindeutigen SQLite-Index, dass eine nicht leere
+externe Transaktions-ID innerhalb von Konto und Provider nur einmal vorkommt.
+
+Trenne Paket-Idempotenz und Buchungs-Matching. Der SHA-256-Hash der gesamten
+Datei verhindert weiterhin die doppelte Übernahme genau desselben Pakets.
+Daneben erzeugt jede Importvorschau pro Buchung maximal drei sortierte
+Kandidaten desselben Kontos:
+
+1. Exakte Provider- plus externe Transaktions-ID: Score 100, harter Treffer,
+   standardmäßig überspringen.
+2. Sonstige Kandidaten benötigen identischen Centbetrag und Währung sowie
+   ein vom Nutzer zwischen 0 und 14 Tagen konfiguriertes Datumsfenster.
+3. Ausgangsscore 45 für Betrag/Währung, bis zu 20 Punkte für Datum,
+   20 für End-to-End-ID, 15 für Mandatsreferenz, 15 für Referenz, 15 für
+   IBAN, 10 für identischen Empfänger sowie höchstens 8 beziehungsweise
+   10 für tokenbasierte Ähnlichkeit von Empfänger und Zweck.
+
+Zeige Kandidaten erst ab 55 Punkten. Schlage einen Merge nur bei mindestens
+90 Punkten, finanzieller Kompatibilität und einem eindeutigen besten Score
+vor. Bei Gleichstand oder schwächerem Ergebnis bleibt `Neu importieren`
+voreingestellt. Die Tabelle muss je Importzeile `Neu importieren`,
+`Überspringen` und jeden kompatiblen Kandidaten mit Empfänger, Datum, Betrag
+und Score anbieten; Gründe stehen als Hilfe bereit. Eine Sammelaktion darf
+weiche Treffer bewusst als neu markieren, harte externe IDs aber nicht
+duplizieren.
+
+Berechne beim Commit alle Kandidaten gegen den dann aktuellen Datenbestand
+erneut. Lehne eine erzwungene neue Buchung mit bereits vorhandener harter
+Bank-ID ab. Beim bestätigten Match bleiben lokale Kategorie, Memo, Splits,
+Tags, Mehrwertsteuer und Transferstruktur erhalten. Ergänze Bankmetadaten,
+setze erwartete oder vorgemerkte Umsätze auf gebucht und ändere bei bereits
+abgeglichenen Buchungen keine geschützten fachlichen Felder. Schreibe für
+Import, Überspringen und Merge nachvollziehbare Auditdaten.

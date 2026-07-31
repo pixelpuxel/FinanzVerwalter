@@ -1807,7 +1807,15 @@ struct TransactionEditorView: View {
                 vatCodeID: nil,
                 vatMode: .none,
                 netMinor: hasVAT ? receipt.netMinor : 0,
-                taxMinor: hasVAT ? receipt.taxMinor : 0
+                taxMinor: hasVAT ? receipt.taxMinor : 0,
+                origin: transaction?.origin ?? .manual,
+                externalProvider: transaction?.externalProvider ?? "",
+                externalTransactionID: transaction?.externalTransactionID ?? "",
+                counterpartyIBAN: transaction?.counterpartyIBAN ?? "",
+                endToEndID: transaction?.endToEndID ?? "",
+                mandateReference: transaction?.mandateReference ?? "",
+                duplicateFingerprint: transaction?.duplicateFingerprint ?? "",
+                bankBalanceAfterMinor: transaction?.bankBalanceAfterMinor
             )
             if store.saveSplitTransaction(value) {
                 dismiss()
