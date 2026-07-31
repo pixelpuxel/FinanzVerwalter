@@ -561,3 +561,12 @@ Rechtsberatung.
   installierte App-Fenster erneut in einen Timeout, weil der Mac weiterhin
   gesperrt ist. Deshalb wurde kein fingierter Screenshot versendet und die
   echte visuelle Abnahme bleibt ausdrücklich offen.
+- Da weder Homebrew noch `gh` vorhanden waren, wurde GitHub CLI 2.94.0 aus
+  dem offiziellen arm64-Release geladen, gegen die veröffentlichte
+  SHA-256-Prüfsumme geprüft und benutzerlokal unter `~/.local/bin/gh`
+  installiert. Der Pfad ist in `~/.zshrc` ergänzt; `gh auth status`
+  bestätigt das bestehende Keyring-Konto `pixelpuxel`.
+- Commit `353118c` wurde auf `agent/qif-mehrkontenimport` gepusht. Der
+  bestehende Draft-PR 1 zeigt auf diesen Commit und seine Beschreibung
+  enthält Saldo-Migration, Kontoblatt-Druck/PDF, F3 und den aktualisierten
+  Teststand.
