@@ -643,3 +643,51 @@ Tags, Mehrwertsteuer und Transferstruktur erhalten. Ergänze Bankmetadaten,
 setze erwartete oder vorgemerkte Umsätze auf gebucht und ändere bei bereits
 abgeglichenen Buchungen keine geschützten fachlichen Felder. Schreibe für
 Import, Überspringen und Merge nachvollziehbare Auditdaten.
+
+# Reproduzierbare Regel-Engine und Undo-Pakete
+
+Migration 20 ergänzt `categorization_rules.definition_json` sowie
+`rule_application_runs` und `rule_application_items`. Ergänze Buchungen um
+BIC, Gläubiger-ID und Buchungstext. Die Regeldefinition ist ein
+versioniertes, mit sortierten JSON-Schlüsseln codiertes Datenmodell aus
+einem rekursiven Ausdruck und einer geordneten Aktionsliste.
+
+Ein Ausdruck ist entweder eine Bedingung oder eine Gruppe mit Logik `all`
+(UND) beziehungsweise `any` (ODER) und beliebig vielen Kindausdrücken.
+Bedingungen besitzen eine stabile UUID, Feld, Operator und bis zu zwei
+Stringwerte. Unterstütze Empfänger/Auftraggeber, Zweck, IBAN, BIC, Betrag in
+Cent, Vorzeichen, Konto-UUID, Buchungstext, Referenz, Mandatsreferenz,
+Gläubiger-ID, End-to-End-ID, Buchungsdatum, Memo, Status und Herkunft.
+Operatoren sind gleich, enthält, beginnt/endet mit, Regex, zwischen, leer und
+nicht leer. Normalisiere Textvergleich ohne Beachtung von
+Groß-/Kleinschreibung und Diakritika. Validiere Regex sowie Centbereiche vor
+dem Speichern.
+
+Aktionen sind typisierte Enum-Werte: Kategorie setzen, Empfänger
+normalisieren, Memo setzen, Tags ergänzen, Zwecktext literal oder per Regex
+ersetzen, Zweck in Memo kopieren sowie einen Einzeilen-Split über exakt den
+Gesamtbetrag erzeugen. Verweigere widersprüchliche Mehrfachaktionen auf
+dasselbe Zielfeld. Regeln ändern niemals Betrag, Konto, Status,
+Transferidentität oder Abgleichstatus. Schließe abgeglichene, stornierte und
+Transferbuchungen aus; Split-Erzeugung ist nur aus einer ungeteilten
+steuerneutralen Buchung zulässig.
+
+Sortiere Vorschauzeilen deterministisch nach Datum und UUID. Zeige je
+Buchung alle geänderten Felder als Vorher/Nachher und lasse den Nutzer die
+anzuwendenden UUIDs ausdrücklich auswählen. Prüfe die vollständige Auswahl
+direkt vor dem Commit erneut. Speichere in derselben SQLite-Transaktion einen
+vollständigen vorherigen JSON-Snapshot und den SHA-256-Fingerabdruck des
+Nachher-Zustands.
+
+Ein Undo-Paket darf nur einmal und nur vollständig angewandt werden.
+Vergleiche vor jeder Rücknahme alle aktuellen Buchungsfingerabdrücke mit den
+gespeicherten Nachher-Werten. Fehlt oder unterscheidet sich eine Buchung,
+brich die gesamte Transaktion ab. Andernfalls schreibe alle Vorher-Snapshots
+zurück, markiere den Lauf als zurückgenommen und auditiere ihn.
+
+Für Konflikte ermittle alle aktiven Regeln in Prioritäts-/UUID-Reihenfolge.
+Wenn dieselbe Buchung von mehreren Regeln für dasselbe Zielfeld
+unterschiedliche Aktionen erhält, zeige Buchung, Zielfeld und Regelnamen.
+Eine aus dem Kontoblatt erzeugte Regel verwendet Konto plus Empfänger
+beziehungsweise Zweck als Bedingungen und die vorhandene Kategorie als
+Aktion; sie wird nur gespeichert und nicht automatisch angewandt.

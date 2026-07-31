@@ -202,6 +202,14 @@ struct RegisterView: View {
                         selection = ids
                         prepareTemplateFromSelection()
                     }
+                    if let transaction = store.transactions.first(
+                        where: { ids.contains($0.id) }
+                    ), transaction.categoryID != nil,
+                       transaction.splits.isEmpty {
+                        Button("Regel aus Buchung erstellen") {
+                            _ = store.createRule(from: transaction)
+                        }
+                    }
                 }
                 Button("Kategorie für Auswahl ändern …") {
                     selection = ids
@@ -1815,7 +1823,10 @@ struct TransactionEditorView: View {
                 endToEndID: transaction?.endToEndID ?? "",
                 mandateReference: transaction?.mandateReference ?? "",
                 duplicateFingerprint: transaction?.duplicateFingerprint ?? "",
-                bankBalanceAfterMinor: transaction?.bankBalanceAfterMinor
+                bankBalanceAfterMinor: transaction?.bankBalanceAfterMinor,
+                counterpartyBIC: transaction?.counterpartyBIC ?? "",
+                creditorID: transaction?.creditorID ?? "",
+                bookingText: transaction?.bookingText ?? ""
             )
             if store.saveSplitTransaction(value) {
                 dismiss()

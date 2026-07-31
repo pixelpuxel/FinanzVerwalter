@@ -1123,6 +1123,73 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 19")
             }
         }
+        if version < 20 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS categorization_rules (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        priority INTEGER NOT NULL,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        stop_after_match INTEGER NOT NULL DEFAULT 1,
+                        payee_contains TEXT NOT NULL DEFAULT '',
+                        purpose_contains TEXT NOT NULL DEFAULT '',
+                        minimum_amount_minor INTEGER,
+                        maximum_amount_minor INTEGER,
+                        category_id TEXT NOT NULL REFERENCES categories(id),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    "ALTER TABLE categorization_rules ADD COLUMN definition_json TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN counterparty_bic TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN creditor_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN booking_text TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    """
+                    CREATE TABLE rule_application_runs (
+                        id TEXT PRIMARY KEY,
+                        rule_id TEXT NOT NULL REFERENCES categorization_rules(id),
+                        rule_name TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        undone_at TEXT,
+                        transaction_count INTEGER NOT NULL,
+                        definition_json TEXT NOT NULL
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE rule_application_items (
+                        run_id TEXT NOT NULL REFERENCES rule_application_runs(id) ON DELETE CASCADE,
+                        transaction_id TEXT NOT NULL,
+                        before_json BLOB NOT NULL,
+                        after_fingerprint TEXT NOT NULL,
+                        PRIMARY KEY(run_id,transaction_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX rule_application_runs_latest
+                    ON rule_application_runs(undone_at,applied_at DESC,id)
+                    """
+                )
+                try execute("PRAGMA user_version = 20")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -1311,7 +1378,8 @@ final class SQLiteFinanceStore {
         try query(
             """
             SELECT id,name,priority,is_active,stop_after_match,payee_contains,purpose_contains,
-                   minimum_amount_minor,maximum_amount_minor,category_id
+                   minimum_amount_minor,maximum_amount_minor,category_id,
+                   definition_json
             FROM categorization_rules ORDER BY priority,id
             """
         ) {
@@ -1319,6 +1387,8 @@ final class SQLiteFinanceStore {
                 let id = UUID(uuidString: Self.text($0, 0)),
                 let categoryID = UUID(uuidString: Self.text($0, 9))
             else { return }
+            let definition = Self.text($0, 10).data(using: .utf8)
+                .flatMap(RuleEngine.definition(from:))
             values.append(
                 CategorizationRule(
                     id: id,
@@ -1332,7 +1402,9 @@ final class SQLiteFinanceStore {
                         ? nil : sqlite3_column_int64($0, 7),
                     maximumAmountMinor: sqlite3_column_type($0, 8) == SQLITE_NULL
                         ? nil : sqlite3_column_int64($0, 8),
-                    categoryID: categoryID
+                    categoryID: categoryID,
+                    expression: definition?.expression,
+                    actions: definition?.actions ?? []
                 )
             )
         }
@@ -3020,22 +3092,34 @@ final class SQLiteFinanceStore {
     }
 
     func saveCategorizationRule(_ rule: CategorizationRule) throws {
+        try RuleEngine.validate(rule)
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
+        let definitionData = try RuleEngine.definitionData(for: rule)
+        guard let definitionJSON = String(
+            data: definitionData,
+            encoding: .utf8
+        ) else {
+            throw FinanceError.database(
+                "Die Regeldefinition konnte nicht codiert werden."
+            )
+        }
         try transaction {
             try run(
                 """
                 INSERT INTO categorization_rules(
                     id,finance_file_id,name,priority,is_active,stop_after_match,
                     payee_contains,purpose_contains,minimum_amount_minor,maximum_amount_minor,
-                    category_id,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    category_id,created_at,updated_at,definition_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,priority=excluded.priority,
                     is_active=excluded.is_active,stop_after_match=excluded.stop_after_match,
                     payee_contains=excluded.payee_contains,purpose_contains=excluded.purpose_contains,
                     minimum_amount_minor=excluded.minimum_amount_minor,
                     maximum_amount_minor=excluded.maximum_amount_minor,
-                    category_id=excluded.category_id,updated_at=excluded.updated_at,version=version+1
+                    category_id=excluded.category_id,
+                    definition_json=excluded.definition_json,
+                    updated_at=excluded.updated_at,version=version+1
                 """,
                 [
                     .text(rule.id.uuidString), .text(info.id.uuidString), .text(rule.name),
@@ -3044,7 +3128,8 @@ final class SQLiteFinanceStore {
                     .text(rule.purposeContains),
                     rule.minimumAmountMinor.map(SQLiteValue.integer) ?? .null,
                     rule.maximumAmountMinor.map(SQLiteValue.integer) ?? .null,
-                    .text(rule.categoryID.uuidString), .text(now), .text(now)
+                    .text(rule.categoryID.uuidString), .text(now), .text(now),
+                    .text(definitionJSON)
                 ]
             )
             try audit(entity: "categorization_rule", id: rule.id, action: "save", details: rule.name)
@@ -3052,28 +3137,205 @@ final class SQLiteFinanceStore {
     }
 
     func applyCategorizationRule(_ rule: CategorizationRule) throws -> Int {
-        let candidates = try transactions().filter(rule.matches)
-        guard !candidates.isEmpty else { return 0 }
+        let preview = RuleEngine.preview(
+            rule: rule,
+            transactions: try transactions()
+        )
+        guard !preview.isEmpty else { return 0 }
+        return try applyCategorizationRule(
+            rule,
+            transactionIDs: Set(preview.map(\.id))
+        ).changedCount
+    }
+
+    func applyCategorizationRule(
+        _ rule: CategorizationRule,
+        transactionIDs: Set<UUID>
+    ) throws -> RuleApplicationResult {
+        guard !transactionIDs.isEmpty else {
+            throw FinanceError.database(
+                "Für die Regelanwendung wurde keine Buchung ausgewählt."
+            )
+        }
+        let preview = RuleEngine.preview(
+            rule: rule,
+            transactions: try transactions()
+        ).filter { transactionIDs.contains($0.id) }
+        guard preview.count == transactionIDs.count else {
+            throw FinanceError.database(
+                "Mindestens eine ausgewählte Buchung ist kein unveränderter Regeltreffer mehr."
+            )
+        }
+        let definition = try RuleEngine.definitionData(for: rule)
+        guard let definitionJSON = String(data: definition, encoding: .utf8)
+        else {
+            throw FinanceError.database(
+                "Das Undo-Paket der Regel konnte nicht codiert werden."
+            )
+        }
+        let runID = UUID()
         let now = Self.timestamp(Date())
         try transaction {
-            for candidate in candidates {
+            try run(
+                """
+                INSERT INTO rule_application_runs(
+                    id,rule_id,rule_name,applied_at,transaction_count,
+                    definition_json
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                [
+                    .text(runID.uuidString),
+                    .text(rule.id.uuidString),
+                    .text(rule.name),
+                    .text(now),
+                    .integer(Int64(preview.count)),
+                    .text(definitionJSON)
+                ]
+            )
+            for candidate in preview {
+                let before = try RuleEngine.snapshotData(candidate.before)
+                let afterFingerprint = try RuleEngine.snapshotFingerprint(
+                    candidate.after
+                )
                 try run(
                     """
-                    UPDATE transactions SET category_id=?,updated_at=?,version=version+1
-                    WHERE id=? AND status NOT IN ('reconciled','cancelled')
+                    INSERT INTO rule_application_items(
+                        run_id,transaction_id,before_json,after_fingerprint
+                    ) VALUES(?,?,?,?)
                     """,
                     [
-                        .text(rule.categoryID.uuidString), .text(now),
-                        .text(candidate.id.uuidString)
+                        .text(runID.uuidString),
+                        .text(candidate.id.uuidString),
+                        .text(before.base64EncodedString()),
+                        .text(afterFingerprint)
                     ]
+                )
+                try candidate.after.validate()
+                try validateVATReferences(candidate.after)
+                try writeTransaction(candidate.after, now: now)
+                /*
+                 The identity is validated again by writeTransaction and all
+                 updates live in the same SQLite transaction as the undo data.
+                 */
+                guard sqlite3_changes(database) >= 0 else {
+                    throw databaseError()
+                }
+            }
+            try audit(
+                entity: "categorization_rule",
+                id: rule.id,
+                action: "apply",
+                details: "run=\(runID.uuidString);count=\(preview.count)"
+            )
+        }
+        return RuleApplicationResult(
+            runID: runID,
+            changedCount: preview.count
+        )
+    }
+
+    func latestRuleUndo() throws -> RuleUndoSummary? {
+        var value: RuleUndoSummary?
+        try query(
+            """
+            SELECT id,rule_name,applied_at,transaction_count
+            FROM rule_application_runs
+            WHERE undone_at IS NULL
+            ORDER BY applied_at DESC,id DESC LIMIT 1
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let appliedAt = Self.timestampDate(Self.text(statement, 2))
+            else { return }
+            value = RuleUndoSummary(
+                id: id,
+                ruleName: Self.text(statement, 1),
+                appliedAt: appliedAt,
+                transactionCount: Int(sqlite3_column_int64(statement, 3))
+            )
+        }
+        return value
+    }
+
+    func undoRuleApplication(id: UUID) throws -> Int {
+        var snapshots: [(UUID, FinanceTransaction, String)] = []
+        try query(
+            """
+            SELECT i.transaction_id,i.before_json,i.after_fingerprint
+            FROM rule_application_items i
+            JOIN rule_application_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND r.undone_at IS NULL
+            ORDER BY i.transaction_id
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard
+                let transactionID = UUID(
+                    uuidString: Self.text(statement, 0)
+                ),
+                let data = Data(
+                    base64Encoded: Self.text(statement, 1)
+                ),
+                let before = try? RuleEngine.snapshot(from: data)
+            else { return }
+            snapshots.append(
+                (
+                    transactionID,
+                    before,
+                    Self.text(statement, 2)
+                )
+            )
+        }
+        guard !snapshots.isEmpty else {
+            throw FinanceError.database(
+                "Das Undo-Paket fehlt oder wurde bereits verwendet."
+            )
+        }
+        let currentByID = Dictionary(
+            uniqueKeysWithValues: try transactions().map { ($0.id, $0) }
+        )
+        for snapshot in snapshots {
+            guard
+                let current = currentByID[snapshot.0],
+                try RuleEngine.snapshotFingerprint(current) == snapshot.2
+            else {
+                throw FinanceError.database(
+                    "Mindestens eine Buchung wurde nach der Regelanwendung geändert. Das Undo wurde vollständig abgebrochen."
+                )
+            }
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            for snapshot in snapshots {
+                try snapshot.1.validate()
+                try validateVATReferences(snapshot.1)
+                try writeTransaction(
+                    snapshot.1,
+                    now: now,
+                    computeFingerprint: false
+                )
+            }
+            try run(
+                """
+                UPDATE rule_application_runs SET undone_at=?
+                WHERE id=? AND undone_at IS NULL
+                """,
+                [.text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Die Regelanwendung wurde bereits zurückgenommen."
                 )
             }
             try audit(
-                entity: "categorization_rule", id: rule.id, action: "apply",
-                details: "\(candidates.count) Buchungen"
+                entity: "categorization_rule",
+                id: id,
+                action: "undo",
+                details: "\(snapshots.count) Buchungen"
             )
         }
-        return candidates.count
+        return snapshots.count
     }
 
     func transactions(accountID: UUID? = nil) throws -> [FinanceTransaction] {
@@ -3084,7 +3346,8 @@ final class SQLiteFinanceStore {
                    import_fingerprint,payee_id,vat_code_id,vat_mode,net_minor,tax_minor,
                    origin,external_provider,external_transaction_id,counterparty_iban,
                    end_to_end_id,mandate_reference,duplicate_fingerprint,
-                   bank_balance_after_minor
+                   bank_balance_after_minor,counterparty_bic,creditor_id,
+                   booking_text
             FROM transactions
             \(accountID == nil ? "" : "WHERE account_id = ?")
             ORDER BY booking_date DESC,id DESC
@@ -3130,7 +3393,10 @@ final class SQLiteFinanceStore {
                     duplicateFingerprint: Self.text(statement, 25),
                     bankBalanceAfterMinor: sqlite3_column_type(statement, 26)
                         == SQLITE_NULL
-                        ? nil : sqlite3_column_int64(statement, 26)
+                        ? nil : sqlite3_column_int64(statement, 26),
+                    counterpartyBIC: Self.text(statement, 27),
+                    creditorID: Self.text(statement, 28),
+                    bookingText: Self.text(statement, 29)
                 )
             )
         }
@@ -4342,6 +4608,9 @@ final class SQLiteFinanceStore {
         merged.mandateReference = imported.mandateReference
         merged.duplicateFingerprint = ImportMatcher.strongFingerprint(imported)
         merged.bankBalanceAfterMinor = imported.bankBalanceAfterMinor
+        merged.counterpartyBIC = imported.counterpartyBIC
+        merged.creditorID = imported.creditorID
+        merged.bookingText = imported.bookingText
         try writeTransaction(merged, now: now)
         try audit(
             entity: "transaction",
@@ -4380,7 +4649,11 @@ final class SQLiteFinanceStore {
         return result == "ok"
     }
 
-    private func writeTransaction(_ value: FinanceTransaction, now: String) throws {
+    private func writeTransaction(
+        _ value: FinanceTransaction,
+        now: String,
+        computeFingerprint: Bool = true
+    ) throws {
         try run(
             """
             INSERT INTO transactions(
@@ -4390,9 +4663,10 @@ final class SQLiteFinanceStore {
                 vat_code_id,vat_mode,net_minor,tax_minor,
                 origin,external_provider,external_transaction_id,
                 counterparty_iban,end_to_end_id,mandate_reference,
-                duplicate_fingerprint,bank_balance_after_minor
+                duplicate_fingerprint,bank_balance_after_minor,
+                counterparty_bic,creditor_id,booking_text
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET booking_date=excluded.booking_date,value_date=excluded.value_date,
                 payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                 amount_minor=excluded.amount_minor,currency=excluded.currency,status=excluded.status,
@@ -4407,6 +4681,9 @@ final class SQLiteFinanceStore {
                 mandate_reference=excluded.mandate_reference,
                 duplicate_fingerprint=excluded.duplicate_fingerprint,
                 bank_balance_after_minor=excluded.bank_balance_after_minor,
+                counterparty_bic=excluded.counterparty_bic,
+                creditor_id=excluded.creditor_id,
+                booking_text=excluded.booking_text,
                 updated_at=excluded.updated_at,version=version+1
             """,
             [
@@ -4431,11 +4708,14 @@ final class SQLiteFinanceStore {
                 .text(value.endToEndID),
                 .text(value.mandateReference),
                 .text(
-                    value.duplicateFingerprint.isEmpty
+                    value.duplicateFingerprint.isEmpty && computeFingerprint
                         ? ImportMatcher.strongFingerprint(value)
                         : value.duplicateFingerprint
                 ),
-                value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null
+                value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null,
+                .text(value.counterpartyBIC),
+                .text(value.creditorID),
+                .text(value.bookingText)
             ]
         )
         try run("DELETE FROM transaction_tags WHERE transaction_id=?", [.text(value.id.uuidString)])
@@ -4773,7 +5053,20 @@ enum CSVFinanceImporter {
                             ?? record["mandate reference"]
                             ?? record["mandate_reference"]
                             ?? "",
-                        bankBalanceAfterMinor: bankBalance
+                        bankBalanceAfterMinor: bankBalance,
+                        counterpartyBIC: record["bic"]
+                            ?? record["gegenkonto bic"]
+                            ?? record["counterparty bic"]
+                            ?? "",
+                        creditorID: record["gläubiger-id"]
+                            ?? record["glaeubiger-id"]
+                            ?? record["creditor id"]
+                            ?? record["creditor_id"]
+                            ?? "",
+                        bookingText: record["buchungstext"]
+                            ?? record["booking text"]
+                            ?? record["booking_text"]
+                            ?? ""
                     )
                 )
             } catch {

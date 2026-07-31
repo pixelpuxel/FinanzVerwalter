@@ -14,6 +14,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var reportTemplates: [SavedReportTemplate] = []
     @Published private(set) var transactionTemplates: [TransactionTemplate] = []
     @Published private(set) var categorizationRules: [CategorizationRule] = []
+    @Published private(set) var latestRuleUndo: RuleUndoSummary?
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
@@ -446,7 +447,10 @@ final class FinanceAppStore: ObservableObject {
                 endToEndID: existing?.endToEndID ?? "",
                 mandateReference: existing?.mandateReference ?? "",
                 duplicateFingerprint: existing?.duplicateFingerprint ?? "",
-                bankBalanceAfterMinor: existing?.bankBalanceAfterMinor
+                bankBalanceAfterMinor: existing?.bankBalanceAfterMinor,
+                counterpartyBIC: existing?.counterpartyBIC ?? "",
+                creditorID: existing?.creditorID ?? "",
+                bookingText: existing?.bookingText ?? ""
             )
             try repository.saveTransaction(value)
             try load()
@@ -789,7 +793,20 @@ final class FinanceAppStore: ObservableObject {
     }
 
     func rulePreviewCount(_ rule: CategorizationRule) -> Int {
-        transactions.filter(rule.matches).count
+        rulePreview(rule).count
+    }
+
+    func rulePreview(
+        _ rule: CategorizationRule
+    ) -> [RuleTransactionPreview] {
+        RuleEngine.preview(rule: rule, transactions: transactions)
+    }
+
+    var ruleConflicts: [RuleConflict] {
+        RuleEngine.conflicts(
+            rules: categorizationRules,
+            transactions: transactions
+        )
     }
 
     func saveRule(_ rule: CategorizationRule) -> Bool {
@@ -805,16 +822,106 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func createRule(from transaction: FinanceTransaction) -> Bool {
+        guard let categoryID = transaction.categoryID,
+              transaction.splits.isEmpty
+        else {
+            present(
+                FinanceError.database(
+                    "Eine Regel kann hier nur aus einer einfach kategorisierten Buchung erzeugt werden."
+                )
+            )
+            return false
+        }
+        var conditions: [RuleExpression] = [
+            .condition(
+                RuleCondition(
+                    field: .account,
+                    operation: .equals,
+                    value: transaction.accountID.uuidString
+                )
+            )
+        ]
+        if !transaction.payee.isEmpty {
+            conditions.append(
+                .condition(
+                    RuleCondition(
+                        field: .payee,
+                        operation: .equals,
+                        value: transaction.payee
+                    )
+                )
+            )
+        } else if !transaction.purpose.isEmpty {
+            conditions.append(
+                .condition(
+                    RuleCondition(
+                        field: .purpose,
+                        operation: .contains,
+                        value: transaction.purpose
+                    )
+                )
+            )
+        }
+        let nameSource = transaction.payee.isEmpty
+            ? transaction.purpose : transaction.payee
+        let rule = CategorizationRule(
+            id: UUID(),
+            name: "\(nameSource) → \(categoryName(categoryID))",
+            priority: (categorizationRules.map(\.priority).max() ?? 0) + 10,
+            isActive: true,
+            stopAfterMatch: true,
+            payeeContains: "",
+            purposeContains: "",
+            minimumAmountMinor: nil,
+            maximumAmountMinor: nil,
+            categoryID: categoryID,
+            expression: .group(.all, conditions),
+            actions: [.setCategory(categoryID)]
+        )
+        guard saveRule(rule) else { return false }
+        statusText = "Regel „\(rule.name)“ aus Buchung erstellt · noch nicht angewendet"
+        return true
+    }
+
     func applyRule(_ rule: CategorizationRule) -> Int? {
+        applyRule(
+            rule,
+            transactionIDs: Set(rulePreview(rule).map(\.id))
+        )
+    }
+
+    func applyRule(
+        _ rule: CategorizationRule,
+        transactionIDs: Set<UUID>
+    ) -> Int? {
         guard let repository else { return nil }
         do {
-            let count = try repository.applyCategorizationRule(rule)
+            let result = try repository.applyCategorizationRule(
+                rule,
+                transactionIDs: transactionIDs
+            )
             try load()
-            statusText = "Regel auf \(count) Buchungen angewendet"
-            return count
+            statusText = "Regel auf \(result.changedCount) Buchungen angewendet · Undo verfügbar"
+            return result.changedCount
         } catch {
             present(error)
             return nil
+        }
+    }
+
+    func undoLatestRuleApplication() -> Bool {
+        guard let repository, let latestRuleUndo else { return false }
+        do {
+            let count = try repository.undoRuleApplication(
+                id: latestRuleUndo.id
+            )
+            try load()
+            statusText = "\(count) Regeländerungen vollständig zurückgenommen"
+            return true
+        } catch {
+            present(error)
+            return false
         }
     }
 
@@ -1389,6 +1496,7 @@ final class FinanceAppStore: ObservableObject {
         reportTemplates = try repository.reportTemplates()
         transactionTemplates = try repository.transactionTemplates()
         categorizationRules = try repository.categorizationRules()
+        latestRuleUndo = try repository.latestRuleUndo()
         scheduledTransactions = try repository.scheduledTransactions()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()

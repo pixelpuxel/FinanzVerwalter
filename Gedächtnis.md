@@ -747,3 +747,44 @@ Rechtsberatung.
   enthält den geprüften Matching-, Release- und Teststatus sowie den
   ausdrücklichen Hinweis, dass wegen des gesperrten Macs noch kein echter
   Screenshot vorliegt.
+- Migration 20 erweitert Regeln um deterministisch codierte, versionierte
+  und rekursive UND-/ODER-Ausdrücke. 16 fachliche Bedingungsfelder und acht
+  Operatoren decken unter anderem Konto, Empfänger/Auftraggeber, Zweck,
+  Betrag/Vorzeichen, IBAN, BIC, Buchungstext, Referenzen, Zeitraum, Status
+  und Herkunft ab. BIC, Gläubiger-ID und Buchungstext sind deshalb nun auch
+  persistente Buchungsfelder und werden beim CSV-Import übernommen.
+- Regelaktionen können Kategorie, Empfänger, Notiz, Tags und Zwecktext
+  ändern, Zweck in die Notiz kopieren oder einen centgenauen Einzeilen-Split
+  erzeugen. Widersprüchliche Mehrfachaktionen, ungültige Regex-Ausdrücke und
+  fehlerhafte Centbereiche werden vor dem Speichern abgelehnt. Abgeglichene,
+  stornierte und Transferbuchungen bleiben geschützt.
+- Die Regeloberfläche zeigt Prioritätsreihenfolge und Konfliktmarken. Eine
+  Trockenlauf-Tabelle stellt pro Treffer alle Vorher-/Nachher-Werte
+  gegenüber; nur ausdrücklich ausgewählte Buchungen werden atomar
+  angewandt. Eine einfach kategorisierte Kontoblattbuchung kann eine
+  kontospezifische, noch nicht angewandte Regel erzeugen.
+- Jede Anwendung schreibt in derselben SQLite-Transaktion ein vollständiges
+  Undo-Paket mit Vorher-Snapshot und Nachher-Fingerabdruck. Die Rücknahme ist
+  einmalig und vollständig. Wurde nur eine Buchung zwischenzeitlich
+  bearbeitet oder gelöscht, wird das gesamte Undo ohne Teiländerung
+  abgebrochen.
+- Der neue Regeltest prüft verschachteltes UND/ODER, Regex-Validierung,
+  Feldroundtrip, Konflikte, Vorher/Nachher-Vorschau, selektive Anwendung,
+  Split-Erzeugung, vollständige Rücknahme und den atomaren Schutz nach
+  manueller Nachbearbeitung. Die direkte Gesamtabnahme führte 48 Tests aus:
+  47 bestanden, ein opt-in-Real-QIF-Test wurde erwartungsgemäß übersprungen,
+  0 Fehler.
+- Vor Migration 20 wurde ausschließlich lokal die validierte Sicherung
+  `Vor Migration 20 Regel-Engine.qbackup` angelegt: Schema 19,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Regeln, SHA-256
+  `8ad5b5fc1e4896b05355a5c317a461ccd6c173eadbf6e0c22cf6f80c106f9e28`.
+- Der optimierte Release ist unter
+  `~/Applications/FinanzVerwalter.app` installiert, ad hoc
+  signaturgeprüft und gestartet. Die Produktivdatei meldet Schema 20,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Regeln, 0 Regelanwendungen
+  und keine unbeabsichtigt gefüllten neuen Buchungsfelder. Der Vorgänger
+  liegt ignoriert unter
+  `build/FinanzVerwalter-vor-regel-engine-20260731-1124.app`.
+- Computer Use meldet auch für die installierte Regeloberfläche den
+  gesperrten Mac. Die sichtbare Abnahme und ein echter Screenshot bleiben
+  bis zum manuellen Entsperren offen.

@@ -1078,13 +1078,246 @@ final class FinanzVerwalterTests: XCTestCase {
         )
         try context.store.saveCategorizationRule(rule)
 
-        XCTAssertEqual(try context.store.categorizationRules(), [rule])
+        let storedRule = try XCTUnwrap(
+            try context.store.categorizationRules().first
+        )
+        XCTAssertEqual(storedRule.id, rule.id)
+        XCTAssertEqual(
+            storedRule.effectiveExpression,
+            rule.effectiveExpression
+        )
+        XCTAssertEqual(storedRule.effectiveActions, rule.effectiveActions)
         XCTAssertTrue(rule.matches(matching))
         XCTAssertFalse(rule.matches(protected))
         XCTAssertEqual(try context.store.applyCategorizationRule(rule), 1)
         let values = try context.store.transactions()
         XCTAssertEqual(values.first { $0.id == matching.id }?.categoryID, category.id)
         XCTAssertNil(values.first { $0.id == protected.id }?.categoryID)
+    }
+
+    func testNestedRulePreviewConflictSelectedApplyAndSafeUndo() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "",
+            type: .checking, currency: "EUR",
+            openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let categories = try context.store.categories()
+        let food = try XCTUnwrap(
+            categories.first { $0.name == "Lebensmittel" }
+        )
+        let housing = try XCTUnwrap(
+            categories.first { $0.name == "Wohnen" }
+        )
+        let date = try XCTUnwrap(
+            Calendar(identifier: .gregorian).date(
+                from: DateComponents(year: 2026, month: 7, day: 31)
+            )
+        )
+        let first = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: date,
+            valueDate: date, payee: "Edeka Markt 12",
+            purpose: "Kartenzahlung 4711", categoryID: nil,
+            amountMinor: -5_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: [],
+            counterpartyIBAN: "DE89370400440532013000",
+            counterpartyBIC: "COBADEFFXXX",
+            bookingText: "Kartenzahlung"
+        )
+        var second = first
+        second = FinanceTransaction(
+            id: UUID(), accountID: second.accountID,
+            bookingDate: second.bookingDate, valueDate: second.valueDate,
+            payee: "EDEKA City", purpose: "Kartenzahlung 4711",
+            categoryID: nil, amountMinor: -2_500,
+            currency: second.currency, status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: [],
+            counterpartyIBAN: second.counterpartyIBAN,
+            counterpartyBIC: second.counterpartyBIC,
+            bookingText: second.bookingText
+        )
+        try context.store.saveTransaction(first)
+        try context.store.saveTransaction(second)
+        let persistedFirst = try XCTUnwrap(
+            try context.store.transactions().first { $0.id == first.id }
+        )
+        XCTAssertEqual(persistedFirst.counterpartyBIC, "COBADEFFXXX")
+        XCTAssertEqual(persistedFirst.bookingText, "Kartenzahlung")
+
+        let expression = RuleExpression.group(
+            .all,
+            [
+                .condition(
+                    RuleCondition(
+                        field: .payee,
+                        operation: .regex,
+                        value: "^edeka"
+                    )
+                ),
+                .group(
+                    .any,
+                    [
+                        .condition(
+                            RuleCondition(
+                                field: .purpose,
+                                operation: .contains,
+                                value: "4711"
+                            )
+                        ),
+                        .condition(
+                            RuleCondition(
+                                field: .counterpartyIBAN,
+                                operation: .equals,
+                                value: "DE89370400440532013000"
+                            )
+                        )
+                    ]
+                )
+            ]
+        )
+        let rule = CategorizationRule(
+            id: UUID(), name: "EDEKA vollständig", priority: 10,
+            isActive: true, stopAfterMatch: true,
+            payeeContains: "", purposeContains: "",
+            minimumAmountMinor: nil, maximumAmountMinor: nil,
+            categoryID: food.id,
+            expression: expression,
+            actions: [
+                .setCategory(food.id),
+                .normalizePayee("EDEKA"),
+                .setMemo("Automatisch kategorisiert"),
+                .replacePurpose(
+                    search: "4711",
+                    replacement: "****",
+                    useRegex: false
+                )
+            ]
+        )
+        try context.store.saveCategorizationRule(rule)
+        let stored = try XCTUnwrap(
+            try context.store.categorizationRules().first {
+                $0.id == rule.id
+            }
+        )
+        XCTAssertEqual(stored.expression, expression)
+        XCTAssertEqual(stored.actions, rule.actions)
+
+        let invalidRegexRule = CategorizationRule(
+            id: UUID(), name: "Ungültige Regex", priority: 11,
+            isActive: true, stopAfterMatch: true,
+            payeeContains: "", purposeContains: "",
+            minimumAmountMinor: nil, maximumAmountMinor: nil,
+            categoryID: food.id,
+            expression: .condition(
+                RuleCondition(
+                    field: .purpose,
+                    operation: .regex,
+                    value: "["
+                )
+            ),
+            actions: [.setCategory(food.id)]
+        )
+        XCTAssertThrowsError(
+            try context.store.saveCategorizationRule(invalidRegexRule)
+        )
+
+        let splitRule = CategorizationRule(
+            id: UUID(), name: "Regelsplit", priority: 12,
+            isActive: true, stopAfterMatch: true,
+            payeeContains: "", purposeContains: "",
+            minimumAmountMinor: nil, maximumAmountMinor: nil,
+            categoryID: food.id,
+            expression: expression,
+            actions: [
+                .createSingleSplit(
+                    categoryID: food.id,
+                    memo: "Regelsplit"
+                )
+            ]
+        )
+        let splitValue = try RuleEngine.transformed(first, by: splitRule)
+        XCTAssertNil(splitValue.categoryID)
+        XCTAssertEqual(splitValue.splits.count, 1)
+        XCTAssertEqual(splitValue.splits[0].amountMinor, first.amountMinor)
+        XCTAssertEqual(splitValue.splits[0].categoryID, food.id)
+
+        let preview = RuleEngine.preview(
+            rule: stored,
+            transactions: try context.store.transactions()
+        )
+        XCTAssertEqual(preview.count, 2)
+        XCTAssertTrue(
+            preview.allSatisfy {
+                $0.after.categoryID == food.id
+                    && $0.after.payee == "EDEKA"
+                    && $0.after.memo == "Automatisch kategorisiert"
+                    && $0.after.purpose == "Kartenzahlung ****"
+            }
+        )
+
+        let conflicting = CategorizationRule(
+            id: UUID(), name: "Andere Kategorie", priority: 20,
+            isActive: true, stopAfterMatch: false,
+            payeeContains: "edeka", purposeContains: "",
+            minimumAmountMinor: nil, maximumAmountMinor: nil,
+            categoryID: housing.id
+        )
+        XCTAssertEqual(
+            RuleEngine.conflicts(
+                rules: [stored, conflicting],
+                transactions: try context.store.transactions()
+            ).filter { $0.field == "category" }.count,
+            2
+        )
+
+        let result = try context.store.applyCategorizationRule(
+            stored,
+            transactionIDs: [first.id]
+        )
+        XCTAssertEqual(result.changedCount, 1)
+        var values = try context.store.transactions()
+        let changed = try XCTUnwrap(values.first { $0.id == first.id })
+        XCTAssertEqual(changed.categoryID, food.id)
+        XCTAssertEqual(changed.payee, "EDEKA")
+        XCTAssertEqual(changed.origin, .rule)
+        XCTAssertNil(values.first { $0.id == second.id }?.categoryID)
+        let undo = try XCTUnwrap(try context.store.latestRuleUndo())
+        XCTAssertEqual(undo.id, result.runID)
+        XCTAssertEqual(
+            try context.store.undoRuleApplication(id: undo.id),
+            1
+        )
+        values = try context.store.transactions()
+        let restored = try XCTUnwrap(values.first { $0.id == first.id })
+        XCTAssertEqual(restored.categoryID, first.categoryID)
+        XCTAssertEqual(restored.payee, first.payee)
+        XCTAssertEqual(restored.purpose, first.purpose)
+        XCTAssertEqual(restored.memo, first.memo)
+        XCTAssertEqual(restored.origin, first.origin)
+
+        let secondRun = try context.store.applyCategorizationRule(
+            stored,
+            transactionIDs: [first.id]
+        )
+        var intervening = try XCTUnwrap(
+            try context.store.transactions().first { $0.id == first.id }
+        )
+        intervening.memo = "Manuell nachbearbeitet"
+        try context.store.saveTransaction(intervening)
+        XCTAssertThrowsError(
+            try context.store.undoRuleApplication(id: secondRun.runID)
+        )
+        XCTAssertEqual(
+            try context.store.transactions().first {
+                $0.id == first.id
+            }?.memo,
+            "Manuell nachbearbeitet"
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
     }
 
     func testMonthlySchedulePreservesMonthEndAndPersists() throws {
@@ -2062,7 +2295,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To19PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To20PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -2174,7 +2407,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 19)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 20)
         sqlite3_finalize(statement)
     }
 

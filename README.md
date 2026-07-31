@@ -84,6 +84,27 @@ werden. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen auch
 Splits und Tags, aber niemals altes Datum, Belegnummer, Transfer- oder
 Importidentität. Eine einzelne Umbuchungsseite ist keine zulässige Vorlage.
 
+## Regeln
+
+Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-
+Bedingungsgruppen. Neben Empfänger und Zweck können unter anderem Konto,
+IBAN, BIC, Betrag/Vorzeichen, Buchungstext, Referenzen, Zeitraum, Status und
+Herkunft mit Gleichheit, Textoperatoren, Regex, Bereichen oder
+Leerprüfungen ausgewertet werden. Ungültige Regex- und Betragsbedingungen
+werden vor dem Speichern abgelehnt.
+
+Aktionen können Kategorie, Empfänger, Notiz, Klassen/Tags und
+Verwendungszweck verändern oder einen centgenauen Einzeilen-Split erzeugen.
+Vor jeder Anwendung zeigt FinanzVerwalter die betroffenen Buchungen mit
+Vorher/Nachher-Werten; nur ausdrücklich ausgewählte Zeilen werden atomar
+geändert. Widersprüchliche Zielfelder anderer Regeln erscheinen als
+Konflikthinweis. Das letzte Regelpaket kann vollständig zurückgenommen
+werden, solange keine seiner Buchungen zwischenzeitlich bearbeitet wurde.
+
+Aus dem Kontextmenü einer einfach kategorisierten Kontoblattbuchung lässt
+sich eine kontospezifische Regel erzeugen. Sie wird gespeichert, aber nie
+unbemerkt auf Bestandsdaten angewandt.
+
 Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
 QIF-, OFX- und QFX-Dateien ausdrücklich aus.
 

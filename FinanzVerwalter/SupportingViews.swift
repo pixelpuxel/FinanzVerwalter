@@ -2950,23 +2950,43 @@ struct RulesView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selectedID: UUID?
     @State private var draft: CategorizationRule?
-    @State private var confirmApply = false
+    @State private var previewRule: CategorizationRule?
+    @State private var confirmUndo = false
 
     var body: some View {
+        let allConflicts = store.ruleConflicts
         HSplitView {
             VStack(spacing: 0) {
                 HStack {
                     Text("Regeln").font(.title2.bold())
                     Spacer()
+                    if let undo = store.latestRuleUndo {
+                        Button("Undo \(undo.transactionCount)", systemImage: "arrow.uturn.backward") {
+                            confirmUndo = true
+                        }
+                        .help(
+                            "Letzte Regelanwendung „\(undo.ruleName)“ "
+                                + "vollständig zurücknehmen"
+                        )
+                    }
                     Button {
                         guard let category = store.categories.first else { return }
+                        let condition = RuleCondition(
+                            field: .payee,
+                            operation: .contains
+                        )
                         draft = CategorizationRule(
                             id: UUID(), name: "Neue Regel",
                             priority: (store.categorizationRules.map(\.priority).max() ?? 0) + 10,
                             isActive: true, stopAfterMatch: true,
                             payeeContains: "", purposeContains: "",
                             minimumAmountMinor: nil, maximumAmountMinor: nil,
-                            categoryID: category.id
+                            categoryID: category.id,
+                            expression: .group(
+                                .all,
+                                [.condition(condition)]
+                            ),
+                            actions: [.setCategory(category.id)]
                         )
                         selectedID = draft?.id
                     } label: {
@@ -2989,6 +3009,17 @@ struct RulesView: View {
                             Circle()
                                 .fill(rule.isActive ? Color.green : Color.gray)
                                 .frame(width: 8, height: 8)
+                            let conflicts = allConflicts.filter {
+                                $0.ruleNames.contains(rule.name)
+                            }.count
+                            if conflicts > 0 {
+                                Text("\(conflicts)")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .background(.orange, in: Capsule())
+                                    .help("Mögliche Konflikte mit anderen Regeln")
+                            }
                         }
                         .tag(rule.id)
                     }
@@ -3002,7 +3033,7 @@ struct RulesView: View {
                         get: { draft! },
                         set: { draft = $0 }
                     ),
-                    confirmApply: $confirmApply
+                    previewRule: $previewRule
                 )
                     .frame(minWidth: 500)
             } else {
@@ -3019,13 +3050,23 @@ struct RulesView: View {
                 draft = existing
             }
         }
-        .alert("Regel anwenden?", isPresented: $confirmApply) {
+        .sheet(item: $previewRule) { rule in
+            RuleApplicationPreviewSheet(rule: rule)
+                .environmentObject(store)
+        }
+        .alert("Letzte Regelanwendung zurücknehmen?", isPresented: $confirmUndo) {
             Button("Abbrechen", role: .cancel) {}
-            Button("Auf Treffer anwenden") {
-                if let draft { _ = store.applyRule(draft) }
+            Button("Vollständig zurücknehmen", role: .destructive) {
+                _ = store.undoLatestRuleApplication()
             }
         } message: {
-            Text("Die Vorschau umfasst \(draft.map(store.rulePreviewCount) ?? 0) Buchungen. Abgeglichene Buchungen bleiben unverändert.")
+            if let undo = store.latestRuleUndo {
+                Text(
+                    "\(undo.transactionCount) Buchungen aus „\(undo.ruleName)“ "
+                        + "werden atomar auf den vorherigen Stand gesetzt. "
+                        + "Zwischenzeitliche Änderungen brechen das gesamte Undo ab."
+                )
+            }
         }
     }
 }
@@ -3033,7 +3074,7 @@ struct RulesView: View {
 private struct RuleEditor: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Binding var rule: CategorizationRule
-    @Binding var confirmApply: Bool
+    @Binding var previewRule: CategorizationRule?
 
     var body: some View {
         Form {
@@ -3043,20 +3084,138 @@ private struct RuleEditor: View {
                 Toggle("Aktiv", isOn: $rule.isActive)
                 Toggle("Nach Treffer stoppen", isOn: $rule.stopAfterMatch)
             }
-            Section("Bedingungen – alle müssen zutreffen") {
-                TextField("Empfänger enthält", text: $rule.payeeContains)
-                TextField("Verwendungszweck enthält", text: $rule.purposeContains)
-                LabeledContent("Betragsgrenzen") {
-                    Text("Optional; im aktuellen Editor nicht gesetzt")
-                        .foregroundStyle(.secondary)
+            Section("Bedingungsgruppe") {
+                Picker("Verknüpfung", selection: rootLogicBinding) {
+                    ForEach(RuleGroupLogic.allCases) {
+                        Text($0.title).tag($0)
+                    }
                 }
+                ForEach(rootConditions) { condition in
+                    HStack {
+                        Picker(
+                            "Feld",
+                            selection: conditionBinding(condition.id).field
+                        ) {
+                            ForEach(RuleField.allCases) {
+                                Text($0.title).tag($0)
+                            }
+                        }
+                        Picker(
+                            "Operator",
+                            selection: conditionBinding(condition.id).operation
+                        ) {
+                            ForEach(RuleOperator.allCases) {
+                                Text($0.title).tag($0)
+                            }
+                        }
+                        if condition.operation.needsValue {
+                            TextField(
+                                condition.field == .amount
+                                    ? "Centbetrag" : "Wert",
+                                text: conditionBinding(condition.id).value
+                            )
+                        }
+                        if condition.operation.needsSecondValue {
+                            TextField(
+                                condition.field == .amount
+                                    ? "Bis Cent" : "Bis",
+                                text: conditionBinding(condition.id)
+                                    .secondValue
+                            )
+                        }
+                        Button(role: .destructive) {
+                            removeCondition(condition.id)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Button("Bedingung hinzufügen", systemImage: "plus") {
+                    appendCondition()
+                }
+                Text(
+                    "Regex-Ausdrücke werden vor dem Schreiben nur für die "
+                        + "Vorschau ausgewertet. Leere Gruppen treffen alle "
+                        + "änderbaren Buchungen."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Section("Aktion") {
-                Picker("Kategorie setzen", selection: $rule.categoryID) {
+                Picker("Kategorie setzen", selection: categoryActionBinding) {
                     ForEach(store.categoriesByPath.filter(\.isActive)) {
                         Text(store.categoryPath($0.id)).tag($0.id)
                     }
                 }
+                TextField(
+                    "Empfänger normalisieren (optional)",
+                    text: textActionBinding(
+                        read: {
+                            if case .normalizePayee(let value) = $0 {
+                                return value
+                            }
+                            return nil
+                        },
+                        make: RuleAction.normalizePayee
+                    )
+                )
+                TextField(
+                    "Notiz setzen (optional)",
+                    text: textActionBinding(
+                        read: {
+                            if case .setMemo(let value) = $0 { return value }
+                            return nil
+                        },
+                        make: RuleAction.setMemo
+                    )
+                )
+                Toggle(
+                    "Verwendungszweck in Notiz kopieren",
+                    isOn: booleanActionBinding(.copyPurposeToMemo)
+                )
+                HStack {
+                    TextField(
+                        "Text im Verwendungszweck",
+                        text: purposeReplacementSearchBinding
+                    )
+                    TextField(
+                        "Ersetzen durch",
+                        text: purposeReplacementValueBinding
+                    )
+                    Toggle(
+                        "Regex",
+                        isOn: purposeReplacementRegexBinding
+                    )
+                    .toggleStyle(.checkbox)
+                }
+                Menu {
+                    ForEach(store.tags.filter(\.isActive)) { tag in
+                        Toggle(
+                            tag.name,
+                            isOn: tagActionBinding(tag.id)
+                        )
+                    }
+                } label: {
+                    Label(
+                        tagActionIDs.isEmpty
+                            ? "Klassen/Tags ergänzen"
+                            : "\(tagActionIDs.count) Klassen/Tags ergänzen",
+                        systemImage: "tag"
+                    )
+                }
+                Toggle(
+                    "Statt einfacher Kategorie einen vollständigen "
+                        + "Einzeilen-Split erzeugen",
+                    isOn: splitActionBinding
+                )
+                Text(
+                    "Split-Erzeugung ist nur bei ungeteilten Buchungen ohne "
+                        + "MwSt. zulässig; andernfalls erscheint sie nicht in "
+                        + "der anwendbaren Vorschau."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Section("Vorschau") {
                 LabeledContent("Betroffene Buchungen") {
@@ -3075,13 +3234,351 @@ private struct RuleEditor: View {
                 Spacer()
                 Button("Auf bestehende Buchungen anwenden …") {
                     guard store.saveRule(rule) else { return }
-                    confirmApply = true
+                    previewRule = rule
                 }
                 .disabled(!rule.isActive || store.rulePreviewCount(rule) == 0)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Regel bearbeiten")
+    }
+
+    private var rootLogicBinding: Binding<RuleGroupLogic> {
+        Binding(
+            get: {
+                if case .group(let logic, _) = rule.effectiveExpression {
+                    return logic
+                }
+                return .all
+            },
+            set: { newValue in
+                rule.expression = .group(
+                    newValue,
+                    rootConditions.map(RuleExpression.condition)
+                )
+            }
+        )
+    }
+
+    private var rootConditions: [RuleCondition] {
+        guard case .group(_, let children) = rule.effectiveExpression else {
+            return []
+        }
+        return children.compactMap {
+            if case .condition(let value) = $0 { return value }
+            return nil
+        }
+    }
+
+    private func conditionBinding(
+        _ id: UUID
+    ) -> Binding<RuleCondition> {
+        Binding(
+            get: {
+                rootConditions.first { $0.id == id }
+                    ?? RuleCondition(field: .payee, operation: .contains)
+            },
+            set: { newValue in
+                let updated = rootConditions.map {
+                    $0.id == id ? newValue : $0
+                }
+                rule.expression = .group(
+                    rootLogicBinding.wrappedValue,
+                    updated.map(RuleExpression.condition)
+                )
+            }
+        )
+    }
+
+    private func appendCondition() {
+        var updated = rootConditions
+        updated.append(
+            RuleCondition(field: .purpose, operation: .contains)
+        )
+        rule.expression = .group(
+            rootLogicBinding.wrappedValue,
+            updated.map(RuleExpression.condition)
+        )
+    }
+
+    private func removeCondition(_ id: UUID) {
+        rule.expression = .group(
+            rootLogicBinding.wrappedValue,
+            rootConditions.filter { $0.id != id }
+                .map(RuleExpression.condition)
+        )
+    }
+
+    private var categoryActionBinding: Binding<UUID> {
+        Binding(
+            get: {
+                rule.effectiveActions.compactMap {
+                    if case .setCategory(let id) = $0 { return id }
+                    if case .createSingleSplit(let id, _) = $0 {
+                        return id
+                    }
+                    return nil
+                }.first ?? rule.categoryID
+            },
+            set: { categoryID in
+                rule.categoryID = categoryID
+                let usesSplit = splitActionBinding.wrappedValue
+                rule.actions.removeAll { $0.fieldKey == "category" }
+                rule.actions.insert(
+                    usesSplit
+                        ? .createSingleSplit(
+                            categoryID: categoryID,
+                            memo: ""
+                        )
+                        : .setCategory(categoryID),
+                    at: 0
+                )
+            }
+        )
+    }
+
+    private func textActionBinding(
+        read: @escaping (RuleAction) -> String?,
+        make: @escaping (String) -> RuleAction
+    ) -> Binding<String> {
+        Binding(
+            get: {
+                rule.actions.compactMap(read).first ?? ""
+            },
+            set: { value in
+                rule.actions.removeAll { read($0) != nil }
+                if !value.isEmpty { rule.actions.append(make(value)) }
+            }
+        )
+    }
+
+    private func booleanActionBinding(
+        _ action: RuleAction
+    ) -> Binding<Bool> {
+        Binding(
+            get: { rule.actions.contains(action) },
+            set: { enabled in
+                rule.actions.removeAll { $0 == action }
+                if enabled { rule.actions.append(action) }
+            }
+        )
+    }
+
+    private var purposeReplacement: (
+        search: String,
+        replacement: String,
+        useRegex: Bool
+    ) {
+        rule.actions.compactMap {
+            if case .replacePurpose(
+                let search,
+                let replacement,
+                let useRegex
+            ) = $0 {
+                return (search, replacement, useRegex)
+            }
+            return nil
+        }.first ?? ("", "", false)
+    }
+
+    private var purposeReplacementSearchBinding: Binding<String> {
+        Binding(
+            get: { purposeReplacement.search },
+            set: { value in
+                var replacement = purposeReplacement
+                replacement.search = value
+                setPurposeReplacement(replacement)
+            }
+        )
+    }
+
+    private var purposeReplacementValueBinding: Binding<String> {
+        Binding(
+            get: { purposeReplacement.replacement },
+            set: { value in
+                var replacement = purposeReplacement
+                replacement.replacement = value
+                setPurposeReplacement(replacement)
+            }
+        )
+    }
+
+    private var purposeReplacementRegexBinding: Binding<Bool> {
+        Binding(
+            get: { purposeReplacement.useRegex },
+            set: { value in
+                var replacement = purposeReplacement
+                replacement.useRegex = value
+                setPurposeReplacement(replacement)
+            }
+        )
+    }
+
+    private func setPurposeReplacement(
+        _ value: (
+            search: String,
+            replacement: String,
+            useRegex: Bool
+        )
+    ) {
+        rule.actions.removeAll {
+            if case .replacePurpose = $0 { return true }
+            return false
+        }
+        if !value.search.isEmpty {
+            rule.actions.append(
+                .replacePurpose(
+                    search: value.search,
+                    replacement: value.replacement,
+                    useRegex: value.useRegex
+                )
+            )
+        }
+    }
+
+    private var tagActionIDs: Set<UUID> {
+        Set(
+            rule.actions.compactMap {
+                if case .addTags(let ids) = $0 { return ids }
+                return nil
+            }.flatMap { $0 }
+        )
+    }
+
+    private func tagActionBinding(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { tagActionIDs.contains(id) },
+            set: { enabled in
+                var ids = tagActionIDs
+                if enabled { ids.insert(id) } else { ids.remove(id) }
+                rule.actions.removeAll {
+                    if case .addTags = $0 { return true }
+                    return false
+                }
+                if !ids.isEmpty {
+                    rule.actions.append(
+                        .addTags(
+                            ids.sorted {
+                                $0.uuidString < $1.uuidString
+                            }
+                        )
+                    )
+                }
+            }
+        )
+    }
+
+    private var splitActionBinding: Binding<Bool> {
+        Binding(
+            get: {
+                rule.actions.contains {
+                    if case .createSingleSplit = $0 { return true }
+                    return false
+                }
+            },
+            set: { enabled in
+                let categoryID = categoryActionBinding.wrappedValue
+                rule.actions.removeAll { $0.fieldKey == "category" }
+                rule.actions.insert(
+                    enabled
+                        ? .createSingleSplit(
+                            categoryID: categoryID,
+                            memo: ""
+                        )
+                        : .setCategory(categoryID),
+                    at: 0
+                )
+            }
+        )
+    }
+}
+
+private struct RuleApplicationPreviewSheet: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let rule: CategorizationRule
+    @State private var selectedIDs: Set<UUID> = []
+
+    private var rows: [RuleTransactionPreview] {
+        store.rulePreview(rule)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Regelvorschau: \(rule.name)")
+                .font(.title2.bold())
+            Text(
+                "Wähle ausdrücklich die Buchungen aus. Betrag, Konto und "
+                    + "Abgleichstatus werden durch Regeln nie verändert."
+            )
+            .foregroundStyle(.secondary)
+            Table(rows, selection: $selectedIDs) {
+                TableColumn("Datum") {
+                    Text(
+                        $0.before.bookingDate,
+                        format: .dateTime.day().month().year()
+                    )
+                }
+                TableColumn("Empfänger") {
+                    Text($0.before.payee)
+                }
+                TableColumn("Vorher") {
+                    Text(changeSummary($0, before: true))
+                        .lineLimit(2)
+                        .help(changeSummary($0, before: true))
+                }
+                TableColumn("Nachher") {
+                    Text(changeSummary($0, before: false))
+                        .lineLimit(2)
+                        .help(changeSummary($0, before: false))
+                }
+            }
+            .frame(minHeight: 300)
+            let conflicts = store.ruleConflicts.filter {
+                selectedIDs.contains($0.transactionID)
+                    && $0.ruleNames.contains(rule.name)
+            }
+            if !conflicts.isEmpty {
+                Label(
+                    "\(conflicts.count) mögliche Überschneidung"
+                        + "\(conflicts.count == 1 ? "" : "en") mit anderen Regeln",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Alle auswählen") {
+                    selectedIDs = Set(rows.map(\.id))
+                }
+                Button("Auswahl aufheben") { selectedIDs = [] }
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Auswahl atomar anwenden") {
+                    if store.applyRule(
+                        rule,
+                        transactionIDs: selectedIDs
+                    ) != nil {
+                        dismiss()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedIDs.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 900, minHeight: 470)
+        .onAppear {
+            selectedIDs = Set(rows.map(\.id))
+        }
+    }
+
+    private func changeSummary(
+        _ row: RuleTransactionPreview,
+        before: Bool
+    ) -> String {
+        row.changes.map {
+            "\($0.field): \(before ? $0.before : $0.after)"
+        }.joined(separator: " · ")
     }
 }
 

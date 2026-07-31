@@ -172,7 +172,7 @@ enum TransactionStatus: String, Codable, CaseIterable, Sendable {
     }
 }
 
-struct FinanceSplit: Identifiable, Hashable, Sendable {
+struct FinanceSplit: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     var categoryID: UUID?
     var amountMinor: Int64
@@ -202,7 +202,7 @@ struct FinanceSplit: Identifiable, Hashable, Sendable {
     }
 }
 
-struct FinanceTransaction: Identifiable, Hashable, Sendable {
+struct FinanceTransaction: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     var accountID: UUID
     var bookingDate: Date
@@ -232,6 +232,9 @@ struct FinanceTransaction: Identifiable, Hashable, Sendable {
     var mandateReference: String = ""
     var duplicateFingerprint: String = ""
     var bankBalanceAfterMinor: Int64? = nil
+    var counterpartyBIC: String = ""
+    var creditorID: String = ""
+    var bookingText: String = ""
 
     func validate() throws {
         if splits.isEmpty {
@@ -544,10 +547,22 @@ struct CategorizationRule: Identifiable, Hashable, Sendable {
     var minimumAmountMinor: Int64?
     var maximumAmountMinor: Int64?
     var categoryID: UUID
+    var expression: RuleExpression? = nil
+    var actions: [RuleAction] = []
 
     func matches(_ transaction: FinanceTransaction) -> Bool {
-        guard isActive, transaction.status != .reconciled, transaction.status != .cancelled else {
+        guard isActive,
+              transaction.status != .reconciled,
+              transaction.status != .cancelled,
+              transaction.transferID == nil
+        else {
             return false
+        }
+        if expression != nil {
+            return RuleEngine.matches(
+                effectiveExpression,
+                transaction: transaction
+            )
         }
         if !payeeContains.isEmpty,
            !transaction.payee.localizedCaseInsensitiveContains(payeeContains) {
