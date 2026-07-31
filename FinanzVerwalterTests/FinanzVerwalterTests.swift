@@ -4540,6 +4540,42 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertNil(decoded.secondaryGrouping)
     }
 
+    func testTransactionReportStandardPresetsAreDeterministicAndDistinct() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let now = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 7, day: 14, hour: 12))
+        )
+        let expectedStart = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 1, day: 1))
+        )
+        let expectedEnd = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))
+        ).addingTimeInterval(-0.001)
+
+        let presets = TransactionReportStandardPreset.allCases
+        XCTAssertEqual(presets.count, 6)
+        let queries = presets.map { $0.query(now: now, calendar: calendar) }
+        XCTAssertTrue(queries.allSatisfy { $0.dateFrom == expectedStart })
+        XCTAssertTrue(queries.allSatisfy { $0.dateThrough == expectedEnd })
+        XCTAssertEqual(Set(queries.map { "\($0.grouping.rawValue):\($0.secondaryGrouping?.rawValue ?? "-"):\($0.sort.rawValue)" }).count, 6)
+
+        let journal = TransactionReportStandardPreset.bookingJournal.query(
+            now: now, calendar: calendar
+        )
+        XCTAssertEqual(journal.grouping, .none)
+        XCTAssertNil(journal.secondaryGrouping)
+        XCTAssertEqual(journal.sort, .dateAscending)
+
+        let cashFlow = TransactionReportStandardPreset.cashFlow.query(
+            now: now, calendar: calendar
+        )
+        XCTAssertEqual(cashFlow.grouping, .account)
+        XCTAssertEqual(cashFlow.secondaryGrouping, .category)
+        XCTAssertFalse(cashFlow.includeTransfers)
+        XCTAssertTrue(cashFlow.expandSplits)
+    }
+
     func testReportCSVExportIsDeterministicEscapedAndUsesGermanMinorUnits() throws {
         let fact = TransactionReportFact(
             id: "fact-1",

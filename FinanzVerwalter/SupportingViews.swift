@@ -1014,6 +1014,7 @@ struct ReportsView: View {
     @State private var secondaryGrouping: ReportGrouping = .none
     @State private var sort: ReportSort = .amountDescending
     @State private var selectedReportGroupID: String?
+    @State private var selectedStandardReport: TransactionReportStandardPreset?
     @State private var selectedTemplateID: UUID?
     @State private var showTemplateSave = false
     @State private var templateName = ""
@@ -1063,9 +1064,12 @@ struct ReportsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Berichtswerkstatt")
+                    Text(activeReportTitle)
                         .font(.title2.bold())
-                    Text("Live-Auswertung mit Filtern, Gruppierung und Buchungs-Drill-down")
+                    Text(
+                        selectedStandardReport?.summary
+                            ?? "Live-Auswertung mit Filtern, Gruppierung und Buchungs-Drill-down"
+                    )
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1114,6 +1118,18 @@ struct ReportsView: View {
 
             VStack(spacing: 8) {
                 HStack(spacing: 10) {
+                    Menu {
+                        ForEach(TransactionReportStandardPreset.allCases) { preset in
+                            Button {
+                                applyStandardReport(preset)
+                            } label: {
+                                Label(preset.title, systemImage: preset.systemImage)
+                            }
+                            .help(preset.summary)
+                        }
+                    } label: {
+                        Label("Standardberichte", systemImage: "chart.bar.doc.horizontal")
+                    }
                     Picker("Vorlage", selection: $selectedTemplateID) {
                         Text("Keine Vorlage").tag(UUID?.none)
                         ForEach(store.reportTemplates) { template in
@@ -1128,7 +1144,7 @@ struct ReportsView: View {
                     Button("Vorlage speichern …", systemImage: "square.and.arrow.down") {
                         templateName = selectedTemplateID.flatMap { id in
                             store.reportTemplates.first { $0.id == id }?.name
-                        } ?? ""
+                        } ?? selectedStandardReport?.title ?? ""
                         showTemplateSave = true
                     }
                     Button("Vorlage löschen", systemImage: "trash", role: .destructive) {
@@ -1695,6 +1711,7 @@ struct ReportsView: View {
         exactPayee = nil
         includeForecast = false
         selectedReportGroupID = nil
+        selectedStandardReport = nil
         selectedTemplateID = nil
     }
 
@@ -1719,6 +1736,12 @@ struct ReportsView: View {
         apply(template.query)
     }
 
+    private func applyStandardReport(_ preset: TransactionReportStandardPreset) {
+        apply(preset.query())
+        selectedStandardReport = preset
+        selectedTemplateID = nil
+    }
+
     private func deleteSelectedTemplate() {
         guard let selectedTemplateID,
               let template = store.reportTemplates.first(where: { $0.id == selectedTemplateID })
@@ -1728,6 +1751,7 @@ struct ReportsView: View {
     }
 
     private func apply(_ savedQuery: TransactionReportQuery) {
+        selectedStandardReport = nil
         if savedQuery.dateFrom == nil && savedQuery.dateThrough == nil {
             period = .all
         } else {
@@ -1767,9 +1791,7 @@ struct ReportsView: View {
                 encoding: csvEncoding
             )
             let metadata = ReportExportMetadata(
-                title: selectedTemplateID.flatMap { id in
-                    store.reportTemplates.first { $0.id == id }?.name
-                } ?? "\(reportGroupingTitle)-Bericht",
+                title: activeReportTitle,
                 dateLabel: reportDateLabel,
                 filterSummary: reportFilterSummary,
                 baseCurrency: store.fileInfo?.baseCurrency ?? "EUR",
@@ -1815,9 +1837,7 @@ struct ReportsView: View {
 
     private var reportExportMetadata: ReportExportMetadata {
         ReportExportMetadata(
-            title: selectedTemplateID.flatMap { id in
-                store.reportTemplates.first { $0.id == id }?.name
-            } ?? "\(reportGroupingTitle)-Bericht",
+            title: activeReportTitle,
             dateLabel: reportDateLabel,
             filterSummary: reportFilterSummary,
             baseCurrency: store.fileInfo?.baseCurrency ?? "EUR",
@@ -1856,10 +1876,14 @@ struct ReportsView: View {
         return "\(grouping.title) nach \(secondaryGrouping.title)"
     }
 
-    private var exportFilename: String {
-        let raw = selectedTemplateID.flatMap { id in
+    private var activeReportTitle: String {
+        selectedTemplateID.flatMap { id in
             store.reportTemplates.first { $0.id == id }?.name
-        } ?? "FinanzVerwalter-Bericht"
+        } ?? selectedStandardReport?.title ?? "\(reportGroupingTitle)-Bericht"
+    }
+
+    private var exportFilename: String {
+        let raw = activeReportTitle
         let safe = raw.replacingOccurrences(
             of: #"[^A-Za-z0-9ÄÖÜäöüß_-]+"#,
             with: "-",

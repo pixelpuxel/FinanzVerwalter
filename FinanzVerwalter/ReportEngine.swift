@@ -40,6 +40,101 @@ enum ReportSort: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendable {
+    case categoryIncomeExpense
+    case payeeIncomeExpense
+    case bookingJournal
+    case cashFlow
+    case accountActivity
+    case categoryAndTag
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .categoryIncomeExpense: "Einnahmen/Ausgaben nach Kategorie"
+        case .payeeIncomeExpense: "Einnahmen/Ausgaben nach Empfänger"
+        case .bookingJournal: "Buchungsbericht"
+        case .cashFlow: "Cashflow nach Konto und Kategorie"
+        case .accountActivity: "Kontobewegungen nach Konto und Empfänger"
+        case .categoryAndTag: "Kategorie- und Klassenbericht"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .categoryIncomeExpense: "square.grid.2x2"
+        case .payeeIncomeExpense: "person.2"
+        case .bookingJournal: "list.bullet.rectangle"
+        case .cashFlow: "arrow.left.arrow.right"
+        case .accountActivity: "building.columns"
+        case .categoryAndTag: "tag"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .categoryIncomeExpense:
+            "Aktuelles Jahr, Kategorien nach Betrag"
+        case .payeeIncomeExpense:
+            "Aktuelles Jahr, Empfänger mit Kategorie-Drill-down"
+        case .bookingJournal:
+            "Aktuelles Jahr, alle Positionen chronologisch"
+        case .cashFlow:
+            "Aktuelles Jahr, Konten mit Kategorie-Drill-down"
+        case .accountActivity:
+            "Aktuelles Jahr, Konten mit Empfänger-Drill-down"
+        case .categoryAndTag:
+            "Aktuelles Jahr, Kategorien mit Klassen-/Tag-Drill-down"
+        }
+    }
+
+    func query(
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) -> TransactionReportQuery {
+        let interval = calendar.dateInterval(of: .year, for: now)
+        let dateFrom = interval?.start
+        let dateThrough = interval?.end.addingTimeInterval(-0.001)
+        switch self {
+        case .categoryIncomeExpense:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .category, sort: .amountDescending
+            )
+        case .payeeIncomeExpense:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .payee, secondaryGrouping: .category,
+                sort: .amountDescending
+            )
+        case .bookingJournal:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .none, sort: .dateAscending
+            )
+        case .cashFlow:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .account, secondaryGrouping: .category,
+                sort: .amountDescending
+            )
+        case .accountActivity:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .account, secondaryGrouping: .payee,
+                sort: .amountDescending
+            )
+        case .categoryAndTag:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .category, secondaryGrouping: .tag,
+                sort: .amountDescending
+            )
+        }
+    }
+}
+
 struct TransactionReportQuery: Codable, Equatable, Sendable {
     var dateFrom: Date?
     var dateThrough: Date?
