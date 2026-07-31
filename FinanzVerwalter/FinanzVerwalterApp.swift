@@ -156,4 +156,7 @@ extension Notification.Name {
     static let cancelCurrentEditor = Notification.Name(
         "FinanzVerwalter.cancelCurrentEditor"
     )
+    static let openTransactionReport = Notification.Name(
+        "FinanzVerwalter.openTransactionReport"
+    )
 }

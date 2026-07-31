@@ -918,3 +918,33 @@ Rechtsberatung.
 - Telegram-Nachricht 945 wurde im Projektthread 894 veröffentlicht. Sie
   enthält denselben geprüften Sammelkontoblatt-, Zukunfts-, Saldo-, Release-,
   GitHub- und Teststatus sowie den Zielzählerstand von 7.006.958 Tokens.
+- Das Sammelkontoblatt kann nun persistent in Hauptansicht und
+  `Sammelansicht B` geteilt werden. Ansicht B besitzt eine eigene persistente
+  Kontenkombination, eigene Status-, Kategorie- und Zeitraumfilter sowie
+  einen eigenen Zukunftsschalter. Beide Seiten verwenden denselben
+  getesteten Query-/Saldoalgorithmus und kennzeichnen gefilterte Summen als
+  Nicht-Kontostand.
+- Direkte Berichtsaufrufe übergeben der Berichtswerkstatt exakt alle
+  sichtbaren UUIDs einschließlich errechneter Zukunft oder den Empfänger,
+  die Kategorie beziehungsweise Klasse/Tag einer markierten Buchung. Die
+  Werkstatt zeigt und löst diese Direktauswahl sichtbar.
+- Berichtsanfragen besitzen dafür drei rückwärtskompatible optionale Felder:
+  UUID-Menge, exakter Empfänger und Zukunftsschalter. Empfänger werden
+  diakritika- und großschreibungsunabhängig exakt verglichen. Nur direkte
+  Zukunftsberichte ergänzen die bestehenden 365-Tage-Occurrences; normale
+  Vorlagen bleiben unverändert.
+- Der neue Test prüft exakte UUID-Selektion, diakritischen Empfängervergleich,
+  Ausschluss anderer Empfänger, regelmäßige Zukunft und optionalen
+  Query-Roundtrip. Die vollständige Abnahme führte 53 Tests aus: 52
+  bestanden, der private opt-in-QIF-Test wurde erwartungsgemäß übersprungen,
+  0 Fehler. Test-Build und optimierter Release-Build bestehen.
+- Der Release ist unter `~/Applications/FinanzVerwalter.app` installiert,
+  ad hoc signaturgeprüft und gestartet. Schema 21, Integrität `ok`, 97
+  Konten, 2.170 Buchungen, eine vorhandene Berichtsvorlage und 0
+  Banking-Verbindungen blieben erhalten. Der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-direktberichte-20260731-1225.app`.
+- Computer Use konnte auch diesen installierten Release nicht sichtbar
+  prüfen: Die Fensterabfrage lieferte zunächst `cgWindowNotFound`, die
+  anschließende App-Suche bestätigte den weiterhin gesperrten Mac. Deshalb
+  bleibt ein echter Screenshot offen und wird nicht durch ein Ersatzbild
+  vorgetäuscht.

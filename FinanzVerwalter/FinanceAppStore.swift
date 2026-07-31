@@ -126,9 +126,12 @@ final class FinanceAppStore: ObservableObject {
     func transactionReport(
         _ query: TransactionReportQuery
     ) -> TransactionReportSnapshot {
-        TransactionReportEngine.snapshot(
+        let reportTransactions = query.includeForecast == true
+            ? transactions + forecastOccurrences(days: 365)
+            : transactions
+        return TransactionReportEngine.snapshot(
             query: query,
-            transactions: transactions,
+            transactions: reportTransactions,
             accounts: accounts,
             categories: categories,
             tags: tags

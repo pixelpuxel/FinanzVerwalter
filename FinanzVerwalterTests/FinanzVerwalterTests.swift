@@ -3495,6 +3495,79 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testDirectReportFiltersExactSelectionAndIncludesScheduledFuture() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let matching = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Müller GmbH", purpose: "Rechnung",
+            categoryID: nil, amountMinor: -1_000, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let other = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Andere GmbH", purpose: "Rechnung",
+            categoryID: nil, amountMinor: -2_000, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(matching)
+        try context.store.saveTransaction(other)
+        try context.store.saveScheduledTransaction(
+            ScheduledTransaction(
+                id: UUID(), name: "Müller Zukunft", accountID: account.id,
+                payee: "muller gmbh", purpose: "Regelmäßig",
+                categoryID: nil, amountMinor: -3_000, currency: "EUR",
+                nextDueDate: Calendar.current.date(
+                    byAdding: .day,
+                    value: 2,
+                    to: .now
+                )!,
+                endDate: nil, frequency: .monthly, action: .remind,
+                reminderDays: 3, isActive: true
+            )
+        )
+        let app = FinanceAppStore(repository: context.store)
+        let payeeQuery = TransactionReportQuery(
+            exactPayee: "MÜLLER GMBH",
+            includeForecast: true
+        )
+        let payeeSnapshot = app.transactionReport(payeeQuery)
+        XCTAssertTrue(
+            payeeSnapshot.facts.contains { $0.transactionID == matching.id }
+        )
+        XCTAssertFalse(
+            payeeSnapshot.facts.contains { $0.transactionID == other.id }
+        )
+        XCTAssertTrue(
+            payeeSnapshot.facts.contains { $0.status == .expected }
+        )
+
+        let exactSelection = app.transactionReport(
+            TransactionReportQuery(
+                statuses: Set(TransactionStatus.allCases),
+                transactionIDs: [other.id]
+            )
+        )
+        XCTAssertEqual(Set(exactSelection.facts.map(\.transactionID)), [other.id])
+
+        let encoded = try JSONEncoder().encode(TransactionReportQuery())
+        let decoded = try JSONDecoder().decode(
+            TransactionReportQuery.self,
+            from: encoded
+        )
+        XCTAssertNil(decoded.transactionIDs)
+        XCTAssertNil(decoded.exactPayee)
+        XCTAssertNil(decoded.includeForecast)
+    }
+
     func testBankingDownloadCommitsAtomicallyAndIsIdempotent() async throws {
         let context = try TestDatabase()
         var account = FinanceAccount(

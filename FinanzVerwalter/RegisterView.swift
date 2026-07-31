@@ -2542,6 +2542,279 @@ private struct RegisterMiniReportPanel: View {
     }
 }
 
+private struct SecondaryCombinedRegisterPane: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var selection = Set<UUID>()
+    @State private var statusFilter: TransactionStatus?
+    @State private var categoryFilter = RegisterCategoryFilter.all
+    @State private var periodFilter = RegisterPeriodFilter.all
+    @State private var customStart = Calendar.current.date(
+        byAdding: .month,
+        value: -1,
+        to: .now
+    ) ?? .now
+    @State private var customEnd = Date.now
+    @AppStorage("combinedRegisterSecondaryAccountIDsV1")
+    private var includedAccountIDsRaw = ""
+    @AppStorage("combinedRegisterSecondaryForecastV1")
+    private var includeForecast = true
+    @AppStorage("registerRowMode")
+    private var rowModeRaw = RegisterRowMode.single.rawValue
+
+    private var rowMode: RegisterRowMode {
+        RegisterRowMode(rawValue: rowModeRaw) ?? .single
+    }
+
+    private var includedAccountIDs: Set<UUID> {
+        get {
+            Set(includedAccountIDsRaw.split(separator: ",").compactMap {
+                UUID(uuidString: String($0))
+            }).intersection(Set(store.accounts.map(\.id)))
+        }
+        nonmutating set {
+            includedAccountIDsRaw = newValue.sorted {
+                $0.uuidString < $1.uuidString
+            }.map(\.uuidString).joined(separator: ",")
+        }
+    }
+
+    private var result: CombinedRegisterQueryResult {
+        CombinedRegisterQuery.evaluate(
+            transactions: store.transactions,
+            forecastTransactions: store.forecastOccurrences(days: 365),
+            allAccountIDs: Set(store.accounts.filter {
+                !$0.isClosed
+            }.map(\.id)),
+            includedAccountIDs: includedAccountIDs,
+            status: statusFilter,
+            category: categoryFilter,
+            period: periodFilter,
+            customStart: customStart,
+            customEnd: customEnd,
+            searchText: store.searchText,
+            includeForecast: includeForecast
+        ) { transaction in
+            store.transactionCategoryPath(transaction)
+        }
+    }
+
+    var body: some View {
+        let balances = CombinedRegisterQuery.runningBalances(
+            accounts: store.accounts,
+            transactions: store.transactions
+                + (includeForecast ? store.forecastOccurrences(days: 365) : [])
+        )
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sammelansicht B").font(.headline)
+                    Text(result.isFiltered ? "Gefilterte Summe" : "Alle Konten")
+                        .font(.caption)
+                        .foregroundStyle(result.isFiltered ? .orange : .secondary)
+                }
+                Spacer()
+                Text(totalsText)
+                    .font(.headline.monospacedDigit())
+            }
+            .padding(10)
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    accountMenu
+                    Picker("Status", selection: $statusFilter) {
+                        Text("Alle Status").tag(TransactionStatus?.none)
+                        ForEach(TransactionStatus.allCases, id: \.self) {
+                            Text($0.title).tag(Optional($0))
+                        }
+                    }
+                    .frame(width: 125)
+                    Picker("Kategorie", selection: $categoryFilter) {
+                        Text("Alle Kategorien").tag(RegisterCategoryFilter.all)
+                        Text("Nicht kategorisiert")
+                            .tag(RegisterCategoryFilter.uncategorized)
+                        Divider()
+                        ForEach(store.categoriesByPath.filter(\.isActive)) {
+                            Text(store.categoryPath($0.id))
+                                .tag(RegisterCategoryFilter.category($0.id))
+                        }
+                    }
+                    .frame(width: 160)
+                    Picker("Zeitraum", selection: $periodFilter) {
+                        ForEach(RegisterPeriodFilter.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 135)
+                    Toggle("Zukunft", isOn: $includeForecast)
+                        .toggleStyle(.checkbox)
+                    Button("Bericht") {
+                        NotificationCenter.default.post(
+                            name: .openTransactionReport,
+                            object: TransactionReportQuery(
+                                statuses: Set(TransactionStatus.allCases),
+                                includeHiddenAccounts: true,
+                                includeAccountsExcludedFromReports: true,
+                                includeTransfers: true,
+                                expandSplits: true,
+                                grouping: .account,
+                                sort: .dateAscending,
+                                transactionIDs: Set(result.rows.map(\.id)),
+                                includeForecast: includeForecast
+                            )
+                        )
+                    }
+                    .disabled(result.rows.isEmpty)
+                }
+                .controlSize(.mini)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 7)
+            }
+            .scrollIndicators(.hidden)
+            Divider()
+            Table(result.rows, selection: $selection) {
+                TableColumn("Datum") { transaction in
+                    Text(
+                        transaction.bookingDate,
+                        format: .dateTime.day().month(.twoDigits).year()
+                    )
+                    .foregroundStyle(transaction.bookingDate > Date() ? .blue : .primary)
+                    .frame(height: rowMode.rowHeight)
+                }
+                .width(min: 78, ideal: 88)
+                TableColumn("Konto") { transaction in
+                    Text(store.accountName(transaction.accountID))
+                        .lineLimit(1)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                .width(min: 95, ideal: 125)
+                TableColumn("Empfänger / Zweck") { transaction in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(transaction.payee).lineLimit(1)
+                        if rowMode == .twoLines {
+                            Text(transaction.purpose)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                .width(min: 115, ideal: 170)
+                TableColumn("Kategorie") { transaction in
+                    let path = store.transactionCategoryPath(transaction)
+                    Text(path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(path)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                .width(min: 100, ideal: 140)
+                TableColumn("Betrag") { transaction in
+                    Text(
+                        Money(
+                            minorUnits: transaction.amountMinor,
+                            currency: transaction.currency
+                        ).formatted
+                    )
+                    .monospacedDigit()
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: rowMode.rowHeight,
+                        alignment: .trailing
+                    )
+                }
+                .width(min: 82, ideal: 100)
+                TableColumn("Saldo") { transaction in
+                    Text(
+                        Money(
+                            minorUnits: balances[transaction.id] ?? 0,
+                            currency: transaction.currency
+                        ).formatted
+                    )
+                    .monospacedDigit()
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: rowMode.rowHeight,
+                        alignment: .trailing
+                    )
+                }
+                .width(min: 85, ideal: 105)
+            }
+            .overlay {
+                if result.rows.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Buchungen",
+                        systemImage: "rectangle.split.2x1",
+                        description: Text("Die Filter der zweiten Ansicht liefern keine Treffer.")
+                    )
+                }
+            }
+            Divider()
+            HStack {
+                if result.isFiltered {
+                    Label(
+                        "Kein Kontostand",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(.orange)
+                }
+                Spacer()
+                Text("\(result.rows.count) Buchungen")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+        }
+        .onChange(of: result.rows.map(\.id)) {
+            selection.formIntersection(Set(result.rows.map(\.id)))
+        }
+    }
+
+    private var totalsText: String {
+        let text = result.totalsByCurrency.keys.sorted().map { currency in
+            Money(
+                minorUnits: result.totalsByCurrency[currency] ?? 0,
+                currency: currency
+            ).formatted
+        }.joined(separator: " · ")
+        return text.isEmpty ? "—" : text
+    }
+
+    private var accountMenu: some View {
+        Menu {
+            Button("Alle offenen Konten") { includedAccountIDs = [] }
+            Divider()
+            ForEach(store.accounts.filter { !$0.isClosed }) { account in
+                Toggle(
+                    account.name,
+                    isOn: Binding(
+                        get: {
+                            includedAccountIDs.isEmpty
+                                || includedAccountIDs.contains(account.id)
+                        },
+                        set: { selected in
+                            var ids = includedAccountIDs.isEmpty
+                                ? Set(store.accounts.filter {
+                                    !$0.isClosed
+                                }.map(\.id))
+                                : includedAccountIDs
+                            if selected { ids.insert(account.id) }
+                            else { ids.remove(account.id) }
+                            includedAccountIDs = ids
+                        }
+                    )
+                )
+            }
+        } label: {
+            Label(
+                includedAccountIDs.isEmpty
+                    ? "Alle Konten" : "\(includedAccountIDs.count) Konten",
+                systemImage: "building.columns"
+            )
+        }
+    }
+}
+
 struct CombinedRegisterQueryResult: Equatable {
     let rows: [FinanceTransaction]
     let isFiltered: Bool
@@ -2675,6 +2948,8 @@ struct CombinedRegisterView: View {
     private var includedAccountIDsRaw = ""
     @AppStorage("savedCombinedRegisterViewsV1")
     private var savedViewsRaw = ""
+    @AppStorage("combinedRegisterSplitVisibleV1")
+    private var showSecondCombinedRegister = false
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
@@ -2743,6 +3018,16 @@ struct CombinedRegisterView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    showSecondCombinedRegister.toggle()
+                } label: {
+                    Label("Zweite Ansicht", systemImage: "rectangle.split.2x1")
+                }
+                .help(
+                    showSecondCombinedRegister
+                        ? "Zweite Sammelansicht schließen"
+                        : "Zweite unabhängige Sammelansicht öffnen"
+                )
                 Picker(
                     "Zeilen",
                     selection: Binding(get: { rowMode }, set: { rowMode = $0 })
@@ -2812,8 +3097,9 @@ struct CombinedRegisterView: View {
                     )
                     .labelsHidden()
                 }
-                Spacer()
-                combinedOutputMenu
+                    Spacer()
+                    combinedReportMenu
+                    combinedOutputMenu
                     Button("Filter zurücksetzen") {
                         includedAccountIDs = []
                         statusFilter = nil
@@ -2829,36 +3115,43 @@ struct CombinedRegisterView: View {
             }
             .scrollIndicators(.hidden)
             Divider()
-            Table(queryResult.rows, selection: $selection) {
-                TableColumnForEach(orderedVisibleColumns) { column in
-                    TableColumn(column.title) { value in
-                        combinedRegisterCell(
-                            value,
-                            column: column,
-                            runningBalances: runningBalances
+            HStack(spacing: 0) {
+                Table(queryResult.rows, selection: $selection) {
+                    TableColumnForEach(orderedVisibleColumns) { column in
+                        TableColumn(column.title) { value in
+                            combinedRegisterCell(
+                                value,
+                                column: column,
+                                runningBalances: runningBalances
+                            )
+                        }
+                        .width(min: column.minimumWidth, ideal: column.idealWidth)
+                    }
+                }
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    Button("Kategorie für Auswahl ändern …") {
+                        selection = ids
+                        showBulkEditor = true
+                    }
+                    .disabled(
+                        ids.intersection(Set(store.transactions.map(\.id))).isEmpty
+                    )
+                }
+                .overlay {
+                    if queryResult.rows.isEmpty {
+                        ContentUnavailableView(
+                            "Keine Buchungen",
+                            systemImage: "rectangle.stack.badge.person.crop",
+                            description: Text(
+                                "Die gewählten Konten und Filter liefern keine Treffer."
+                            )
                         )
                     }
-                    .width(min: column.minimumWidth, ideal: column.idealWidth)
                 }
-            }
-            .contextMenu(forSelectionType: UUID.self) { ids in
-                Button("Kategorie für Auswahl ändern …") {
-                    selection = ids
-                    showBulkEditor = true
-                }
-                .disabled(
-                    ids.intersection(Set(store.transactions.map(\.id))).isEmpty
-                )
-            }
-            .overlay {
-                if queryResult.rows.isEmpty {
-                    ContentUnavailableView(
-                        "Keine Buchungen",
-                        systemImage: "rectangle.stack.badge.person.crop",
-                        description: Text(
-                            "Die gewählten Konten und Filter liefern keine Treffer."
-                        )
-                    )
+                if showSecondCombinedRegister {
+                    Divider()
+                    SecondaryCombinedRegisterPane()
+                        .frame(minWidth: 410, idealWidth: 560)
                 }
             }
             HStack {
@@ -3129,6 +3422,103 @@ struct CombinedRegisterView: View {
         } label: {
             Label("Ausgabe", systemImage: "printer")
         }
+    }
+
+    private var combinedReportMenu: some View {
+        Menu {
+            Button("Alle sichtbaren Buchungen") {
+                openReport(
+                    TransactionReportQuery(
+                        statuses: Set(TransactionStatus.allCases),
+                        includeHiddenAccounts: true,
+                        includeAccountsExcludedFromReports: true,
+                        includeTransfers: true,
+                        expandSplits: true,
+                        grouping: .account,
+                        sort: .dateAscending,
+                        transactionIDs: Set(queryResult.rows.map(\.id)),
+                        includeForecast: includeForecast
+                    )
+                )
+            }
+            .disabled(queryResult.rows.isEmpty)
+            Divider()
+            Button("Empfänger der Auswahl") {
+                guard let transaction = selectedCombinedTransaction else {
+                    return
+                }
+                openReport(
+                    TransactionReportQuery(
+                        exactPayee: transaction.payee,
+                        includeForecast: includeForecast
+                    )
+                )
+            }
+            .disabled(
+                selectedCombinedTransaction?.payee.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty != false
+            )
+            Button("Kategorie der Auswahl") {
+                guard let transaction = selectedCombinedTransaction,
+                      let categoryID = transaction.categoryID
+                        ?? transaction.splits.sorted(by: {
+                            $0.sortOrder < $1.sortOrder
+                        }).compactMap(\.categoryID).first
+                else { return }
+                openReport(
+                    TransactionReportQuery(
+                        categoryIDs: [categoryID],
+                        grouping: .category,
+                        includeForecast: includeForecast
+                    )
+                )
+            }
+            .disabled(selectedCombinedCategoryID == nil)
+            Button("Klasse/Tag der Auswahl") {
+                guard let tagID = selectedCombinedTagID else { return }
+                openReport(
+                    TransactionReportQuery(
+                        tagIDs: [tagID],
+                        grouping: .tag,
+                        includeForecast: includeForecast
+                    )
+                )
+            }
+            .disabled(selectedCombinedTagID == nil)
+        } label: {
+            Label("Bericht", systemImage: "chart.bar.xaxis")
+        }
+    }
+
+    private var selectedCombinedTransaction: FinanceTransaction? {
+        guard selection.count == 1, let id = selection.first else {
+            return nil
+        }
+        return queryResult.rows.first { $0.id == id }
+    }
+
+    private var selectedCombinedCategoryID: UUID? {
+        guard let transaction = selectedCombinedTransaction else { return nil }
+        return transaction.categoryID
+            ?? transaction.splits.sorted {
+                $0.sortOrder < $1.sortOrder
+            }.compactMap(\.categoryID).first
+    }
+
+    private var selectedCombinedTagID: UUID? {
+        guard let transaction = selectedCombinedTransaction else { return nil }
+        return (transaction.tagIDs + transaction.splits.flatMap(\.tagIDs))
+            .sorted { $0.uuidString < $1.uuidString }
+            .first
+    }
+
+    private func openReport(_ query: TransactionReportQuery) {
+        NotificationCenter.default.post(
+            name: .openTransactionReport,
+            object: query
+        )
+        store.statusText = "Bericht aus Sammelkontoblatt geöffnet"
     }
 
     private var combinedPrintSnapshot: RegisterPrintSnapshot {

@@ -789,3 +789,27 @@ Zeitraum, benutzerdefinierte Grenzen, Zukunftsschalter, Zeilenmodus und
 Spaltenmenge. Beim Laden entferne nicht mehr existierende Konten und
 normalisiere leere Spalten auf den Standard. Teste Filterkombination,
 Währungstrennung, Stornoausschluss, Zukunftssaldo und JSON-Roundtrip.
+
+Ergänze einen persistenten Schalter `Zweite Ansicht`. Bei Aktivierung stehen
+Hauptansicht und `Sammelansicht B` gleichzeitig nebeneinander. Ansicht B
+besitzt eine eigene lokale Kontenmenge, eigene Status-, Kategorie- und
+Zeitraumfilter sowie einen eigenen Zukunftsschalter. Sie nutzt denselben
+reinen Query- und Saldoalgorithmus, zeigt Konto, Empfänger/Zweck,
+vollständigen Kategoriepfad, Betrag und Saldo und kennzeichnet gefilterte
+Summen ebenfalls als Nicht-Kontostand. Globale Volltextsuche und
+Ein-/Zweizeilenmodus dürfen gemeinsam bleiben.
+
+Direkte Berichtsaufrufe transportieren eine typisierte
+`TransactionReportQuery` per interner Navigation an die Berichtswerkstatt.
+Erweitere die Query rückwärtskompatibel nur um optionale Felder:
+`transactionIDs`, `exactPayee` und `includeForecast`. Exakte UUID-Auswahl
+bildet alle sichtbaren Zeilen einschließlich errechneter Zukunft ab. Für
+Empfänger vergleiche getrimmt, ohne Groß-/Kleinschreibung und Diakritika;
+Kategorie und Tag verwenden die vorhandenen hierarchischen Filter.
+
+Die Berichtswerkstatt zeigt eine sichtbare Leiste für die Direktauswahl und
+einen Befehl zum Lösen. `includeForecast` ergänzt ausschließlich für diesen
+Query die gleichen 365-Tage-Occurrences; normale Berichte ändern ihr
+Verhalten nicht. Alte JSON-Berichtsvorlagen ohne die optionalen Felder müssen
+weiter decodieren. Teste exakte UUID-Selektion, diakritischen Empfänger,
+Zukunftseinbeziehung und alten Nil-Roundtrip.

@@ -196,6 +196,20 @@ Filter, Zukunftsschalter, Zeilenmodus und Spalten können als benannte Ansicht
 gespeichert werden. Systemdruck und mehrseitiger PDF-Export verwenden exakt
 die sichtbaren Zeilen und Spalten einschließlich Zukunftsvorgängen.
 
+`Zweite Ansicht` teilt den Arbeitsbereich in zwei gleichzeitig sichtbare
+Sammelkontoblätter. Ansicht B besitzt eine eigene persistente Kontenkombination,
+eigene Status-, Kategorie- und Zeitraumfilter sowie einen eigenen
+Zukunftsschalter; globale Volltextsuche und Ein-/Zweizeilenmodus bleiben
+bewusst gemeinsam. Beide Seiten zeigen Konto, Betrag und echten laufenden
+Saldo, ohne gefilterte Bewegungssummen als Kontostand auszugeben.
+
+Das Menü `Bericht` öffnet die Berichtswerkstatt wahlweise für exakt alle
+sichtbaren Buchungen – einschließlich errechneter Zukunft – oder für den
+Empfänger, die Kategorie beziehungsweise Klasse/Tag der markierten Buchung.
+Die Werkstatt kennzeichnet diese Direktauswahl und lässt sie ausdrücklich
+lösen. Exakte Empfängervergleiche sind großschreibungs- und
+diakritikaunabhängig; alte Berichtsvorlagen bleiben kompatibel.
+
 ## Kategorien und Mehrwertsteuer
 
 Kategorien besitzen neben einer beliebig tiefen Hierarchie eine Beschreibung,

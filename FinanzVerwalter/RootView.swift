@@ -86,6 +86,7 @@ struct RootView: View {
     @State private var showTransfer = false
     @State private var showReconciliation = false
     @State private var newTransactionStartsWithSplits = false
+    @State private var reportLaunchQuery: TransactionReportQuery?
     @FocusState private var searchIsFocused: Bool
 
     var body: some View {
@@ -190,6 +191,14 @@ struct RootView: View {
             showTransfer = false
             showReconciliation = false
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openTransactionReport)
+        ) { notification in
+            guard let query = notification.object as? TransactionReportQuery
+            else { return }
+            reportLaunchQuery = query
+            selectedSection = .reports
+        }
     }
 
     private func accountSidebarButton(_ account: FinanceAccount) -> some View {
@@ -293,7 +302,7 @@ struct RootView: View {
         case .payments: PaymentsView()
         case .calendar: CalendarForecastView()
         case .budget: BudgetView()
-        case .reports: ReportsView()
+        case .reports: ReportsView(launchQuery: reportLaunchQuery)
         case .investments: InvestmentsView()
         case .assets: AssetsView()
         case .contracts: ContractsView()

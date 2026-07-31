@@ -62,6 +62,9 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var expandSplits = true
     var grouping: ReportGrouping = .category
     var sort: ReportSort = .amountDescending
+    var transactionIDs: Set<UUID>? = nil
+    var exactPayee: String? = nil
+    var includeForecast: Bool? = nil
 }
 
 struct SavedReportTemplate: Identifiable, Equatable, Sendable {
@@ -148,9 +151,13 @@ enum TransactionReportEngine {
             includeDescendants: true
         )
         let normalizedText = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedExactPayee = query.exactPayee.map(normalized)
 
         var facts: [TransactionReportFact] = []
         for transaction in transactions {
+            guard query.transactionIDs?.contains(transaction.id) ?? true else {
+                continue
+            }
             guard let account = accountsByID[transaction.accountID] else { continue }
             guard accountMatches(account, query: query) else { continue }
             guard query.statuses.contains(transaction.status) else { continue }
@@ -163,6 +170,9 @@ enum TransactionReportEngine {
             guard query.payeeIDs.isEmpty
                 || transaction.payeeID.map(query.payeeIDs.contains) == true
             else { continue }
+            guard normalizedExactPayee.map({
+                normalized(transaction.payee) == $0
+            }) ?? true else { continue }
 
             let candidates = expandedFacts(
                 transaction: transaction,
@@ -194,6 +204,14 @@ enum TransactionReportEngine {
         let groups = makeGroups(facts: facts, grouping: query.grouping, sort: query.sort)
         let totals = makeTotals(facts)
         return TransactionReportSnapshot(facts: facts, groups: groups, totals: totals)
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "de_DE")
+            )
     }
 
     private static func accountMatches(

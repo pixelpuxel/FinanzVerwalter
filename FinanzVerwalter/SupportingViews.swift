@@ -985,6 +985,7 @@ struct ReconciliationView: View {
 
 struct ReportsView: View {
     @EnvironmentObject private var store: FinanceAppStore
+    let launchQuery: TransactionReportQuery?
     @State private var period: ReportPeriodPreset = .all
     @State private var customStart = Calendar.current.date(
         byAdding: .month,
@@ -1022,6 +1023,9 @@ struct ReportsView: View {
     @State private var pdfOrientation: ReportPDFOrientation = .landscape
     @State private var pdfDocument = ReportPDFDocument(data: Data())
     @State private var showPDFExporter = false
+    @State private var constrainedTransactionIDs: Set<UUID>?
+    @State private var exactPayee: String?
+    @State private var includeForecast = false
 
     private var query: TransactionReportQuery {
         let range = period.range(customStart: customStart, customEnd: customEnd)
@@ -1044,7 +1048,10 @@ struct ReportsView: View {
             includeTransfers: includeTransfers,
             expandSplits: expandSplits,
             grouping: grouping,
-            sort: sort
+            sort: sort,
+            transactionIDs: constrainedTransactionIDs,
+            exactPayee: exactPayee,
+            includeForecast: includeForecast
         )
     }
 
@@ -1073,6 +1080,34 @@ struct ReportsView: View {
             }
             .padding(16)
             Divider()
+
+            if constrainedTransactionIDs != nil || exactPayee != nil {
+                HStack {
+                    Label(
+                        "Direkt aus dem Kontenblatt aufgerufene Auswahl",
+                        systemImage: "arrow.turn.down.right"
+                    )
+                    if let exactPayee {
+                        Text("Empfänger: \(exactPayee)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let count = constrainedTransactionIDs?.count {
+                        Text("\(count) Buchungen")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Direktauswahl lösen") {
+                        constrainedTransactionIDs = nil
+                        exactPayee = nil
+                        includeForecast = false
+                    }
+                }
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(.blue.opacity(0.08))
+                Divider()
+            }
 
             VStack(spacing: 8) {
                 HStack(spacing: 10) {
@@ -1246,6 +1281,12 @@ struct ReportsView: View {
                !snapshot.groups.contains(where: { $0.id == selectedReportGroupID }) {
                 self.selectedReportGroupID = nil
             }
+        }
+        .onAppear {
+            if let launchQuery { apply(launchQuery) }
+        }
+        .onChange(of: launchQuery) {
+            if let launchQuery { apply(launchQuery) }
         }
         .sheet(isPresented: $showTemplateSave) {
             VStack(alignment: .leading, spacing: 18) {
@@ -1607,6 +1648,9 @@ struct ReportsView: View {
             || !expandSplits
             || grouping != .category
             || sort != .amountDescending
+            || constrainedTransactionIDs != nil
+            || exactPayee != nil
+            || includeForecast
     }
 
     private func resetFilters() {
@@ -1628,6 +1672,9 @@ struct ReportsView: View {
         expandSplits = true
         grouping = .category
         sort = .amountDescending
+        constrainedTransactionIDs = nil
+        exactPayee = nil
+        includeForecast = false
         selectedReportGroupID = nil
         selectedTemplateID = nil
     }
@@ -1686,6 +1733,9 @@ struct ReportsView: View {
         expandSplits = savedQuery.expandSplits
         grouping = savedQuery.grouping
         sort = savedQuery.sort
+        constrainedTransactionIDs = savedQuery.transactionIDs
+        exactPayee = savedQuery.exactPayee
+        includeForecast = savedQuery.includeForecast == true
         selectedReportGroupID = nil
     }
 
