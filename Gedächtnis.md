@@ -948,3 +948,10 @@ Rechtsberatung.
   anschließende App-Suche bestätigte den weiterhin gesperrten Mac. Deshalb
   bleibt ein echter Screenshot offen und wird nicht durch ein Ersatzbild
   vorgetäuscht.
+- Der Direktbericht-/Zwei-Ansichten-Stand ist als Commit `4549569` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 zeigt auf diesen Commit
+  und dokumentiert 53 ausgeführte Tests.
+- Telegram-Nachricht 946 wurde im Projektthread 894 veröffentlicht. Sie
+  enthält denselben geprüften Ansichten-, Bericht-, Zukunfts-, Saldo-,
+  Release-, GitHub- und Teststatus sowie den Zielzählerstand von 7.107.447
+  Tokens.
