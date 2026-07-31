@@ -837,3 +837,12 @@ Rechtsberatung.
   automatisch entsperren. Die sichtbare Banking-/Saldo-Abnahme und ein
   echter Screenshot bleiben deshalb offen; es wurde kein Ersatzbild als
   angeblicher App-Screenshot erzeugt.
+- Der Banking-Stand ist als Commit `22575e6` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 zeigt auf diesen Commit,
+  trägt nun den Titel „FinanzVerwalter: Kontoblatt, Regeln und sicherer
+  Banking-Abruf“ und dokumentiert Schema 21 sowie 49 ausgeführte Tests.
+- Telegram-Nachricht 943 wurde im Projektthread 894 veröffentlicht. Sie
+  enthält den geprüften Saldo-, Banking-, Release-, GitHub- und Teststatus
+  sowie den ausdrücklichen Hinweis auf den fehlenden Screenshot wegen der
+  macOS-Sperre. Der dort dokumentierte Zielzählerstand beträgt 6.793.516
+  verbrauchte Tokens.
