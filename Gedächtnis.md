@@ -1365,3 +1365,12 @@ Rechtsberatung.
 - Die sichtbare UI-/VoiceOver-Abnahme und ein neuer Screenshot bleiben offen,
   solange die macOS-Sitzung gesperrt ist; dieser Nachweis wird nicht
   vorgetäuscht.
+- Implementierung und Tests sind als Commit `98949c6`, die reproduzierbare
+  Dokumentation als `7a73bde` auf
+  `agent/qif-mehrkontenimport` festgeschrieben und auf GitHub gepusht.
+  Draft-PR 1 dokumentiert Schema 24, SEPA-Core-Lastschrift, pain.008 und den
+  69-Test-Stand.
+- Telegram-Nachricht 968 wurde im Projektthread 894 (`/quicken`)
+  veröffentlicht. Sie enthält den verifizierten Release-, Datenbank-, GitHub-
+  und Teststand sowie den Zielzählerstand von 9.651.001 Tokens; wegen der
+  gesperrten Sitzung bewusst ohne Screenshot.
