@@ -1433,6 +1433,11 @@ Rechtsberatung.
   `1ffa1d0f17dbd24cdc33863232ce5fbf482c6daf597ee2c51387e761719d518b`.
   Die installierte App wurde danach wieder gestartet.
 - Implementierung und Tests sind als Commit `0b3f795` auf
-  `agent/qif-mehrkontenimport` festgeschrieben. Die GitHub- und
-  Telegram-Veröffentlichung wird im Anschluss an diesen reproduzierbaren
-  Installationsstand protokolliert.
+  `agent/qif-mehrkontenimport` festgeschrieben; die reproduzierbare
+  Dokumentation als Commit `5d0ffcc`. Beide Commits wurden auf GitHub
+  gepusht. Draft-PR 1 dokumentiert Schema 25, atomare Sammelüberweisungen und
+  Sammellastschriften, Mehrpositions-pain-Export sowie den 71-Test-Stand.
+- Telegram-Nachricht 969 wurde im Projektthread 894 (`/quicken`)
+  veröffentlicht. Sie enthält denselben verifizierten Release-, Datenbank-,
+  GitHub- und Teststand sowie den Zielzählerstand von 9.973.156 Tokens. Wegen
+  der gesperrten macOS-Sitzung wurde bewusst kein Screenshot vorgetäuscht.
