@@ -1866,3 +1866,11 @@ Rechtsberatung.
   UI-Abnahme und kein neuer Screenshot möglich; beides wurde nicht
   vorgetäuscht. Implementierung und Tests sind in Commit `e31934a`
   festgeschrieben.
+- Die reproduzierbare Dokumentation ist in Commit `dd96b46` festgeschrieben;
+  beide Commits wurden auf `agent/qif-mehrkontenimport` nach GitHub gepusht.
+  Draft-PR 1 beschreibt jetzt Stichtagslogik, Saldo-Spalten, 87-Test-Suite und
+  die verbleibenden Zeit-/Budgetvergleiche und ist `CLEAN` sowie `MERGEABLE`.
+  Telegram-Nachricht 978 wurde im Projektthread 894 (`/quicken`) mit dem
+  Funktions-, Test-, Release-, Datenbank- und GitHub-Stand sowie dem exakten
+  Zielzählerstand von 11.954.069 Tokens veröffentlicht. Wegen der
+  Bildschirmsperre enthält sie ausdrücklich keinen vorgetäuschten Screenshot.
