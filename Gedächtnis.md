@@ -1121,3 +1121,10 @@ Rechtsberatung.
   Berichtsvorlage und 0 Banking-Verbindungen.
 - Der exakte Zielzählerstand dieses geprüften Meilensteins beträgt
   7.984.886 Tokens.
+- Die Implementierung wurde als Commit `74ad54e`, die Dokumentation als
+  `d1bf030` auf `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 beschreibt
+  nun die Klassenfilter, atomare Organisation und 63 ausgeführte Tests.
+- Telegram-Nachricht 950 im Projektthread 894 (`/quicken`) enthält denselben
+  Test-, Release-, Datenbank-, GitHub- und Tokenstatus. Ein Screenshot wurde
+  nicht vorgetäuscht, weil `CGSSessionScreenIsLocked=Yes` den weiterhin
+  gesperrten macOS-Anmeldebildschirm bestätigt.
