@@ -4220,6 +4220,86 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func moveTransaction(id: UUID, toAccountID destinationID: UUID) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            var sourceAccountID: UUID?
+            var sourceCurrency = ""
+            var sourceStatus: TransactionStatus?
+            var sourceTransferID: UUID?
+            try query(
+                "SELECT account_id,currency,status,transfer_id FROM transactions WHERE id=?",
+                [.text(id.uuidString)]
+            ) { statement in
+                sourceAccountID = UUID(uuidString: Self.text(statement, 0))
+                sourceCurrency = Self.text(statement, 1)
+                sourceStatus = TransactionStatus(
+                    rawValue: Self.text(statement, 2)
+                )
+                sourceTransferID = Self.optionalText(statement, 3)
+                    .flatMap(UUID.init(uuidString:))
+            }
+            guard let sourceAccountID, let sourceStatus else {
+                throw FinanceError.database("Die Buchung wurde nicht gefunden.")
+            }
+            guard sourceStatus != .reconciled else {
+                throw FinanceError.protectedTransaction
+            }
+            guard sourceTransferID == nil else {
+                throw FinanceError.database(
+                    "Eine Umbuchung kann nur als zusammengehöriges Buchungspaar geändert werden."
+                )
+            }
+            guard sourceAccountID != destinationID else {
+                throw FinanceError.database(
+                    "Quell- und Zielkonto sind identisch."
+                )
+            }
+
+            var destinationCurrency: String?
+            var destinationClosed = true
+            try query(
+                "SELECT currency,is_closed FROM accounts WHERE id=?",
+                [.text(destinationID.uuidString)]
+            ) { statement in
+                destinationCurrency = Self.text(statement, 0)
+                destinationClosed = sqlite3_column_int(statement, 1) != 0
+            }
+            guard let destinationCurrency else {
+                throw FinanceError.database("Das Zielkonto wurde nicht gefunden.")
+            }
+            guard !destinationClosed else {
+                throw FinanceError.database(
+                    "In ein geschlossenes Konto kann keine Buchung verschoben werden."
+                )
+            }
+            guard destinationCurrency == sourceCurrency else {
+                throw FinanceError.database(
+                    "Buchungen können nur zwischen Konten derselben Währung verschoben werden."
+                )
+            }
+
+            try run(
+                "UPDATE transactions SET account_id=?,updated_at=?,version=version+1 WHERE id=?",
+                [
+                    .text(destinationID.uuidString), .text(now),
+                    .text(id.uuidString)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Die Buchung konnte nicht verschoben werden."
+                )
+            }
+            try audit(
+                entity: "transaction",
+                id: id,
+                action: "move-account",
+                details: "from=\(sourceAccountID.uuidString);to=\(destinationID.uuidString)"
+            )
+        }
+    }
+
     func bulkUpdateTransactionCategory(
         ids: Set<UUID>,
         categoryID: UUID?

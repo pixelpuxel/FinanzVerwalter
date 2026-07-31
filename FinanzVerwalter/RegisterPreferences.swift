@@ -76,6 +76,32 @@ enum RegisterAccessibility {
     }
 }
 
+enum RegisterClipboard {
+    static func tsv(
+        transaction: FinanceTransaction,
+        categoryPath: String
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return [
+            formatter.string(from: transaction.bookingDate),
+            transaction.payee,
+            transaction.purpose,
+            categoryPath,
+            Money(
+                minorUnits: transaction.amountMinor,
+                currency: transaction.currency
+            ).editingString,
+            transaction.currency
+        ]
+        .map { $0.replacingOccurrences(of: "\t", with: " ") }
+        .joined(separator: "\t")
+    }
+}
+
 enum RegisterCategorySelection: Codable, Equatable, Sendable {
     case all
     case uncategorized

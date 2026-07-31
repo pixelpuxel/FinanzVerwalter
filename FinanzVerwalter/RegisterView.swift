@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct RegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
@@ -7,6 +8,7 @@ struct RegisterView: View {
     @State private var showEditor = false
     @State private var showBulkEditor = false
     @State private var editingTransaction: FinanceTransaction?
+    @State private var movingTransaction: FinanceTransaction?
     @State private var editorTemplate: TransactionTemplate?
     @State private var showTemplateNameEditor = false
     @State private var templateName = ""
@@ -292,19 +294,35 @@ struct RegisterView: View {
                 )
                 .accessibilityIdentifier("register.transactionTable")
                 .contextMenu(forSelectionType: UUID.self) { ids in
-                    if ids.count == 1 {
+                    if ids.count == 1,
+                       let transaction = store.transactions.first(where: {
+                           ids.contains($0.id)
+                       }) {
                         Button("Bearbeiten") {
-                            editingTransaction = store.transactions.first { ids.contains($0.id) }
+                            editingTransaction = transaction
                             editorTemplate = nil
-                            showEditor = editingTransaction != nil
+                            showEditor = true
                         }
+                        Button("Duplizieren …", systemImage: "plus.square.on.square") {
+                            prepareDuplicate(transaction)
+                        }
+                        .disabled(transaction.transferID != nil)
+                        Button("Kopieren", systemImage: "doc.on.doc") {
+                            copyToPasteboard(transaction)
+                        }
+                        Button("In anderes Konto verschieben …", systemImage: "tray.and.arrow.down") {
+                            movingTransaction = transaction
+                        }
+                        .disabled(
+                            transaction.status == .reconciled
+                                || transaction.transferID != nil
+                        )
+                        Divider()
                         Button("Als Vorlage merken …") {
                             selection = ids
                             prepareTemplateFromSelection()
                         }
-                        if let transaction = store.transactions.first(
-                            where: { ids.contains($0.id) }
-                        ), transaction.categoryID != nil,
+                        if transaction.categoryID != nil,
                            transaction.splits.isEmpty {
                             Button("Regel aus Buchung erstellen") {
                                 _ = store.createRule(from: transaction)
@@ -400,6 +418,11 @@ struct RegisterView: View {
         }
         .sheet(isPresented: $showBulkEditor) {
             BulkCategoryEditorView(transactionIDs: selection) {
+                selection.removeAll()
+            }
+        }
+        .sheet(item: $movingTransaction) { transaction in
+            MoveTransactionView(transaction: transaction) {
                 selection.removeAll()
             }
         }
@@ -603,6 +626,29 @@ struct RegisterView: View {
         let suggested = value.payee.isEmpty ? value.purpose : value.payee
         templateName = suggested.isEmpty ? "Neue Buchungsvorlage" : suggested
         showTemplateNameEditor = true
+    }
+
+    private func prepareDuplicate(_ value: FinanceTransaction) {
+        guard value.transferID == nil else {
+            store.errorMessage = "Eine einzelne Umbuchungsseite kann nicht dupliziert werden."
+            return
+        }
+        editingTransaction = nil
+        editorTemplate = TransactionTemplate(
+            name: "Duplikat",
+            transaction: value
+        )
+        showEditor = true
+    }
+
+    private func copyToPasteboard(_ value: FinanceTransaction) {
+        let text = RegisterClipboard.tsv(
+            transaction: value,
+            categoryPath: store.transactionCategoryPath(value)
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        store.statusText = "Buchung in die Zwischenablage kopiert"
     }
 
     private func prepareDeletion() {
@@ -1412,6 +1458,112 @@ private enum RegisterRowMode: String, CaseIterable, Identifiable {
 
     var rowHeight: CGFloat {
         self == .twoLines ? 38 : 20
+    }
+}
+
+private struct MoveTransactionView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let transaction: FinanceTransaction
+    let onCompletion: () -> Void
+
+    @State private var destinationAccountID: UUID?
+
+    private var destinationAccounts: [FinanceAccount] {
+        store.accounts
+            .filter {
+                !$0.isClosed
+                    && $0.id != transaction.accountID
+                    && $0.currency == transaction.currency
+            }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name)
+                        == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Buchung verschieben")
+                .font(.title2.bold())
+            Text(
+                "Die Buchung wird vollständig einschließlich Kategorien, "
+                    + "Klassen/Tags und Splitzeilen in ein anderes Konto verschoben."
+            )
+            .foregroundStyle(.secondary)
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    LabeledContent("Buchung", value: transaction.payee)
+                    LabeledContent("Quellkonto", value: store.accountName(transaction.accountID))
+                    LabeledContent("Betrag") {
+                        Text(
+                            Money(
+                                minorUnits: transaction.amountMinor,
+                                currency: transaction.currency
+                            ).formatted
+                        )
+                        .monospacedDigit()
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if destinationAccounts.isEmpty {
+                ContentUnavailableView(
+                    "Kein passendes Zielkonto",
+                    systemImage: "tray.and.arrow.down",
+                    description: Text(
+                        "Benötigt wird ein weiteres offenes Konto in "
+                            + transaction.currency + "."
+                    )
+                )
+            } else {
+                Picker("Zielkonto", selection: $destinationAccountID) {
+                    ForEach(destinationAccounts) { account in
+                        Text(account.name).tag(UUID?.some(account.id))
+                    }
+                }
+                .accessibilityIdentifier("register.move.destinationAccount")
+
+                Label(
+                    "Abgeglichene Buchungen und einzelne Seiten einer Umbuchung "
+                        + "können nicht verschoben werden.",
+                    systemImage: "checkmark.shield"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Abbrechen", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Verschieben") {
+                    guard let destinationAccountID else { return }
+                    if store.moveTransaction(
+                        transaction,
+                        toAccountID: destinationAccountID
+                    ) {
+                        onCompletion()
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(destinationAccountID == nil)
+                .accessibilityIdentifier("register.move.confirm")
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+        .onAppear {
+            if destinationAccountID == nil {
+                destinationAccountID = destinationAccounts.first?.id
+            }
+        }
     }
 }
 

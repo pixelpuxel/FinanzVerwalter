@@ -245,6 +245,127 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try context.store.accountBalanceMinor(account: destination), 25_000)
     }
 
+    func testMovingTransactionIsAtomicAndProtectsAccountingInvariants() throws {
+        let context = try TestDatabase()
+        let source = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let destination = FinanceAccount(
+            id: UUID(), name: "Haushalt", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        let foreignCurrency = FinanceAccount(
+            id: UUID(), name: "Dollar", institution: "", type: .checking,
+            currency: "USD", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 2
+        )
+        let closed = FinanceAccount(
+            id: UUID(), name: "Alt", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: true, sortOrder: 3
+        )
+        try [source, destination, foreignCurrency, closed]
+            .forEach(context.store.saveAccount)
+
+        let date = Date(timeIntervalSince1970: 1_735_689_600)
+        let firstSplitID = UUID()
+        let secondSplitID = UUID()
+        let value = FinanceTransaction(
+            id: UUID(), accountID: source.id, bookingDate: date,
+            valueDate: date, payee: "Vermieter", purpose: "Nebenkosten",
+            categoryID: nil, amountMinor: -3_000, currency: "EUR",
+            status: .booked, memo: "Vollständig erhalten", reference: "R-42",
+            transferID: nil, importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: firstSplitID, categoryID: nil, amountMinor: -2_000,
+                    memo: "Heizung", sortOrder: 0
+                ),
+                FinanceSplit(
+                    id: secondSplitID, categoryID: nil, amountMinor: -1_000,
+                    memo: "Wasser", sortOrder: 1
+                )
+            ],
+            origin: .manual, externalProvider: "Testbank",
+            externalTransactionID: "external-42", counterpartyIBAN: "DE001234",
+            endToEndID: "E2E-42", mandateReference: "M-42",
+            duplicateFingerprint: "duplicate-42", bankBalanceAfterMinor: 7_000,
+            counterpartyBIC: "TESTDEFF", creditorID: "DE98ZZZ09999999999",
+            bookingText: "LASTSCHRIFT"
+        )
+        try context.store.saveTransaction(value)
+
+        try context.store.moveTransaction(id: value.id, toAccountID: destination.id)
+        let moved = try XCTUnwrap(
+            context.store.transactions().first { $0.id == value.id }
+        )
+        XCTAssertEqual(moved.accountID, destination.id)
+        XCTAssertEqual(moved.splits.map(\.id), [firstSplitID, secondSplitID])
+        XCTAssertEqual(moved.splits.map(\.amountMinor), [-2_000, -1_000])
+        XCTAssertEqual(moved.memo, value.memo)
+        XCTAssertEqual(moved.reference, value.reference)
+        XCTAssertEqual(moved.externalTransactionID, value.externalTransactionID)
+        XCTAssertEqual(moved.bankBalanceAfterMinor, value.bankBalanceAfterMinor)
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: source), 10_000)
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: destination), -3_000)
+
+        for invalidDestination in [foreignCurrency.id, closed.id, destination.id] {
+            XCTAssertThrowsError(
+                try context.store.moveTransaction(
+                    id: value.id,
+                    toAccountID: invalidDestination
+                )
+            )
+            XCTAssertEqual(
+                try context.store.transactions().first { $0.id == value.id }?.accountID,
+                destination.id
+            )
+        }
+
+        let reconciled = FinanceTransaction(
+            id: UUID(), accountID: source.id, bookingDate: date,
+            valueDate: nil, payee: "Abgeglichen", purpose: "Abschluss",
+            categoryID: nil, amountMinor: -100, currency: "EUR",
+            status: .reconciled, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(reconciled)
+        XCTAssertThrowsError(
+            try context.store.moveTransaction(
+                id: reconciled.id,
+                toAccountID: destination.id
+            )
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .protectedTransaction)
+        }
+        XCTAssertEqual(
+            try context.store.transactions().first { $0.id == reconciled.id }?.accountID,
+            source.id
+        )
+
+        try context.store.createTransfer(
+            from: source, to: destination, amountMinor: 500,
+            date: date, purpose: "Rücklage"
+        )
+        let transferSide = try XCTUnwrap(
+            context.store.transactions().first { $0.transferID != nil }
+        )
+        XCTAssertThrowsError(
+            try context.store.moveTransaction(
+                id: transferSide.id,
+                toAccountID: foreignCurrency.id
+            )
+        )
+        XCTAssertEqual(
+            try context.store.transactions().first { $0.id == transferSide.id }?.accountID,
+            transferSide.accountID
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testCSVImportIsIdempotentByPackageFingerprint() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(
@@ -3244,6 +3365,22 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(
             RegisterAccessibility.tableValue(visibleCount: 27, selectedCount: 3),
             "27 Buchungen, 3 ausgewählt"
+        )
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: UUID(),
+            bookingDate: Date(timeIntervalSince1970: 1_700_000_000),
+            valueDate: nil, payee: "Stadt\tBerlin", purpose: "Grund\tsteuer",
+            categoryID: nil, amountMinor: -1_234, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        XCTAssertEqual(
+            RegisterClipboard.tsv(
+                transaction: transaction,
+                categoryPath: "Immobilien\tBerlin:Grundsteuer"
+            ),
+            "14.11.2023\tStadt Berlin\tGrund steuer\t"
+                + "Immobilien Berlin:Grundsteuer\t-12,34\tEUR"
         )
     }
 

@@ -642,6 +642,26 @@ final class FinanceAppStore: ObservableObject {
     }
 
     @discardableResult
+    func moveTransaction(
+        _ value: FinanceTransaction,
+        toAccountID destinationID: UUID
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.moveTransaction(
+                id: value.id,
+                toAccountID: destinationID
+            )
+            try load()
+            statusText = "Buchung nach „\(accountName(destinationID))“ verschoben"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    @discardableResult
     func deleteTransactions(_ values: [FinanceTransaction]) -> Bool {
         guard let repository else { return false }
         do {
