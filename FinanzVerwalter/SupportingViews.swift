@@ -3080,6 +3080,7 @@ private struct PayeeEditor: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var value: FinancePayee
     @State private var aliasesText: String
+    @State private var editedBankAccount: FinancePayeeBankAccount?
     @State private var editedMandate: FinanceSEPAMandate?
 
     init(value: FinancePayee) {
@@ -3114,8 +3115,6 @@ private struct PayeeEditor: View {
                     Toggle("Aktiv", isOn: $value.isActive)
                 }
                 Section("Zahlung & Vorgaben") {
-                    TextField("IBAN", text: $value.iban)
-                    TextField("BIC", text: $value.bic)
                     TextField("SEPA-Gläubiger-ID", text: $value.creditorID)
                     Picker("Standardkategorie", selection: $value.defaultCategoryID) {
                         Text("Keine").tag(UUID?.none)
@@ -3165,6 +3164,47 @@ private struct PayeeEditor: View {
                         }
                     }
                 }
+                Section("Bankverbindungen") {
+                    Button("Bankverbindung anlegen", systemImage: "plus") {
+                        editedBankAccount = FinancePayeeBankAccount(
+                            id: UUID(), payeeID: value.id,
+                            label: "Neue Bankverbindung",
+                            accountHolder: value.canonicalName,
+                            iban: "", bic: "", bankName: "",
+                            isDefault: store.payeeBankAccounts.allSatisfy {
+                                $0.payeeID != value.id || !$0.isActive
+                            },
+                            isActive: true
+                        )
+                    }
+                    .disabled(!store.payees.contains { $0.id == value.id })
+                    .help(
+                        store.payees.contains { $0.id == value.id }
+                            ? "Neue Bankverbindung für diese Empfängerakte"
+                            : "Speichere die neue Empfängerakte zuerst und öffne sie anschließend erneut."
+                    )
+                    ForEach(store.payeeBankAccounts.filter {
+                        $0.payeeID == value.id
+                    }) { bankAccount in
+                        Button {
+                            editedBankAccount = bankAccount
+                        } label: {
+                            LabeledContent(
+                                bankAccount.label,
+                                value: bankAccount.iban
+                                    + (bankAccount.isDefault ? " · Standard" : "")
+                                    + (bankAccount.isActive ? "" : " · Inaktiv")
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if store.payeeBankAccounts.allSatisfy({
+                        $0.payeeID != value.id
+                    }) {
+                        Text("Noch keine Bankverbindung vorhanden.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section("SEPA-Mandate") {
                     Button("Mandat anlegen", systemImage: "plus") {
                         editedMandate = FinanceSEPAMandate(
@@ -3204,9 +3244,70 @@ private struct PayeeEditor: View {
             .formStyle(.grouped)
         }
         .frame(width: 680, height: 720)
+        .sheet(item: $editedBankAccount) {
+            PayeeBankAccountEditor(value: $0)
+        }
         .sheet(item: $editedMandate) {
             SEPAMandateEditor(value: $0)
         }
+    }
+}
+
+private struct PayeeBankAccountEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var value: FinancePayeeBankAccount
+
+    init(value: FinancePayeeBankAccount) {
+        _value = State(initialValue: value)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Empfänger-Bankverbindung")
+                    .font(.title2.bold())
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Speichern") {
+                    if store.savePayeeBankAccount(value) { dismiss() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    value.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || value.accountHolder.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                        || value.iban.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                )
+            }
+            .padding(14)
+            Divider()
+            Form {
+                TextField("Bezeichnung", text: $value.label)
+                TextField("Kontoinhaber", text: $value.accountHolder)
+                TextField("IBAN", text: $value.iban)
+                TextField("BIC (optional)", text: $value.bic)
+                TextField("Bankname (optional)", text: $value.bankName)
+                Toggle("Standardverbindung", isOn: $value.isDefault)
+                    .disabled(!value.isActive)
+                Toggle("Aktiv", isOn: $value.isActive)
+                    .onChange(of: value.isActive) {
+                        if !value.isActive { value.isDefault = false }
+                    }
+                Text(
+                    "Genau eine aktive Verbindung wird als Standard geführt. "
+                        + "Zahlungsaufträge speichern zusätzlich einen unveränderlichen "
+                        + "Schnappschuss aus Name, IBAN und BIC."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 560, height: 500)
     }
 }
 
@@ -5788,6 +5889,8 @@ private struct PaymentDraftEditor: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var accountID: UUID?
     @State private var type: PaymentType = .sepaCreditTransfer
+    @State private var payeeID: UUID?
+    @State private var payeeBankAccountID: UUID?
     @State private var recipientName = ""
     @State private var iban = ""
     @State private var bic = ""
@@ -5808,7 +5911,9 @@ private struct PaymentDraftEditor: View {
                         accountID: accountID, type: type, recipientName: recipientName,
                         iban: iban, bic: bic, amount: amount,
                         executionDate: executionDate, purpose: purpose,
-                        endToEndID: endToEndID
+                        endToEndID: endToEndID,
+                        payeeID: payeeID,
+                        payeeBankAccountID: payeeBankAccountID
                     ) { dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -5826,6 +5931,29 @@ private struct PaymentDraftEditor: View {
                     }
                     Picker("Zahlungsart", selection: $type) {
                         ForEach(PaymentType.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("Empfängerakte", selection: $payeeID) {
+                        Text("Manuelle Eingabe").tag(UUID?.none)
+                        ForEach(store.payees.filter(\.isActive)) { payee in
+                            Text(payee.canonicalName).tag(UUID?.some(payee.id))
+                        }
+                    }
+                    .onChange(of: payeeID) { applySelectedPayee() }
+                    if payeeID != nil {
+                        Picker("Bankverbindung", selection: $payeeBankAccountID) {
+                            Text("Manuelle Eingabe").tag(UUID?.none)
+                            ForEach(selectedPayeeBankAccounts) { bankAccount in
+                                Text(
+                                    bankAccount.label
+                                        + (bankAccount.isDefault ? " · Standard" : "")
+                                        + " · " + bankAccount.iban
+                                )
+                                .tag(UUID?.some(bankAccount.id))
+                            }
+                        }
+                        .onChange(of: payeeBankAccountID) {
+                            applySelectedBankAccount()
+                        }
                     }
                     TextField("Empfänger", text: $recipientName)
                     TextField("IBAN", text: $iban)
@@ -5845,8 +5973,40 @@ private struct PaymentDraftEditor: View {
             }
             .formStyle(.grouped)
         }
-        .frame(width: 650, height: 660)
+        .frame(width: 650, height: 720)
         .onAppear { accountID = accountID ?? store.accounts.first?.id }
+    }
+
+    private var selectedPayeeBankAccounts: [FinancePayeeBankAccount] {
+        guard let payeeID else { return [] }
+        return store.payeeBankAccounts.filter {
+            $0.payeeID == payeeID && $0.isActive
+        }
+    }
+
+    private func applySelectedPayee() {
+        guard let payeeID,
+              let payee = store.payees.first(where: { $0.id == payeeID })
+        else {
+            payeeBankAccountID = nil
+            return
+        }
+        recipientName = payee.canonicalName
+        let preferred = selectedPayeeBankAccounts.first(where: \.isDefault)
+            ?? selectedPayeeBankAccounts.first
+        payeeBankAccountID = preferred?.id
+        applySelectedBankAccount()
+    }
+
+    private func applySelectedBankAccount() {
+        guard let payeeBankAccountID,
+              let bankAccount = selectedPayeeBankAccounts.first(where: {
+                  $0.id == payeeBankAccountID
+              })
+        else { return }
+        recipientName = bankAccount.accountHolder
+        iban = bankAccount.iban
+        bic = bankAccount.bic
     }
 }
 

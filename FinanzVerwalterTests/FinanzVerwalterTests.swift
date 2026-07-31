@@ -1702,6 +1702,146 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testPayeeBankAccountsKeepOneDefaultAndLinkImmutablePaymentSnapshot() throws {
+        let context = try TestDatabase()
+        let source = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 50_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(source)
+        let payee = FinancePayee(
+            id: UUID(), canonicalName: "Muster GmbH", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: source.id,
+            note: "", isActive: true
+        )
+        try context.store.savePayee(payee)
+        var primary = FinancePayeeBankAccount(
+            id: UUID(), payeeID: payee.id, label: "Rechnungen",
+            accountHolder: "Muster GmbH",
+            iban: "DE89 3704 0044 0532 0130 00", bic: "COBADEFFXXX",
+            bankName: "Commerzbank", isDefault: true, isActive: true
+        )
+        var secondary = FinancePayeeBankAccount(
+            id: UUID(), payeeID: payee.id, label: "Erstattungen",
+            accountHolder: "Muster Erstattung GmbH",
+            iban: "DE75 5121 0800 1245 1261 99", bic: "SOGEDEFFXXX",
+            bankName: "Bank Zwei", isDefault: false, isActive: true
+        )
+        try context.store.savePayeeBankAccount(primary)
+        try context.store.savePayeeBankAccount(secondary)
+        var restored = try context.store.payeeBankAccounts(payeeID: payee.id)
+        XCTAssertEqual(restored.count, 2)
+        XCTAssertEqual(restored.filter(\.isDefault).map(\.id), [primary.id])
+        XCTAssertEqual(
+            restored.first { $0.id == primary.id }?.iban,
+            "DE89370400440532013000"
+        )
+
+        secondary.isDefault = true
+        try context.store.savePayeeBankAccount(secondary)
+        restored = try context.store.payeeBankAccounts(payeeID: payee.id)
+        XCTAssertEqual(restored.filter(\.isDefault).map(\.id), [secondary.id])
+
+        let otherPayee = FinancePayee(
+            id: UUID(), canonicalName: "Andere GmbH", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: source.id,
+            note: "", isActive: true
+        )
+        try context.store.savePayee(otherPayee)
+        var reassigned = primary
+        reassigned.payeeID = otherPayee.id
+        XCTAssertThrowsError(try context.store.savePayeeBankAccount(reassigned))
+
+        let now = Date(timeIntervalSince1970: 1_735_689_600)
+        let payment = PaymentOrder(
+            id: UUID(), accountID: source.id, type: .sepaCreditTransfer,
+            recipientName: secondary.accountHolder,
+            iban: IBANValidator.normalized(secondary.iban), bic: secondary.bic,
+            amountMinor: 12_345, currency: "EUR", executionDate: now,
+            purpose: "Rechnung 42", endToEndID: "E2E-42", status: .draft,
+            idempotencyKey: "payee-bank-link-42", bankReference: "",
+            createdAt: now, updatedAt: now,
+            payeeID: payee.id, payeeBankAccountID: secondary.id
+        )
+        try context.store.createPaymentOrder(payment)
+        let restoredPayment = try XCTUnwrap(context.store.paymentOrders().first)
+        XCTAssertEqual(restoredPayment.payeeID, payee.id)
+        XCTAssertEqual(restoredPayment.payeeBankAccountID, secondary.id)
+        XCTAssertEqual(restoredPayment.recipientName, "Muster Erstattung GmbH")
+        XCTAssertEqual(restoredPayment.iban, "DE75512108001245126199")
+
+        let tampered = PaymentOrder(
+            id: UUID(), accountID: source.id, type: .sepaCreditTransfer,
+            recipientName: secondary.accountHolder,
+            iban: IBANValidator.normalized(secondary.iban), bic: "FALSCHBIC",
+            amountMinor: 100, currency: "EUR", executionDate: now,
+            purpose: "Manipuliert", endToEndID: "NOTPROVIDED", status: .draft,
+            idempotencyKey: "tampered-payee-bank-link", bankReference: "",
+            createdAt: now, updatedAt: now,
+            payeeID: payee.id, payeeBankAccountID: secondary.id
+        )
+        XCTAssertThrowsError(try context.store.createPaymentOrder(tampered))
+        let tamperedHolder = PaymentOrder(
+            id: UUID(), accountID: payment.accountID, type: payment.type,
+            recipientName: "Manipulierter Kontoinhaber", iban: payment.iban,
+            bic: payment.bic, amountMinor: payment.amountMinor,
+            currency: payment.currency, executionDate: payment.executionDate,
+            purpose: payment.purpose, endToEndID: payment.endToEndID,
+            status: .draft, idempotencyKey: "tampered-payee-account-holder",
+            bankReference: "", createdAt: now, updatedAt: now,
+            payeeID: payment.payeeID,
+            payeeBankAccountID: payment.payeeBankAccountID
+        )
+        XCTAssertThrowsError(try context.store.createPaymentOrder(tamperedHolder))
+
+        var inactivePayee = otherPayee
+        inactivePayee.isActive = false
+        try context.store.savePayee(inactivePayee)
+        let inactivePayeePayment = PaymentOrder(
+            id: UUID(), accountID: payment.accountID, type: payment.type,
+            recipientName: payment.recipientName, iban: payment.iban,
+            bic: payment.bic, amountMinor: payment.amountMinor,
+            currency: payment.currency, executionDate: payment.executionDate,
+            purpose: payment.purpose, endToEndID: payment.endToEndID,
+            status: .draft, idempotencyKey: "inactive-payee-link",
+            bankReference: "", createdAt: now, updatedAt: now,
+            payeeID: inactivePayee.id, payeeBankAccountID: nil
+        )
+        XCTAssertThrowsError(
+            try context.store.createPaymentOrder(inactivePayeePayment)
+        )
+
+        secondary.isDefault = false
+        secondary.isActive = false
+        try context.store.savePayeeBankAccount(secondary)
+        restored = try context.store.payeeBankAccounts(payeeID: payee.id)
+        XCTAssertEqual(restored.filter(\.isDefault).map(\.id), [primary.id])
+        XCTAssertEqual(
+            try context.store.paymentOrders().first?.iban,
+            "DE75512108001245126199",
+            "Der bestehende Zahlungsauftrag bleibt ein unveränderlicher Schnappschuss."
+        )
+        let inactivePayment = PaymentOrder(
+            id: UUID(), accountID: source.id, type: .sepaCreditTransfer,
+            recipientName: secondary.accountHolder,
+            iban: IBANValidator.normalized(secondary.iban), bic: secondary.bic,
+            amountMinor: 100, currency: "EUR", executionDate: now,
+            purpose: "Inaktiv", endToEndID: "NOTPROVIDED", status: .draft,
+            idempotencyKey: "inactive-payee-bank-link", bankReference: "",
+            createdAt: now, updatedAt: now,
+            payeeID: payee.id, payeeBankAccountID: secondary.id
+        )
+        XCTAssertThrowsError(try context.store.createPaymentOrder(inactivePayment))
+
+        primary.isActive = false
+        primary.isDefault = true
+        XCTAssertThrowsError(try context.store.savePayeeBankAccount(primary))
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testStandingOrderMaterializationIsIdempotentAuditedAndWeekendSafe() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -2589,6 +2729,7 @@ final class FinanzVerwalterTests: XCTestCase {
             booking_date TEXT NOT NULL
         );
         CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
+        CREATE TABLE payment_orders (id TEXT PRIMARY KEY);
         CREATE TABLE reconciliations (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -2633,7 +2774,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To22PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To23PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -2661,6 +2802,7 @@ final class FinanzVerwalterTests: XCTestCase {
             booking_date TEXT NOT NULL DEFAULT '2025-01-01'
         );
         CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
+        CREATE TABLE payment_orders (id TEXT PRIMARY KEY);
         CREATE TABLE reconciliations (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -2747,8 +2889,62 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 22)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 23)
         sqlite3_finalize(statement)
+    }
+
+    func testMigration22To23PromotesLegacyPayeeBankData() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-migration-22-23-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.qdata")
+        let payee = FinancePayee(
+            id: UUID(), canonicalName: "Legacy Lieferant", aliases: [],
+            address: "", email: "", phone: "",
+            iban: "DE89 3704 0044 0532 0130 00", bic: "COBADEFFXXX",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        var original: SQLiteFinanceStore? = try SQLiteFinanceStore(fileURL: url)
+        try original?.savePayee(payee)
+        original?.close()
+        original = nil
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        let downgradeSQL = """
+        ALTER TABLE payment_orders DROP COLUMN payee_bank_account_id;
+        ALTER TABLE payment_orders DROP COLUMN payee_id;
+        DROP TABLE payee_bank_accounts;
+        PRAGMA user_version=22;
+        """
+        var message: UnsafeMutablePointer<CChar>?
+        XCTAssertEqual(
+            sqlite3_exec(database, downgradeSQL, nil, nil, &message),
+            SQLITE_OK,
+            message.map { String(cString: $0) } ?? ""
+        )
+        if let message { sqlite3_free(message) }
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        let bankAccount = try XCTUnwrap(
+            migrated.payeeBankAccounts(payeeID: payee.id).first
+        )
+        XCTAssertEqual(bankAccount.label, "Standardkonto")
+        XCTAssertEqual(bankAccount.accountHolder, payee.canonicalName)
+        XCTAssertEqual(bankAccount.iban, "DE89370400440532013000")
+        XCTAssertEqual(bankAccount.bic, "COBADEFFXXX")
+        XCTAssertTrue(bankAccount.isDefault)
+        XCTAssertTrue(bankAccount.isActive)
+        XCTAssertTrue(try migrated.integrityCheck())
     }
 
     @MainActor

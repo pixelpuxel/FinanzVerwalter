@@ -1313,6 +1313,95 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 22")
             }
         }
+        if version < 23 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payee_bank_accounts (
+                        id TEXT PRIMARY KEY,
+                        payee_id TEXT NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+                        label TEXT NOT NULL,
+                        account_holder TEXT NOT NULL DEFAULT '',
+                        iban TEXT NOT NULL,
+                        bic TEXT NOT NULL DEFAULT '',
+                        bank_name TEXT NOT NULL DEFAULT '',
+                        is_default INTEGER NOT NULL DEFAULT 0,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(payee_id,iban),
+                        CHECK(is_default=0 OR is_active=1)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX payee_bank_accounts_one_default
+                    ON payee_bank_accounts(payee_id) WHERE is_default=1
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payee_bank_accounts_payee_active
+                    ON payee_bank_accounts(payee_id,is_active,label,id)
+                    """
+                )
+                try execute(
+                    "ALTER TABLE payment_orders ADD COLUMN payee_id TEXT REFERENCES payees(id)"
+                )
+                try execute(
+                    """
+                    ALTER TABLE payment_orders ADD COLUMN payee_bank_account_id TEXT
+                    REFERENCES payee_bank_accounts(id)
+                    """
+                )
+
+                var payeeColumns = Set<String>()
+                try query("PRAGMA table_info(payees)") {
+                    payeeColumns.insert(Self.text($0, 1))
+                }
+                if payeeColumns.isSuperset(of: ["id", "canonical_name", "iban", "bic"]) {
+                    var legacyAccounts: [(UUID, String, String, String)] = []
+                    try query(
+                        """
+                        SELECT id,canonical_name,iban,bic FROM payees
+                        WHERE TRIM(iban) != '' ORDER BY id
+                        """
+                    ) {
+                        guard let payeeID = UUID(uuidString: Self.text($0, 0)) else {
+                            return
+                        }
+                        legacyAccounts.append(
+                            (
+                                payeeID, Self.text($0, 1), Self.text($0, 2),
+                                Self.text($0, 3)
+                            )
+                        )
+                    }
+                    let now = Self.timestamp(Date())
+                    for legacy in legacyAccounts {
+                        try run(
+                            """
+                            INSERT INTO payee_bank_accounts(
+                                id,payee_id,label,account_holder,iban,bic,bank_name,
+                                is_default,is_active,created_at,updated_at
+                            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            [
+                                .text(UUID().uuidString),
+                                .text(legacy.0.uuidString), .text("Standardkonto"),
+                                .text(legacy.1),
+                                .text(IBANValidator.normalized(legacy.2)),
+                                .text(legacy.3.uppercased()), .text(""),
+                                .integer(1), .integer(1), .text(now), .text(now)
+                            ]
+                        )
+                    }
+                }
+                try execute("PRAGMA user_version = 23")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -1998,7 +2087,7 @@ final class SQLiteFinanceStore {
             """
             SELECT id,account_id,type,recipient_name,iban,bic,amount_minor,currency,
                    execution_date,purpose,end_to_end_id,status,idempotency_key,
-                   bank_reference,created_at,updated_at
+                   bank_reference,created_at,updated_at,payee_id,payee_bank_account_id
             FROM payment_orders ORDER BY created_at DESC,id DESC
             """
         ) {
@@ -2020,7 +2109,10 @@ final class SQLiteFinanceStore {
                     purpose: Self.text($0, 9), endToEndID: Self.text($0, 10),
                     status: status, idempotencyKey: Self.text($0, 12),
                     bankReference: Self.text($0, 13),
-                    createdAt: createdAt, updatedAt: updatedAt
+                    createdAt: createdAt, updatedAt: updatedAt,
+                    payeeID: Self.optionalText($0, 16).flatMap(UUID.init(uuidString:)),
+                    payeeBankAccountID: Self.optionalText($0, 17)
+                        .flatMap(UUID.init(uuidString:))
                 )
             )
         }
@@ -2267,7 +2359,167 @@ final class SQLiteFinanceStore {
                     [.text(value.id.uuidString), .text(tagID.uuidString)]
                 )
             }
+            let normalizedIBAN = IBANValidator.normalized(value.iban)
+            if !normalizedIBAN.isEmpty,
+               try scalarInt(
+                "SELECT COUNT(*) FROM payee_bank_accounts WHERE payee_id=? AND iban=?",
+                [.text(value.id.uuidString), .text(normalizedIBAN)]
+               ) == 0 {
+                let hasDefault = try scalarInt(
+                    "SELECT COUNT(*) FROM payee_bank_accounts WHERE payee_id=? AND is_default=1",
+                    [.text(value.id.uuidString)]
+                ) > 0
+                try run(
+                    """
+                    INSERT INTO payee_bank_accounts(
+                        id,payee_id,label,account_holder,iban,bic,bank_name,
+                        is_default,is_active,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(UUID().uuidString), .text(value.id.uuidString),
+                        .text("Standardkonto"), .text(name),
+                        .text(normalizedIBAN), .text(value.bic.uppercased()),
+                        .text(""), .integer(hasDefault ? 0 : 1), .integer(1),
+                        .text(now), .text(now)
+                    ]
+                )
+            }
             try audit(entity: "payee", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func payeeBankAccounts(payeeID: UUID? = nil) throws -> [FinancePayeeBankAccount] {
+        var values: [FinancePayeeBankAccount] = []
+        let sql: String
+        let bindings: [SQLiteValue]
+        if let payeeID {
+            sql = """
+                SELECT id,payee_id,label,account_holder,iban,bic,bank_name,
+                       is_default,is_active
+                FROM payee_bank_accounts WHERE payee_id=?
+                ORDER BY is_default DESC,is_active DESC,label COLLATE NOCASE,id
+                """
+            bindings = [.text(payeeID.uuidString)]
+        } else {
+            sql = """
+                SELECT id,payee_id,label,account_holder,iban,bic,bank_name,
+                       is_default,is_active
+                FROM payee_bank_accounts
+                ORDER BY payee_id,is_default DESC,is_active DESC,label COLLATE NOCASE,id
+                """
+            bindings = []
+        }
+        try query(sql, bindings) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let ownerID = UUID(uuidString: Self.text(statement, 1))
+            else { return }
+            values.append(
+                FinancePayeeBankAccount(
+                    id: id,
+                    payeeID: ownerID,
+                    label: Self.text(statement, 2),
+                    accountHolder: Self.text(statement, 3),
+                    iban: Self.text(statement, 4),
+                    bic: Self.text(statement, 5),
+                    bankName: Self.text(statement, 6),
+                    isDefault: sqlite3_column_int(statement, 7) != 0,
+                    isActive: sqlite3_column_int(statement, 8) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func savePayeeBankAccount(_ value: FinancePayeeBankAccount) throws {
+        let label = value.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let holder = value.accountHolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let iban = IBANValidator.normalized(value.iban)
+        guard !label.isEmpty else {
+            throw FinanceError.database("Die Bezeichnung der Bankverbindung fehlt.")
+        }
+        guard !holder.isEmpty else {
+            throw FinanceError.database("Der Kontoinhaber fehlt.")
+        }
+        guard IBANValidator.isValid(iban) else { throw FinanceError.invalidIBAN }
+        guard !value.isDefault || value.isActive else {
+            throw FinanceError.database("Eine inaktive Bankverbindung kann nicht Standard sein.")
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payees WHERE id=?",
+            [.text(value.payeeID.uuidString)]
+        ) == 1 else {
+            throw FinanceError.database("Die Empfängerakte wurde nicht gefunden.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM payee_bank_accounts WHERE id=? AND payee_id!=?",
+                [.text(value.id.uuidString), .text(value.payeeID.uuidString)]
+            ) == 0 else {
+                throw FinanceError.database(
+                    "Eine Bankverbindung kann nicht einer anderen Empfängerakte zugeordnet werden."
+                )
+            }
+            if value.isDefault {
+                try run(
+                    "UPDATE payee_bank_accounts SET is_default=0,updated_at=?,version=version+1 WHERE payee_id=? AND is_default=1 AND id!=?",
+                    [
+                        .text(now), .text(value.payeeID.uuidString),
+                        .text(value.id.uuidString)
+                    ]
+                )
+            }
+            try run(
+                """
+                INSERT INTO payee_bank_accounts(
+                    id,payee_id,label,account_holder,iban,bic,bank_name,
+                    is_default,is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET label=excluded.label,
+                    account_holder=excluded.account_holder,iban=excluded.iban,
+                    bic=excluded.bic,bank_name=excluded.bank_name,
+                    is_default=excluded.is_default,is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(value.payeeID.uuidString),
+                    .text(label), .text(holder), .text(iban),
+                    .text(value.bic.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()),
+                    .text(value.bankName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .integer(value.isDefault ? 1 : 0),
+                    .integer(value.isActive ? 1 : 0), .text(now), .text(now)
+                ]
+            )
+            if try scalarInt(
+                "SELECT COUNT(*) FROM payee_bank_accounts WHERE payee_id=? AND is_active=1 AND is_default=1",
+                [.text(value.payeeID.uuidString)]
+            ) == 0 {
+                var replacementID: UUID?
+                try query(
+                    """
+                    SELECT id FROM payee_bank_accounts
+                    WHERE payee_id=? AND is_active=1
+                    ORDER BY CASE WHEN id=? THEN 1 ELSE 0 END,label COLLATE NOCASE,id
+                    LIMIT 1
+                    """,
+                    [.text(value.payeeID.uuidString), .text(value.id.uuidString)]
+                ) {
+                    replacementID = UUID(uuidString: Self.text($0, 0))
+                }
+                if let replacementID {
+                    try run(
+                        "UPDATE payee_bank_accounts SET is_default=1,updated_at=?,version=version+1 WHERE id=?",
+                        [.text(now), .text(replacementID.uuidString)]
+                    )
+                }
+            }
+            try audit(
+                entity: "payee_bank_account",
+                id: value.id,
+                action: "save",
+                details: "payee=\(value.payeeID.uuidString);label=\(label)"
+            )
         }
     }
 
@@ -3543,6 +3795,44 @@ final class SQLiteFinanceStore {
 
     func createPaymentOrder(_ value: PaymentOrder) throws {
         try value.validate()
+        if value.payeeID == nil, value.payeeBankAccountID != nil {
+            throw FinanceError.database(
+                "Eine Bankverbindung benötigt eine verknüpfte Empfängerakte."
+            )
+        }
+        if let payeeID = value.payeeID {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM payees WHERE id=? AND is_active=1",
+                [.text(payeeID.uuidString)]
+            ) == 1 else {
+                throw FinanceError.database(
+                    "Die verknüpfte Empfängerakte fehlt oder ist inaktiv."
+                )
+            }
+        }
+        if let bankAccountID = value.payeeBankAccountID {
+            guard let payeeID = value.payeeID,
+                  let bankAccount = try payeeBankAccounts(payeeID: payeeID)
+                    .first(where: { $0.id == bankAccountID }),
+                  bankAccount.isActive
+            else {
+                throw FinanceError.database(
+                    "Die gewählte Empfänger-Bankverbindung fehlt oder ist inaktiv."
+                )
+            }
+            guard bankAccount.accountHolder
+                    == value.recipientName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                  IBANValidator.normalized(bankAccount.iban)
+                    == IBANValidator.normalized(value.iban),
+                  bankAccount.bic.uppercased() == value.bic.uppercased()
+            else {
+                throw FinanceError.database(
+                    "Die Zahlungsdaten stimmen nicht mehr mit der gewählten Bankverbindung überein."
+                )
+            }
+        }
         if try scalarInt(
             "SELECT COUNT(*) FROM payment_orders WHERE idempotency_key=?",
             [.text(value.idempotencyKey)]
@@ -3556,8 +3846,8 @@ final class SQLiteFinanceStore {
                 INSERT INTO payment_orders(
                     id,finance_file_id,account_id,type,recipient_name,iban,bic,amount_minor,
                     currency,execution_date,purpose,end_to_end_id,status,idempotency_key,
-                    bank_reference,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    bank_reference,created_at,updated_at,payee_id,payee_bank_account_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 [
                     .text(value.id.uuidString), .text(info.id.uuidString),
@@ -3568,7 +3858,9 @@ final class SQLiteFinanceStore {
                     .text(value.purpose), .text(value.endToEndID),
                     .text(value.status.rawValue), .text(value.idempotencyKey),
                     .text(value.bankReference), .text(Self.timestamp(value.createdAt)),
-                    .text(Self.timestamp(value.updatedAt))
+                    .text(Self.timestamp(value.updatedAt)),
+                    value.payeeID.map { .text($0.uuidString) } ?? .null,
+                    value.payeeBankAccountID.map { .text($0.uuidString) } ?? .null
                 ]
             )
             try audit(entity: "payment_order", id: value.id, action: "create", details: value.type.rawValue)

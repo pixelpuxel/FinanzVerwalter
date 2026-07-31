@@ -94,6 +94,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
+    @Published private(set) var payeeBankAccounts: [FinancePayeeBankAccount] = []
     @Published private(set) var sepaMandates: [FinanceSEPAMandate] = []
     @Published private(set) var tags: [FinanceTag] = []
     @Published private(set) var securities: [Security] = []
@@ -490,6 +491,19 @@ final class FinanceAppStore: ObservableObject {
             try repository.savePayee(value)
             try load()
             statusText = "Empfänger „\(value.canonicalName)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func savePayeeBankAccount(_ value: FinancePayeeBankAccount) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.savePayeeBankAccount(value)
+            try load()
+            statusText = "Bankverbindung „\(value.label)“ gespeichert"
             return true
         } catch {
             present(error)
@@ -1490,7 +1504,9 @@ final class FinanceAppStore: ObservableObject {
         amount: String,
         executionDate: Date,
         purpose: String,
-        endToEndID: String
+        endToEndID: String,
+        payeeID: UUID? = nil,
+        payeeBankAccountID: UUID? = nil
     ) -> Bool {
         guard let repository, let account = accounts.first(where: { $0.id == accountID }) else {
             return false
@@ -1520,7 +1536,9 @@ final class FinanceAppStore: ObservableObject {
                     purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),
                     endToEndID: endToEndID.trimmingCharacters(in: .whitespacesAndNewlines),
                     status: .draft, idempotencyKey: idempotencyKey,
-                    bankReference: "", createdAt: now, updatedAt: now
+                    bankReference: "", createdAt: now, updatedAt: now,
+                    payeeID: payeeID,
+                    payeeBankAccountID: payeeBankAccountID
                 )
             )
             try load()
@@ -1912,6 +1930,7 @@ final class FinanceAppStore: ObservableObject {
         paymentOrders = try repository.paymentOrders()
         standingOrders = try repository.standingOrders()
         payees = try repository.payees()
+        payeeBankAccounts = try repository.payeeBankAccounts()
         sepaMandates = try repository.sepaMandates()
         tags = try repository.tags()
         securities = try repository.securities()

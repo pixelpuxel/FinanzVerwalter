@@ -463,6 +463,18 @@ struct FinancePayee: Identifiable, Hashable, Sendable {
     var isActive: Bool
 }
 
+struct FinancePayeeBankAccount: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var payeeID: UUID
+    var label: String
+    var accountHolder: String
+    var iban: String
+    var bic: String
+    var bankName: String
+    var isDefault: Bool
+    var isActive: Bool
+}
+
 enum SEPAMandateSequenceType: String, CaseIterable, Codable, Sendable {
     case oneOff
     case first
@@ -895,6 +907,8 @@ struct PaymentOrder: Identifiable, Hashable, Sendable {
     var bankReference: String
     var createdAt: Date
     var updatedAt: Date
+    var payeeID: UUID? = nil
+    var payeeBankAccountID: UUID? = nil
 
     func validate() throws {
         guard !recipientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
