@@ -911,6 +911,7 @@ struct PaymentOrder: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var payeeID: UUID? = nil
     var payeeBankAccountID: UUID? = nil
+    var purposeCode: String = ""
 
     func validate() throws {
         guard !recipientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -919,6 +920,11 @@ struct PaymentOrder: Identifiable, Hashable, Sendable {
             throw FinanceError.database("Empfänger, Verwendungszweck und positiver Betrag sind erforderlich.")
         }
         guard IBANValidator.isValid(iban) else { throw FinanceError.invalidIBAN }
+        guard purposeCode.isEmpty || purposeCode.range(
+            of: "^[A-Z0-9]{1,4}$", options: .regularExpression
+        ) != nil else {
+            throw FinanceError.database("Der SEPA-Zweckcode ist ungültig.")
+        }
     }
 }
 

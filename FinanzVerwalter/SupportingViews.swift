@@ -6925,6 +6925,9 @@ private struct PaymentOrderDetail: View {
                     GridRow { Text("Betrag").foregroundStyle(.secondary); Text(Money(minorUnits: order.amountMinor).formatted).bold() }
                     GridRow { Text("Ausführung").foregroundStyle(.secondary); Text(order.executionDate, format: .dateTime.day().month().year()) }
                     GridRow { Text("Zweck").foregroundStyle(.secondary); Text(order.purpose) }
+                    if !order.purposeCode.isEmpty {
+                        GridRow { Text("SEPA-Zweckcode").foregroundStyle(.secondary); Text(order.purposeCode).monospaced() }
+                    }
                     GridRow { Text("End-to-End-ID").foregroundStyle(.secondary); Text(order.endToEndID).monospaced() }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -7528,12 +7531,18 @@ private struct PaymentDraftEditor: View {
     @State private var executionDate = Date()
     @State private var purpose = ""
     @State private var endToEndID = "NOTPROVIDED"
+    @State private var purposeCode = ""
+    @State private var showEPCQRImporter = false
+    @State private var epcInformation = ""
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Zahlungsentwurf").font(.title2.bold())
                 Spacer()
+                Button("EPC-QR einlesen …", systemImage: "qrcode.viewfinder") {
+                    showEPCQRImporter = true
+                }
                 Button("Abbrechen") { dismiss() }
                 Button("Entwurf anlegen") {
                     guard let accountID else { return }
@@ -7543,7 +7552,8 @@ private struct PaymentDraftEditor: View {
                         executionDate: executionDate, purpose: purpose,
                         endToEndID: endToEndID,
                         payeeID: payeeID,
-                        payeeBankAccountID: payeeBankAccountID
+                        payeeBankAccountID: payeeBankAccountID,
+                        purposeCode: purposeCode
                     ) { dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -7591,7 +7601,14 @@ private struct PaymentDraftEditor: View {
                     TextField("Betrag", text: $amount)
                     DatePicker("Ausführung", selection: $executionDate, displayedComponents: .date)
                     TextField("Verwendungszweck", text: $purpose)
+                    TextField("SEPA-Zweckcode (optional)", text: $purposeCode)
                     TextField("End-to-End-ID", text: $endToEndID)
+                }
+                if !epcInformation.isEmpty {
+                    Section("Hinweis aus dem EPC-QR-Code") {
+                        Text(epcInformation)
+                            .textSelection(.enabled)
+                    }
                 }
                 Section {
                     Label(
@@ -7603,8 +7620,30 @@ private struct PaymentDraftEditor: View {
             }
             .formStyle(.grouped)
         }
-        .frame(width: 650, height: 720)
+        .frame(width: 700, height: 760)
         .onAppear { accountID = accountID ?? store.accounts.first?.id }
+        .fileImporter(
+            isPresented: $showEPCQRImporter,
+            allowedContentTypes: [.image], allowsMultipleSelection: false
+        ) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                Task {
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    do {
+                        let payload = try await Task.detached(priority: .userInitiated) {
+                            try EPCQRImporter.decodeImage(at: url)
+                        }.value
+                        apply(payload)
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                }
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private var selectedPayeeBankAccounts: [FinancePayeeBankAccount] {
@@ -7637,6 +7676,34 @@ private struct PaymentDraftEditor: View {
         recipientName = bankAccount.accountHolder
         iban = bankAccount.iban
         bic = bankAccount.bic
+    }
+
+    private func apply(_ payload: EPCQRPayload) {
+        type = .sepaCreditTransfer
+        recipientName = payload.recipientName
+        iban = payload.iban
+        bic = payload.bic
+        amount = payload.amountMinor.map {
+            Money(minorUnits: $0, currency: "EUR").editingString
+        } ?? ""
+        purpose = payload.paymentPurpose
+        purposeCode = payload.purposeCode
+        epcInformation = payload.information
+
+        let candidates = store.payeeBankAccounts.filter { bank in
+            bank.isActive
+                && bank.accountHolder == payload.recipientName
+                && IBANValidator.normalized(bank.iban) == payload.iban
+                && (payload.bic.isEmpty || bank.bic.uppercased() == payload.bic)
+                && store.payees.contains { $0.id == bank.payeeID && $0.isActive }
+        }
+        if candidates.count == 1, let bank = candidates.first {
+            payeeID = bank.payeeID
+            payeeBankAccountID = bank.id
+        } else {
+            payeeID = nil
+            payeeBankAccountID = nil
+        }
     }
 }
 

@@ -1,9 +1,92 @@
 import XCTest
 import SQLite3
 import PDFKit
+import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 @testable import FinanzVerwalter
 
 final class FinanzVerwalterTests: XCTestCase {
+    @MainActor
+    func testEPCQRParsesScansPersistsAndExportsPurposeCode() throws {
+        let text = [
+            "BCD", "002", "1", "SCT", "COBADEFFXXX",
+            "Stadtwerke Nord", "DE12500105170648489890", "EUR12.30",
+            "GDDS", "RF18539007547034", "", "Nur mit Rechnung abgleichen"
+        ].joined(separator: "\n")
+        let parsed = try EPCQRImporter.parse(text)
+        XCTAssertEqual(parsed.version, "002")
+        XCTAssertEqual(parsed.amountMinor, 1_230)
+        XCTAssertEqual(parsed.purposeCode, "GDDS")
+        XCTAssertEqual(parsed.paymentPurpose, "RF18539007547034")
+
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "M"
+        let output = try XCTUnwrap(filter.outputImage).transformed(
+            by: CGAffineTransform(scaleX: 8, y: 8)
+        )
+        let cgImage = try XCTUnwrap(
+            CIContext().createCGImage(output, from: output.extent)
+        )
+        let representation = NSBitmapImageRep(cgImage: cgImage)
+        let png = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("epc-qr-\(UUID().uuidString).png")
+        try png.write(to: imageURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+        XCTAssertEqual(try EPCQRImporter.decodeImage(at: imageURL), parsed)
+
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "Bank", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Max Mustermann"
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        try context.store.saveAccount(account)
+        let now = Pain001Exporter.gregorianDate(year: 2026, month: 7, day: 31)
+        let order = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+            recipientName: parsed.recipientName, iban: parsed.iban,
+            bic: parsed.bic, amountMinor: try XCTUnwrap(parsed.amountMinor),
+            currency: "EUR", executionDate: now, purpose: parsed.paymentPurpose,
+            endToEndID: "NOTPROVIDED", status: .draft,
+            idempotencyKey: UUID().uuidString, bankReference: "",
+            createdAt: now, updatedAt: now, purposeCode: parsed.purposeCode
+        )
+        try context.store.createPaymentOrder(order)
+        XCTAssertEqual(try context.store.paymentOrders().first?.purposeCode, "GDDS")
+        let xml = try Pain001Exporter.export(
+            order: order, account: account, createdAt: now
+        ).data
+        XCTAssertTrue(String(decoding: xml, as: UTF8.self).contains("<Purp><Cd>GDDS</Cd></Purp>"))
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testEPCQRRejectsUnsafeOrContradictoryPayloads() throws {
+        let valid = [
+            "BCD", "002", "1", "SCT", "", "Empfänger",
+            "DE12500105170648489890", "EUR0.01", "", "", "Rechnung"
+        ].joined(separator: "\n")
+        XCTAssertNoThrow(try EPCQRImporter.parse(valid))
+        XCTAssertThrowsError(try EPCQRImporter.parse(valid + "\n"))
+        XCTAssertThrowsError(try EPCQRImporter.parse(valid.replacingOccurrences(of: "EUR0.01", with: "USD0.01")))
+        XCTAssertThrowsError(try EPCQRImporter.parse(valid.replacingOccurrences(of: "EUR0.01", with: "EUR1000000000.00")))
+        XCTAssertThrowsError(try EPCQRImporter.parse(valid.replacingOccurrences(of: "\n\nRechnung", with: "\nRF00539007547034\nRechnung")))
+        XCTAssertThrowsError(try EPCQRImporter.parse(valid.replacingOccurrences(of: "\n\nRechnung", with: "\nRF18539007547034\nRechnung")))
+        XCTAssertThrowsError(try EPCQRImporter.parse(valid.replacingOccurrences(of: "\n1\nSCT", with: "\n2\nSCT").replacingOccurrences(of: "Empfänger", with: "Empfänger 😀")))
+        let oversized = [
+            "BCD", "002", "1", "SCT", "COBADEFFXXX",
+            String(repeating: "N", count: 70), "DE12500105170648489890",
+            "EUR999999999.99", "GDDS", "",
+            String(repeating: "Z", count: 140), String(repeating: "I", count: 70)
+        ].joined(separator: "\n")
+        XCTAssertThrowsError(try EPCQRImporter.parse(oversized))
+    }
+
     func testPainInstructionImporterRoundTripsCreditAndDebitExports() throws {
         var account = FinanceAccount(
             id: UUID(), name: "SEPA-Konto", institution: "Bank",
@@ -3828,7 +3911,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To27PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To28PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -3943,11 +4026,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 27)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 28)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To27PromotesLegacyPayeeBankData() throws {
+    func testMigration22To28PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -3981,6 +4064,7 @@ final class FinanzVerwalterTests: XCTestCase {
         DROP TABLE payment_batch_items;
         DROP TABLE payment_batches;
         DROP TABLE direct_debit_orders;
+        ALTER TABLE payment_orders DROP COLUMN purpose_code;
         ALTER TABLE payment_orders DROP COLUMN payee_bank_account_id;
         ALTER TABLE payment_orders DROP COLUMN payee_id;
         DROP TABLE payee_bank_accounts;

@@ -24,6 +24,7 @@ struct PainInstructionRecord: Identifiable, Hashable, Sendable {
     let amountMinor: Int64
     let requestedDate: Date
     let purpose: String
+    let purposeCode: String
     let isInstant: Bool
     let creditorID: String
     let mandateReference: String
@@ -303,6 +304,7 @@ private extension PainInstructionImporter {
                 counterpartyBIC: try bic(node.text(at: ["CdtrAgt", "FinInstnId", "BICFI"]), "Empfänger-BIC"),
                 amountMinor: amount, requestedDate: requestedDate,
                 purpose: try text(node.text(at: ["RmtInf", "Ustrd"]), "Verwendungszweck"),
+                purposeCode: try purposeCode(node.text(at: ["Purp", "Cd"])),
                 isInstant: instant, creditorID: "", mandateReference: "",
                 mandateSignedOn: nil, sequenceType: nil
             )
@@ -349,6 +351,7 @@ private extension PainInstructionImporter {
                 amountMinor: try amount(node.firstChild(named: "InstdAmt")),
                 requestedDate: requestedDate,
                 purpose: try text(node.text(at: ["RmtInf", "Ustrd"]), "Verwendungszweck"),
+                purposeCode: "",
                 isInstant: false,
                 creditorID: SEPACreditorIDValidator.normalized(creditorID),
                 mandateReference: try identifier(
@@ -447,6 +450,14 @@ private extension PainInstructionImporter {
         guard normalized.isEmpty || normalized.range(
             of: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$", options: .regularExpression
         ) != nil else { throw invalid("\(field) ist ungültig.") }
+        return normalized
+    }
+
+    static func purposeCode(_ value: String?) throws -> String {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard normalized.isEmpty || normalized.range(
+            of: "^[A-Z0-9]{1,4}$", options: .regularExpression
+        ) != nil else { throw invalid("Der SEPA-Zweckcode ist ungültig.") }
         return normalized
     }
 

@@ -27,6 +27,7 @@ enum Pain001ExportError: LocalizedError, Equatable {
     case euroRequired
     case textTooLong(field: String, maximum: Int)
     case invalidIdentifier(String)
+    case invalidPurposeCode
     case amountOutOfRange
 
     var errorDescription: String? {
@@ -51,6 +52,8 @@ enum Pain001ExportError: LocalizedError, Equatable {
             "\(field) darf höchstens \(maximum) Zeichen enthalten."
         case .invalidIdentifier(let field):
             "\(field) darf nicht mit „/“ beginnen oder enden und kein „//“ enthalten."
+        case .invalidPurposeCode:
+            "Der SEPA-Zweckcode muss aus ein bis vier Großbuchstaben oder Ziffern bestehen."
         case .amountOutOfRange:
             "Der Betrag überschreitet den Wertebereich des pain.001-Formats."
         }
@@ -127,6 +130,10 @@ enum Pain001Exporter {
         try validateIdentifier(
             endToEndID, field: "End-to-End-ID", maximum: 35
         )
+        let purposeCode = order.purposeCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard purposeCode.isEmpty || purposeCode.range(
+            of: "^[A-Z0-9]{1,4}$", options: .regularExpression
+        ) != nil else { throw Pain001ExportError.invalidPurposeCode }
 
         let debtorBIC = try normalizedBIC(account.bic)
         let creditorBIC = try normalizedBIC(order.bic)
@@ -154,6 +161,10 @@ enum Pain001Exporter {
               <CdtrAgt>
                 <FinInstnId><BICFI>\(xml(creditorBIC))</BICFI></FinInstnId>
               </CdtrAgt>
+        """
+        let purposeElement = purposeCode.isEmpty ? "" : """
+
+                <Purp><Cd>\(xml(purposeCode))</Cd></Purp>
         """
 
         let content = """
@@ -185,7 +196,7 @@ enum Pain001Exporter {
                 <PmtId><EndToEndId>\(xml(endToEndID))</EndToEndId></PmtId>
                 <Amt><InstdAmt Ccy="EUR">\(amount)</InstdAmt></Amt>\(creditorAgent)
                 <Cdtr><Nm>\(xml(recipientName))</Nm></Cdtr>
-                <CdtrAcct><Id><IBAN>\(IBANValidator.normalized(order.iban))</IBAN></Id></CdtrAcct>
+                <CdtrAcct><Id><IBAN>\(IBANValidator.normalized(order.iban))</IBAN></Id></CdtrAcct>\(purposeElement)
                 <RmtInf><Ustrd>\(xml(purpose))</Ustrd></RmtInf>
               </CdtTrfTxInf>
             </PmtInf>
@@ -291,12 +302,19 @@ enum Pain001Exporter {
                   <FinInstnId><BICFI>\(xml(creditorBIC))</BICFI></FinInstnId>
                 </CdtrAgt>
             """
+            let purposeCode = order.purposeCode.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let purposeElement = purposeCode.isEmpty ? "" : """
+
+                <Purp><Cd>\(xml(purposeCode))</Cd></Purp>
+            """
             return """
               <CdtTrfTxInf>
                 <PmtId><EndToEndId>\(xml(normalizedEndToEndID(order.endToEndID)))</EndToEndId></PmtId>
                 <Amt><InstdAmt Ccy="EUR">\(decimalAmount(order.amountMinor))</InstdAmt></Amt>\(creditorAgent)
                 <Cdtr><Nm>\(xml(order.recipientName.trimmingCharacters(in: .whitespacesAndNewlines)))</Nm></Cdtr>
-                <CdtrAcct><Id><IBAN>\(IBANValidator.normalized(order.iban))</IBAN></Id></CdtrAcct>
+                <CdtrAcct><Id><IBAN>\(IBANValidator.normalized(order.iban))</IBAN></Id></CdtrAcct>\(purposeElement)
                 <RmtInf><Ustrd>\(xml(order.purpose.trimmingCharacters(in: .whitespacesAndNewlines)))</Ustrd></RmtInf>
               </CdtTrfTxInf>
             """

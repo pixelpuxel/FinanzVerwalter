@@ -1603,6 +1603,14 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 27")
             }
         }
+        if version < 28 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE payment_orders ADD COLUMN purpose_code TEXT NOT NULL DEFAULT '' CHECK(length(purpose_code)<=4)"
+                )
+                try execute("PRAGMA user_version = 28")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2288,7 +2296,8 @@ final class SQLiteFinanceStore {
             """
             SELECT id,account_id,type,recipient_name,iban,bic,amount_minor,currency,
                    execution_date,purpose,end_to_end_id,status,idempotency_key,
-                   bank_reference,created_at,updated_at,payee_id,payee_bank_account_id
+                   bank_reference,created_at,updated_at,payee_id,payee_bank_account_id,
+                   purpose_code
             FROM payment_orders ORDER BY created_at DESC,id DESC
             """
         ) {
@@ -2313,7 +2322,8 @@ final class SQLiteFinanceStore {
                     createdAt: createdAt, updatedAt: updatedAt,
                     payeeID: Self.optionalText($0, 16).flatMap(UUID.init(uuidString:)),
                     payeeBankAccountID: Self.optionalText($0, 17)
-                        .flatMap(UUID.init(uuidString:))
+                        .flatMap(UUID.init(uuidString:)),
+                    purposeCode: Self.text($0, 18)
                 )
             )
         }
@@ -2598,7 +2608,8 @@ final class SQLiteFinanceStore {
                             idempotencyKey: "pain-instruction:\(preview.document.fingerprint):\(match.id.uuidString)",
                             bankReference: "", createdAt: now, updatedAt: now,
                             payeeID: match.payeeID,
-                            payeeBankAccountID: match.payeeBankAccountID
+                            payeeBankAccountID: match.payeeBankAccountID,
+                            purposeCode: record.purposeCode
                         )
                     )
                 case .directDebit:
@@ -4596,8 +4607,9 @@ final class SQLiteFinanceStore {
                 INSERT INTO payment_orders(
                     id,finance_file_id,account_id,type,recipient_name,iban,bic,amount_minor,
                     currency,execution_date,purpose,end_to_end_id,status,idempotency_key,
-                    bank_reference,created_at,updated_at,payee_id,payee_bank_account_id
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    bank_reference,created_at,updated_at,payee_id,payee_bank_account_id,
+                    purpose_code
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 [
                     .text(value.id.uuidString), .text(info.id.uuidString),
@@ -4610,7 +4622,8 @@ final class SQLiteFinanceStore {
                     .text(value.bankReference), .text(Self.timestamp(value.createdAt)),
                     .text(Self.timestamp(value.updatedAt)),
                     value.payeeID.map { .text($0.uuidString) } ?? .null,
-                    value.payeeBankAccountID.map { .text($0.uuidString) } ?? .null
+                    value.payeeBankAccountID.map { .text($0.uuidString) } ?? .null,
+                    .text(value.purposeCode)
                 ]
             )
             try audit(entity: "payment_order", id: value.id, action: "create", details: value.type.rawValue)

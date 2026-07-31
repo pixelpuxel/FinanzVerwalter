@@ -1510,7 +1510,8 @@ final class FinanceAppStore: ObservableObject {
         purpose: String,
         endToEndID: String,
         payeeID: UUID? = nil,
-        payeeBankAccountID: UUID? = nil
+        payeeBankAccountID: UUID? = nil,
+        purposeCode: String = ""
     ) -> Bool {
         guard let repository, let account = accounts.first(where: { $0.id == accountID }) else {
             return false
@@ -1518,6 +1519,8 @@ final class FinanceAppStore: ObservableObject {
         do {
             let money = try Money(parsing: amount, currency: account.currency)
             let normalizedIBAN = IBANValidator.normalized(iban)
+            let normalizedPurposeCode = purposeCode
+                .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             let day = executionDate.formatted(
                 .iso8601.year().month().day().dateSeparator(.dash)
             )
@@ -1525,7 +1528,8 @@ final class FinanceAppStore: ObservableObject {
                 accountID.uuidString, type.rawValue, normalizedIBAN,
                 String(abs(money.minorUnits)), day,
                 purpose.trimmingCharacters(in: .whitespacesAndNewlines),
-                endToEndID.trimmingCharacters(in: .whitespacesAndNewlines)
+                endToEndID.trimmingCharacters(in: .whitespacesAndNewlines),
+                normalizedPurposeCode
             ].joined(separator: "|")
             let idempotencyKey = SHA256.hash(data: Data(canonical.utf8))
                 .map { String(format: "%02x", $0) }.joined()
@@ -1542,7 +1546,8 @@ final class FinanceAppStore: ObservableObject {
                     status: .draft, idempotencyKey: idempotencyKey,
                     bankReference: "", createdAt: now, updatedAt: now,
                     payeeID: payeeID,
-                    payeeBankAccountID: payeeBankAccountID
+                    payeeBankAccountID: payeeBankAccountID,
+                    purposeCode: normalizedPurposeCode
                 )
             )
             try load()
