@@ -3384,6 +3384,117 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testCombinedRegisterQueryForecastBalancesAndSavedViewRoundTrip() throws {
+        let firstAccount = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 1_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let secondAccount = FinanceAccount(
+            id: UUID(), name: "Dollar", institution: "", type: .cash,
+            currency: "USD", openingBalanceMinor: 2_000,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        let categoryID = UUID()
+        let booked = FinanceTransaction(
+            id: UUID(), accountID: firstAccount.id,
+            bookingDate: Date(timeIntervalSince1970: 100), valueDate: nil,
+            payee: "Miete", purpose: "Wohnung", categoryID: categoryID,
+            amountMinor: -100, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let cancelled = FinanceTransaction(
+            id: UUID(), accountID: firstAccount.id,
+            bookingDate: Date(timeIntervalSince1970: 200), valueDate: nil,
+            payee: "Storno", purpose: "", categoryID: categoryID,
+            amountMinor: -500, currency: "EUR", status: .cancelled,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let dollar = FinanceTransaction(
+            id: UUID(), accountID: secondAccount.id,
+            bookingDate: Date(timeIntervalSince1970: 300), valueDate: nil,
+            payee: "Kunde", purpose: "Erstattung", categoryID: nil,
+            amountMinor: 200, currency: "USD", status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let forecast = FinanceTransaction(
+            id: UUID(), accountID: firstAccount.id,
+            bookingDate: Date(timeIntervalSince1970: 400), valueDate: nil,
+            payee: "Miete", purpose: "Zukunft", categoryID: categoryID,
+            amountMinor: -50, currency: "EUR", status: .expected,
+            memo: "", reference: "SCHEDULED:test", transferID: nil,
+            importFingerprint: nil, splits: [], origin: .scheduled
+        )
+        let allAccountIDs: Set<UUID> = [firstAccount.id, secondAccount.id]
+        let result = CombinedRegisterQuery.evaluate(
+            transactions: [booked, cancelled, dollar],
+            forecastTransactions: [forecast],
+            allAccountIDs: allAccountIDs,
+            includedAccountIDs: [],
+            status: nil,
+            category: .all,
+            period: .all,
+            customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: "",
+            includeForecast: true
+        ) { transaction in
+            transaction.categoryID == categoryID ? "Wohnen › Miete" : ""
+        }
+        XCTAssertFalse(result.isFiltered)
+        XCTAssertEqual(result.rows.map(\.id), [
+            booked.id, cancelled.id, dollar.id, forecast.id
+        ])
+        XCTAssertEqual(result.totalsByCurrency["EUR"], -150)
+        XCTAssertEqual(result.totalsByCurrency["USD"], 200)
+
+        let filtered = CombinedRegisterQuery.evaluate(
+            transactions: [booked, cancelled, dollar],
+            forecastTransactions: [forecast],
+            allAccountIDs: allAccountIDs,
+            includedAccountIDs: [firstAccount.id],
+            status: .booked,
+            category: .category(categoryID),
+            period: .all,
+            customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: "Wohnen",
+            includeForecast: true
+        ) { _ in "Wohnen › Miete" }
+        XCTAssertTrue(filtered.isFiltered)
+        XCTAssertEqual(filtered.rows.map(\.id), [booked.id])
+
+        let balances = CombinedRegisterQuery.runningBalances(
+            accounts: [firstAccount, secondAccount],
+            transactions: [booked, cancelled, dollar, forecast]
+        )
+        XCTAssertEqual(balances[booked.id], 900)
+        XCTAssertEqual(balances[cancelled.id], 900)
+        XCTAssertEqual(balances[forecast.id], 850)
+        XCTAssertEqual(balances[dollar.id], 2_200)
+
+        let view = SavedCombinedRegisterView(
+            id: UUID(), name: "Zukunft Miete",
+            includedAccountIDs: [firstAccount.id],
+            statusRawValue: TransactionStatus.expected.rawValue,
+            categorySelection: .category(categoryID),
+            periodRawValue: RegisterPeriodFilter.currentYear.rawValue,
+            customStart: Date(timeIntervalSince1970: 10),
+            customEnd: Date(timeIntervalSince1970: 20),
+            includeForecast: true,
+            rowModeRawValue: "twoLines",
+            visibleColumns: [.date, .payee, .amount, .balance]
+        )
+        let encoded = try RegisterPreferencesCodec.encodeCombinedViews([view])
+        XCTAssertEqual(
+            RegisterPreferencesCodec.decodeCombinedViews(encoded),
+            [view]
+        )
+    }
+
     func testBankingDownloadCommitsAtomicallyAndIsIdempotent() async throws {
         let context = try TestDatabase()
         var account = FinanceAccount(

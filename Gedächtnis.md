@@ -884,3 +884,31 @@ Rechtsberatung.
   enthält denselben geprüften Kontenblatt-, Saldo-, Release-, GitHub- und
   Teststatus, bittet um manuelles Entsperren für die echte Sichtabnahme und
   nennt den Zielzählerstand von 6.898.694 verbrauchten Tokens.
+- Das Sammelkontoblatt kombiniert nun frei auswählbare offene Konten mit
+  eigenen Status-, vollständigen Kategorie-, Zeitraum- und Volltextfiltern.
+  Regelmäßige Vorgänge können deterministisch für 365 Tage eingeblendet
+  werden; die erste Zukunftszeile erhält eine blaue Heute-Grenze.
+- Reale und errechnete Zukunftszeilen erhalten einen kontenweisen laufenden
+  Saldo ab Eröffnungssaldo. Stornos verändern ihn nicht. Kopf- und
+  Statussummen bleiben nach Währung getrennt und schließen Umbuchungen und
+  Stornos aus. Bei jeder Einschränkung steht ausdrücklich dabei, dass die
+  gefilterte Bewegungssumme kein Kontostand ist.
+- Mehrfachkategorisierung reicht ausschließlich persistente Buchungs-UUIDs
+  an den bestehenden atomaren Commit weiter; errechnete Zukunftsvorgänge
+  sind geschützt. Systemdruck und PDF übernehmen sichtbare Spalten, Zeilen,
+  Zukunftsvorgänge und Filterbeschreibung.
+- Benannte Sammelansichten speichern Kontenmenge, Status, Kategorie,
+  Zeitraum, eigene Datumsgrenzen, Zukunftsschalter, Zeilenmodus und Spalten
+  deterministisch als lokales JSON. Ungültige Konten werden beim Laden
+  entfernt.
+- Ein neuer Domänentest prüft Kontenkombination, kombinierte Filter,
+  chronologische Reihenfolge, Währungstrennung, Stornoausschluss,
+  Zukunftssalden und Ansichten-Roundtrip. Die vollständige Abnahme führte 52
+  Tests aus: 51 bestanden, der private opt-in-Real-QIF-Test wurde
+  erwartungsgemäß übersprungen, 0 Fehler. Test-Build und optimierter
+  Release-Build bestehen.
+- Der Release ist unter `~/Applications/FinanzVerwalter.app` installiert,
+  ad hoc signaturgeprüft und gestartet. Schema 21, Integrität `ok`, 97
+  Konten, 2.170 Buchungen, 0 Banking-Verbindungen und 0 Abrufläufe blieben
+  unverändert. Der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-sammelkontoblatt-20260731-1212.app`.

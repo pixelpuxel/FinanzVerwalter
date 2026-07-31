@@ -134,6 +134,20 @@ struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var visibleColumns: Set<RegisterColumn>
 }
 
+struct SavedCombinedRegisterView: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    var name: String
+    var includedAccountIDs: Set<UUID>
+    var statusRawValue: String?
+    var categorySelection: RegisterCategorySelection
+    var periodRawValue: String
+    var customStart: Date
+    var customEnd: Date
+    var includeForecast: Bool
+    var rowModeRawValue: String
+    var visibleColumns: Set<RegisterColumn>
+}
+
 enum RegisterPreferencesCodec {
     static func encodeTabAccountIDs(_ ids: [UUID]) -> String {
         var seen = Set<UUID>()
@@ -212,6 +226,39 @@ enum RegisterPreferencesCodec {
                 return normalizedView
             }
             .filter { !$0.name.isEmpty }
+    }
+
+    static func encodeCombinedViews(
+        _ views: [SavedCombinedRegisterView]
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(views), as: UTF8.self)
+    }
+
+    static func decodeCombinedViews(
+        _ value: String
+    ) -> [SavedCombinedRegisterView] {
+        guard !value.isEmpty, let data = value.data(using: .utf8) else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let decoded = try? decoder.decode(
+            [SavedCombinedRegisterView].self,
+            from: data
+        ) else { return [] }
+        var seen = Set<UUID>()
+        return decoded.compactMap { view in
+            guard seen.insert(view.id).inserted else { return nil }
+            var normalizedView = view
+            normalizedView.name = view.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            normalizedView.visibleColumns = normalized(view.visibleColumns)
+            return normalizedView.name.isEmpty ? nil : normalizedView
+        }
     }
 
     private static func normalized(

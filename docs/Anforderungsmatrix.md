@@ -19,7 +19,7 @@ fertigen Funktionsbereich.
 | P0 | Regeln | Erfüllt für lokalen Kern | Versionierte rekursive AND/OR-Ausdrücke, 16 fachliche Felder, acht Operatoren einschließlich Regex/Bereich/Leerprüfung, Kategorie-/Empfänger-/Notiz-/Tag-/Text-/Splitaktionen, Priorität, Konfliktanzeige, buchungsweise Vorher/Nachher-Auswahl, atomarer Commit, vollständiges konfliktgeschütztes Undo und Regel aus Buchung; konfliktfreie Regeln laufen sichtbar in der Bankabrufvorschau, Konflikte verhindern die automatische Anwendung; SmartFill-Nutzungsgewichtung fehlt |
 | P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Paket-Idempotenz, gestuftem Buchungs-Matching, konfigurierbarem Datumsfenster, expliziter Entscheidung, erhaltener lokaler Anreicherung und eindeutiger externer Bank-ID sowie pain.001.001.09-Export; Profilassistent, OFX/QFX, MT940, camt und ISO-20022-Import fehlen |
 | P0 | Kontoabgleich | Erfüllt für lokalen Kern | Anfangs-/Endsaldo, Auszugsdatum, explizite Buchungsauswahl, markierte Summe, Differenz, doppelt bestätigte Ausgleichsbuchung, Buchungsschutz, unveränderliche Positionshistorie und Rücknahme des jüngsten aktiven Abgleichs mit Audit vorhanden |
-| P0 | Sammelkontoblatt | Teilweise | Kontenübergreifende Liste, Zukunft und Summe; benannte Kombinationen, Mehrfachbearbeitung, zwei Ansichten und Export fehlen |
+| P0 | Sammelkontoblatt | Teilweise | Frei kombinierbare offene Konten, chronologische reale und regelmäßige Zukunft bis 365 Tage, echte kontenweise Salden, blaue Heute-/Zukunftsgrenze, unabhängige Status-/Kategorie-/Zeitraum-/Textfilter, Warnung bei gefilterter Bewegungssumme, währungsgetrennte Summen, benannte Kombinationen, geschützte Mehrfachkategorisierung sowie Systemdruck/PDF der sichtbaren Spalten vorhanden; zwei gleichzeitig geteilte Sammelansichten und direkte Berichtsaufrufe fehlen |
 | P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; das Kontoblatt besitzt direkten Systemdruck, die Berichtswerkstatt noch nicht; zweite Dimension, weitere Standardberichte sowie XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Erfüllt für Simulator-Kern | Getrennter Read-only-Adaptervertrag, deterministischer Simulator für Konten, Salden, gebuchte/vorgemerkte Umsätze, Daueraufträge und Terminüberweisungen, explizite Kontenzuordnung, Regel-/Matching-Vorschau, Abbruchschutz, Rohhash, Diagnose, Abrufhistorie und atomarer Commit; echte FinTS-/PSD2-Verbindungen, SCA-Dialoge, Depots und Kurse fehlen und bleiben sichtbar deaktiviert |
@@ -42,8 +42,8 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Vollständige Kontoblatt-Tastatur-/Accessibility-/UI-Abnahme und
-   Sammelkontoblatt-Ausbau.
+1. Vollständige Kontoblatt-Tastatur-/Accessibility-/UI-Abnahme, zwei
+   gleichzeitig geteilte Sammelansichten und direkte Berichtsaufrufe.
 2. OFX/QFX-, MT940- und camt-Import über denselben sicheren Commitpfad.
 3. SmartFill-Nutzungsgewichtung und erweiterte Klassen-Massenbearbeitung.
 4. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,

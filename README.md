@@ -177,6 +177,25 @@ Saldo und kann Buchungen per Doppelklick bearbeiten. Minireport und geteilte
 Ansicht sind auf engem Raum wechselseitig, damit das Hauptkontenblatt nicht
 unter eine unbrauchbare Mindestbreite gedrückt wird.
 
+## Sammelkontoblatt
+
+Das Sammelkontoblatt kombiniert frei wählbare offene Konten mit eigenen
+Status-, vollständigen Kategorie-, Zeitraum- und Volltextfiltern. Optional
+werden deterministisch erzeugte regelmäßige Vorgänge für die kommenden 365
+Tage eingeblendet. Die Tabelle bleibt chronologisch, markiert den ersten
+Zukunftsvorgang blau und berechnet den laufenden Saldo je Ursprungskonto aus
+Eröffnungssaldo, realen und erwarteten Buchungen; Stornos verändern ihn
+nicht.
+
+Sobald Konten oder Inhalte gefiltert sind, kennzeichnet die Statusleiste die
+währungsgetrennte Bewegungssumme ausdrücklich als „kein Kontostand“.
+Umbuchungen und Stornos zählen nicht in diese Summe. Mehrere persistente
+Buchungen lassen sich gemeinsam kategorisieren; nur errechnete
+Zukunftsvorgänge bleiben gegen eine solche Änderung geschützt. Kontenauswahl,
+Filter, Zukunftsschalter, Zeilenmodus und Spalten können als benannte Ansicht
+gespeichert werden. Systemdruck und mehrseitiger PDF-Export verwenden exakt
+die sichtbaren Zeilen und Spalten einschließlich Zukunftsvorgängen.
+
 ## Kategorien und Mehrwertsteuer
 
 Kategorien besitzen neben einer beliebig tiefen Hierarchie eine Beschreibung,

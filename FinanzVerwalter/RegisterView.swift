@@ -2542,11 +2542,139 @@ private struct RegisterMiniReportPanel: View {
     }
 }
 
+struct CombinedRegisterQueryResult: Equatable {
+    let rows: [FinanceTransaction]
+    let isFiltered: Bool
+    let totalsByCurrency: [String: Int64]
+}
+
+enum CombinedRegisterQuery {
+    static func evaluate(
+        transactions: [FinanceTransaction],
+        forecastTransactions: [FinanceTransaction],
+        allAccountIDs: Set<UUID>,
+        includedAccountIDs: Set<UUID>,
+        status: TransactionStatus?,
+        category: RegisterCategoryFilter,
+        period: RegisterPeriodFilter,
+        customStart: Date,
+        customEnd: Date,
+        searchText: String,
+        includeForecast: Bool,
+        categoryPath: (FinanceTransaction) -> String
+    ) -> CombinedRegisterQueryResult {
+        let effectiveAccounts = includedAccountIDs.isEmpty
+            ? allAccountIDs : includedAccountIDs
+        let combined = transactions + (includeForecast ? forecastTransactions : [])
+        let search = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let rows = combined.filter { transaction in
+            guard effectiveAccounts.contains(transaction.accountID) else {
+                return false
+            }
+            let statusMatches = status == nil || transaction.status == status
+            let categoryMatches: Bool
+            switch category {
+            case .all:
+                categoryMatches = true
+            case .uncategorized:
+                categoryMatches = transaction.categoryID == nil
+                    && transaction.transferID == nil
+            case .category(let id):
+                categoryMatches = transaction.categoryID == id
+                    || transaction.splits.contains { $0.categoryID == id }
+            }
+            let searchMatches = search.isEmpty
+                || transaction.payee.localizedCaseInsensitiveContains(search)
+                || transaction.purpose.localizedCaseInsensitiveContains(search)
+                || transaction.memo.localizedCaseInsensitiveContains(search)
+                || transaction.reference.localizedCaseInsensitiveContains(search)
+                || categoryPath(transaction)
+                    .localizedCaseInsensitiveContains(search)
+            return statusMatches && categoryMatches && searchMatches
+                && period.contains(
+                    transaction.bookingDate,
+                    customStart: customStart,
+                    customEnd: customEnd
+                )
+        }.sorted {
+            if $0.bookingDate != $1.bookingDate {
+                return $0.bookingDate < $1.bookingDate
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        let isFiltered = effectiveAccounts != allAccountIDs
+            || status != nil
+            || category != .all
+            || period != .all
+            || !search.isEmpty
+        let totals = Dictionary(grouping: rows.filter {
+            $0.transferID == nil && $0.status != .cancelled
+        }) { $0.currency }.mapValues { values in
+            values.reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+        return CombinedRegisterQueryResult(
+            rows: rows,
+            isFiltered: isFiltered,
+            totalsByCurrency: totals
+        )
+    }
+
+    static func runningBalances(
+        accounts: [FinanceAccount],
+        transactions: [FinanceTransaction]
+    ) -> [UUID: Int64] {
+        let openingByAccount = Dictionary(
+            uniqueKeysWithValues: accounts.map {
+                ($0.id, $0.openingBalanceMinor)
+            }
+        )
+        let grouped = Dictionary(grouping: transactions) { $0.accountID }
+        var result: [UUID: Int64] = [:]
+        for (accountID, values) in grouped {
+            var balance = openingByAccount[accountID] ?? 0
+            for transaction in values.sorted(by: {
+                if $0.bookingDate != $1.bookingDate {
+                    return $0.bookingDate < $1.bookingDate
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }) {
+                if transaction.status != .cancelled {
+                    balance += transaction.amountMinor
+                }
+                result[transaction.id] = balance
+            }
+        }
+        return result
+    }
+}
+
 struct CombinedRegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selection = Set<UUID>()
+    @State private var showBulkEditor = false
+    @State private var statusFilter: TransactionStatus?
+    @State private var categoryFilter = RegisterCategoryFilter.all
+    @State private var periodFilter = RegisterPeriodFilter.all
+    @State private var customStart = Calendar.current.date(
+        byAdding: .month,
+        value: -1,
+        to: .now
+    ) ?? .now
+    @State private var customEnd = Date.now
+    @State private var includeForecast = true
+    @State private var showPDFExporter = false
+    @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
+    @State private var showSaveView = false
+    @State private var savedViewName = ""
+    @State private var selectedSavedViewID: UUID?
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
+    @AppStorage("combinedRegisterAccountIDsV1")
+    private var includedAccountIDsRaw = ""
+    @AppStorage("savedCombinedRegisterViewsV1")
+    private var savedViewsRaw = ""
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
@@ -2560,21 +2688,53 @@ struct CombinedRegisterView: View {
         }
     }
 
-    private var visible: [FinanceTransaction] {
-        store.transactions.filter {
-            store.searchText.isEmpty
-                || $0.payee.localizedCaseInsensitiveContains(store.searchText)
-                || $0.purpose.localizedCaseInsensitiveContains(store.searchText)
+    private var includedAccountIDs: Set<UUID> {
+        get {
+            Set(includedAccountIDsRaw.split(separator: ",").compactMap {
+                UUID(uuidString: String($0))
+            }).intersection(Set(store.accounts.map(\.id)))
+        }
+        nonmutating set {
+            includedAccountIDsRaw = newValue.sorted {
+                $0.uuidString < $1.uuidString
+            }.map(\.uuidString).joined(separator: ",")
         }
     }
 
-    private var visibleSum: Int64 {
-        visible.filter { $0.transferID == nil && $0.status != .cancelled }
-            .reduce(Int64.zero) { $0 + $1.amountMinor }
+    private var queryResult: CombinedRegisterQueryResult {
+        CombinedRegisterQuery.evaluate(
+            transactions: store.transactions,
+            forecastTransactions: store.forecastOccurrences(days: 365),
+            allAccountIDs: Set(store.accounts.filter {
+                !$0.isClosed
+            }.map(\.id)),
+            includedAccountIDs: includedAccountIDs,
+            status: statusFilter,
+            category: categoryFilter,
+            period: periodFilter,
+            customStart: customStart,
+            customEnd: customEnd,
+            searchText: store.searchText,
+            includeForecast: includeForecast
+        ) { transaction in
+            store.transactionCategoryPath(transaction)
+        }
+    }
+
+    private var savedViews: [SavedCombinedRegisterView] {
+        RegisterPreferencesCodec.decodeCombinedViews(savedViewsRaw)
+    }
+
+    private var persistentSelection: Set<UUID> {
+        selection.intersection(Set(store.transactions.map(\.id)))
     }
 
     var body: some View {
-        let runningBalances = store.runningBalances()
+        let runningBalances = CombinedRegisterQuery.runningBalances(
+            accounts: store.accounts,
+            transactions: store.transactions
+                + (includeForecast ? store.forecastOccurrences(days: 365) : [])
+        )
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -2593,17 +2753,83 @@ struct CombinedRegisterView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 175)
+                combinedViewMenu
                 registerColumnMenu
                 VStack(alignment: .trailing) {
-                    Text(store.searchText.isEmpty ? "Summe ohne Umbuchungen" : "Gefilterte Summe")
+                    Text(
+                        queryResult.isFiltered
+                            ? "Gefilterte Summe ohne Umbuchungen"
+                            : "Bewegungssumme ohne Umbuchungen"
+                    )
                         .font(.caption).foregroundStyle(.secondary)
-                    Text(Money(minorUnits: visibleSum).formatted)
+                    Text(queryTotalsText)
                         .font(.title3.bold().monospacedDigit())
                 }
             }
             .padding(14)
             Divider()
-            Table(visible, selection: $selection) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    combinedAccountMenu
+                Picker("Status", selection: $statusFilter) {
+                    Text("Alle Status").tag(TransactionStatus?.none)
+                    ForEach(TransactionStatus.allCases, id: \.self) {
+                        Text($0.title).tag(Optional($0))
+                    }
+                }
+                .frame(width: 140)
+                Picker("Kategorie", selection: $categoryFilter) {
+                    Text("Alle Kategorien").tag(RegisterCategoryFilter.all)
+                    Text("Nicht kategorisiert")
+                        .tag(RegisterCategoryFilter.uncategorized)
+                    Divider()
+                    ForEach(store.categoriesByPath.filter(\.isActive)) {
+                        Text(store.categoryPath($0.id))
+                            .tag(RegisterCategoryFilter.category($0.id))
+                    }
+                }
+                .frame(width: 190)
+                Picker("Zeitraum", selection: $periodFilter) {
+                    ForEach(RegisterPeriodFilter.allCases) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .frame(width: 150)
+                Toggle("Regelmäßige Zukunft", isOn: $includeForecast)
+                    .toggleStyle(.checkbox)
+                if periodFilter == .custom {
+                    DatePicker(
+                        "Von",
+                        selection: $customStart,
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                    Text("bis").foregroundStyle(.secondary)
+                    DatePicker(
+                        "Bis",
+                        selection: $customEnd,
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                }
+                Spacer()
+                combinedOutputMenu
+                    Button("Filter zurücksetzen") {
+                        includedAccountIDs = []
+                        statusFilter = nil
+                        categoryFilter = .all
+                        periodFilter = .all
+                        store.searchText = ""
+                    }
+                    .disabled(!queryResult.isFiltered)
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+            }
+            .scrollIndicators(.hidden)
+            Divider()
+            Table(queryResult.rows, selection: $selection) {
                 TableColumnForEach(orderedVisibleColumns) { column in
                     TableColumn(column.title) { value in
                         combinedRegisterCell(
@@ -2615,16 +2841,340 @@ struct CombinedRegisterView: View {
                     .width(min: column.minimumWidth, ideal: column.idealWidth)
                 }
             }
+            .contextMenu(forSelectionType: UUID.self) { ids in
+                Button("Kategorie für Auswahl ändern …") {
+                    selection = ids
+                    showBulkEditor = true
+                }
+                .disabled(
+                    ids.intersection(Set(store.transactions.map(\.id))).isEmpty
+                )
+            }
+            .overlay {
+                if queryResult.rows.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Buchungen",
+                        systemImage: "rectangle.stack.badge.person.crop",
+                        description: Text(
+                            "Die gewählten Konten und Filter liefern keine Treffer."
+                        )
+                    )
+                }
+            }
             HStack {
                 Rectangle().fill(.blue).frame(width: 36, height: 2)
                 Text("Heute-Grenze: \(Date.now.formatted(.dateTime.day().month().year()))")
+                if queryResult.isFiltered {
+                    Label(
+                        "Gefilterte Summe ist kein Kontostand",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(.orange)
+                }
                 Spacer()
-                Text("\(visible.count) sichtbare Buchungen")
+                if !selection.isEmpty {
+                    Button("Kategorie ändern …") {
+                        showBulkEditor = true
+                    }
+                    .disabled(persistentSelection.isEmpty)
+                    Text("\(selection.count) ausgewählt")
+                }
+                Text("\(queryResult.rows.count) sichtbare Buchungen")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
             .padding(8)
         }
+        .sheet(isPresented: $showBulkEditor) {
+            BulkCategoryEditorView(transactionIDs: persistentSelection) {
+                selection.removeAll()
+            }
+        }
+        .sheet(isPresented: $showSaveView) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Sammelkontoblatt-Ansicht speichern")
+                    .font(.title2.bold())
+                Text(
+                    "Gespeichert werden Kontenauswahl, Filter, Zukunft, "
+                        + "Zeilenmodus und sichtbare Spalten."
+                )
+                .foregroundStyle(.secondary)
+                TextField("Name der Ansicht", text: $savedViewName)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Abbrechen", role: .cancel) {
+                        showSaveView = false
+                    }
+                    Button("Speichern") { saveCombinedView() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            savedViewName.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                        )
+                }
+            }
+            .padding(24)
+            .frame(width: 500)
+        }
+        .fileExporter(
+            isPresented: $showPDFExporter,
+            document: registerPDFDocument,
+            contentType: .pdf,
+            defaultFilename: "Sammelkontoblatt"
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Sammelkontoblatt als PDF exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .onChange(of: queryResult.rows.map(\.id)) {
+            selection.formIntersection(Set(queryResult.rows.map(\.id)))
+        }
+    }
+
+    private var queryTotalsText: String {
+        let text = queryResult.totalsByCurrency.keys.sorted().map { currency in
+            Money(
+                minorUnits: queryResult.totalsByCurrency[currency] ?? 0,
+                currency: currency
+            ).formatted
+        }.joined(separator: " · ")
+        return text.isEmpty ? "—" : text
+    }
+
+    private var combinedViewMenu: some View {
+        Menu {
+            if savedViews.isEmpty {
+                Text("Noch keine gespeicherte Ansicht")
+            } else {
+                ForEach(savedViews) { view in
+                    Button {
+                        applyCombinedView(view)
+                    } label: {
+                        if selectedSavedViewID == view.id {
+                            Label(view.name, systemImage: "checkmark")
+                        } else {
+                            Text(view.name)
+                        }
+                    }
+                }
+                Divider()
+            }
+            Button("Aktuelle Ansicht speichern …", systemImage: "plus") {
+                savedViewName = selectedSavedViewID.flatMap { id in
+                    savedViews.first { $0.id == id }?.name
+                } ?? ""
+                showSaveView = true
+            }
+            Button(
+                "Ausgewählte Ansicht löschen",
+                systemImage: "trash",
+                role: .destructive
+            ) {
+                deleteCombinedView()
+            }
+            .disabled(selectedSavedViewID == nil)
+        } label: {
+            Label(
+                selectedSavedViewID.flatMap { id in
+                    savedViews.first { $0.id == id }?.name
+                } ?? "Ansicht",
+                systemImage: "rectangle.stack.badge.plus"
+            )
+        }
+    }
+
+    private func saveCombinedView() {
+        let name = savedViewName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let existingID = savedViews.first {
+            $0.name.compare(name, options: .caseInsensitive) == .orderedSame
+        }?.id
+        let id = selectedSavedViewID ?? existingID ?? UUID()
+        let view = SavedCombinedRegisterView(
+            id: id,
+            name: name,
+            includedAccountIDs: includedAccountIDs,
+            statusRawValue: statusFilter?.rawValue,
+            categorySelection: categoryFilter.savedSelection,
+            periodRawValue: periodFilter.rawValue,
+            customStart: customStart,
+            customEnd: customEnd,
+            includeForecast: includeForecast,
+            rowModeRawValue: rowMode.rawValue,
+            visibleColumns: visibleColumns
+        )
+        var values = savedViews.filter { $0.id != id }
+        values.append(view)
+        values.sort {
+            $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
+        }
+        do {
+            savedViewsRaw = try RegisterPreferencesCodec
+                .encodeCombinedViews(values)
+            selectedSavedViewID = id
+            showSaveView = false
+            store.statusText = "Sammelkontoblatt-Ansicht „\(name)“ gespeichert"
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func applyCombinedView(_ view: SavedCombinedRegisterView) {
+        let validAccountIDs = Set(store.accounts.map(\.id))
+        includedAccountIDs = view.includedAccountIDs
+            .intersection(validAccountIDs)
+        statusFilter = view.statusRawValue.flatMap(
+            TransactionStatus.init(rawValue:)
+        )
+        categoryFilter = RegisterCategoryFilter(view.categorySelection)
+        periodFilter = RegisterPeriodFilter(
+            rawValue: view.periodRawValue
+        ) ?? .all
+        customStart = view.customStart
+        customEnd = view.customEnd
+        includeForecast = view.includeForecast
+        rowMode = RegisterRowMode(
+            rawValue: view.rowModeRawValue
+        ) ?? .single
+        visibleColumns = view.visibleColumns
+        selectedSavedViewID = view.id
+        store.statusText = "Sammelkontoblatt-Ansicht „\(view.name)“ geladen"
+    }
+
+    private func deleteCombinedView() {
+        guard let selectedSavedViewID else { return }
+        do {
+            savedViewsRaw = try RegisterPreferencesCodec.encodeCombinedViews(
+                savedViews.filter { $0.id != selectedSavedViewID }
+            )
+            self.selectedSavedViewID = nil
+            store.statusText = "Sammelkontoblatt-Ansicht gelöscht"
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private var combinedAccountMenu: some View {
+        Menu {
+            Button("Alle offenen Konten") {
+                includedAccountIDs = []
+            }
+            Divider()
+            ForEach(store.accounts.filter { !$0.isClosed }) { account in
+                Toggle(
+                    account.name,
+                    isOn: Binding(
+                        get: {
+                            includedAccountIDs.isEmpty
+                                || includedAccountIDs.contains(account.id)
+                        },
+                        set: { selected in
+                            var ids = includedAccountIDs.isEmpty
+                                ? Set(store.accounts.filter {
+                                    !$0.isClosed
+                                }.map(\.id))
+                                : includedAccountIDs
+                            if selected {
+                                ids.insert(account.id)
+                            } else {
+                                ids.remove(account.id)
+                            }
+                            includedAccountIDs = ids
+                        }
+                    )
+                )
+            }
+        } label: {
+            Label(
+                includedAccountIDs.isEmpty
+                    ? "Alle Konten"
+                    : "\(includedAccountIDs.count) Konten",
+                systemImage: "building.columns"
+            )
+        }
+    }
+
+    private var combinedOutputMenu: some View {
+        Menu {
+            Button("Drucken …", systemImage: "printer") {
+                do {
+                    try RegisterPrintService.printPDF(
+                        try RegisterPDFExporter.data(
+                            snapshot: combinedPrintSnapshot
+                        )
+                    )
+                } catch {
+                    store.errorMessage = error.localizedDescription
+                }
+            }
+            Button("Als PDF exportieren …", systemImage: "doc.richtext") {
+                do {
+                    registerPDFDocument = RegisterPDFDocument(
+                        data: try RegisterPDFExporter.data(
+                            snapshot: combinedPrintSnapshot
+                        )
+                    )
+                    showPDFExporter = true
+                } catch {
+                    store.errorMessage = error.localizedDescription
+                }
+            }
+        } label: {
+            Label("Ausgabe", systemImage: "printer")
+        }
+    }
+
+    private var combinedPrintSnapshot: RegisterPrintSnapshot {
+        let runningBalances = CombinedRegisterQuery.runningBalances(
+            accounts: store.accounts,
+            transactions: store.transactions
+                + (includeForecast ? store.forecastOccurrences(days: 365) : [])
+        )
+        return RegisterPrintSnapshot(
+            title: "Sammelkontoblatt",
+            filterSummary: combinedFilterSummary,
+            generatedAt: .now,
+            columns: orderedVisibleColumns,
+            rows: queryResult.rows.map { transaction in
+                orderedVisibleColumns.map { column in
+                    combinedCellText(
+                        transaction,
+                        column: column,
+                        runningBalances: runningBalances
+                    )
+                }
+            }
+        )
+    }
+
+    private var combinedFilterSummary: String {
+        var parts: [String] = []
+        if !includedAccountIDs.isEmpty {
+            parts.append("Konten: \(includedAccountIDs.count)")
+        }
+        if let statusFilter { parts.append("Status: \(statusFilter.title)") }
+        switch categoryFilter {
+        case .all: break
+        case .uncategorized: parts.append("Kategorie: Nicht kategorisiert")
+        case .category(let id):
+            parts.append("Kategorie: \(store.categoryPath(id))")
+        }
+        if periodFilter != .all {
+            parts.append("Zeitraum: \(periodFilter.title)")
+        }
+        let search = store.searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !search.isEmpty { parts.append("Suche: \(search)") }
+        if includeForecast { parts.append("einschließlich regelmäßiger Zukunft") }
+        return parts.isEmpty ? "Keine zusätzlichen Filter" : parts.joined(separator: " · ")
     }
 
     private var orderedVisibleColumns: [RegisterColumn] {
@@ -2639,10 +3189,18 @@ struct CombinedRegisterView: View {
     ) -> some View {
         switch column {
         case .date:
-            Text(
-                value.bookingDate,
-                format: .dateTime.day().month(.twoDigits).year()
-            )
+            HStack(spacing: 4) {
+                if isFirstFutureTransaction(value) {
+                    Rectangle()
+                        .fill(.blue)
+                        .frame(width: 3, height: rowMode.rowHeight - 4)
+                        .help("Beginn der erwarteten Zukunft")
+                }
+                Text(
+                    value.bookingDate,
+                    format: .dateTime.day().month(.twoDigits).year()
+                )
+            }
             .foregroundStyle(value.bookingDate > Date() ? .blue : .primary)
             .frame(height: rowMode.rowHeight)
         case .valueDate:
@@ -2716,6 +3274,54 @@ struct CombinedRegisterView: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
             .monospacedDigit()
             .frame(height: rowMode.rowHeight)
+        }
+    }
+
+    private func isFirstFutureTransaction(
+        _ transaction: FinanceTransaction
+    ) -> Bool {
+        guard transaction.bookingDate > Date() else { return false }
+        return queryResult.rows.first(where: {
+            $0.bookingDate > Date()
+        })?.id == transaction.id
+    }
+
+    private func combinedCellText(
+        _ value: FinanceTransaction,
+        column: RegisterColumn,
+        runningBalances: [UUID: Int64]
+    ) -> String {
+        switch column {
+        case .date:
+            return value.bookingDate.formatted(date: .numeric, time: .omitted)
+        case .valueDate:
+            return (value.valueDate ?? value.bookingDate)
+                .formatted(date: .numeric, time: .omitted)
+        case .reference:
+            return value.reference.isEmpty ? "–" : value.reference
+        case .status:
+            return value.status.title
+        case .payee:
+            return value.payee
+        case .purpose:
+            return value.purpose
+        case .category:
+            return store.transactionCategoryPath(value)
+        case .tags:
+            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            return tags.isEmpty ? "–" : tags
+        case .account:
+            return store.accountName(value.accountID)
+        case .amount:
+            return Money(
+                minorUnits: value.amountMinor,
+                currency: value.currency
+            ).formatted
+        case .balance:
+            return Money(
+                minorUnits: runningBalances[value.id] ?? 0,
+                currency: value.currency
+            ).formatted
         }
     }
 

@@ -758,3 +758,34 @@ Beide Zustände und die sekundäre Konto-ID liegen nur in lokalen
 Benutzereinstellungen, nicht in der Finanzdatei. Teste die Minireport-
 Splitbeiträge, Währungstrennung, Stornoausschluss sowie die unabhängige
 Konto-/Status-/Kategorie-/Textfilterung als reine deterministische Logik.
+
+# Reproduzierbarer Sammelkontoblatt-Ausbau
+
+Das Sammelkontoblatt kombiniert eine frei wählbare Teilmenge aller offenen
+Konten. Eine leere gespeicherte Kontenmenge bedeutet stabil „alle offenen
+Konten“. Ergänze unabhängige Status-, vollständige Kategorie-, Zeitraum- und
+Volltextfilter. Der Textfilter durchsucht Empfänger, Zweck, Memo, Referenz
+und vollständigen Kategoriepfad. Sortiere immer chronologisch nach Datum und
+UUID, niemals nach Abgleichstatus.
+
+Ein eigener Schalter ergänzt regelmäßige Vorgänge für 365 Tage über dieselbe
+deterministische Occurrence-Logik der Prognose. Berechne für reale und
+errechnete Zeilen den laufenden Saldo getrennt je Ursprungskonto, beginnend
+beim Eröffnungssaldo; Stornos verändern ihn nicht. Kennzeichne die erste
+Zukunftszeile blau. Ein Filter verändert nie diesen echten kontenweisen
+Saldo. Die Kopfsumme ist dagegen eine währungsgetrennte Bewegungssumme ohne
+Umbuchungen und Stornos. Sobald Konten, Status, Kategorie, Zeitraum oder Text
+eingeschränkt sind, zeige ausdrücklich „Gefilterte Summe ist kein
+Kontostand“.
+
+Erlaube Mehrfachkategorisierung nur für UUIDs real gespeicherter Buchungen;
+errechnete Zukunftszeilen dürfen niemals an den Repository-Commit gelangen.
+Systemdruck und PDF exportieren exakt die sichtbaren Spalten und Zeilen samt
+Filterbeschreibung und Zukunftsvorgängen.
+
+Speichere benannte Sammelansichten deterministisch als JSON in lokalen
+Benutzereinstellungen: UUID, Name, Kontenmenge, Status, Kategorieauswahl,
+Zeitraum, benutzerdefinierte Grenzen, Zukunftsschalter, Zeilenmodus und
+Spaltenmenge. Beim Laden entferne nicht mehr existierende Konten und
+normalisiere leere Spalten auf den Standard. Teste Filterkombination,
+Währungstrennung, Stornoausschluss, Zukunftssaldo und JSON-Roundtrip.
