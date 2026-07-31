@@ -859,7 +859,9 @@ enum PaymentStatus: String, Codable, CaseIterable, Sendable {
              (.awaitingUser, .cancelled),
              (.submitted, .accepted),
              (.submitted, .rejected),
-             (.submitted, .unknown):
+             (.submitted, .unknown),
+             (.unknown, .accepted),
+             (.unknown, .rejected):
             true
         default:
             false

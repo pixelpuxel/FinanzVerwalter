@@ -4,6 +4,258 @@ import PDFKit
 @testable import FinanzVerwalter
 
 final class FinanzVerwalterTests: XCTestCase {
+    func testPain002ParsesSafelyAndMatchesOnlyFinalExactReference() throws {
+        let id = UUID(uuidString: "11111111-2222-4333-A444-555555555555")!
+        let now = Date(timeIntervalSince1970: 1_788_000_000)
+        let order = PaymentOrder(
+            id: id, accountID: UUID(), type: .sepaCreditTransfer,
+            recipientName: "Müller & Söhne", iban: "DE89370400440532013000",
+            bic: "COBADEFFXXX", amountMinor: 12_345, currency: "EUR",
+            executionDate: now, purpose: "Rechnung", endToEndID: "E2E-EXAKT-1",
+            status: .submitted, idempotencyKey: "pain002-source",
+            bankReference: "", createdAt: now, updatedAt: now
+        )
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">
+          <CstmrPmtStsRpt>
+            <GrpHdr><MsgId>STATUS-1</MsgId><CreDtTm>2026-08-01T10:00:00Z</CreDtTm></GrpHdr>
+            <OrgnlGrpInfAndSts>
+              <OrgnlMsgId>FV-1111111122224333A444555555555555</OrgnlMsgId>
+              <OrgnlMsgNmId>pain.001.001.09</OrgnlMsgNmId>
+            </OrgnlGrpInfAndSts>
+            <OrgnlPmtInfAndSts>
+              <OrgnlPmtInfId>PI-1111111122224333A444555555555555</OrgnlPmtInfId>
+              <TxInfAndSts>
+                <OrgnlEndToEndId>E2E-EXAKT-1</OrgnlEndToEndId>
+                <TxSts>ACSC</TxSts>
+                <StsRsnInf><Rsn><Cd>G000</Cd></Rsn><AddtlInf>Gebucht &amp; bestätigt</AddtlInf></StsRsnInf>
+              </TxInfAndSts>
+            </OrgnlPmtInfAndSts>
+          </CstmrPmtStsRpt>
+        </Document>
+        """
+        let document = try Pain002Importer.parse(data: Data(xml.utf8))
+        XCTAssertEqual(document.messageID, "STATUS-1")
+        XCTAssertEqual(document.records.count, 1)
+        XCTAssertEqual(document.records[0].proposedStatus, .accepted)
+        XCTAssertEqual(document.records[0].reasonText, "Gebucht & bestätigt")
+        let preview = Pain002Importer.preview(
+            document: document, paymentOrders: [order],
+            directDebitOrders: [], batches: []
+        )
+        XCTAssertEqual(preview.applicableCount, 1)
+        XCTAssertEqual(preview.matches[0].targetID, id)
+        XCTAssertEqual(preview.matches[0].currentStatus, .submitted)
+        XCTAssertEqual(preview.matches[0].proposedStatus, .accepted)
+
+        let pendingXML = xml.replacingOccurrences(of: "ACSC", with: "PDNG")
+            .replacingOccurrences(of: "E2E-EXAKT-1", with: "UNBEKANNT")
+        let pending = try Pain002Importer.parse(data: Data(pendingXML.utf8))
+        let pendingPreview = Pain002Importer.preview(
+            document: pending, paymentOrders: [order],
+            directDebitOrders: [], batches: []
+        )
+        XCTAssertEqual(pendingPreview.applicableCount, 0)
+        XCTAssertEqual(pendingPreview.unresolvedCount, 1)
+        XCTAssertNil(pending.records[0].proposedStatus)
+    }
+
+    func testPain002RejectsWrongNamespaceAndExternalEntities() throws {
+        let wrongNamespace = """
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.09">
+          <CstmrPmtStsRpt><GrpHdr><MsgId>X-1</MsgId></GrpHdr>
+          <OrgnlGrpInfAndSts><OrgnlMsgId>Y-1</OrgnlMsgId><GrpSts>RJCT</GrpSts></OrgnlGrpInfAndSts>
+          </CstmrPmtStsRpt>
+        </Document>
+        """
+        XCTAssertThrowsError(
+            try Pain002Importer.parse(data: Data(wrongNamespace.utf8))
+        )
+        let unsafe = """
+        <!DOCTYPE x [<!ENTITY leak SYSTEM "file:///etc/passwd">]>
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">&leak;</Document>
+        """
+        XCTAssertThrowsError(try Pain002Importer.parse(data: Data(unsafe.utf8)))
+    }
+
+    func testPain002CommitIsAtomicIdempotentAndMaterializesOnlyACSC() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Statuskonto", institution: "Bank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 50_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let now = Date(timeIntervalSince1970: 1_788_000_000)
+        let accepted = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+            recipientName: "Akzeptiert GmbH", iban: "DE89370400440532013000",
+            bic: "", amountMinor: 12_345, currency: "EUR",
+            executionDate: now, purpose: "Akzeptanz", endToEndID: "E2E-ACSC-1",
+            status: .draft, idempotencyKey: "pain002-accepted",
+            bankReference: "", createdAt: now, updatedAt: now
+        )
+        let rejected = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+            recipientName: "Abgelehnt GmbH", iban: "DE75512108001245126199",
+            bic: "", amountMinor: 2_500, currency: "EUR",
+            executionDate: now, purpose: "Ablehnung", endToEndID: "E2E-RJCT-1",
+            status: .draft, idempotencyKey: "pain002-rejected",
+            bankReference: "", createdAt: now, updatedAt: now
+        )
+        for order in [accepted, rejected] {
+            try context.store.createPaymentOrder(order)
+            for status in [
+                PaymentStatus.initiated, .challengeReceived, .awaitingUser,
+                .submitted
+            ] {
+                try context.store.transitionPaymentOrder(id: order.id, to: status)
+            }
+        }
+        let xml = """
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">
+          <CstmrPmtStsRpt>
+            <GrpHdr><MsgId>BANK-STATUS-42</MsgId><CreDtTm>2026-08-01T12:00:00Z</CreDtTm></GrpHdr>
+            <OrgnlGrpInfAndSts><OrgnlMsgId>EXTERNAL-GROUP</OrgnlMsgId><OrgnlMsgNmId>pain.001.001.09</OrgnlMsgNmId></OrgnlGrpInfAndSts>
+            <OrgnlPmtInfAndSts><OrgnlPmtInfId>EXTERNAL-PAYMENT</OrgnlPmtInfId>
+              <TxInfAndSts><OrgnlEndToEndId>E2E-ACSC-1</OrgnlEndToEndId><TxSts>ACSC</TxSts><StsRsnInf><Rsn><Cd>G000</Cd></Rsn><AddtlInf>Settlement abgeschlossen</AddtlInf></StsRsnInf></TxInfAndSts>
+              <TxInfAndSts><OrgnlEndToEndId>E2E-RJCT-1</OrgnlEndToEndId><TxSts>RJCT</TxSts><StsRsnInf><Rsn><Cd>AC01</Cd></Rsn><AddtlInf>Kontonummer fehlerhaft</AddtlInf></StsRsnInf></TxInfAndSts>
+            </OrgnlPmtInfAndSts>
+          </CstmrPmtStsRpt>
+        </Document>
+        """
+        let document = try Pain002Importer.parse(data: Data(xml.utf8))
+        let preview = Pain002Importer.preview(
+            document: document,
+            paymentOrders: try context.store.paymentOrders(),
+            directDebitOrders: try context.store.directDebitOrders(),
+            batches: try context.store.paymentBatches()
+        )
+        XCTAssertEqual(preview.applicableCount, 2)
+        let selected = Set(preview.matches.filter(\.canApply).map(\.id))
+        try context.store.commitPaymentStatusReport(preview, applying: selected)
+
+        let byID = Dictionary(uniqueKeysWithValues: try context.store.paymentOrders().map { ($0.id, $0) })
+        XCTAssertEqual(byID[accepted.id]?.status, .accepted)
+        XCTAssertEqual(byID[rejected.id]?.status, .rejected)
+        XCTAssertEqual(byID[accepted.id]?.bankReference, "P002-BANK-STATUS-42")
+        XCTAssertEqual(byID[rejected.id]?.bankReference, "P002-BANK-STATUS-42")
+        XCTAssertEqual(
+            try context.store.transactions().filter {
+                $0.reference == "payment:\(accepted.id.uuidString)"
+            }.count,
+            1
+        )
+        XCTAssertFalse(try context.store.transactions().contains {
+            $0.reference == "payment:\(rejected.id.uuidString)"
+        })
+        let report = try XCTUnwrap(context.store.paymentStatusReports().first)
+        XCTAssertEqual(report.messageID, "BANK-STATUS-42")
+        XCTAssertEqual(report.recordCount, 2)
+        XCTAssertEqual(report.appliedCount, 2)
+        let items = try context.store.paymentStatusReportItems(reportID: report.id)
+        XCTAssertEqual(items.map(\.statusCode), ["ACSC", "RJCT"])
+        XCTAssertEqual(items.map(\.appliedStatus), [.accepted, .rejected])
+        XCTAssertEqual(items.map(\.reasonCode), ["G000", "AC01"])
+        XCTAssertThrowsError(
+            try context.store.commitPaymentStatusReport(preview, applying: selected)
+        ) { XCTAssertEqual($0 as? FinanceError, .duplicateImport) }
+        XCTAssertEqual(
+            try context.store.transactions().filter {
+                $0.reference == "payment:\(accepted.id.uuidString)"
+            }.count,
+            1
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testPain002ResolvesBatchAtomicallyWithoutApplyingMemberRows() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Sammlerkonto", institution: "Bank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 100_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let now = Date(timeIntervalSince1970: 1_788_000_000)
+        let orders = [
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Position Eins", iban: "DE89370400440532013000",
+                bic: "", amountMinor: 1_100, currency: "EUR",
+                executionDate: now, purpose: "Eins", endToEndID: "BATCH-E2E-1",
+                status: .draft, idempotencyKey: "pain002-batch-1",
+                bankReference: "", createdAt: now, updatedAt: now
+            ),
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Position Zwei", iban: "DE75512108001245126199",
+                bic: "", amountMinor: 2_200, currency: "EUR",
+                executionDate: now, purpose: "Zwei", endToEndID: "BATCH-E2E-2",
+                status: .draft, idempotencyKey: "pain002-batch-2",
+                bankReference: "", createdAt: now, updatedAt: now
+            )
+        ]
+        for order in orders { try context.store.createPaymentOrder(order) }
+        let batch = PaymentBatch(
+            id: UUID(), name: "Statussammler", kind: .creditTransfer,
+            accountID: account.id, requestedDate: now, status: .draft,
+            idempotencyKey: "pain002-batch", bankReference: "",
+            memberOrderIDs: orders.map(\.id), createdAt: now, updatedAt: now
+        )
+        try context.store.createPaymentBatch(batch)
+        for status in [
+            PaymentStatus.initiated, .challengeReceived, .awaitingUser,
+            .submitted
+        ] {
+            try context.store.transitionPaymentBatch(id: batch.id, to: status)
+        }
+        let compact = batch.id.uuidString.replacingOccurrences(of: "-", with: "").uppercased()
+        let xml = """
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">
+          <CstmrPmtStsRpt>
+            <GrpHdr><MsgId>BATCH-STATUS-1</MsgId></GrpHdr>
+            <OrgnlGrpInfAndSts><OrgnlMsgId>BT-\(compact)</OrgnlMsgId><OrgnlMsgNmId>pain.001.001.09</OrgnlMsgNmId><GrpSts>ACSC</GrpSts></OrgnlGrpInfAndSts>
+            <OrgnlPmtInfAndSts><OrgnlPmtInfId>BT-\(compact)</OrgnlPmtInfId>
+              <TxInfAndSts><OrgnlEndToEndId>BATCH-E2E-1</OrgnlEndToEndId><TxSts>ACSC</TxSts></TxInfAndSts>
+              <TxInfAndSts><OrgnlEndToEndId>BATCH-E2E-2</OrgnlEndToEndId><TxSts>ACSC</TxSts></TxInfAndSts>
+            </OrgnlPmtInfAndSts>
+          </CstmrPmtStsRpt>
+        </Document>
+        """
+        let document = try Pain002Importer.parse(data: Data(xml.utf8))
+        let preview = Pain002Importer.preview(
+            document: document,
+            paymentOrders: try context.store.paymentOrders(),
+            directDebitOrders: [], batches: try context.store.paymentBatches()
+        )
+        XCTAssertEqual(preview.matches.count, 3)
+        XCTAssertEqual(preview.matches.filter(\.canApply).map(\.targetID), [batch.id])
+        XCTAssertTrue(preview.matches.dropFirst().allSatisfy {
+            !$0.canApply && $0.targetID != nil
+        })
+        let selected = Set(preview.matches.filter(\.canApply).map(\.id))
+        try context.store.commitPaymentStatusReport(preview, applying: selected)
+        XCTAssertEqual(try context.store.paymentBatches().first?.status, .accepted)
+        XCTAssertEqual(Set(try context.store.paymentOrders().map(\.status)), [.accepted])
+        XCTAssertEqual(
+            try context.store.transactions().filter {
+                $0.reference.hasPrefix("payment:")
+            }.count,
+            2
+        )
+        let report = try XCTUnwrap(context.store.paymentStatusReports().first)
+        XCTAssertEqual(report.recordCount, 3)
+        XCTAssertEqual(report.appliedCount, 1)
+        XCTAssertEqual(
+            try context.store.paymentStatusReportItems(reportID: report.id)
+                .filter { $0.appliedStatus != nil }.count,
+            1
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testGermanMoneyParsingUsesMinorUnitsWithoutBinaryFloat() throws {
         XCTAssertEqual(try Money(parsing: "1.234,56 €").minorUnits, 123_456)
         XCTAssertEqual(try Money(parsing: "-0,015").minorUnits, -2)
@@ -3296,7 +3548,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To25PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To26PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -3411,11 +3663,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 25)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 26)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To25PromotesLegacyPayeeBankData() throws {
+    func testMigration22To26PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -3442,6 +3694,8 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         let downgradeSQL = """
+        DROP TABLE payment_status_report_items;
+        DROP TABLE payment_status_reports;
         DROP TABLE payment_batch_items;
         DROP TABLE payment_batches;
         DROP TABLE direct_debit_orders;

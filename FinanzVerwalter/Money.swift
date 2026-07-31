@@ -126,6 +126,7 @@ enum FinanceError: LocalizedError, Equatable {
     case duplicateDirectDebitOrder
     case invalidPaymentBatch(String)
     case duplicatePaymentBatch
+    case invalidPaymentStatusReport(String)
     case invalidStandingOrder(String)
     case inactiveStandingOrder
     case standingOrderRunFinalized
@@ -167,6 +168,8 @@ enum FinanceError: LocalizedError, Equatable {
             "Der Sammler ist ungültig: \(message)"
         case .duplicatePaymentBatch:
             "Dieser Sammler wurde mit derselben Idempotenzkennung bereits angelegt."
+        case .invalidPaymentStatusReport(let message):
+            "Der pain.002-Statusbericht ist ungültig: \(message)"
         case .invalidStandingOrder(let message): "Der Dauerauftrag ist ungültig: \(message)"
         case .inactiveStandingOrder: "Nur aktive Daueraufträge können vorbereitet oder übersprungen werden."
         case .standingOrderRunFinalized:

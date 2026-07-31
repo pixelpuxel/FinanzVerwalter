@@ -4,6 +4,7 @@ import SQLite3
 
 final class SQLiteFinanceStore {
     private var database: OpaquePointer?
+    private var transactionDepth = 0
     let fileURL: URL
 
     init(fileURL: URL = SQLiteFinanceStore.defaultFileURL()) throws {
@@ -1501,6 +1502,59 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 25")
             }
         }
+        if version < 26 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payment_status_reports (
+                        fingerprint TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        message_id TEXT NOT NULL,
+                        source_created_at TEXT,
+                        imported_at TEXT NOT NULL,
+                        record_count INTEGER NOT NULL CHECK(record_count>0),
+                        applied_count INTEGER NOT NULL CHECK(applied_count>=0),
+                        warning_count INTEGER NOT NULL CHECK(warning_count>=0)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE payment_status_report_items (
+                        id TEXT PRIMARY KEY,
+                        report_fingerprint TEXT NOT NULL REFERENCES payment_status_reports(fingerprint) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK(position>=0),
+                        target_kind TEXT CHECK(target_kind IN ('creditTransfer','directDebit','batch')),
+                        target_id TEXT,
+                        target_title TEXT NOT NULL,
+                        original_message_id TEXT NOT NULL,
+                        original_message_name_id TEXT NOT NULL,
+                        original_payment_information_id TEXT NOT NULL,
+                        original_end_to_end_id TEXT NOT NULL,
+                        status_code TEXT NOT NULL,
+                        reason_code TEXT NOT NULL,
+                        reason_text TEXT NOT NULL,
+                        previous_status TEXT,
+                        applied_status TEXT,
+                        UNIQUE(report_fingerprint,position)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payment_status_reports_imported
+                    ON payment_status_reports(imported_at,fingerprint)
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payment_status_items_target
+                    ON payment_status_report_items(target_kind,target_id,position)
+                    """
+                )
+                try execute("PRAGMA user_version = 26")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2341,6 +2395,184 @@ final class SQLiteFinanceStore {
                 bankReference: header.bankReference,
                 memberOrderIDs: memberIDs, createdAt: header.createdAt,
                 updatedAt: header.updatedAt
+            )
+        }
+    }
+
+    func paymentStatusReports() throws -> [PaymentStatusReportSummary] {
+        var values: [PaymentStatusReportSummary] = []
+        try query(
+            """
+            SELECT fingerprint,message_id,source_created_at,imported_at,
+                   record_count,applied_count,warning_count
+            FROM payment_status_reports ORDER BY imported_at DESC,fingerprint
+            """
+        ) {
+            guard let importedAt = Self.timestampDate(Self.text($0, 3)) else {
+                return
+            }
+            values.append(
+                PaymentStatusReportSummary(
+                    id: Self.text($0, 0), messageID: Self.text($0, 1),
+                    sourceCreatedAt: Self.timestampDate(Self.text($0, 2)),
+                    importedAt: importedAt,
+                    recordCount: Int(sqlite3_column_int64($0, 4)),
+                    appliedCount: Int(sqlite3_column_int64($0, 5)),
+                    warningCount: Int(sqlite3_column_int64($0, 6))
+                )
+            )
+        }
+        return values
+    }
+
+    func paymentStatusReportItems(
+        reportID: String
+    ) throws -> [PaymentStatusReportItem] {
+        var values: [PaymentStatusReportItem] = []
+        try query(
+            """
+            SELECT id,report_fingerprint,position,target_kind,target_id,
+                   target_title,status_code,reason_code,reason_text,
+                   previous_status,applied_status
+            FROM payment_status_report_items
+            WHERE report_fingerprint=? ORDER BY position
+            """,
+            [.text(reportID)]
+        ) {
+            guard let id = UUID(uuidString: Self.text($0, 0)) else { return }
+            values.append(
+                PaymentStatusReportItem(
+                    id: id, reportID: Self.text($0, 1),
+                    position: Int(sqlite3_column_int64($0, 2)),
+                    targetKind: Pain002TargetKind(rawValue: Self.text($0, 3)),
+                    targetID: UUID(uuidString: Self.text($0, 4)),
+                    targetTitle: Self.text($0, 5), statusCode: Self.text($0, 6),
+                    reasonCode: Self.text($0, 7), reasonText: Self.text($0, 8),
+                    previousStatus: PaymentStatus(rawValue: Self.text($0, 9)),
+                    appliedStatus: PaymentStatus(rawValue: Self.text($0, 10))
+                )
+            )
+        }
+        return values
+    }
+
+    func commitPaymentStatusReport(
+        _ preview: Pain002Preview,
+        applying selectedMatchIDs: Set<UUID>
+    ) throws {
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_status_reports WHERE fingerprint=?",
+            [.text(preview.document.fingerprint)]
+        ) == 0 else { throw FinanceError.duplicateImport }
+        let fresh = Pain002Importer.preview(
+            document: preview.document,
+            paymentOrders: try paymentOrders(),
+            directDebitOrders: try directDebitOrders(),
+            batches: try paymentBatches()
+        )
+        guard fresh.matches.map({ ($0.targetKind?.rawValue ?? "", $0.targetID) })
+            .elementsEqual(preview.matches.map({ ($0.targetKind?.rawValue ?? "", $0.targetID) }), by: { $0.0 == $1.0 && $0.1 == $1.1 })
+        else {
+            throw FinanceError.invalidImportResolution(
+                "Die Zuordnung des Statusberichts hat sich seit der Vorschau geändert."
+            )
+        }
+        let selected = fresh.matches.filter { selectedMatchIDs.contains($0.id) }
+        guard selected.count == selectedMatchIDs.count,
+              selected.allSatisfy({
+                  $0.canApply && $0.targetKind != nil && $0.targetID != nil
+                      && $0.proposedStatus != nil
+              }) else {
+            throw FinanceError.invalidImportResolution(
+                "Mindestens eine ausgewählte Statusposition ist nicht mehr anwendbar."
+            )
+        }
+        struct ActionKey: Hashable {
+            let kind: Pain002TargetKind
+            let id: UUID
+        }
+        var actions: [ActionKey: PaymentStatus] = [:]
+        for match in selected {
+            let key = ActionKey(kind: match.targetKind!, id: match.targetID!)
+            if let existing = actions[key], existing != match.proposedStatus! {
+                throw FinanceError.invalidImportResolution(
+                    "Der Bericht enthält widersprüchliche finale Status für denselben Auftrag."
+                )
+            }
+            actions[key] = match.proposedStatus!
+        }
+        let info = try financeFileInfo()
+        let now = Date()
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_status_reports(
+                    fingerprint,finance_file_id,message_id,source_created_at,
+                    imported_at,record_count,applied_count,warning_count
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(preview.document.fingerprint), .text(info.id.uuidString),
+                    .text(preview.document.messageID),
+                    preview.document.createdAt.map { .text(Self.timestamp($0)) } ?? .null,
+                    .text(Self.timestamp(now)),
+                    .integer(Int64(preview.matches.count)),
+                    .integer(Int64(selected.count)),
+                    .integer(Int64(preview.document.warnings.count))
+                ]
+            )
+            for (position, match) in preview.matches.enumerated() {
+                let record = match.record
+                try run(
+                    """
+                    INSERT INTO payment_status_report_items(
+                        id,report_fingerprint,position,target_kind,target_id,
+                        target_title,original_message_id,original_message_name_id,
+                        original_payment_information_id,original_end_to_end_id,
+                        status_code,reason_code,reason_text,previous_status,applied_status
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(match.id.uuidString),
+                        .text(preview.document.fingerprint), .integer(Int64(position)),
+                        match.targetKind.map { .text($0.rawValue) } ?? .null,
+                        match.targetID.map { .text($0.uuidString) } ?? .null,
+                        .text(match.targetTitle), .text(record.originalMessageID),
+                        .text(record.originalMessageNameID),
+                        .text(record.originalPaymentInformationID),
+                        .text(record.originalEndToEndID), .text(record.statusCode),
+                        .text(record.reasonCode), .text(record.reasonText),
+                        match.currentStatus.map { .text($0.rawValue) } ?? .null,
+                        selectedMatchIDs.contains(match.id)
+                            ? .text(match.proposedStatus!.rawValue) : .null
+                    ]
+                )
+            }
+            let bankReference = "P002-\(preview.document.messageID)"
+            for (key, status) in actions.sorted(by: {
+                if $0.key.kind.rawValue != $1.key.kind.rawValue {
+                    return $0.key.kind.rawValue < $1.key.kind.rawValue
+                }
+                return $0.key.id.uuidString < $1.key.id.uuidString
+            }) {
+                switch key.kind {
+                case .creditTransfer:
+                    try transitionPaymentOrder(
+                        id: key.id, to: status, bankReference: bankReference
+                    )
+                case .directDebit:
+                    try transitionDirectDebitOrder(
+                        id: key.id, to: status, bankReference: bankReference
+                    )
+                case .batch:
+                    try transitionPaymentBatch(
+                        id: key.id, to: status, bankReference: bankReference
+                    )
+                }
+            }
+            try audit(
+                entity: "payment_status_report", id: UUID(), action: "import",
+                details: "message=\(preview.document.messageID);records=\(preview.matches.count);applied=\(selected.count)"
             )
         }
     }
@@ -4093,7 +4325,9 @@ final class SQLiteFinanceStore {
         }
     }
 
-    func transitionPaymentOrder(id: UUID, to target: PaymentStatus) throws {
+    func transitionPaymentOrder(
+        id: UUID, to target: PaymentStatus, bankReference suppliedReference: String? = nil
+    ) throws {
         guard try scalarInt(
             "SELECT COUNT(*) FROM payment_batch_items WHERE payment_order_id=?",
             [.text(id.uuidString)]
@@ -4117,8 +4351,8 @@ final class SQLiteFinanceStore {
         }
         let now = Self.timestamp(Date())
         try transaction {
-            let bankReference = target == .accepted
-                ? "SIM-\(id.uuidString.prefix(8).uppercased())" : current.bankReference
+            let bankReference = suppliedReference ?? (target == .accepted
+                ? "SIM-\(id.uuidString.prefix(8).uppercased())" : current.bankReference)
             try run(
                 """
                 UPDATE payment_orders SET status=?,bank_reference=?,updated_at=?,version=version+1
@@ -4275,7 +4509,9 @@ final class SQLiteFinanceStore {
         }
     }
 
-    func transitionDirectDebitOrder(id: UUID, to target: PaymentStatus) throws {
+    func transitionDirectDebitOrder(
+        id: UUID, to target: PaymentStatus, bankReference suppliedReference: String? = nil
+    ) throws {
         guard try scalarInt(
             "SELECT COUNT(*) FROM payment_batch_items WHERE direct_debit_order_id=?",
             [.text(id.uuidString)]
@@ -4293,9 +4529,9 @@ final class SQLiteFinanceStore {
         }
         let now = Self.timestamp(Date())
         try transaction {
-            let bankReference = target == .accepted
+            let bankReference = suppliedReference ?? (target == .accepted
                 ? "SIM-DD-\(id.uuidString.prefix(8).uppercased())"
-                : current.bankReference
+                : current.bankReference)
             try run(
                 """
                 UPDATE direct_debit_orders
@@ -4504,7 +4740,9 @@ final class SQLiteFinanceStore {
         }
     }
 
-    func transitionPaymentBatch(id: UUID, to target: PaymentStatus) throws {
+    func transitionPaymentBatch(
+        id: UUID, to target: PaymentStatus, bankReference suppliedReference: String? = nil
+    ) throws {
         guard let current = try paymentBatches().first(where: { $0.id == id }) else {
             throw FinanceError.invalidPaymentBatch("Der Sammler fehlt.")
         }
@@ -4512,9 +4750,9 @@ final class SQLiteFinanceStore {
             throw FinanceError.invalidPaymentTransition
         }
         let now = Self.timestamp(Date())
-        let batchReference = target == .accepted
+        let batchReference = suppliedReference ?? (target == .accepted
             ? "SIM-BT-\(id.uuidString.prefix(8).uppercased())"
-            : current.bankReference
+            : current.bankReference)
         try transaction {
             try run(
                 """
@@ -4539,9 +4777,9 @@ final class SQLiteFinanceStore {
                             "Mindestens ein Überweisungsstatus wurde zwischenzeitlich geändert."
                         )
                     }
-                    let reference = target == .accepted
+                    let reference = suppliedReference ?? (target == .accepted
                         ? "SIM-\(memberID.uuidString.prefix(8).uppercased())"
-                        : order.bankReference
+                        : order.bankReference)
                     try run(
                         """
                         UPDATE payment_orders
@@ -4592,9 +4830,9 @@ final class SQLiteFinanceStore {
                             "Mindestens ein Lastschriftstatus wurde zwischenzeitlich geändert."
                         )
                     }
-                    let reference = target == .accepted
+                    let reference = suppliedReference ?? (target == .accepted
                         ? "SIM-DD-\(memberID.uuidString.prefix(8).uppercased())"
-                        : order.bankReference
+                        : order.bankReference)
                     try run(
                         """
                         UPDATE direct_debit_orders
@@ -6798,12 +7036,30 @@ final class SQLiteFinanceStore {
     }
 
     private func transaction(_ operation: () throws -> Void) throws {
-        try execute("BEGIN IMMEDIATE")
+        let nested = transactionDepth > 0
+        let savepoint = "fv_nested_\(transactionDepth)"
+        if nested {
+            try execute("SAVEPOINT \(savepoint)")
+        } else {
+            try execute("BEGIN IMMEDIATE")
+        }
+        transactionDepth += 1
         do {
             try operation()
-            try execute("COMMIT")
+            transactionDepth -= 1
+            if nested {
+                try execute("RELEASE SAVEPOINT \(savepoint)")
+            } else {
+                try execute("COMMIT")
+            }
         } catch {
-            try? execute("ROLLBACK")
+            transactionDepth -= 1
+            if nested {
+                try? execute("ROLLBACK TO SAVEPOINT \(savepoint)")
+                try? execute("RELEASE SAVEPOINT \(savepoint)")
+            } else {
+                try? execute("ROLLBACK")
+            }
             throw error
         }
     }

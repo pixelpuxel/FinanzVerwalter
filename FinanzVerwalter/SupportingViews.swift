@@ -5154,6 +5154,7 @@ struct PaymentsView: View {
         case payments = "Überweisungen"
         case directDebits = "Lastschriften"
         case batches = "Sammler"
+        case statusReports = "Statusberichte"
         case standingOrders = "Daueraufträge"
         var id: Self { self }
     }
@@ -5163,10 +5164,13 @@ struct PaymentsView: View {
     @State private var selectedDirectDebitID: UUID?
     @State private var selectedStandingOrderID: UUID?
     @State private var selectedBatchID: UUID?
+    @State private var selectedStatusReportID: String?
     @State private var section: PaymentSection = .payments
     @State private var showNewPayment = false
     @State private var showNewDirectDebit = false
     @State private var showNewBatch = false
+    @State private var showStatusImporter = false
+    @State private var statusPreview: Pain002Preview?
     @State private var editedStandingOrder: StandingOrder?
 
     private var selectedOrder: PaymentOrder? {
@@ -5205,7 +5209,7 @@ struct PaymentsView: View {
                     ForEach(PaymentSection.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 500)
+                .frame(width: 650)
                 Button {
                     switch section {
                     case .payments:
@@ -5214,6 +5218,8 @@ struct PaymentsView: View {
                         showNewDirectDebit = true
                     case .batches:
                         showNewBatch = true
+                    case .statusReports:
+                        showStatusImporter = true
                     case .standingOrders:
                         guard let account = store.accounts.first(where: {
                             !$0.isClosed && $0.currency == "EUR"
@@ -5238,13 +5244,19 @@ struct PaymentsView: View {
                             ? "Überweisung"
                             : (section == .directDebits
                                 ? "Lastschrift"
-                                : (section == .batches ? "Sammler" : "Dauerauftrag")),
-                        systemImage: "plus"
+                                : (section == .batches
+                                    ? "Sammler"
+                                    : (section == .statusReports
+                                        ? "pain.002" : "Dauerauftrag"))),
+                        systemImage: section == .statusReports
+                            ? "doc.badge.arrow.down" : "plus"
                     )
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(
-                    section == PaymentSection.standingOrders
+                    section == .statusReports
+                        ? false
+                        : (section == PaymentSection.standingOrders
                         ? !store.accounts.contains(where: {
                             !$0.isClosed && $0.currency == "EUR"
                         })
@@ -5253,7 +5265,7 @@ struct PaymentsView: View {
                                 store.paymentOrders.filter({ $0.status == .draft }).count < 2
                                     && store.directDebitOrders.filter({ $0.status == .draft }).count < 2
                             )
-                            : store.accounts.isEmpty)
+                            : store.accounts.isEmpty))
                 )
             }
             .padding(12)
@@ -5265,6 +5277,8 @@ struct PaymentsView: View {
                 directDebitsContent
             case .batches:
                 batchesContent
+            case .statusReports:
+                statusReportsContent
             case .standingOrders:
                 standingOrdersContent
             }
@@ -5280,6 +5294,9 @@ struct PaymentsView: View {
             if selectedBatchID == nil {
                 selectedBatchID = store.paymentBatches.first?.id
             }
+            if selectedStatusReportID == nil {
+                selectedStatusReportID = store.paymentStatusReports.first?.id
+            }
         }
         .sheet(isPresented: $showNewPayment) {
             PaymentDraftEditor()
@@ -5289,6 +5306,24 @@ struct PaymentsView: View {
         }
         .sheet(isPresented: $showNewBatch) {
             PaymentBatchDraftEditor()
+        }
+        .sheet(item: $statusPreview) { preview in
+            Pain002PreviewSheet(preview: preview)
+        }
+        .fileImporter(
+            isPresented: $showStatusImporter,
+            allowedContentTypes: [.xml], allowsMultipleSelection: false
+        ) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                statusPreview = store.previewPaymentStatusReport(
+                    data: try Data(contentsOf: url)
+                )
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
         }
         .sheet(item: $editedStandingOrder) {
             StandingOrderEditor(value: $0)
@@ -5548,6 +5583,70 @@ struct PaymentsView: View {
         }
     }
 
+    private var statusReportsContent: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("pain.002-Importhistorie").font(.headline)
+                    Spacer()
+                    Text("\(store.paymentStatusReports.count)")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                Divider()
+                if store.paymentStatusReports.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Statusberichte",
+                        systemImage: "doc.text.magnifyingglass",
+                        description: Text(
+                            "Importiere einen pain.002.001.10-Bericht. Vor jeder Übernahme erscheint eine unveränderliche Vorschau."
+                        )
+                    )
+                } else {
+                    List(selection: $selectedStatusReportID) {
+                        ForEach(store.paymentStatusReports) { report in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(report.messageID).fontWeight(.medium)
+                                HStack {
+                                    Text("\(report.recordCount) Positionen")
+                                    Text("·")
+                                    Text("\(report.appliedCount) übernommen")
+                                    Spacer()
+                                    Text(
+                                        report.importedAt,
+                                        format: .dateTime.day().month().year()
+                                            .hour().minute()
+                                    )
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .tag(report.id)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 390, idealWidth: 470)
+            if let reportID = selectedStatusReportID,
+               let report = store.paymentStatusReports.first(where: {
+                   $0.id == reportID
+               }) {
+                PaymentStatusReportDetail(
+                    report: report,
+                    items: store.paymentStatusReportItems(reportID: reportID)
+                )
+                .id(reportID)
+                .frame(minWidth: 520)
+            } else {
+                ContentUnavailableView(
+                    "Kein Statusbericht ausgewählt",
+                    systemImage: "doc.text.magnifyingglass"
+                )
+                .frame(minWidth: 520)
+            }
+        }
+    }
+
     private func batchTotal(_ batch: PaymentBatch) -> Int64 {
         switch batch.kind {
         case .creditTransfer:
@@ -5558,6 +5657,174 @@ struct PaymentsView: View {
             return store.directDebitOrders
                 .filter { batch.memberOrderIDs.contains($0.id) }
                 .reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+    }
+}
+
+private struct Pain002PreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    let preview: Pain002Preview
+    @State private var selectedIDs: Set<UUID>
+    @State private var confirmImport = false
+
+    init(preview: Pain002Preview) {
+        self.preview = preview
+        _selectedIDs = State(
+            initialValue: Set(preview.matches.filter(\.canApply).map(\.id))
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("pain.002-Vorschau").font(.title2.bold())
+                    Text("Nachricht \(preview.document.messageID)")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Auswahl übernehmen …") { confirmImport = true }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(14)
+            Divider()
+            HStack(spacing: 18) {
+                LabeledContent("Positionen", value: "\(preview.matches.count)")
+                LabeledContent("Final anwendbar", value: "\(preview.applicableCount)")
+                LabeledContent("Nicht zugeordnet", value: "\(preview.unresolvedCount)")
+                LabeledContent("Ausgewählt", value: "\(selectedIDs.count)")
+                Spacer()
+            }
+            .padding(12)
+            Divider()
+            List {
+                ForEach(preview.matches) { match in
+                    Toggle(isOn: selection(match)) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(match.record.statusCode)
+                                .font(.caption.bold().monospaced())
+                                .padding(.horizontal, 7).padding(.vertical, 4)
+                                .background(statusColor(match).opacity(0.14), in: Capsule())
+                                .foregroundStyle(statusColor(match))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(match.targetTitle).fontWeight(.medium)
+                                Text(match.explanation)
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if !match.record.reasonCode.isEmpty
+                                    || !match.record.reasonText.isEmpty {
+                                    Text(
+                                        [match.record.reasonCode, match.record.reasonText]
+                                            .filter { !$0.isEmpty }.joined(separator: " · ")
+                                    )
+                                    .font(.caption)
+                                }
+                            }
+                            Spacer()
+                            if let current = match.currentStatus {
+                                Text(current.title)
+                                Image(systemName: "arrow.right")
+                                Text(match.proposedStatus?.title ?? "nur Historie")
+                            }
+                        }
+                    }
+                    .disabled(!match.canApply)
+                }
+                if !preview.document.warnings.isEmpty {
+                    Section("Hinweise") {
+                        ForEach(preview.document.warnings, id: \.self) {
+                            Label($0, systemImage: "exclamationmark.triangle")
+                        }
+                    }
+                }
+            }
+            Text(
+                "Alle Positionen werden unveränderlich historisiert. Nur ausdrücklich ausgewählte finale ACSC-/RJCT-Positionen ändern lokale Aufträge; der gesamte Commit ist atomar."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(12)
+        }
+        .frame(width: 980, height: 720)
+        .alert("Statusbericht verbindlich importieren?", isPresented: $confirmImport) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("\(selectedIDs.count) Status übernehmen") {
+                if store.commitPaymentStatusReport(
+                    preview, applying: selectedIDs
+                ) { dismiss() }
+            }
+        } message: {
+            Text(
+                "Die Datei wird einmalig anhand ihres SHA-256-Fingerprints importiert. Finale Status und daraus entstehende Buchungen werden gemeinsam oder gar nicht übernommen."
+            )
+        }
+    }
+
+    private func selection(_ match: Pain002Match) -> Binding<Bool> {
+        Binding(
+            get: { selectedIDs.contains(match.id) },
+            set: { selected in
+                if selected { selectedIDs.insert(match.id) }
+                else { selectedIDs.remove(match.id) }
+            }
+        )
+    }
+
+    private func statusColor(_ match: Pain002Match) -> Color {
+        switch match.proposedStatus {
+        case .accepted: .green
+        case .rejected: .red
+        default: .orange
+        }
+    }
+}
+
+private struct PaymentStatusReportDetail: View {
+    let report: PaymentStatusReportSummary
+    let items: [PaymentStatusReportItem]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(report.messageID).font(.title2.bold())
+                GroupBox("Unveränderlicher Importnachweis") {
+                    Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                        GridRow { Text("Fingerprint"); Text(report.id).font(.caption.monospaced()) }
+                        GridRow { Text("Importiert"); Text(report.importedAt.formatted()) }
+                        GridRow { Text("Positionen"); Text("\(report.recordCount)") }
+                        GridRow { Text("Übernommen"); Text("\(report.appliedCount)") }
+                        GridRow { Text("Hinweise"); Text("\(report.warningCount)") }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+                GroupBox("Statuspositionen") {
+                    VStack(spacing: 0) {
+                        ForEach(items) { item in
+                            HStack(alignment: .top, spacing: 12) {
+                                Text(item.statusCode).font(.caption.bold().monospaced())
+                                    .frame(width: 42)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.targetTitle).fontWeight(.medium)
+                                    Text(
+                                        [item.reasonCode, item.reasonText]
+                                            .filter { !$0.isEmpty }.joined(separator: " · ")
+                                    )
+                                    .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(item.appliedStatus?.title ?? "nur historisiert")
+                                    .font(.caption)
+                            }
+                            .padding(.vertical, 7)
+                            if item.id != items.last?.id { Divider() }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            .padding(18)
         }
     }
 }

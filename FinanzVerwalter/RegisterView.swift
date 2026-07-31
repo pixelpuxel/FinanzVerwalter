@@ -36,7 +36,7 @@ struct RegisterView: View {
     private var secondaryAccountIDRaw = ""
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
-    @AppStorage("registerVisibleColumnsIncludesBalanceV3")
+    @AppStorage("registerVisibleColumnsIncludesBalanceV4")
     private var visibleColumnsIncludesBalance = false
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""

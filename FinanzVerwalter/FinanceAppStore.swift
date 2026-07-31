@@ -94,6 +94,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
     @Published private(set) var paymentBatches: [PaymentBatch] = []
+    @Published private(set) var paymentStatusReports: [PaymentStatusReportSummary] = []
     @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
     @Published private(set) var payeeBankAccounts: [FinancePayeeBankAccount] = []
@@ -1577,6 +1578,45 @@ final class FinanceAppStore: ObservableObject {
         transitionPayment(order, to: outcome.paymentStatus)
     }
 
+    func previewPaymentStatusReport(data: Data) -> Pain002Preview? {
+        do {
+            return Pain002Importer.preview(
+                document: try Pain002Importer.parse(data: data),
+                paymentOrders: paymentOrders,
+                directDebitOrders: directDebitOrders,
+                batches: paymentBatches
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func commitPaymentStatusReport(
+        _ preview: Pain002Preview,
+        applying selectedMatchIDs: Set<UUID>
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.commitPaymentStatusReport(
+                preview, applying: selectedMatchIDs
+            )
+            try load()
+            statusText = "pain.002-Statusbericht importiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func paymentStatusReportItems(
+        reportID: String
+    ) -> [PaymentStatusReportItem] {
+        guard let repository else { return [] }
+        return (try? repository.paymentStatusReportItems(reportID: reportID)) ?? []
+    }
+
     func createPaymentBatch(
         name: String,
         kind: PaymentBatchKind,
@@ -2141,6 +2181,7 @@ final class FinanceAppStore: ObservableObject {
         paymentOrders = try repository.paymentOrders()
         directDebitOrders = try repository.directDebitOrders()
         paymentBatches = try repository.paymentBatches()
+        paymentStatusReports = try repository.paymentStatusReports()
         standingOrders = try repository.standingOrders()
         payees = try repository.payees()
         payeeBankAccounts = try repository.payeeBankAccounts()
