@@ -2080,6 +2080,26 @@ final class SQLiteFinanceStore {
     func saveTag(_ value: FinanceTag) throws {
         let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw FinanceError.database("Der Tagname fehlt.") }
+        guard value.parentID != value.id else {
+            throw FinanceError.database("Eine Klasse kann nicht ihr eigener Oberpunkt sein.")
+        }
+        let existing = try tags()
+        if let parentID = value.parentID {
+            guard existing.contains(where: { $0.id == parentID }) else {
+                throw FinanceError.database("Die übergeordnete Klasse fehlt.")
+            }
+            var ancestorID: UUID? = parentID
+            var visited = Set<UUID>()
+            while let currentID = ancestorID {
+                guard visited.insert(currentID).inserted else {
+                    throw FinanceError.database("Die Klassenhierarchie enthält einen Kreis.")
+                }
+                guard currentID != value.id else {
+                    throw FinanceError.database("Die Klassenhierarchie würde einen Kreis erzeugen.")
+                }
+                ancestorID = existing.first(where: { $0.id == currentID })?.parentID
+            }
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -4040,10 +4060,27 @@ final class SQLiteFinanceStore {
         ids: Set<UUID>,
         categoryID: UUID?
     ) throws -> BulkCategoryUpdateResult {
+        try bulkUpdateTransactionOrganization(
+            ids: ids,
+            updateCategory: true,
+            categoryID: categoryID,
+            replacementTagIDs: nil
+        )
+    }
+
+    func bulkUpdateTransactionOrganization(
+        ids: Set<UUID>,
+        updateCategory: Bool,
+        categoryID: UUID?,
+        replacementTagIDs: Set<UUID>?
+    ) throws -> BulkCategoryUpdateResult {
         guard !ids.isEmpty else {
             return BulkCategoryUpdateResult(updatedCount: 0, totalsByCurrency: [:])
         }
-        if let categoryID {
+        guard updateCategory || replacementTagIDs != nil else {
+            throw FinanceError.database("Es wurde keine Massenänderung ausgewählt.")
+        }
+        if updateCategory, let categoryID {
             var categoryExists = false
             try query(
                 "SELECT 1 FROM categories WHERE id=? AND is_active=1 LIMIT 1",
@@ -4051,6 +4088,18 @@ final class SQLiteFinanceStore {
             ) { _ in categoryExists = true }
             guard categoryExists else {
                 throw FinanceError.database("Die gewählte Kategorie existiert nicht oder ist inaktiv.")
+            }
+        }
+        if let replacementTagIDs {
+            for tagID in replacementTagIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                var tagExists = false
+                try query(
+                    "SELECT 1 FROM tags WHERE id=? AND is_active=1 LIMIT 1",
+                    [.text(tagID.uuidString)]
+                ) { _ in tagExists = true }
+                guard tagExists else {
+                    throw FinanceError.database("Mindestens eine gewählte Klasse fehlt oder ist inaktiv.")
+                }
             }
         }
 
@@ -4083,7 +4132,7 @@ final class SQLiteFinanceStore {
         guard selected.allSatisfy({
             $0.status != TransactionStatus.reconciled.rawValue
                 && $0.transferID == nil
-                && $0.splitCount == 0
+                && (!updateCategory || $0.splitCount == 0)
         }) else {
             throw FinanceError.protectedBulkEdit
         }
@@ -4091,23 +4140,49 @@ final class SQLiteFinanceStore {
         let now = Self.timestamp(Date())
         try transaction {
             for value in selected {
-                try run(
-                    """
-                    UPDATE transactions
-                    SET category_id=?,updated_at=?,version=version+1
-                    WHERE id=?
-                    """,
-                    [
-                        categoryID.map { .text($0.uuidString) } ?? .null,
-                        .text(now),
-                        .text(value.id.uuidString)
-                    ]
-                )
+                if updateCategory {
+                    try run(
+                        """
+                        UPDATE transactions
+                        SET category_id=?,updated_at=?,version=version+1
+                        WHERE id=?
+                        """,
+                        [
+                            categoryID.map { .text($0.uuidString) } ?? .null,
+                            .text(now),
+                            .text(value.id.uuidString)
+                        ]
+                    )
+                } else {
+                    try run(
+                        "UPDATE transactions SET updated_at=?,version=version+1 WHERE id=?",
+                        [.text(now), .text(value.id.uuidString)]
+                    )
+                }
+                if let replacementTagIDs {
+                    try run(
+                        "DELETE FROM transaction_tags WHERE transaction_id=?",
+                        [.text(value.id.uuidString)]
+                    )
+                    for tagID in replacementTagIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                        try run(
+                            "INSERT INTO transaction_tags(transaction_id,tag_id) VALUES(?,?)",
+                            [.text(value.id.uuidString), .text(tagID.uuidString)]
+                        )
+                    }
+                }
                 try audit(
                     entity: "transaction",
                     id: value.id,
-                    action: "bulk-category",
-                    details: categoryID?.uuidString ?? "uncategorized"
+                    action: replacementTagIDs == nil ? "bulk-category" : "bulk-organization",
+                    details: [
+                        updateCategory
+                            ? "category=\(categoryID?.uuidString ?? "uncategorized")"
+                            : "category=unchanged",
+                        replacementTagIDs.map {
+                            "tags=" + $0.map(\.uuidString).sorted().joined(separator: ",")
+                        } ?? "tags=unchanged"
+                    ].joined(separator: ";")
                 )
             }
         }

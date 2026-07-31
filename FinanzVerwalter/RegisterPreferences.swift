@@ -140,6 +140,7 @@ struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var accountID: UUID?
     var statusRawValue: String?
     var categorySelection: RegisterCategorySelection
+    var tagID: UUID? = nil
     var periodRawValue: String
     var customStart: Date
     var customEnd: Date
@@ -153,6 +154,7 @@ struct SavedCombinedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var includedAccountIDs: Set<UUID>
     var statusRawValue: String?
     var categorySelection: RegisterCategorySelection
+    var tagID: UUID? = nil
     var periodRawValue: String
     var customStart: Date
     var customEnd: Date

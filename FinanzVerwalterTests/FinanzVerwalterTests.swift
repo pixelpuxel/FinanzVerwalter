@@ -1037,6 +1037,104 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testBulkOrganizationReplacesTagsAtomicallyAndKeepsCategories() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let category = try XCTUnwrap(try context.store.categories().first(where: \.isActive))
+        let oldTag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Alt", color: "gray",
+            description: "", isActive: true
+        )
+        let newTag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Neu", color: "blue",
+            description: "", isActive: true
+        )
+        try context.store.saveTag(oldTag)
+        try context.store.saveTag(newTag)
+        let editable = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
+            payee: "Markt", purpose: "Einkauf", categoryID: category.id,
+            amountMinor: -2_500, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [], tagIDs: [oldTag.id]
+        )
+        let split = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
+            payee: "Kaufhaus", purpose: "Aufgeteilt", categoryID: nil,
+            amountMinor: -1_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: category.id, amountMinor: -1_000,
+                    memo: "", sortOrder: 0, tagIDs: [oldTag.id]
+                )
+            ],
+            tagIDs: [oldTag.id]
+        )
+        let reconciled = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
+            payee: "Versorger", purpose: "Abgeglichen", categoryID: nil,
+            amountMinor: -4_000, currency: "EUR", status: .reconciled,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [], tagIDs: [oldTag.id]
+        )
+        try context.store.saveTransaction(editable)
+        try context.store.saveTransaction(split)
+        try context.store.saveTransaction(reconciled)
+
+        let result = try context.store.bulkUpdateTransactionOrganization(
+            ids: [editable.id, split.id],
+            updateCategory: false,
+            categoryID: nil,
+            replacementTagIDs: [newTag.id]
+        )
+        XCTAssertEqual(result.updatedCount, 2)
+        XCTAssertEqual(result.totalsByCurrency, ["EUR": -3_500])
+        var restored = try context.store.transactions()
+        XCTAssertEqual(
+            restored.first(where: { $0.id == editable.id })?.categoryID,
+            category.id
+        )
+        XCTAssertEqual(
+            Set(restored.first(where: { $0.id == editable.id })?.tagIDs ?? []),
+            [newTag.id]
+        )
+        XCTAssertEqual(
+            Set(restored.first(where: { $0.id == split.id })?.tagIDs ?? []),
+            [newTag.id]
+        )
+        XCTAssertEqual(
+            Set(restored.first(where: { $0.id == split.id })?.splits.first?.tagIDs ?? []),
+            [oldTag.id]
+        )
+
+        XCTAssertThrowsError(
+            try context.store.bulkUpdateTransactionOrganization(
+                ids: [editable.id, reconciled.id],
+                updateCategory: false,
+                categoryID: nil,
+                replacementTagIDs: [oldTag.id]
+            )
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .protectedBulkEdit)
+        }
+        restored = try context.store.transactions()
+        XCTAssertEqual(
+            Set(restored.first(where: { $0.id == editable.id })?.tagIDs ?? []),
+            [newTag.id]
+        )
+        XCTAssertEqual(
+            Set(restored.first(where: { $0.id == reconciled.id })?.tagIDs ?? []),
+            [oldTag.id]
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testInvalidBackupIsRejectedBeforeRestore() throws {
         let context = try TestDatabase()
         let invalid = context.directory.appendingPathComponent("invalid.qbackup")
@@ -1790,6 +1888,14 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(Set(restored.splits[0].tagIDs), [privateTag.id])
         XCTAssertEqual(Set(restored.splits[1].tagIDs), [childTag.id])
         XCTAssertNoThrow(try restored.validate())
+
+        var cyclicRoot = privateTag
+        cyclicRoot.parentID = childTag.id
+        XCTAssertThrowsError(try context.store.saveTag(cyclicRoot))
+        var missingParent = childTag
+        missingParent.parentID = UUID()
+        XCTAssertThrowsError(try context.store.saveTag(missingParent))
+        XCTAssertEqual(try context.store.tags(), [childTag, privateTag])
     }
 
     func testPortfolioFIFOUsesFixedPointLotsAndRejectsNegativeHoldings() throws {
@@ -3460,13 +3566,14 @@ final class FinanzVerwalterTests: XCTestCase {
             isHidden: false, isClosed: false, sortOrder: 1
         )
         let categoryID = UUID()
+        let tagID = UUID()
         let booked = FinanceTransaction(
             id: UUID(), accountID: firstAccount.id,
             bookingDate: Date(timeIntervalSince1970: 100), valueDate: nil,
             payee: "Miete", purpose: "Wohnung", categoryID: categoryID,
             amountMinor: -100, currency: "EUR", status: .booked,
             memo: "", reference: "", transferID: nil,
-            importFingerprint: nil, splits: []
+            importFingerprint: nil, splits: [], tagIDs: [tagID]
         )
         let cancelled = FinanceTransaction(
             id: UUID(), accountID: firstAccount.id,
@@ -3531,6 +3638,23 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(filtered.isFiltered)
         XCTAssertEqual(filtered.rows.map(\.id), [booked.id])
 
+        let tagFiltered = CombinedRegisterQuery.evaluate(
+            transactions: [booked, cancelled, dollar],
+            forecastTransactions: [forecast],
+            allAccountIDs: allAccountIDs,
+            includedAccountIDs: [],
+            status: nil,
+            category: .all,
+            tagID: tagID,
+            period: .all,
+            customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: "",
+            includeForecast: true
+        ) { _ in "" }
+        XCTAssertTrue(tagFiltered.isFiltered)
+        XCTAssertEqual(tagFiltered.rows.map(\.id), [booked.id])
+
         let balances = CombinedRegisterQuery.runningBalances(
             accounts: [firstAccount, secondAccount],
             transactions: [booked, cancelled, dollar, forecast]
@@ -3545,6 +3669,7 @@ final class FinanzVerwalterTests: XCTestCase {
             includedAccountIDs: [firstAccount.id],
             statusRawValue: TransactionStatus.expected.rawValue,
             categorySelection: .category(categoryID),
+            tagID: tagID,
             periodRawValue: RegisterPeriodFilter.currentYear.rawValue,
             customStart: Date(timeIntervalSince1970: 10),
             customEnd: Date(timeIntervalSince1970: 20),
@@ -3556,6 +3681,13 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(
             RegisterPreferencesCodec.decodeCombinedViews(encoded),
             [view]
+        )
+        let legacyEncoded = encoded.replacingOccurrences(
+            of: ",\"tagID\":\"\(tagID.uuidString)\"",
+            with: ""
+        )
+        XCTAssertNil(
+            RegisterPreferencesCodec.decodeCombinedViews(legacyEncoded).first?.tagID
         )
     }
 

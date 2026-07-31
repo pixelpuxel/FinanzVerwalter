@@ -14,6 +14,7 @@ struct RegisterView: View {
     @State private var showDeleteConfirmation = false
     @State private var statusFilter: TransactionStatus?
     @State private var categoryFilter: RegisterCategoryFilter = .all
+    @State private var tagFilterID: UUID?
     @State private var periodFilter: RegisterPeriodFilter = .all
     @State private var customStart = Calendar.current.date(byAdding: .month, value: -1, to: .now) ?? .now
     @State private var customEnd = Date.now
@@ -87,7 +88,14 @@ struct RegisterView: View {
                 categoryMatches = transaction.categoryID == id
                     || transaction.splits.contains { $0.categoryID == id }
             }
-            return statusMatches && categoryMatches && periodFilter.contains(
+            let tagMatches: Bool
+            if let tagFilterID {
+                tagMatches = transaction.tagIDs.contains(tagFilterID)
+                    || transaction.splits.contains { $0.tagIDs.contains(tagFilterID) }
+            } else {
+                tagMatches = true
+            }
+            return statusMatches && categoryMatches && tagMatches && periodFilter.contains(
                 transaction.bookingDate,
                 customStart: customStart,
                 customEnd: customEnd
@@ -139,7 +147,8 @@ struct RegisterView: View {
             accountTabs
             Divider()
 
-            HStack(spacing: 12) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 12) {
                 Picker("Status", selection: $statusFilter) {
                     Text("Alle Status").tag(TransactionStatus?.none)
                     ForEach(TransactionStatus.allCases, id: \.self) {
@@ -159,6 +168,14 @@ struct RegisterView: View {
                 }
                 .frame(width: 210)
                 .accessibilityIdentifier("register.categoryFilter")
+                Picker("Klasse/Tag", selection: $tagFilterID) {
+                    Text("Alle Klassen/Tags").tag(UUID?.none)
+                    ForEach(store.tagsByPath.filter(\.isActive)) { tag in
+                        Text(store.tagPath(tag.id)).tag(UUID?.some(tag.id))
+                    }
+                }
+                .frame(width: 160)
+                .accessibilityIdentifier("register.tagFilter")
                 Picker("Zeitraum", selection: $periodFilter) {
                     ForEach(RegisterPeriodFilter.allCases) {
                         Text($0.title).tag($0)
@@ -220,14 +237,20 @@ struct RegisterView: View {
                     DatePicker("Bis", selection: $customEnd, displayedComponents: .date)
                         .labelsHidden()
                 }
-                Spacer()
-                Button("Filter zurücksetzen", systemImage: "line.3.horizontal.decrease.circle") {
-                    statusFilter = nil
-                    categoryFilter = .all
-                    periodFilter = .all
+                    Spacer()
+                    Button("Filter zurücksetzen", systemImage: "line.3.horizontal.decrease.circle") {
+                        statusFilter = nil
+                        categoryFilter = .all
+                        tagFilterID = nil
+                        periodFilter = .all
+                    }
+                    .disabled(
+                        statusFilter == nil && categoryFilter == .all
+                            && tagFilterID == nil && periodFilter == .all
+                    )
                 }
-                .disabled(statusFilter == nil && categoryFilter == .all && periodFilter == .all)
             }
+            .scrollIndicators(.hidden)
             .controlSize(.small)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
@@ -288,7 +311,7 @@ struct RegisterView: View {
                             }
                         }
                     }
-                    Button("Kategorie für Auswahl ändern …") {
+                    Button("Kategorie/Klassen für Auswahl ändern …") {
                         selection = ids
                         showBulkEditor = true
                     }
@@ -356,7 +379,7 @@ struct RegisterView: View {
                     Divider().frame(height: 14)
                     Text("\(selection.count) ausgewählt")
                         .fontWeight(.semibold)
-                    Button("Kategorie ändern …", systemImage: "tag") {
+                    Button("Kategorie/Klassen ändern …", systemImage: "tag") {
                         showBulkEditor = true
                     }
                 }
@@ -765,7 +788,7 @@ struct RegisterView: View {
                 .help(path)
                 .frame(height: rowMode.rowHeight, alignment: .leading)
         case .tags:
-            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            let tags = value.tagIDs.map(store.tagPath).joined(separator: ", ")
             Text(tags.isEmpty ? "–" : tags)
                 .lineLimit(rowMode == .twoLines ? 2 : 1)
                 .truncationMode(.middle)
@@ -961,6 +984,9 @@ struct RegisterView: View {
         case .category(let id):
             parts.append("Kategorie: \(store.categoryPath(id))")
         }
+        if let tagFilterID {
+            parts.append("Klasse/Tag: \(store.tagPath(tagFilterID))")
+        }
         if periodFilter != .all {
             parts.append("Zeitraum: \(periodFilter.title)")
         }
@@ -995,7 +1021,7 @@ struct RegisterView: View {
         case .category:
             return store.transactionCategoryPath(value)
         case .tags:
-            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            let tags = value.tagIDs.map(store.tagPath).joined(separator: ", ")
             return tags.isEmpty ? "–" : tags
         case .account:
             return store.accountName(value.accountID)
@@ -1063,6 +1089,7 @@ struct RegisterView: View {
             accountID: store.selectedAccountID,
             statusRawValue: statusFilter?.rawValue,
             categorySelection: categoryFilter.savedSelection,
+            tagID: tagFilterID,
             periodRawValue: periodFilter.rawValue,
             customStart: customStart,
             customEnd: customEnd,
@@ -1098,6 +1125,9 @@ struct RegisterView: View {
             categoryFilter = .all
         } else {
             categoryFilter = savedCategoryFilter
+        }
+        tagFilterID = view.tagID.flatMap { id in
+            store.tags.contains(where: { $0.id == id }) ? id : nil
         }
         periodFilter = RegisterPeriodFilter(rawValue: view.periodRawValue) ?? .all
         customStart = view.customStart
@@ -1137,7 +1167,7 @@ struct RegisterView: View {
             parts.append("Ref. \(value.reference)")
         }
         if !value.tagIDs.isEmpty {
-            parts.append(value.tagIDs.map(store.tagName).joined(separator: ", "))
+            parts.append(value.tagIDs.map(store.tagPath).joined(separator: ", "))
         }
         if value.vatMode != .none, let vatCodeID = value.vatCodeID {
             let code = store.vatCodes.first { $0.id == vatCodeID }
@@ -1392,6 +1422,9 @@ private struct BulkCategoryEditorView: View {
     let onCompletion: () -> Void
 
     @State private var categoryID: UUID?
+    @State private var updateCategory = true
+    @State private var updateTags = false
+    @State private var selectedTagIDs = Set<UUID>()
     @State private var showConfirmation = false
 
     private var transactions: [FinanceTransaction] {
@@ -1400,7 +1433,8 @@ private struct BulkCategoryEditorView: View {
 
     private var protectedTransactions: [FinanceTransaction] {
         transactions.filter {
-            $0.status == .reconciled || $0.transferID != nil || !$0.splits.isEmpty
+            $0.status == .reconciled || $0.transferID != nil
+                || (updateCategory && !$0.splits.isEmpty)
         }
     }
 
@@ -1412,7 +1446,7 @@ private struct BulkCategoryEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Kategorie für Auswahl ändern")
+            Text("Kategorie und Klassen/Tags ändern")
                 .font(.title2.bold())
             Text("\(transactions.count) Buchungen werden gemeinsam geprüft und atomar geändert.")
                 .foregroundStyle(.secondary)
@@ -1426,23 +1460,67 @@ private struct BulkCategoryEditorView: View {
                 }
             }
 
-            Picker("Neue Kategorie", selection: $categoryID) {
-                Text("Nicht kategorisiert").tag(UUID?.none)
-                ForEach(store.categoriesByPath.filter(\.isActive)) {
-                    Text(store.categoryPath($0.id)).tag(UUID?.some($0.id))
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Kategorie ersetzen", isOn: $updateCategory)
+                    Picker("Neue Kategorie", selection: $categoryID) {
+                        Text("Nicht kategorisiert").tag(UUID?.none)
+                        ForEach(store.categoriesByPath.filter(\.isActive)) {
+                            Text(store.categoryPath($0.id)).tag(UUID?.some($0.id))
+                        }
+                    }
+                    .disabled(!updateCategory)
+                }
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Klassen/Tags vollständig ersetzen", isOn: $updateTags)
+                    if updateTags {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(store.tagsByPath.filter(\.isActive)) { tag in
+                                    Toggle(
+                                        store.tagPath(tag.id),
+                                        isOn: Binding(
+                                            get: { selectedTagIDs.contains(tag.id) },
+                                            set: { selected in
+                                                if selected { selectedTagIDs.insert(tag.id) }
+                                                else { selectedTagIDs.remove(tag.id) }
+                                            }
+                                        )
+                                    )
+                                }
+                                if store.tagsByPath.filter(\.isActive).isEmpty {
+                                    Text("Noch keine aktiven Klassen/Tags vorhanden.")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 150)
+                        Text(
+                            selectedTagIDs.isEmpty
+                                ? "Die vorhandenen Klassen/Tags werden entfernt."
+                                : "\(selectedTagIDs.count) Klassen/Tags werden gesetzt."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                 }
             }
 
             if !protectedTransactions.isEmpty {
                 Label(
                     "\(protectedTransactions.count) geschützte Buchungen in der Auswahl. "
-                        + "Abgeglichene Buchungen, Umbuchungen und Splitbuchungen werden nicht massenweise geändert.",
+                        + "Abgeglichene Buchungen und Umbuchungen sind geschützt; "
+                        + "Splitbuchungen zusätzlich bei einer Kategorieänderung.",
                     systemImage: "lock.trianglebadge.exclamationmark"
                 )
                 .foregroundStyle(.orange)
             } else {
                 Label(
-                    "Die Änderung betrifft ausschließlich die Kategorie. Beträge, Konten und Status bleiben unverändert.",
+                    "Beträge, Konten, Status und Splitzeilen bleiben unverändert.",
                     systemImage: "checkmark.shield"
                 )
                 .foregroundStyle(.secondary)
@@ -1456,20 +1534,25 @@ private struct BulkCategoryEditorView: View {
                     showConfirmation = true
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(transactions.isEmpty || !protectedTransactions.isEmpty)
+                .disabled(
+                    transactions.isEmpty || !protectedTransactions.isEmpty
+                        || (!updateCategory && !updateTags)
+                )
             }
         }
         .padding(24)
         .frame(width: 520)
         .confirmationDialog(
-            "Kategorie wirklich für \(transactions.count) Buchungen ändern?",
+            "Organisation wirklich für \(transactions.count) Buchungen ändern?",
             isPresented: $showConfirmation,
             titleVisibility: .visible
         ) {
             Button("Für \(transactions.count) Buchungen anwenden") {
-                if store.bulkAssignCategory(
+                if store.bulkAssignOrganization(
                     transactionIDs: transactionIDs,
-                    categoryID: categoryID
+                    updateCategory: updateCategory,
+                    categoryID: categoryID,
+                    replacementTagIDs: updateTags ? selectedTagIDs : nil
                 ) {
                     onCompletion()
                     dismiss()
@@ -1626,9 +1709,9 @@ struct TransactionEditorView: View {
                     Section("Klassen & Tags") {
                         ScrollView(.horizontal) {
                             HStack {
-                                ForEach(store.tags.filter(\.isActive)) { tag in
+                                ForEach(store.tagsByPath.filter(\.isActive)) { tag in
                                     Toggle(
-                                        tag.name,
+                                        store.tagPath(tag.id),
                                         isOn: Binding(
                                             get: { selectedTagIDs.contains(tag.id) },
                                             set: {
@@ -1668,7 +1751,7 @@ struct TransactionEditorView: View {
                                         .frame(width: 110)
                                     TextField("Notiz", text: $draft.memo)
                                     Menu("Tags") {
-                                        ForEach(store.tags.filter(\.isActive)) { tag in
+                                        ForEach(store.tagsByPath.filter(\.isActive)) { tag in
                                             Button {
                                                 if draft.tagIDs.contains(tag.id) {
                                                     draft.tagIDs.remove(tag.id)
@@ -1677,7 +1760,7 @@ struct TransactionEditorView: View {
                                                 }
                                             } label: {
                                                 Label(
-                                                    tag.name,
+                                                    store.tagPath(tag.id),
                                                     systemImage: draft.tagIDs.contains(tag.id)
                                                         ? "checkmark" : "tag"
                                                 )
@@ -2063,6 +2146,7 @@ private struct SecondaryRegisterPane: View {
     @State private var selection = Set<UUID>()
     @State private var statusFilter: TransactionStatus?
     @State private var categoryFilter = RegisterCategoryFilter.all
+    @State private var tagFilterID: UUID?
     @State private var periodFilter = RegisterPeriodFilter.all
     @State private var customStart = Calendar.current.date(
         byAdding: .month,
@@ -2088,7 +2172,7 @@ private struct SecondaryRegisterPane: View {
     }
 
     private var visibleTransactions: [FinanceTransaction] {
-        RegisterSecondaryQuery.visible(
+        let base = RegisterSecondaryQuery.visible(
             transactions: store.transactions,
             accountID: selectedAccountID,
             status: statusFilter,
@@ -2099,6 +2183,11 @@ private struct SecondaryRegisterPane: View {
             searchText: store.searchText
         ) { transaction in
             store.transactionCategoryPath(transaction)
+        }
+        guard let tagFilterID else { return base }
+        return base.filter {
+            $0.tagIDs.contains(tagFilterID)
+                || $0.splits.contains { $0.tagIDs.contains(tagFilterID) }
         }
     }
 
@@ -2157,6 +2246,13 @@ private struct SecondaryRegisterPane: View {
                     }
                 }
                 .frame(maxWidth: 130)
+                Picker("Klasse/Tag", selection: $tagFilterID) {
+                    Text("Alle Klassen/Tags").tag(UUID?.none)
+                    ForEach(store.tagsByPath.filter(\.isActive)) { tag in
+                        Text(store.tagPath(tag.id)).tag(UUID?.some(tag.id))
+                    }
+                }
+                .frame(maxWidth: 150)
             }
             .controlSize(.mini)
             .padding(.horizontal, 8)
@@ -2565,7 +2661,7 @@ private struct RegisterMiniReportPanel: View {
         switch snapshot.subject {
         case .payee(let name): name
         case .category(let id): store.categoryPath(id)
-        case .tag(let id): store.tagName(id)
+        case .tag(let id): store.tagPath(id)
         case .unavailable: "Kein Wert"
         }
     }
@@ -2594,6 +2690,7 @@ private struct SecondaryCombinedRegisterPane: View {
     @State private var selection = Set<UUID>()
     @State private var statusFilter: TransactionStatus?
     @State private var categoryFilter = RegisterCategoryFilter.all
+    @State private var tagFilterID: UUID?
     @State private var periodFilter = RegisterPeriodFilter.all
     @State private var customStart = Calendar.current.date(
         byAdding: .month,
@@ -2635,6 +2732,7 @@ private struct SecondaryCombinedRegisterPane: View {
             includedAccountIDs: includedAccountIDs,
             status: statusFilter,
             category: categoryFilter,
+            tagID: tagFilterID,
             period: periodFilter,
             customStart: customStart,
             customEnd: customEnd,
@@ -2685,6 +2783,13 @@ private struct SecondaryCombinedRegisterPane: View {
                         }
                     }
                     .frame(width: 160)
+                    Picker("Klasse/Tag", selection: $tagFilterID) {
+                        Text("Alle Klassen/Tags").tag(UUID?.none)
+                        ForEach(store.tagsByPath.filter(\.isActive)) { tag in
+                            Text(store.tagPath(tag.id)).tag(UUID?.some(tag.id))
+                        }
+                    }
+                    .frame(width: 150)
                     Picker("Zeitraum", selection: $periodFilter) {
                         ForEach(RegisterPeriodFilter.allCases) {
                             Text($0.title).tag($0)
@@ -2876,6 +2981,7 @@ enum CombinedRegisterQuery {
         includedAccountIDs: Set<UUID>,
         status: TransactionStatus?,
         category: RegisterCategoryFilter,
+        tagID: UUID? = nil,
         period: RegisterPeriodFilter,
         customStart: Date,
         customEnd: Date,
@@ -2905,6 +3011,13 @@ enum CombinedRegisterQuery {
                 categoryMatches = transaction.categoryID == id
                     || transaction.splits.contains { $0.categoryID == id }
             }
+            let tagMatches: Bool
+            if let tagID {
+                tagMatches = transaction.tagIDs.contains(tagID)
+                    || transaction.splits.contains { $0.tagIDs.contains(tagID) }
+            } else {
+                tagMatches = true
+            }
             let searchMatches = search.isEmpty
                 || transaction.payee.localizedCaseInsensitiveContains(search)
                 || transaction.purpose.localizedCaseInsensitiveContains(search)
@@ -2912,7 +3025,7 @@ enum CombinedRegisterQuery {
                 || transaction.reference.localizedCaseInsensitiveContains(search)
                 || categoryPath(transaction)
                     .localizedCaseInsensitiveContains(search)
-            return statusMatches && categoryMatches && searchMatches
+            return statusMatches && categoryMatches && tagMatches && searchMatches
                 && period.contains(
                     transaction.bookingDate,
                     customStart: customStart,
@@ -2927,6 +3040,7 @@ enum CombinedRegisterQuery {
         let isFiltered = effectiveAccounts != allAccountIDs
             || status != nil
             || category != .all
+            || tagID != nil
             || period != .all
             || !search.isEmpty
         let totals = Dictionary(grouping: rows.filter {
@@ -2976,6 +3090,7 @@ struct CombinedRegisterView: View {
     @State private var showBulkEditor = false
     @State private var statusFilter: TransactionStatus?
     @State private var categoryFilter = RegisterCategoryFilter.all
+    @State private var tagFilterID: UUID?
     @State private var periodFilter = RegisterPeriodFilter.all
     @State private var customStart = Calendar.current.date(
         byAdding: .month,
@@ -3033,6 +3148,7 @@ struct CombinedRegisterView: View {
             includedAccountIDs: includedAccountIDs,
             status: statusFilter,
             category: categoryFilter,
+            tagID: tagFilterID,
             period: periodFilter,
             customStart: customStart,
             customEnd: customEnd,
@@ -3121,6 +3237,13 @@ struct CombinedRegisterView: View {
                     }
                 }
                 .frame(width: 190)
+                Picker("Klasse/Tag", selection: $tagFilterID) {
+                    Text("Alle Klassen/Tags").tag(UUID?.none)
+                    ForEach(store.tagsByPath.filter(\.isActive)) { tag in
+                        Text(store.tagPath(tag.id)).tag(UUID?.some(tag.id))
+                    }
+                }
+                .frame(width: 165)
                 Picker("Zeitraum", selection: $periodFilter) {
                     ForEach(RegisterPeriodFilter.allCases) {
                         Text($0.title).tag($0)
@@ -3151,6 +3274,7 @@ struct CombinedRegisterView: View {
                         includedAccountIDs = []
                         statusFilter = nil
                         categoryFilter = .all
+                        tagFilterID = nil
                         periodFilter = .all
                         store.searchText = ""
                     }
@@ -3194,7 +3318,7 @@ struct CombinedRegisterView: View {
                 )
                 .accessibilityIdentifier("combinedRegister.transactionTable")
                 .contextMenu(forSelectionType: UUID.self) { ids in
-                    Button("Kategorie für Auswahl ändern …") {
+                    Button("Kategorie/Klassen für Auswahl ändern …") {
                         selection = ids
                         showBulkEditor = true
                     }
@@ -3231,7 +3355,7 @@ struct CombinedRegisterView: View {
                 }
                 Spacer()
                 if !selection.isEmpty {
-                    Button("Kategorie ändern …") {
+                    Button("Kategorie/Klassen ändern …") {
                         showBulkEditor = true
                     }
                     .disabled(persistentSelection.isEmpty)
@@ -3360,6 +3484,7 @@ struct CombinedRegisterView: View {
             includedAccountIDs: includedAccountIDs,
             statusRawValue: statusFilter?.rawValue,
             categorySelection: categoryFilter.savedSelection,
+            tagID: tagFilterID,
             periodRawValue: periodFilter.rawValue,
             customStart: customStart,
             customEnd: customEnd,
@@ -3392,6 +3517,9 @@ struct CombinedRegisterView: View {
             TransactionStatus.init(rawValue:)
         )
         categoryFilter = RegisterCategoryFilter(view.categorySelection)
+        tagFilterID = view.tagID.flatMap { id in
+            store.tags.contains(where: { $0.id == id }) ? id : nil
+        }
         periodFilter = RegisterPeriodFilter(
             rawValue: view.periodRawValue
         ) ?? .all
@@ -3621,6 +3749,9 @@ struct CombinedRegisterView: View {
         case .category(let id):
             parts.append("Kategorie: \(store.categoryPath(id))")
         }
+        if let tagFilterID {
+            parts.append("Klasse/Tag: \(store.tagPath(tagFilterID))")
+        }
         if periodFilter != .all {
             parts.append("Zeitraum: \(periodFilter.title)")
         }
@@ -3700,7 +3831,7 @@ struct CombinedRegisterView: View {
                 .help(path)
                 .frame(height: rowMode.rowHeight, alignment: .leading)
         case .tags:
-            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            let tags = value.tagIDs.map(store.tagPath).joined(separator: ", ")
             Text(tags.isEmpty ? "–" : tags)
                 .lineLimit(rowMode == .twoLines ? 2 : 1)
                 .truncationMode(.middle)
@@ -3763,7 +3894,7 @@ struct CombinedRegisterView: View {
         case .category:
             return store.transactionCategoryPath(value)
         case .tags:
-            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            let tags = value.tagIDs.map(store.tagPath).joined(separator: ", ")
             return tags.isEmpty ? "–" : tags
         case .account:
             return store.accountName(value.accountID)

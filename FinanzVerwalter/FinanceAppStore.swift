@@ -261,6 +261,29 @@ final class FinanceAppStore: ObservableObject {
         tags.first { $0.id == id }?.name ?? "Unbekannter Tag"
     }
 
+    func tagPath(_ id: UUID?) -> String {
+        guard let id, let tag = tags.first(where: { $0.id == id }) else {
+            return "Ohne Klasse/Tag"
+        }
+        var names = [tag.name]
+        var parentID = tag.parentID
+        var visited = Set([tag.id])
+        while let currentID = parentID,
+              visited.insert(currentID).inserted,
+              let parent = tags.first(where: { $0.id == currentID }) {
+            names.insert(parent.name, at: 0)
+            parentID = parent.parentID
+        }
+        return names.joined(separator: " › ")
+    }
+
+    var tagsByPath: [FinanceTag] {
+        tags.sorted {
+            tagPath($0.id).localizedCaseInsensitiveCompare(tagPath($1.id))
+                == .orderedAscending
+        }
+    }
+
     func payeeSuggestions(for query: String) -> [FinancePayee] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return payees
@@ -492,6 +515,29 @@ final class FinanceAppStore: ObservableObject {
             )
             try load()
             statusText = "\(result.updatedCount) Buchungen kategorisiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func bulkAssignOrganization(
+        transactionIDs: Set<UUID>,
+        updateCategory: Bool,
+        categoryID: UUID?,
+        replacementTagIDs: Set<UUID>?
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            let result = try repository.bulkUpdateTransactionOrganization(
+                ids: transactionIDs,
+                updateCategory: updateCategory,
+                categoryID: categoryID,
+                replacementTagIDs: replacementTagIDs
+            )
+            try load()
+            statusText = "\(result.updatedCount) Buchungen organisiert"
             return true
         } catch {
             present(error)

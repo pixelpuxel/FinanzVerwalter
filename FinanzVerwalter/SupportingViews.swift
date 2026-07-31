@@ -1398,9 +1398,9 @@ struct ReportsView: View {
     private var tagFilterMenu: some View {
         Menu {
             Button("Alle Klassen/Tags") { selectedTagIDs.removeAll() }
-            ForEach(store.tags.filter(\.isActive)) { tag in
+            ForEach(store.tagsByPath.filter(\.isActive)) { tag in
                 Toggle(
-                    store.tagName(tag.id),
+                    store.tagPath(tag.id),
                     isOn: memberBinding(tag.id, in: $selectedTagIDs)
                 )
             }
@@ -2578,11 +2578,14 @@ struct SettingsView: View {
                         color: "blue", description: "", isActive: true
                     )
                 }
-                ForEach(store.tags) { tag in
+                ForEach(store.tagsByPath) { tag in
                     Button {
                         editedTag = tag
                     } label: {
-                        LabeledContent(tag.name, value: tag.isActive ? "Aktiv" : "Inaktiv")
+                        LabeledContent(
+                            store.tagPath(tag.id),
+                            value: tag.isActive ? "Aktiv" : "Inaktiv"
+                        )
                     }
                     .buttonStyle(.plain)
                 }
@@ -3060,8 +3063,8 @@ private struct TagEditor: View {
                 TextField("Beschreibung", text: $value.description)
                 Picker("Übergeordneter Tag", selection: $value.parentID) {
                     Text("Keine Hierarchie").tag(UUID?.none)
-                    ForEach(store.tags.filter { $0.id != value.id }) {
-                        Text($0.name).tag(Optional($0.id))
+                    ForEach(store.tagsByPath.filter { $0.id != value.id }) {
+                        Text(store.tagPath($0.id)).tag(Optional($0.id))
                     }
                 }
                 Toggle("Aktiv", isOn: $value.isActive)
@@ -3376,9 +3379,9 @@ private struct RuleEditor: View {
                     .toggleStyle(.checkbox)
                 }
                 Menu {
-                    ForEach(store.tags.filter(\.isActive)) { tag in
+                    ForEach(store.tagsByPath.filter(\.isActive)) { tag in
                         Toggle(
-                            tag.name,
+                            store.tagPath(tag.id),
                             isOn: tagActionBinding(tag.id)
                         )
                     }
