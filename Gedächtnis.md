@@ -1510,3 +1510,57 @@ Rechtsberatung.
   75-Test-Stand, private QIF-Prüfung, Produktivmigration, GitHub-Commits und
   Zielzählerstand von 10.372.101 Tokens. Wegen der gesperrten Sitzung wurde
   ausdrücklich kein Screenshot angehängt oder vorgetäuscht.
+
+## 2026-07-31 – Sicherer pain.001-/pain.008-Auftragsimport
+
+- `PainInstructionImporter` liest ausschließlich `pain.001.001.09` und
+  `pain.008.001.08` in ihren exakten ISO-Namespaces. Eingaben sind auf 10 MB
+  und 20.000 Positionen begrenzt; DTD/ENTITY und externe Entitäten werden
+  abgewiesen. Erstellungszeit, IDs, SEPA-Servicelevel, EUR-Beträge,
+  IBAN/BIC, Daten, CORE-Sequenz sowie Anzahl und Kontrollsumme auf Gruppen-
+  und Zahlungsblockebene werden geprüft.
+- Die Vorschau ordnet ein offenes EUR-Konto nur über exakten Inhabernamen,
+  IBAN und gegebenenfalls BIC zu. Empfängerbankverbindungen benötigen aktive,
+  exakt übereinstimmende Stammdaten. Lastschriften verlangen zusätzlich genau
+  das aktive Mandat mit Referenz, Datum und Sequenz. Mehrdeutigkeit wird nicht
+  geraten; eine Überweisung ohne Empfängerakte darf nur sichtbar unverbunden
+  als Entwurf entstehen.
+- Migration 27 ergänzt `payment_instruction_imports` und
+  `payment_instruction_import_items`. Auswahl und zweite Bestätigung erzeugen
+  ausschließlich Entwürfe, nie Versand, Statuswechsel oder Buchung. Alle
+  Zuordnungen werden im Commit erneut geprüft. Ein vollständiger
+  Mehrpositionsblock wird in Quellreihenfolge als Sammler rekonstruiert;
+  Teilauswahlen bleiben Einzelentwürfe. Import, Historie und Audit sind eine
+  atomare Transaktion und der Dateihash verhindert Doppelübernahmen.
+- Der Zahlungsverkehr besitzt nun ein sechstes Segment `Dateiimporte` mit
+  sicherem lokalen Dateidialog, unveränderlicher Positionsvorschau,
+  Selektionsbegründungen, ausdrücklichem Entwurfshinweis sowie persistenter
+  Import- und Positionshistorie.
+- Vier neue Tests prüfen Export-Import-Rundläufe beider pain-Formate,
+  DTD/ENTITY, falschen Namespace und manipulierte Kontrollsummen, atomaren
+  idempotenten Überweisungs-/Sammlerimport sowie exakte und beim Commit erneut
+  geprüfte Lastschriftmandate. Die Migrationstests decken Schema 14→27 und
+  Schema 22→27 ab.
+- Die vollständige Suite unter
+  `/tmp/FinanzVerwalter-FullTests-Schema27-PainImport.xcresult` führte 79
+  Tests aus: 78 bestanden, der private opt-in-Real-QIF-Test wurde ohne Pfad
+  erwartungsgemäß übersprungen, 0 Fehler. Derselbe private echte
+  2025-QIF-Test bestand anschließend mit einer ausschließlich temporären
+  Kopie; sie wurde danach gelöscht und bleibt vollständig außerhalb von Git.
+- Der optimierte Release-Build unter
+  `build/DerivedData-Schema27-PainImport/Build/Products/Release` bestand. Vor
+  der Produktivmigration wurde die App kontrolliert beendet und die geprüfte
+  Sicherung `Vor Migration 27 pain-Auftragsimport.qbackup` angelegt: Schema
+  26, Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Statusberichte und 0
+  Statuspositionen. Die bisherige App liegt reversibel unter
+  `build/FinanzVerwalter-vor-pain-import-20260731-1609.app`.
+- Der neue Release ist ad hoc signiert, streng signaturgeprüft, unter
+  `~/Applications/FinanzVerwalter.app` installiert und zweimal erfolgreich
+  gestartet. Nach kontrolliertem WAL-Checkpoint meldet die Produktivdatei
+  Schema 27, Integrität `ok`, unverändert 97 Konten und 2.170 Buchungen sowie
+  0 Auftragsimporte und 0 Importpositionen. Ihr stabiler SHA-256-Wert ist
+  `053ae13acef1ad8140500a7dec96e39114cbeb60b5fe00ecb5ecf6d37fc73849`.
+- Die Computersteuerung bestätigt erneut eine gesperrte macOS-Sitzung, die
+  sich nicht automatisch entsperren lässt. Die sichtbare UI-/VoiceOver-
+  Abnahme und ein echter neuer Screenshot bleiben offen; es wurde nichts
+  vorgetäuscht.

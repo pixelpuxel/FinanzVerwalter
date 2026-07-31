@@ -154,6 +154,17 @@ die Übereinstimmung nochmals geprüft; der Auftrag bewahrt anschließend seinen
 unveränderlichen Bankdaten-Schnappschuss, auch wenn die Empfängerakte später
 bearbeitet wird. Eine vollständig manuelle Eingabe bleibt möglich.
 
+`Zahlungsverkehr › Dateiimporte` liest lokale `pain.001.001.09`- und
+`pain.008.001.08`-Dateien ausschließlich als neue Entwürfe ein. Vor der
+Übernahme zeigt eine unveränderliche Vorschau jede Position, das exakt über
+Name, IBAN und gegebenenfalls BIC zugeordnete EUR-Konto sowie Empfänger,
+Bankverbindung und bei Lastschriften das aktive Mandat. Unklare oder
+widersprüchliche Zuordnungen werden nicht geraten. Erst Auswahl und zweite
+Bestätigung speichern die Entwürfe und gegebenenfalls einen vollständig
+enthaltenen Sammler atomar. Der Import sendet nichts an eine Bank, erzeugt
+keine Buchung und ist über den SHA-256-Dateifingerabdruck idempotent. Eine
+persistente Importhistorie hält auch ausgelassene Positionen nachvollziehbar.
+
 ## Regeln
 
 Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-

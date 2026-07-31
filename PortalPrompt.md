@@ -121,9 +121,9 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 26 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 27 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 75 ausgeführte XCTest-Fälle: 74
+implementiert. Die Suite umfasst aktuell 79 ausgeführte XCTest-Fälle: 78
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -404,7 +404,7 @@ Für Sammelüberweisungen und Sammellastschriften gilt reproduzierbar:
 - Prüfe beide Sammlerarten als Datenbank-Rundlauf einschließlich
   Deduplizierung, Schutz individueller Mitglieder, aller Zustandsübergänge,
   genau-einmaliger Buchung, deterministischem Mehrpositions-XML,
-  Migration 14→26 und Migration 22→26.
+  Migration 14→27 und Migration 22→27.
 
 Für eingehende Zahlungsstatusberichte gilt reproduzierbar:
 
@@ -442,6 +442,45 @@ Für eingehende Zahlungsstatusberichte gilt reproduzierbar:
   vollständige Positionshistorie und einen sicheren XML-Dateiimport. Prüfe
   Parserhärtung, exakte Finalsemantik, atomare Einzel- und Sammlerverarbeitung,
   Deduplizierung, Migrationen und Datenbankintegrität automatisiert.
+
+Für eingehende Überweisungs- und Lastschriftaufträge gilt reproduzierbar:
+
+- Migration 27 erzeugt `payment_instruction_imports` und
+  `payment_instruction_import_items`. Die Kopftabelle speichert
+  SHA-256-Dateifingerabdruck, Nachrichtenart/-kennung, Quellzeitpunkt,
+  Importzeitpunkt sowie Gesamt-, Übernahme-, Auslassungs- und Warnungszahl.
+  Jede Position bewahrt Quelldatenkennung, Zahlungsblock, Reihenfolge,
+  Ergebnis, Begründung und gegebenenfalls Zielart/-UUID unveränderlich.
+- Akzeptiere ausschließlich höchstens 10 MB große Dokumente im exakten
+  Namespace `pain.001.001.09` beziehungsweise `pain.008.001.08`, höchstens
+  20.000 Positionen und keine DTD/ENTITY oder externen Entitäten. Prüfe
+  Erstellungszeitpunkt, eindeutige Identifikatoren, SEPA-Servicelevel,
+  Zahlungsart, EUR-Beträge in Minor Units, IBAN/BIC, Daten, CORE-Sequenz und
+  Anzahl/Kontrollsumme auf Gruppen- und Blockebene.
+- Ordne das lokale offene EUR-Konto ausschließlich über exakten Inhabernamen,
+  IBAN und vorhandene Quell-BIC zu. Ordne eine aktive Empfängerbank ebenso
+  exakt über Kontoinhaber, IBAN und Quell-BIC zu. Bei Lastschriften ist
+  zusätzlich genau ein aktives Mandat derselben Akte mit identischer
+  Referenz, Unterschrift und Sequenz Pflicht. Mehrdeutigkeit ist ein Fehler;
+  Überweisungen ohne passende Empfängerakte dürfen als bewusst unverbundener
+  Entwurf importiert werden.
+- Die Vorschau ist unveränderlich, markiert nur importierbare Positionen
+  standardmäßig und verlangt nach der Positionsauswahl eine zweite
+  Bestätigung. Berechne sämtliche Zuordnungen direkt vor dem Commit erneut
+  und lehne eine veraltete Vorschau vollständig ab.
+- Speichere ausschließlich neue Überweisungs- oder Lastschriftentwürfe. Der
+  Import sendet nichts, ändert keinen Auftragsstatus und erzeugt keine
+  Buchung. Sind alle mindestens zwei Positionen eines Quellzahlungsblocks
+  gewählt, rekonstruiere einen Sammler mit stabiler Quellenreihenfolge;
+  Teilauswahlen bleiben Einzelentwürfe.
+- Führe Entwürfe, Sammler, sämtliche Historienpositionen und Audit gemeinsam
+  in einer äußeren SQLite-Transaktion aus. Stabile Positions-UUIDs und der
+  Dateifingerabdruck verhindern Doppelübernahmen. Zeige im sechsten Segment
+  `Dateiimporte` Importliste und vollständige Detailhistorie.
+- Teste Export-Import-Rundläufe für beide Formate, DTD/ENTITY und falschen
+  Namespace, manipulierte Kontrollsummen, exakte und veraltete
+  Stammdatenzuordnung, Lastschriftmandate, Sammlerreihenfolge, Atomarität,
+  Idempotenz, Migrationen und SQLite-Integrität ausschließlich synthetisch.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 
