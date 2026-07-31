@@ -123,7 +123,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 Migrationen 1 bis 21 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 63 ausgeführte XCTest-Fälle: 62
+implementiert. Die Suite umfasst aktuell 64 ausgeführte XCTest-Fälle: 63
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -364,9 +364,14 @@ Für Empfänger und Klassen/Tags gilt reproduzierbar:
   Filter ist Teil benannter Einzel- und Sammelansichten, alte JSON-Ansichten
   ohne `tagID` bleiben decodierbar. Filterleiste, Druck-/PDF-Beschreibung und
   Tabellenspalte verwenden den vollständigen Hierarchiepfad.
-- SmartFill filtert Name und Aliase, priorisiert Präfixe und danach die
-  bisherige Verwendung; eine Auswahl übernimmt Name und Vorgaben erst im
-  Editor und schreibt niemals unbemerkt.
+- SmartFill normalisiert Suche, Name und Aliase getrimmt sowie ohne
+  Großschreibungs- und Diakritikaunterschiede. Es priorisiert Präfixtreffer
+  vor bloßen Teiltreffern, dann die Anzahl bisheriger `payee_id`-Verwendungen,
+  den normalisierten kanonischen Namen und zuletzt die UUID. Zeige den
+  treffenden Alias und die Verwendung im Vorschlag. Erst eine bewusste
+  Auswahl übernimmt den kanonischen Namen und noch freie Standardwerte im
+  Editor. Weicht der Text danach vom Namen ab, löse `payee_id`, damit niemals
+  eine falsche Empfängerakte gespeichert wird.
 
 Für Depots und Wertpapiere gilt reproduzierbar:
 

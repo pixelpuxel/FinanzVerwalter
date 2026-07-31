@@ -128,6 +128,14 @@ Auswahl in einem atomaren Schritt ersetzen. Abgeglichene Buchungen und
 Umbuchungen bleiben geschützt; eine reine Tag-Änderung ist auch bei einer
 Splitbuchung möglich, ohne deren getrennte Split-Tags anzutasten.
 
+Der Buchungseditor bietet SmartFill für gepflegte Empfängerakten. Die Suche
+berücksichtigt kanonische Namen und Aliase ohne Unterschied bei Großschreibung
+oder Diakritika. Präfixtreffer stehen vor bloßen Teiltreffern; danach folgen
+bisherige Verwendung, Name und UUID als stabile Sortierung. Erst die bewusste
+Auswahl übernimmt den kanonischen Namen und noch freie Standardwerte. Wird der
+Text anschließend manuell verändert, löst FinanzVerwalter die Aktenverknüpfung,
+damit kein falscher Empfänger gespeichert wird.
+
 ## Regeln
 
 Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-

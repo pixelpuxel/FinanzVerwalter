@@ -1128,3 +1128,33 @@ Rechtsberatung.
   Test-, Release-, Datenbank-, GitHub- und Tokenstatus. Ein Screenshot wurde
   nicht vorgetäuscht, weil `CGSSessionScreenIsLocked=Yes` den weiterhin
   gesperrten macOS-Anmeldebildschirm bestätigt.
+
+## 2026-07-31 – Deterministisches Empfänger-SmartFill
+
+- Der Buchungseditor bezeichnet die Empfängeraktenauswahl nun ausdrücklich
+  als SmartFill und zeigt bei Treffern den passenden Alias sowie die Zahl
+  bisheriger Verwendungen. Inaktive Empfängerakten werden ausgeschlossen.
+- Suche und Sortierung sind aus der Oberfläche in den reinen
+  `PayeeSmartFill`-Kern gezogen. Name und Aliase werden getrimmt sowie
+  unabhängig von Großschreibung und Diakritika verglichen. Präfixtreffer
+  stehen vor bloßen Teiltreffern; anschließend entscheiden Verwendung,
+  normalisierter kanonischer Name und UUID deterministisch.
+- Nur die ausdrückliche Picker-Auswahl übernimmt den kanonischen Namen und
+  noch nicht belegte Kategorie-/Kontovorgaben. Verändert der Benutzer den
+  Empfängertext danach manuell, wird die alte `payee_id` entfernt und damit
+  keine falsche Aktenverknüpfung gespeichert.
+- Ein neuer reiner Test prüft Aliaspräfix, kanonisches Präfix,
+  Nutzungshäufigkeit, bloßen Teiltreffer, inaktive Akte und die Suche
+  `cafe` gegen `Café`. Die frische Gesamtabnahme führte 64 Tests aus: 63
+  bestanden, der private opt-in-Real-QIF-Test wurde erwartungsgemäß
+  übersprungen, 0 Fehler.
+- Debug- und optimierter Release-Build bestehen. Der Release ist ad hoc
+  signiert, unter `~/Applications/FinanzVerwalter.app` installiert und als
+  Prozess gestartet. Der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-smartfill-20260731-1322.app`.
+- Die Produktivdatei blieb bytegenau bei SHA-256
+  `0a8d6dd9695ccbace6155c05b82f9367c9621904bf9a68ef7bbb073f4d1bd77e`,
+  Schema 21, Integrität `ok`, 97 Konten, 2.170 Buchungen, einer
+  Berichtsvorlage und 0 Banking-Verbindungen.
+- Der exakte Zielzählerstand dieses geprüften SmartFill-Meilensteins beträgt
+  8.085.000 Tokens.
