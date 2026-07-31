@@ -971,6 +971,115 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 17")
             }
         }
+        if version < 18 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE vat_codes (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        rate_basis_points INTEGER NOT NULL
+                            CHECK(rate_basis_points BETWEEN 0 AND 10000),
+                        description TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    INSERT INTO vat_codes(
+                        id,finance_file_id,name,rate_basis_points,description,
+                        is_active,created_at,updated_at
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000001800',id,
+                        '0 %',0,'Steuerfrei oder eigener Nullsatz',1,
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    FROM finance_files LIMIT 1
+                    """
+                )
+                try execute(
+                    """
+                    INSERT INTO vat_codes(
+                        id,finance_file_id,name,rate_basis_points,description,
+                        is_active,created_at,updated_at
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000001807',id,
+                        '7 %',700,'Ermäßigter deutscher Steuersatz',1,
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    FROM finance_files LIMIT 1
+                    """
+                )
+                try execute(
+                    """
+                    INSERT INTO vat_codes(
+                        id,finance_file_id,name,rate_basis_points,description,
+                        is_active,created_at,updated_at
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000001819',id,
+                        '19 %',1900,'Deutscher Regelsteuersatz',1,
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    FROM finance_files LIMIT 1
+                    """
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN is_budgetable INTEGER NOT NULL DEFAULT 1"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN default_vat_code_id TEXT REFERENCES vat_codes(id) ON DELETE SET NULL"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN german_tax_line TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN us_tax_line TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN vat_code_id TEXT REFERENCES vat_codes(id) ON DELETE SET NULL"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN vat_mode TEXT NOT NULL DEFAULT 'none'"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN net_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN tax_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN vat_code_id TEXT REFERENCES vat_codes(id) ON DELETE SET NULL"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN vat_mode TEXT NOT NULL DEFAULT 'none'"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN net_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN tax_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "CREATE INDEX transactions_vat ON transactions(vat_code_id,booking_date)"
+                )
+                try execute(
+                    "CREATE INDEX transaction_splits_vat ON transaction_splits(vat_code_id)"
+                )
+                try execute("PRAGMA user_version = 18")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -1061,7 +1170,11 @@ final class SQLiteFinanceStore {
     func categories() throws -> [FinanceCategory] {
         var values: [FinanceCategory] = []
         try query(
-            "SELECT id,parent_id,name,kind,color,is_active FROM categories ORDER BY kind,name COLLATE NOCASE"
+            """
+            SELECT id,parent_id,name,kind,color,is_active,description,
+                   is_budgetable,default_vat_code_id,german_tax_line,us_tax_line
+            FROM categories ORDER BY kind,name COLLATE NOCASE
+            """
         ) { statement in
             guard
                 let id = UUID(uuidString: Self.text(statement, 0)),
@@ -1074,11 +1187,80 @@ final class SQLiteFinanceStore {
                     name: Self.text(statement, 2),
                     kind: kind,
                     color: Self.text(statement, 4),
-                    isActive: sqlite3_column_int(statement, 5) != 0
+                    isActive: sqlite3_column_int(statement, 5) != 0,
+                    description: Self.text(statement, 6),
+                    isBudgetable: sqlite3_column_int(statement, 7) != 0,
+                    defaultVATCodeID: Self.optionalText(statement, 8).flatMap(
+                        UUID.init(uuidString:)
+                    ),
+                    germanTaxLine: Self.text(statement, 9),
+                    usTaxLine: Self.text(statement, 10)
                 )
             )
         }
         return values
+    }
+
+    func vatCodes() throws -> [VATCode] {
+        var values: [VATCode] = []
+        try query(
+            """
+            SELECT id,name,rate_basis_points,description,is_active
+            FROM vat_codes
+            ORDER BY rate_basis_points,name COLLATE NOCASE,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)) else { return }
+            values.append(
+                VATCode(
+                    id: id,
+                    name: Self.text(statement, 1),
+                    rateBasisPoints: Int(sqlite3_column_int(statement, 2)),
+                    description: Self.text(statement, 3),
+                    isActive: sqlite3_column_int(statement, 4) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveVATCode(_ value: VATCode) throws {
+        try value.validate()
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO vat_codes(
+                    id,finance_file_id,name,rate_basis_points,description,
+                    is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    rate_basis_points=excluded.rate_basis_points,
+                    description=excluded.description,
+                    is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,
+                    version=version+1
+                """,
+                [
+                    .text(value.id.uuidString),
+                    .text(info.id.uuidString),
+                    .text(value.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .integer(Int64(value.rateBasisPoints)),
+                    .text(value.description),
+                    .integer(value.isActive ? 1 : 0),
+                    .text(now),
+                    .text(now)
+                ]
+            )
+            try audit(
+                entity: "vat-code",
+                id: value.id,
+                action: "save",
+                details: "\(value.name):\(value.rateBasisPoints)"
+            )
+        }
     }
 
     func categorizationRules() throws -> [CategorizationRule] {
@@ -2855,7 +3037,8 @@ final class SQLiteFinanceStore {
         var values: [FinanceTransaction] = []
         let sql = """
             SELECT id,account_id,booking_date,value_date,payee,purpose,category_id,
-                   amount_minor,currency,status,memo,reference,transfer_id,import_fingerprint,payee_id
+                   amount_minor,currency,status,memo,reference,transfer_id,
+                   import_fingerprint,payee_id,vat_code_id,vat_mode,net_minor,tax_minor
             FROM transactions
             \(accountID == nil ? "" : "WHERE account_id = ?")
             ORDER BY booking_date DESC,id DESC
@@ -2865,7 +3048,8 @@ final class SQLiteFinanceStore {
                 let id = UUID(uuidString: Self.text(statement, 0)),
                 let account = UUID(uuidString: Self.text(statement, 1)),
                 let date = Self.date(Self.text(statement, 2)),
-                let status = TransactionStatus(rawValue: Self.text(statement, 9))
+                let status = TransactionStatus(rawValue: Self.text(statement, 9)),
+                let vatMode = VATMode(rawValue: Self.text(statement, 16))
             else { return }
             values.append(
                 FinanceTransaction(
@@ -2885,7 +3069,11 @@ final class SQLiteFinanceStore {
                     importFingerprint: Self.optionalText(statement, 13),
                     splits: [],
                     payeeID: Self.optionalText(statement, 14).flatMap(UUID.init(uuidString:)),
-                    tagIDs: []
+                    tagIDs: [],
+                    vatCodeID: Self.optionalText(statement, 15).flatMap(UUID.init(uuidString:)),
+                    vatMode: vatMode,
+                    netMinor: sqlite3_column_int64(statement, 17),
+                    taxMinor: sqlite3_column_int64(statement, 18)
                 )
             )
         }
@@ -3108,22 +3296,45 @@ final class SQLiteFinanceStore {
                 ancestorID = existing.first(where: { $0.id == currentID })?.parentID
             }
         }
+        if let vatCodeID = category.defaultVATCodeID {
+            guard try vatCodes().contains(where: {
+                $0.id == vatCodeID && $0.isActive
+            }) else {
+                throw FinanceError.invalidVAT(
+                    "Der Standard-MwSt.-Schlüssel fehlt oder ist inaktiv."
+                )
+            }
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
             try run(
                 """
-                INSERT INTO categories(id,finance_file_id,parent_id,name,kind,color,is_active,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                INSERT INTO categories(
+                    id,finance_file_id,parent_id,name,kind,color,is_active,
+                    created_at,updated_at,description,is_budgetable,
+                    default_vat_code_id,german_tax_line,us_tax_line
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,
                     kind=excluded.kind,color=excluded.color,is_active=excluded.is_active,
+                    description=excluded.description,
+                    is_budgetable=excluded.is_budgetable,
+                    default_vat_code_id=excluded.default_vat_code_id,
+                    german_tax_line=excluded.german_tax_line,
+                    us_tax_line=excluded.us_tax_line,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
                     .text(category.id.uuidString), .text(info.id.uuidString),
                     category.parentID.map { .text($0.uuidString) } ?? .null,
                     .text(name), .text(category.kind.rawValue), .text(category.color),
-                    .integer(category.isActive ? 1 : 0), .text(now), .text(now)
+                    .integer(category.isActive ? 1 : 0), .text(now), .text(now),
+                    .text(category.description),
+                    .integer(category.isBudgetable ? 1 : 0),
+                    category.defaultVATCodeID.map { .text($0.uuidString) } ?? .null,
+                    .text(category.germanTaxLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(category.usTaxLine.trimmingCharacters(in: .whitespacesAndNewlines))
                 ]
             )
             try audit(entity: "category", id: category.id, action: "save", details: name)
@@ -3132,6 +3343,7 @@ final class SQLiteFinanceStore {
 
     func saveTransaction(_ value: FinanceTransaction) throws {
         try value.validate()
+        try validateVATReferences(value)
         var existingStatus: String?
         try query("SELECT status FROM transactions WHERE id=?", [.text(value.id.uuidString)]) {
             existingStatus = Self.text($0, 0)
@@ -3942,12 +4154,19 @@ final class SQLiteFinanceStore {
     private func writeTransaction(_ value: FinanceTransaction, now: String) throws {
         try run(
             """
-            INSERT INTO transactions(id,account_id,booking_date,value_date,payee,purpose,category_id,amount_minor,currency,status,memo,reference,transfer_id,import_fingerprint,payee_id,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO transactions(
+                id,account_id,booking_date,value_date,payee,purpose,category_id,
+                amount_minor,currency,status,memo,reference,transfer_id,
+                import_fingerprint,payee_id,created_at,updated_at,
+                vat_code_id,vat_mode,net_minor,tax_minor
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET booking_date=excluded.booking_date,value_date=excluded.value_date,
                 payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                 amount_minor=excluded.amount_minor,currency=excluded.currency,status=excluded.status,
                 memo=excluded.memo,reference=excluded.reference,payee_id=excluded.payee_id,
+                vat_code_id=excluded.vat_code_id,vat_mode=excluded.vat_mode,
+                net_minor=excluded.net_minor,tax_minor=excluded.tax_minor,
                 updated_at=excluded.updated_at,version=version+1
             """,
             [
@@ -3960,7 +4179,11 @@ final class SQLiteFinanceStore {
                 value.transferID.map { .text($0.uuidString) } ?? .null,
                 value.importFingerprint.map(SQLiteValue.text) ?? .null,
                 value.payeeID.map { .text($0.uuidString) } ?? .null,
-                .text(now), .text(now)
+                .text(now), .text(now),
+                value.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                .text(value.vatMode.rawValue),
+                .integer(value.netMinor),
+                .integer(value.taxMinor)
             ]
         )
         try run("DELETE FROM transaction_tags WHERE transaction_id=?", [.text(value.id.uuidString)])
@@ -3973,11 +4196,21 @@ final class SQLiteFinanceStore {
         try run("DELETE FROM transaction_splits WHERE transaction_id=?", [.text(value.id.uuidString)])
         for split in value.splits {
             try run(
-                "INSERT INTO transaction_splits(id,transaction_id,category_id,amount_minor,memo,sort_order) VALUES(?,?,?,?,?,?)",
+                """
+                INSERT INTO transaction_splits(
+                    id,transaction_id,category_id,amount_minor,memo,sort_order,
+                    vat_code_id,vat_mode,net_minor,tax_minor
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
                 [
                     .text(split.id.uuidString), .text(value.id.uuidString),
                     split.categoryID.map { .text($0.uuidString) } ?? .null,
-                    .integer(split.amountMinor), .text(split.memo), .integer(Int64(split.sortOrder))
+                    .integer(split.amountMinor), .text(split.memo),
+                    .integer(Int64(split.sortOrder)),
+                    split.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                    .text(split.vatMode.rawValue),
+                    .integer(split.netMinor),
+                    .integer(split.taxMinor)
                 ]
             )
             for tagID in Set(split.tagIDs) {
@@ -3992,10 +4225,18 @@ final class SQLiteFinanceStore {
     private func splits(transactionID: UUID) throws -> [FinanceSplit] {
         var values: [FinanceSplit] = []
         try query(
-            "SELECT id,category_id,amount_minor,memo,sort_order FROM transaction_splits WHERE transaction_id=? ORDER BY sort_order",
+            """
+            SELECT id,category_id,amount_minor,memo,sort_order,
+                   vat_code_id,vat_mode,net_minor,tax_minor
+            FROM transaction_splits
+            WHERE transaction_id=? ORDER BY sort_order
+            """,
             [.text(transactionID.uuidString)]
         ) {
-            guard let id = UUID(uuidString: Self.text($0, 0)) else { return }
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let vatMode = VATMode(rawValue: Self.text($0, 6))
+            else { return }
             values.append(
                 FinanceSplit(
                     id: id,
@@ -4003,7 +4244,11 @@ final class SQLiteFinanceStore {
                     amountMinor: sqlite3_column_int64($0, 2),
                     memo: Self.text($0, 3),
                     sortOrder: Int(sqlite3_column_int($0, 4)),
-                    tagIDs: []
+                    tagIDs: [],
+                    vatCodeID: Self.optionalText($0, 5).flatMap(UUID.init(uuidString:)),
+                    vatMode: vatMode,
+                    netMinor: sqlite3_column_int64($0, 7),
+                    taxMinor: sqlite3_column_int64($0, 8)
                 )
             )
         }
@@ -4026,6 +4271,20 @@ final class SQLiteFinanceStore {
             if let id = UUID(uuidString: Self.text($0, 0)) { values.append(id) }
         }
         return values
+    }
+
+    private func validateVATReferences(_ value: FinanceTransaction) throws {
+        var referenced = Set(value.splits.compactMap(\.vatCodeID))
+        if let vatCodeID = value.vatCodeID {
+            referenced.insert(vatCodeID)
+        }
+        guard !referenced.isEmpty else { return }
+        let existing = Set(try vatCodes().map(\.id))
+        guard referenced.isSubset(of: existing) else {
+            throw FinanceError.invalidVAT(
+                "Mindestens ein verwendeter MwSt.-Schlüssel existiert nicht."
+            )
+        }
     }
 
     private func seedCategories(financeFileID: UUID) throws {

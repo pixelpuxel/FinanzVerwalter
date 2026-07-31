@@ -651,3 +651,42 @@ Rechtsberatung.
   `agent/qif-mehrkontenimport` gepusht; Draft-PR 1 zeigt auf den zweiten
   Commit und dokumentiert 42 reguläre Tests. Telegram-Nachricht 939 im
   Projektthread 894 wurde auf denselben geprüften Stand aktualisiert.
+- Migration 18 ergänzt frei definierbare, dateigebundene
+  Mehrwertsteuerschlüssel. 0 %, 7 % und 19 % sind eigenständige
+  Standarddatensätze; ein weiterer benutzerdefinierter 0-%-Schlüssel bleibt
+  anhand seiner UUID unterscheidbar und wird nicht auf den Standard
+  umgebogen.
+- Kategorien speichern nun Beschreibung, Budgetierbarkeit,
+  Standard-MwSt.-Schlüssel, deutsche Steuerzuordnung und optionale
+  US-Steuerzeile. Der Kategorieneditor und die Detailansicht machen diese
+  Felder vollständig sichtbar.
+- Normale Buchungen berechnen aus dem Bruttobetrag wahlweise automatisch oder
+  anhand eines manuellen Steuerbetrags Netto und Steuer. Jede Splitzeile kann
+  einen eigenen Schlüssel und Modus besitzen. Gerundet wird mit `Decimal`
+  kaufmännisch je Zeile; Beleg-Netto und Beleg-Steuer sind die Summe der
+  bereits gerundeten Zeilen. Buchungsvorlagen übernehmen diese Felder.
+- In der zweizeiligen Kontenblattansicht erscheinen für steuerbehaftete
+  Buchungen zusätzlich MwSt.-Satz, Netto und Steuer. Die laufende
+  Saldo-Spalte wird mit einer neuen einmaligen Präferenzmigration nicht nur
+  in der aktuellen Spaltenauswahl, sondern auch in älteren benannten
+  Kontenblattansichten sichtbar gemacht.
+- Zwei Mehrwertsteuertests prüfen Zeilen-/Belegrundung, manuelle Validierung,
+  Kategoriezuordnung, einen eigenständigen 0-%-Schlüssel und einen gemischten
+  Split-Roundtrip. Der bestehende Saldo-Test prüft getrennte Konten,
+  Eröffnungssalden und stornierte Buchungen; der Präferenztest prüft nun auch
+  alte benannte Ansichten. Die vollständige direkte XCTest-Abnahme führte
+  45 Tests aus: 44 bestanden, ein opt-in-Real-QIF-Test wurde erwartungsgemäß
+  übersprungen, 0 Fehler.
+- Vor Migration 18 wurde ausschließlich lokal die Sicherung
+  `Vor Migration 18 Mehrwertsteuer.qbackup` angelegt und geprüft: Schema 17,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Buchungsvorlagen, SHA-256
+  `6a3e519791081de0e70e81510a683f219a8a328658106eda44a69374b0577ef0`.
+- Der Release ist unter `~/Applications/FinanzVerwalter.app` installiert,
+  ad hoc signaturgeprüft und gestartet. Die produktive Datei meldet Schema 18,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, drei MwSt.-Schlüssel,
+  0 Buchungsvorlagen und keine steuerlich veränderte Altbuchung. Das vorige
+  Bundle liegt ignoriert unter
+  `build/FinanzVerwalter-vor-mehrwertsteuer-20260731-1038.app`.
+- Computer Use meldet den Mac weiterhin als gesperrt. Eine echte sichtbare
+  Abnahme und ein neuer Screenshot sind deshalb noch offen; es wurde kein
+  angeblicher Screenshot erzeugt.

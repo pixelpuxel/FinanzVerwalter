@@ -90,8 +90,9 @@ Verwendungszweck, Kategorie, Klasse/Tags, Konto, Betrag und Saldo lassen sich
 vollständig ein- oder ausblenden. Benannte Ansichten speichern Konto, Filter,
 Zeitraum, Zeilenmodus und Spaltenauswahl und können später wieder geladen
 oder gelöscht werden. Beim ersten Start nach dem Saldo-Update wird die Spalte
-einmalig auch in vorhandene Spalteneinstellungen aufgenommen; anschließend
-bleibt sie wie jede andere Spalte frei schaltbar. Das Menü `Ausgabe` druckt
+einmalig auch in vorhandene Spalteneinstellungen und benannte Ansichten
+aufgenommen; anschließend bleibt sie wie jede andere Spalte frei schaltbar.
+Das Menü `Ausgabe` druckt
 das gefilterte Kontoblatt direkt über den macOS-Druckdialog oder exportiert
 es als mehrseitiges PDF. Dabei werden exakt die sichtbaren Spalten mit
 wiederholten Tabellenköpfen, Filterbeschreibung und Seitenzahlen ausgegeben.
@@ -105,6 +106,22 @@ globale Suche, `⌘R` öffnet den Abgleich und `⌘⇧S` startet beziehungsweise
 aktiviert die Splitbuchung. `F3` übernimmt aus genau einer markierten Buchung
 wahlweise Empfänger, Verwendungszweck, Kategorie, Konto oder Status als
 Filter; das gewünschte Feld wird direkt im Kontenblatt gewählt.
+
+## Kategorien und Mehrwertsteuer
+
+Kategorien besitzen neben einer beliebig tiefen Hierarchie eine Beschreibung,
+Budgetierbarkeit, einen optionalen Standard-MwSt.-Schlüssel, eine deutsche
+Steuerzuordnung und eine optionale US-Steuerzeile. MwSt.-Schlüssel werden
+unter `Einstellungen › MwSt.-Schlüssel` frei definiert; auch mehrere
+inhaltlich verschiedene Schlüssel mit 0 % bleiben eigenständige Datensätze.
+
+Bei normalen Buchungen kann die Steuer automatisch aus dem Bruttobetrag oder
+über einen ausdrücklich eingegebenen Steuerbetrag ermittelt werden. Der
+Editor zeigt Brutto, Netto und Steuer vor dem Speichern. Splitzeilen besitzen
+jeweils ihren eigenen Schlüssel und Modus; gerundet wird centgenau pro Zeile,
+anschließend werden Netto und Steuer zum Beleg addiert. Ein
+Kategorie-Standard wird beim Auswählen vorgeschlagen und kann je Buchung oder
+Splitzeile überschrieben werden.
 
 ## Kontoabgleich
 

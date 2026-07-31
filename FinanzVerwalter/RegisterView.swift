@@ -24,7 +24,7 @@ struct RegisterView: View {
     @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
-    @AppStorage("registerVisibleColumnsIncludesBalanceV1")
+    @AppStorage("registerVisibleColumnsIncludesBalanceV2")
     private var visibleColumnsIncludesBalance = false
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
@@ -538,6 +538,9 @@ struct RegisterView: View {
         visibleColumnsRaw = RegisterPreferencesCodec.addingBalanceColumn(
             to: visibleColumnsRaw
         )
+        savedViewsRaw = RegisterPreferencesCodec.addingBalanceColumnToViews(
+            savedViewsRaw
+        )
         visibleColumnsIncludesBalance = true
     }
 
@@ -992,6 +995,24 @@ struct RegisterView: View {
         if !value.tagIDs.isEmpty {
             parts.append(value.tagIDs.map(store.tagName).joined(separator: ", "))
         }
+        if value.vatMode != .none, let vatCodeID = value.vatCodeID {
+            let code = store.vatCodes.first { $0.id == vatCodeID }
+            let label = code.map {
+                "MwSt. \($0.percentageText)"
+            } ?? "MwSt."
+            parts.append(
+                "\(label): Netto "
+                    + Money(
+                        minorUnits: value.netMinor,
+                        currency: value.currency
+                    ).formatted
+                    + " · Steuer "
+                    + Money(
+                        minorUnits: value.taxMinor,
+                        currency: value.currency
+                    ).formatted
+            )
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -1280,6 +1301,9 @@ struct TransactionEditorView: View {
     @State private var purpose = ""
     @State private var categoryID: UUID?
     @State private var amount = ""
+    @State private var vatCodeID: UUID?
+    @State private var vatMode: VATMode = .none
+    @State private var manualTax = ""
     @State private var status: TransactionStatus = .booked
     @State private var memo = ""
     @State private var selectedTagIDs = Set<UUID>()
@@ -1334,7 +1358,71 @@ struct TransactionEditorView: View {
                         Text(store.categoryPath($0.id)).tag(UUID?.some($0.id))
                     }
                 }
+                .onChange(of: categoryID) {
+                    if let value = categoryVATDefault(categoryID) {
+                        vatCodeID = value.codeID
+                        vatMode = .automatic
+                    }
+                }
                 TextField("Betrag", text: $amount, prompt: Text("-123,45"))
+                if !useSplits {
+                    Section("Mehrwertsteuer") {
+                        Picker("MwSt.-Schlüssel", selection: $vatCodeID) {
+                            Text("Keine MwSt.").tag(UUID?.none)
+                            ForEach(activeVATCodes(including: vatCodeID)) { code in
+                                Text("\(code.name) · \(code.percentageText)")
+                                    .tag(Optional(code.id))
+                            }
+                        }
+                        .onChange(of: vatCodeID) {
+                            if vatCodeID == nil {
+                                vatMode = .none
+                                manualTax = ""
+                            } else if vatMode == .none {
+                                vatMode = .automatic
+                            }
+                        }
+                        if vatCodeID != nil {
+                            Picker("Berechnung", selection: $vatMode) {
+                                Text(VATMode.automatic.title).tag(VATMode.automatic)
+                                Text(VATMode.manual.title).tag(VATMode.manual)
+                            }
+                            .pickerStyle(.segmented)
+                            if vatMode == .manual {
+                                TextField(
+                                    "Steuerbetrag",
+                                    text: $manualTax,
+                                    prompt: Text("-19,00")
+                                )
+                            }
+                            if let breakdown = try? vatBreakdown(
+                                grossText: amount,
+                                vatCodeID: vatCodeID,
+                                mode: vatMode,
+                                manualTaxText: manualTax
+                            ) {
+                                LabeledContent(
+                                    "Brutto",
+                                    value: Money(
+                                        minorUnits: breakdown.grossMinor
+                                    ).formatted
+                                )
+                                LabeledContent(
+                                    "Netto",
+                                    value: Money(
+                                        minorUnits: breakdown.netMinor
+                                    ).formatted
+                                )
+                                LabeledContent(
+                                    "Steuer",
+                                    value: Money(
+                                        minorUnits: breakdown.taxMinor
+                                    ).formatted
+                                )
+                            }
+                        }
+                    }
+                }
                 Picker("Status", selection: $status) {
                     ForEach(TransactionStatus.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
@@ -1364,41 +1452,95 @@ struct TransactionEditorView: View {
                 if useSplits {
                     Section("Splits") {
                         ForEach($splitDrafts) { $draft in
-                            HStack {
-                                Picker("Kategorie", selection: $draft.categoryID) {
-                                    Text("Ohne Kategorie").tag(UUID?.none)
-                                    ForEach(store.categoriesByPath.filter(\.isActive)) {
-                                        Text(store.categoryPath($0.id)).tag(UUID?.some($0.id))
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack {
+                                    Picker("Kategorie", selection: $draft.categoryID) {
+                                        Text("Ohne Kategorie").tag(UUID?.none)
+                                        ForEach(store.categoriesByPath.filter(\.isActive)) {
+                                            Text(store.categoryPath($0.id)).tag(UUID?.some($0.id))
+                                        }
                                     }
-                                }
-                                .labelsHidden()
-                                TextField("Betrag", text: $draft.amount)
-                                    .frame(width: 110)
-                                TextField("Notiz", text: $draft.memo)
-                                Menu("Tags") {
-                                    ForEach(store.tags.filter(\.isActive)) { tag in
-                                        Button {
-                                            if draft.tagIDs.contains(tag.id) {
-                                                draft.tagIDs.remove(tag.id)
-                                            } else {
-                                                draft.tagIDs.insert(tag.id)
+                                    .labelsHidden()
+                                    .onChange(of: draft.categoryID) {
+                                        if let value = categoryVATDefault(
+                                            draft.categoryID
+                                        ) {
+                                            draft.vatCodeID = value.codeID
+                                            draft.vatMode = .automatic
+                                        }
+                                    }
+                                    TextField("Betrag", text: $draft.amount)
+                                        .frame(width: 110)
+                                    TextField("Notiz", text: $draft.memo)
+                                    Menu("Tags") {
+                                        ForEach(store.tags.filter(\.isActive)) { tag in
+                                            Button {
+                                                if draft.tagIDs.contains(tag.id) {
+                                                    draft.tagIDs.remove(tag.id)
+                                                } else {
+                                                    draft.tagIDs.insert(tag.id)
+                                                }
+                                            } label: {
+                                                Label(
+                                                    tag.name,
+                                                    systemImage: draft.tagIDs.contains(tag.id)
+                                                        ? "checkmark" : "tag"
+                                                )
                                             }
-                                        } label: {
-                                            Label(
-                                                tag.name,
-                                                systemImage: draft.tagIDs.contains(tag.id)
-                                                    ? "checkmark" : "tag"
+                                        }
+                                    }
+                                    Button(role: .destructive) {
+                                        splitDrafts.removeAll { $0.id == draft.id }
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                HStack {
+                                    Picker("MwSt.", selection: $draft.vatCodeID) {
+                                        Text("Keine MwSt.").tag(UUID?.none)
+                                        ForEach(activeVATCodes(including: draft.vatCodeID)) { code in
+                                            Text("\(code.name) · \(code.percentageText)")
+                                                .tag(Optional(code.id))
+                                        }
+                                    }
+                                    .frame(width: 190)
+                                    .onChange(of: draft.vatCodeID) {
+                                        if draft.vatCodeID == nil {
+                                            draft.vatMode = .none
+                                            draft.manualTax = ""
+                                        } else if draft.vatMode == .none {
+                                            draft.vatMode = .automatic
+                                        }
+                                    }
+                                    if draft.vatCodeID != nil {
+                                        Picker("Berechnung", selection: $draft.vatMode) {
+                                            Text("Auto").tag(VATMode.automatic)
+                                            Text("Manuell").tag(VATMode.manual)
+                                        }
+                                        .pickerStyle(.segmented)
+                                        .frame(width: 170)
+                                        if draft.vatMode == .manual {
+                                            TextField("Steuerbetrag", text: $draft.manualTax)
+                                                .frame(width: 120)
+                                        }
+                                        if let breakdown = try? vatBreakdown(
+                                            grossText: draft.amount,
+                                            vatCodeID: draft.vatCodeID,
+                                            mode: draft.vatMode,
+                                            manualTaxText: draft.manualTax
+                                        ) {
+                                            Text(
+                                                "Netto \(Money(minorUnits: breakdown.netMinor).formatted) · "
+                                                    + "Steuer \(Money(minorUnits: breakdown.taxMinor).formatted)"
                                             )
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
                                         }
                                     }
                                 }
-                                Button(role: .destructive) {
-                                    splitDrafts.removeAll { $0.id == draft.id }
-                                } label: {
-                                    Image(systemName: "minus.circle")
-                                }
-                                .buttonStyle(.plain)
                             }
+                            .padding(.vertical, 4)
                         }
                         HStack {
                             Button("Zeile hinzufügen", systemImage: "plus") {
@@ -1426,7 +1568,7 @@ struct TransactionEditorView: View {
             }
         }
         .padding(24)
-        .frame(width: 520)
+        .frame(width: useSplits ? 860 : 620)
         .onAppear {
             guard !initialized else { return }
             initialized = true
@@ -1440,6 +1582,11 @@ struct TransactionEditorView: View {
             amount = source.map {
                 NSDecimalNumber(decimal: Decimal($0.amountMinor) / Decimal(100)).stringValue
             } ?? ""
+            vatCodeID = source?.vatCodeID
+            vatMode = source?.vatMode ?? .none
+            manualTax = source?.vatMode == .manual
+                ? Money(minorUnits: source?.taxMinor ?? 0).editingString
+                : ""
             status = source?.status ?? .booked
             memo = source?.memo ?? ""
             selectedTagIDs = Set(source?.tagIDs ?? [])
@@ -1450,7 +1597,12 @@ struct TransactionEditorView: View {
                     categoryID: $0.categoryID,
                     amount: NSDecimalNumber(decimal: Decimal($0.amountMinor) / Decimal(100)).stringValue,
                     memo: $0.memo,
-                    tagIDs: Set($0.tagIDs)
+                    tagIDs: Set($0.tagIDs),
+                    vatCodeID: $0.vatCodeID,
+                    vatMode: $0.vatMode,
+                    manualTax: $0.vatMode == .manual
+                        ? Money(minorUnits: $0.taxMinor).editingString
+                        : ""
                 )
             } ?? []
             if useSplits, splitDrafts.isEmpty {
@@ -1507,30 +1659,133 @@ struct TransactionEditorView: View {
         }
         if useSplits {
             saveSplit(accountID: accountID)
-        } else if store.saveTransaction(
-            id: transaction?.id, accountID: accountID, date: date, payee: payee,
-            purpose: purpose, categoryID: categoryID, amount: amount,
-            status: status, memo: memo,
-            reference: transaction?.reference ?? "",
-            payeeID: payeeID, tagIDs: Array(selectedTagIDs)
-        ) {
-            dismiss()
+        } else {
+            do {
+                let vatValues = try resolvedSimpleVAT()
+                if store.saveTransaction(
+                    id: transaction?.id, accountID: accountID, date: date, payee: payee,
+                    purpose: purpose, categoryID: categoryID, amount: amount,
+                    status: status, memo: memo,
+                    reference: transaction?.reference ?? "",
+                    payeeID: payeeID, tagIDs: Array(selectedTagIDs),
+                    vatCodeID: vatValues?.codeID,
+                    vatMode: vatValues?.mode ?? .none,
+                    netMinor: vatValues?.breakdown.netMinor ?? 0,
+                    taxMinor: vatValues?.breakdown.taxMinor ?? 0
+                ) {
+                    dismiss()
+                }
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private func resolvedSimpleVAT() throws -> (
+        codeID: UUID,
+        mode: VATMode,
+        breakdown: VATBreakdown
+    )? {
+        guard vatMode != .none else { return nil }
+        guard let vatCodeID else {
+            throw FinanceError.invalidVAT("Bitte wähle einen MwSt.-Schlüssel.")
+        }
+        return (
+            vatCodeID,
+            vatMode,
+            try vatBreakdown(
+                grossText: amount,
+                vatCodeID: vatCodeID,
+                mode: vatMode,
+                manualTaxText: manualTax
+            )
+        )
+    }
+
+    private func vatBreakdown(
+        grossText: String,
+        vatCodeID: UUID?,
+        mode: VATMode,
+        manualTaxText: String
+    ) throws -> VATBreakdown {
+        let gross = try Money(parsing: grossText).minorUnits
+        switch mode {
+        case .none:
+            return VATBreakdown(
+                grossMinor: gross,
+                netMinor: gross,
+                taxMinor: 0
+            )
+        case .automatic:
+            guard let vatCodeID,
+                  let code = store.vatCodes.first(where: { $0.id == vatCodeID })
+            else {
+                throw FinanceError.invalidVAT("Der MwSt.-Schlüssel fehlt.")
+            }
+            return try VATCalculator.automatic(
+                grossMinor: gross,
+                rateBasisPoints: code.rateBasisPoints
+            )
+        case .manual:
+            guard vatCodeID != nil else {
+                throw FinanceError.invalidVAT("Der MwSt.-Schlüssel fehlt.")
+            }
+            return try VATCalculator.manual(
+                grossMinor: gross,
+                taxMinor: try Money(parsing: manualTaxText).minorUnits
+            )
+        }
+    }
+
+    private func activeVATCodes(including id: UUID?) -> [VATCode] {
+        store.vatCodes.filter { $0.isActive || $0.id == id }
+    }
+
+    private func categoryVATDefault(
+        _ categoryID: UUID?
+    ) -> (codeID: UUID, mode: VATMode)? {
+        guard
+            let categoryID,
+            let defaultID = store.categories.first(where: {
+                $0.id == categoryID
+            })?.defaultVATCodeID
+        else { return nil }
+        return (defaultID, .automatic)
     }
 
     private func saveSplit(accountID: UUID) {
         do {
             let total = try Money(parsing: amount)
             let splits = try splitDrafts.enumerated().map { offset, draft in
-                FinanceSplit(
+                let breakdown = try vatBreakdown(
+                    grossText: draft.amount,
+                    vatCodeID: draft.vatCodeID,
+                    mode: draft.vatMode,
+                    manualTaxText: draft.manualTax
+                )
+                return FinanceSplit(
                     id: draft.id,
                     categoryID: draft.categoryID,
                     amountMinor: try Money(parsing: draft.amount).minorUnits,
                     memo: draft.memo,
                     sortOrder: offset,
-                    tagIDs: Array(draft.tagIDs)
+                    tagIDs: Array(draft.tagIDs),
+                    vatCodeID: draft.vatCodeID,
+                    vatMode: draft.vatMode,
+                    netMinor: draft.vatMode == .none ? 0 : breakdown.netMinor,
+                    taxMinor: draft.vatMode == .none ? 0 : breakdown.taxMinor
                 )
             }
+            let hasVAT = splits.contains { $0.vatMode != .none }
+            let receipt = try VATCalculator.receipt(
+                splits.map {
+                    VATBreakdown(
+                        grossMinor: $0.amountMinor,
+                        netMinor: $0.vatMode == .none ? $0.amountMinor : $0.netMinor,
+                        taxMinor: $0.taxMinor
+                    )
+                }
+            )
             let value = FinanceTransaction(
                 id: transaction?.id ?? UUID(),
                 accountID: accountID,
@@ -1548,7 +1803,11 @@ struct TransactionEditorView: View {
                 importFingerprint: transaction?.importFingerprint,
                 splits: splits,
                 payeeID: payeeID,
-                tagIDs: Array(selectedTagIDs)
+                tagIDs: Array(selectedTagIDs),
+                vatCodeID: nil,
+                vatMode: .none,
+                netMinor: hasVAT ? receipt.netMinor : 0,
+                taxMinor: hasVAT ? receipt.taxMinor : 0
             )
             if store.saveSplitTransaction(value) {
                 dismiss()
@@ -1565,19 +1824,28 @@ private struct SplitDraft: Identifiable {
     var amount: String
     var memo: String
     var tagIDs: Set<UUID>
+    var vatCodeID: UUID?
+    var vatMode: VATMode
+    var manualTax: String
 
     init(
         id: UUID = UUID(),
         categoryID: UUID? = nil,
         amount: String = "",
         memo: String = "",
-        tagIDs: Set<UUID> = []
+        tagIDs: Set<UUID> = [],
+        vatCodeID: UUID? = nil,
+        vatMode: VATMode = .none,
+        manualTax: String = ""
     ) {
         self.id = id
         self.categoryID = categoryID
         self.amount = amount
         self.memo = memo
         self.tagIDs = tagIDs
+        self.vatCodeID = vatCodeID
+        self.vatMode = vatMode
+        self.manualTax = manualTax
     }
 }
 

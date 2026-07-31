@@ -127,6 +127,7 @@ enum FinanceError: LocalizedError, Equatable {
     case insufficientQuantity
     case allocationMismatch(Int)
     case invalidLoanTerms(String)
+    case invalidVAT(String)
 
     var errorDescription: String? {
         switch self {
@@ -158,6 +159,8 @@ enum FinanceError: LocalizedError, Equatable {
             "Die Vermögensklassen ergeben \(Decimal(basisPoints) / 100) %, erforderlich sind exakt 100 %."
         case .invalidLoanTerms(let message):
             "Der Tilgungsplan ist ungültig: \(message)"
+        case .invalidVAT(let message):
+            "Mehrwertsteuerfehler: \(message)"
         }
     }
 }

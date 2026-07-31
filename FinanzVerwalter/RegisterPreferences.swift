@@ -175,6 +175,15 @@ enum RegisterPreferencesCodec {
         return encodeColumns(columns)
     }
 
+    static func addingBalanceColumnToViews(_ value: String) -> String {
+        let migrated = decodeViews(value).map { view in
+            var migratedView = view
+            migratedView.visibleColumns.insert(.balance)
+            return migratedView
+        }
+        return (try? encodeViews(migrated)) ?? value
+    }
+
     static func encodeViews(_ views: [SavedRegisterView]) throws -> String {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

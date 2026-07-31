@@ -7,6 +7,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var accounts: [FinanceAccount] = []
     @Published private(set) var accountGroups: [AccountGroup] = []
     @Published private(set) var categories: [FinanceCategory] = []
+    @Published private(set) var vatCodes: [VATCode] = []
     @Published private(set) var transactions: [FinanceTransaction] = []
     @Published private(set) var balances: [UUID: Int64] = [:]
     @Published private(set) var reportRows: [CategoryReportRow] = []
@@ -365,6 +366,19 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func saveVATCode(_ value: VATCode) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveVATCode(value)
+            try load()
+            statusText = "MwSt.-Schlüssel „\(value.name)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func saveTag(_ value: FinanceTag) -> Bool {
         guard let repository else { return false }
         do {
@@ -403,7 +417,11 @@ final class FinanceAppStore: ObservableObject {
         memo: String = "",
         reference: String = "",
         payeeID: UUID? = nil,
-        tagIDs: [UUID] = []
+        tagIDs: [UUID] = [],
+        vatCodeID: UUID? = nil,
+        vatMode: VATMode = .none,
+        netMinor: Int64 = 0,
+        taxMinor: Int64 = 0
     ) -> Bool {
         guard let repository else { return false }
         do {
@@ -415,7 +433,9 @@ final class FinanceAppStore: ObservableObject {
                 categoryID: categoryID, amountMinor: money.minorUnits, currency: money.currency,
                 status: status, memo: memo, reference: reference,
                 transferID: nil, importFingerprint: nil, splits: [],
-                payeeID: payeeID, tagIDs: tagIDs
+                payeeID: payeeID, tagIDs: tagIDs,
+                vatCodeID: vatCodeID, vatMode: vatMode,
+                netMinor: netMinor, taxMinor: taxMinor
             )
             try repository.saveTransaction(value)
             try load()
@@ -1310,6 +1330,7 @@ final class FinanceAppStore: ObservableObject {
         accounts = try repository.accounts()
         accountGroups = try repository.accountGroups()
         categories = try repository.categories()
+        vatCodes = try repository.vatCodes()
         transactions = try repository.transactions()
         reportRows = try repository.categoryReport()
         reportTemplates = try repository.reportTemplates()

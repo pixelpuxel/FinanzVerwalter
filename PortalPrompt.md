@@ -499,9 +499,9 @@ kontenweisen laufenden Saldenfolge der Buchungen befüllt, trägt den deutschen
 Titel `Saldo` und steht in der Standardreihenfolge rechts von `Betrag`.
 Bestehende Installationen benötigen eine einmalige, versionierte
 Präferenzmigration: Sie ergänzt `balance` zu einer vorhandenen
-`registerVisibleColumnsV1`-Liste und setzt erst danach den Marker
-`registerVisibleColumnsIncludesBalanceV1`. Anschließend darf der Nutzer die
-Spalte wieder frei ausblenden.
+`registerVisibleColumnsV1`-Liste sowie zu jeder benannten Ansicht und setzt
+erst danach den Marker `registerVisibleColumnsIncludesBalanceV2`.
+Anschließend darf der Nutzer die Spalte wieder frei ausblenden.
 
 Für Druck und PDF wird zuerst ein unveränderlicher `RegisterPrintSnapshot`
 gebildet. Er enthält Titel, aktuelle Filterbeschreibung, Erstellungszeit,
@@ -575,3 +575,31 @@ unangetastet sein. Enthält die Menge eine abgeglichene Buchung, ändere
 nichts. Zeige immer eine Bestätigung mit der Zahl der Buchungen. Lösche
 danach die gesamte validierte Menge in genau einer SQLite-Transaktion und
 schreibe Auditereignisse.
+
+# Reproduzierbare Mehrwertsteuer und Steuerzuordnung
+
+Migration 18 erzeugt eine dateigebundene Tabelle `vat_codes` mit UUID,
+Bezeichnung, Beschreibung, Satz in Basispunkten und Aktivstatus. Lege 0 %, 7 %
+und 19 % als drei verschiedene Standarddatensätze an. Niemals darf ein
+benutzerdefinierter 0-%-Schlüssel anhand seines Satzes auf den Standardschlüssel
+umgebogen werden.
+
+Erweitere Kategorien um Beschreibung, Budgetierbarkeit,
+`defaultVATCodeID`, deutsche Steuerzuordnung und optionale US-Steuerzeile.
+Normale Buchungen und jede Splitzeile erhalten `vatCodeID`, Modus `none`,
+`automatic` oder `manual`, Netto-Cent und Steuer-Cent. Der vorhandene Betrag
+ist brutto.
+
+Berechne bei automatischer Bruttoeingabe mit `Decimal`:
+`Steuer = Brutto × Basispunkte / (10_000 + Basispunkte)` und runde
+kaufmännisch auf ganze Cent. Netto ist danach exakt Brutto minus Steuer. Bei
+Splits muss diese Rundung separat je Zeile erfolgen; die Belegwerte sind die
+Summe der bereits gerundeten Zeilen. Im manuellen Modus prüfe Vorzeichen,
+Betragsgrenze und `Brutto = Netto + Steuer`. Alte Datensätze bleiben neutral
+mit Modus `none` und Nullwerten.
+
+Der Buchungsdialog schlägt den Kategorie-Standard vor, erlaubt die
+Übersteuerung je Buchung beziehungsweise Splitzeile und zeigt Brutto, Netto
+und Steuer vor dem Speichern. Die zweizeilige Kontenblattansicht nennt
+Schlüssel, Netto und Steuer. Buchungsvorlagen müssen alle MwSt.-Felder
+verlustfrei übernehmen.

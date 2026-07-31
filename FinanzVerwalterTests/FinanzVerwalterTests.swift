@@ -10,6 +10,177 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try Money(parsing: "0,005").minorUnits, 0)
     }
 
+    func testVATCalculatorRoundsPerLineAndValidatesManualTax() throws {
+        XCTAssertEqual(
+            try VATCalculator.automatic(
+                grossMinor: 11_900,
+                rateBasisPoints: 1_900
+            ),
+            VATBreakdown(
+                grossMinor: 11_900,
+                netMinor: 10_000,
+                taxMinor: 1_900
+            )
+        )
+        XCTAssertEqual(
+            try VATCalculator.automatic(
+                grossMinor: -11_900,
+                rateBasisPoints: 1_900
+            ),
+            VATBreakdown(
+                grossMinor: -11_900,
+                netMinor: -10_000,
+                taxMinor: -1_900
+            )
+        )
+        XCTAssertEqual(
+            try VATCalculator.automatic(grossMinor: 999, rateBasisPoints: 0),
+            VATBreakdown(grossMinor: 999, netMinor: 999, taxMinor: 0)
+        )
+        XCTAssertEqual(try VATCalculator.basisPoints(parsing: "19,00 %"), 1_900)
+        XCTAssertEqual(try VATCalculator.basisPoints(parsing: "0"), 0)
+        XCTAssertThrowsError(
+            try VATCalculator.manual(grossMinor: -1_000, taxMinor: 190)
+        )
+        let mixedReceipt = try VATCalculator.receipt([
+            VATCalculator.automatic(grossMinor: -11_900, rateBasisPoints: 1_900),
+            VATCalculator.automatic(grossMinor: -10_700, rateBasisPoints: 700)
+        ])
+        XCTAssertEqual(
+            mixedReceipt,
+            VATBreakdown(
+                grossMinor: -22_600,
+                netMinor: -20_000,
+                taxMinor: -2_600
+            )
+        )
+    }
+
+    func testVATCodesCategoryTaxAssignmentAndMixedSplitRoundTrip() throws {
+        let context = try TestDatabase()
+        let seededCodes = try context.store.vatCodes()
+        XCTAssertEqual(Set(seededCodes.map(\.rateBasisPoints)), [0, 700, 1_900])
+        let ownZero = VATCode(
+            id: UUID(),
+            name: "Eigener steuerfreier Umsatz",
+            rateBasisPoints: 0,
+            description: "Nicht auf den Standardschlüssel umleiten",
+            isActive: true
+        )
+        try context.store.saveVATCode(ownZero)
+        XCTAssertEqual(
+            try context.store.vatCodes().filter { $0.rateBasisPoints == 0 }.count,
+            2
+        )
+        let category = FinanceCategory(
+            id: UUID(),
+            parentID: nil,
+            name: "Betriebliche Leistung",
+            kind: .income,
+            color: "green",
+            isActive: true,
+            description: "Testkategorie",
+            isBudgetable: false,
+            defaultVATCodeID: ownZero.id,
+            germanTaxLine: "EÜR · Betriebseinnahmen",
+            usTaxLine: "Schedule C"
+        )
+        try context.store.saveCategory(category)
+        let restoredCategory = try XCTUnwrap(
+            context.store.categories().first { $0.id == category.id }
+        )
+        XCTAssertEqual(restoredCategory.defaultVATCodeID, ownZero.id)
+        XCTAssertEqual(restoredCategory.germanTaxLine, "EÜR · Betriebseinnahmen")
+        XCTAssertFalse(restoredCategory.isBudgetable)
+
+        let account = FinanceAccount(
+            id: UUID(), name: "Geschäft", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let code19 = try XCTUnwrap(
+            seededCodes.first { $0.rateBasisPoints == 1_900 }
+        )
+        let code7 = try XCTUnwrap(
+            seededCodes.first { $0.rateBasisPoints == 700 }
+        )
+        let line19 = try VATCalculator.automatic(
+            grossMinor: -11_900,
+            rateBasisPoints: code19.rateBasisPoints
+        )
+        let line7 = try VATCalculator.automatic(
+            grossMinor: -10_700,
+            rateBasisPoints: code7.rateBasisPoints
+        )
+        let receipt = try VATCalculator.receipt([line19, line7])
+        let value = FinanceTransaction(
+            id: UUID(),
+            accountID: account.id,
+            bookingDate: .now,
+            valueDate: .now,
+            payee: "Lieferant",
+            purpose: "Gemischter Beleg",
+            categoryID: nil,
+            amountMinor: receipt.grossMinor,
+            currency: "EUR",
+            status: .booked,
+            memo: "",
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: nil,
+                    amountMinor: line19.grossMinor, memo: "19 %",
+                    sortOrder: 0, vatCodeID: code19.id,
+                    vatMode: .automatic, netMinor: line19.netMinor,
+                    taxMinor: line19.taxMinor
+                ),
+                FinanceSplit(
+                    id: UUID(), categoryID: nil,
+                    amountMinor: line7.grossMinor, memo: "7 %",
+                    sortOrder: 1, vatCodeID: code7.id,
+                    vatMode: .manual, netMinor: line7.netMinor,
+                    taxMinor: line7.taxMinor
+                )
+            ],
+            vatCodeID: nil,
+            vatMode: .none,
+            netMinor: receipt.netMinor,
+            taxMinor: receipt.taxMinor
+        )
+        try context.store.saveTransaction(value)
+        let restored = try XCTUnwrap(
+            context.store.transactions().first { $0.id == value.id }
+        )
+        XCTAssertEqual(restored.netMinor, -20_000)
+        XCTAssertEqual(restored.taxMinor, -2_600)
+        XCTAssertEqual(restored.splits.map(\.vatCodeID), [code19.id, code7.id])
+        XCTAssertEqual(restored.splits.map(\.vatMode), [.automatic, .manual])
+        let zeroBreakdown = try VATCalculator.automatic(
+            grossMinor: 12_345,
+            rateBasisPoints: ownZero.rateBasisPoints
+        )
+        let zeroTransaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: .now, payee: "Steuerfrei", purpose: "Eigener Nullsatz",
+            categoryID: category.id, amountMinor: zeroBreakdown.grossMinor,
+            currency: "EUR", status: .booked, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: [],
+            vatCodeID: ownZero.id, vatMode: .automatic,
+            netMinor: zeroBreakdown.netMinor, taxMinor: zeroBreakdown.taxMinor
+        )
+        try context.store.saveTransaction(zeroTransaction)
+        let restoredZero = try XCTUnwrap(
+            context.store.transactions().first { $0.id == zeroTransaction.id }
+        )
+        XCTAssertEqual(restoredZero.vatCodeID, ownZero.id)
+        XCTAssertEqual(restoredZero.netMinor, 12_345)
+        XCTAssertEqual(restoredZero.taxMinor, 0)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testSplitInvariantRejectsDifferenceOfOneCent() throws {
         let accountID = UUID()
         let value = FinanceTransaction(
@@ -1587,6 +1758,20 @@ final class FinanzVerwalterTests: XCTestCase {
             created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1
         );
+        CREATE TABLE categories (
+            id TEXT PRIMARY KEY,
+            finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+            parent_id TEXT,name TEXT NOT NULL,kind TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT 'blue',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE transactions (
+            id TEXT PRIMARY KEY,
+            booking_date TEXT NOT NULL
+        );
+        CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
         CREATE TABLE reconciliations (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -1631,7 +1816,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To17PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To18PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -1648,8 +1833,14 @@ final class FinanzVerwalterTests: XCTestCase {
         let accountID = UUID()
         let reconciliationID = UUID()
         let legacySQL = """
+        CREATE TABLE finance_files (id TEXT PRIMARY KEY);
         CREATE TABLE accounts (id TEXT PRIMARY KEY);
-        CREATE TABLE transactions (id TEXT PRIMARY KEY);
+        CREATE TABLE categories (id TEXT PRIMARY KEY);
+        CREATE TABLE transactions (
+            id TEXT PRIMARY KEY,
+            booking_date TEXT NOT NULL DEFAULT '2025-01-01'
+        );
+        CREATE TABLE transaction_splits (id TEXT PRIMARY KEY);
         CREATE TABLE reconciliations (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -1658,6 +1849,7 @@ final class FinanzVerwalterTests: XCTestCase {
             completed_at TEXT NOT NULL,
             reverted_at TEXT
         );
+        INSERT INTO finance_files(id) VALUES('\(UUID().uuidString)');
         INSERT INTO accounts(id) VALUES('\(accountID.uuidString)');
         INSERT INTO reconciliations(
             id,account_id,statement_date,ending_balance_minor,completed_at
@@ -1735,7 +1927,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 17)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 18)
         sqlite3_finalize(statement)
     }
 
@@ -2218,6 +2410,28 @@ final class FinanzVerwalterTests: XCTestCase {
                 to: "amount,category,date,payee"
             ),
             "amount,balance,category,date,payee"
+        )
+        let viewWithoutBalance = SavedRegisterView(
+            id: UUID(),
+            name: "Alte Ansicht",
+            accountID: nil,
+            statusRawValue: nil,
+            categorySelection: .all,
+            periodRawValue: "all",
+            customStart: Date(timeIntervalSince1970: 0),
+            customEnd: Date(timeIntervalSince1970: 1),
+            rowModeRawValue: "single",
+            visibleColumns: [.date, .payee, .amount]
+        )
+        let oldViews = try RegisterPreferencesCodec.encodeViews([
+            viewWithoutBalance
+        ])
+        let migratedViews = RegisterPreferencesCodec.decodeViews(
+            RegisterPreferencesCodec.addingBalanceColumnToViews(oldViews)
+        )
+        XCTAssertEqual(
+            migratedViews.first?.visibleColumns,
+            [.date, .payee, .amount, .balance]
         )
         let firstAccountID = UUID()
         let secondAccountID = UUID()

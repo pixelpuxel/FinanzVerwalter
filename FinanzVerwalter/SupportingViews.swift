@@ -2164,6 +2164,7 @@ struct SettingsView: View {
     @State private var categoryKind: CategoryKind = .expense
     @State private var editedPayee: FinancePayee?
     @State private var editedTag: FinanceTag?
+    @State private var editedVATCode: VATCode?
 
     var body: some View {
         Form {
@@ -2201,6 +2202,33 @@ struct SettingsView: View {
                 ForEach(store.categoriesByPath) { category in
                     LabeledContent(store.categoryPath(category.id), value: category.kind.title)
                 }
+            }
+            Section("MwSt.-Schlüssel") {
+                Button("MwSt.-Schlüssel anlegen", systemImage: "plus") {
+                    editedVATCode = VATCode(
+                        id: UUID(),
+                        name: "",
+                        rateBasisPoints: 1900,
+                        description: "",
+                        isActive: true
+                    )
+                }
+                ForEach(store.vatCodes) { code in
+                    Button {
+                        editedVATCode = code
+                    } label: {
+                        LabeledContent(
+                            code.name,
+                            value: "\(code.percentageText) · \(code.isActive ? "Aktiv" : "Inaktiv")"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+                Text(
+                    "Auch eigene 0-%-Schlüssel bleiben eigenständig und werden nicht umgeleitet."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Section("Klassen & Tags") {
                 Button("Tag anlegen", systemImage: "plus") {
@@ -2245,6 +2273,61 @@ struct SettingsView: View {
         .navigationTitle("Einstellungen")
         .sheet(item: $editedPayee) { PayeeEditor(value: $0) }
         .sheet(item: $editedTag) { TagEditor(value: $0) }
+        .sheet(item: $editedVATCode) { VATCodeEditor(value: $0) }
+    }
+}
+
+private struct VATCodeEditor: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var value: VATCode
+    @State private var rateText: String
+
+    init(value: VATCode) {
+        _value = State(initialValue: value)
+        _rateText = State(
+            initialValue: (Decimal(value.rateBasisPoints) / 100).formatted(
+                .number
+                    .locale(Locale(identifier: "de_DE"))
+                    .precision(.fractionLength(0...2))
+            )
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(value.name.isEmpty ? "MwSt.-Schlüssel anlegen" : "MwSt.-Schlüssel bearbeiten")
+                .font(.title2.bold())
+            Form {
+                TextField("Name", text: $value.name)
+                TextField("Steuersatz in %", text: $rateText)
+                TextField("Beschreibung", text: $value.description)
+                Toggle("Aktiv", isOn: $value.isActive)
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Abbrechen", role: .cancel) { dismiss() }
+                Button("Speichern") {
+                    do {
+                        value.rateBasisPoints = try VATCalculator.basisPoints(
+                            parsing: rateText
+                        )
+                        if store.saveVATCode(value) { dismiss() }
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    value.name.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                )
+            }
+        }
+        .padding(24)
+        .frame(width: 500)
     }
 }
 
@@ -2374,6 +2457,31 @@ struct CategoriesView: View {
                     categoryMetric("Unterkategorien", "\(children.count)")
                     categoryMetric("Direkte Buchungen", "\(directTransactions.count)")
                     categoryMetric("Direkte Summe", Money(minorUnits: total).formatted)
+                }
+                GroupBox("Steuer & Planung") {
+                    Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Standard-MwSt.").foregroundStyle(.secondary)
+                            Text(
+                                store.vatCodes.first {
+                                    $0.id == category.defaultVATCodeID
+                                }.map { "\($0.name) (\($0.percentageText))" } ?? "Keine"
+                            )
+                        }
+                        GridRow {
+                            Text("Deutsche Steuerzuordnung").foregroundStyle(.secondary)
+                            Text(category.germanTaxLine.isEmpty ? "Keine" : category.germanTaxLine)
+                        }
+                        GridRow {
+                            Text("US-Tax-Line").foregroundStyle(.secondary)
+                            Text(category.usTaxLine.isEmpty ? "Keine" : category.usTaxLine)
+                        }
+                        GridRow {
+                            Text("Budgetfähig").foregroundStyle(.secondary)
+                            Text(category.isBudgetable ? "Ja" : "Nein")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !children.isEmpty {
                     GroupBox("Unterkategorien") {
@@ -2515,6 +2623,29 @@ private struct CategoryEditor: View {
                         Text(colorTitle($0)).tag($0)
                     }
                 }
+                TextField("Beschreibung", text: $value.description)
+                Toggle("Budgetfähig", isOn: $value.isBudgetable)
+                Picker("Standard-MwSt.-Schlüssel", selection: $value.defaultVATCodeID) {
+                    Text("Keine MwSt.").tag(UUID?.none)
+                    ForEach(
+                        store.vatCodes.filter {
+                            $0.isActive || $0.id == value.defaultVATCodeID
+                        }
+                    ) { code in
+                        Text("\(code.name) · \(code.percentageText)")
+                            .tag(Optional(code.id))
+                    }
+                }
+                TextField(
+                    "Deutsche Steuerzuordnung",
+                    text: $value.germanTaxLine,
+                    prompt: Text("z. B. Anlage V · Werbungskosten")
+                )
+                TextField(
+                    "Optionale US-Tax-Line",
+                    text: $value.usTaxLine,
+                    prompt: Text("z. B. Schedule E")
+                )
                 Toggle("Aktiv", isOn: $value.isActive)
                 Text(
                     "Unterkategorien erben nicht automatisch Werte, erscheinen aber mit dem vollständigen Pfad in allen Buchungsdialogen."
@@ -2524,7 +2655,7 @@ private struct CategoryEditor: View {
             }
             .formStyle(.grouped)
         }
-        .frame(width: 560, height: 390)
+        .frame(width: 620, height: 620)
     }
 
     private func isDescendant(_ candidate: FinanceCategory, of categoryID: UUID) -> Bool {

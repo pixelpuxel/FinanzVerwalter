@@ -145,6 +145,11 @@ struct FinanceCategory: Identifiable, Hashable, Sendable {
     var kind: CategoryKind
     var color: String
     var isActive: Bool
+    var description: String = ""
+    var isBudgetable: Bool = true
+    var defaultVATCodeID: UUID? = nil
+    var germanTaxLine: String = ""
+    var usTaxLine: String = ""
 }
 
 enum TransactionStatus: String, Codable, CaseIterable, Sendable {
@@ -174,6 +179,27 @@ struct FinanceSplit: Identifiable, Hashable, Sendable {
     var memo: String
     var sortOrder: Int
     var tagIDs: [UUID] = []
+    var vatCodeID: UUID? = nil
+    var vatMode: VATMode = .none
+    var netMinor: Int64 = 0
+    var taxMinor: Int64 = 0
+
+    func validateVAT() throws {
+        switch vatMode {
+        case .none:
+            guard vatCodeID == nil, netMinor == 0, taxMinor == 0 else {
+                throw FinanceError.invalidVAT(
+                    "Eine Splitzeile ohne MwSt. darf keine Steuerwerte enthalten."
+                )
+            }
+        case .automatic, .manual:
+            guard vatCodeID != nil, netMinor + taxMinor == amountMinor else {
+                throw FinanceError.invalidVAT(
+                    "Die MwSt.-Werte der Splitzeile sind unvollständig."
+                )
+            }
+        }
+    }
 }
 
 struct FinanceTransaction: Identifiable, Hashable, Sendable {
@@ -194,12 +220,59 @@ struct FinanceTransaction: Identifiable, Hashable, Sendable {
     var splits: [FinanceSplit]
     var payeeID: UUID? = nil
     var tagIDs: [UUID] = []
+    var vatCodeID: UUID? = nil
+    var vatMode: VATMode = .none
+    var netMinor: Int64 = 0
+    var taxMinor: Int64 = 0
 
     func validate() throws {
-        guard !splits.isEmpty else { return }
+        if splits.isEmpty {
+            switch vatMode {
+            case .none:
+                guard vatCodeID == nil, netMinor == 0, taxMinor == 0 else {
+                    throw FinanceError.invalidVAT(
+                        "Eine Buchung ohne MwSt. darf keine Steuerwerte enthalten."
+                    )
+                }
+            case .automatic, .manual:
+                guard vatCodeID != nil, netMinor + taxMinor == amountMinor else {
+                    throw FinanceError.invalidVAT(
+                        "Netto und Steuer müssen den Bruttobetrag ergeben."
+                    )
+                }
+            }
+            return
+        }
         let sum = splits.reduce(Int64.zero) { $0 + $1.amountMinor }
         guard sum == amountMinor else {
             throw FinanceError.splitMismatch(expected: amountMinor, actual: sum)
+        }
+        try splits.forEach { try $0.validateVAT() }
+        if splits.allSatisfy({ $0.vatMode == .none }) {
+            guard vatCodeID == nil, vatMode == .none, netMinor == 0, taxMinor == 0 else {
+                throw FinanceError.invalidVAT(
+                    "Eine Splitbuchung ohne MwSt. darf keine Steuerwerte enthalten."
+                )
+            }
+            return
+        }
+        let receipt = try VATCalculator.receipt(
+            splits.map {
+                VATBreakdown(
+                    grossMinor: $0.amountMinor,
+                    netMinor: $0.vatMode == .none ? $0.amountMinor : $0.netMinor,
+                    taxMinor: $0.taxMinor
+                )
+            }
+        )
+        guard vatCodeID == nil,
+              vatMode == .none,
+              netMinor == receipt.netMinor,
+              taxMinor == receipt.taxMinor
+        else {
+            throw FinanceError.invalidVAT(
+                "Die MwSt.-Summen der Splitbuchung stimmen nicht mit den Zeilen überein."
+            )
         }
     }
 }
@@ -210,6 +283,10 @@ struct TransactionTemplateSplit: Codable, Equatable, Sendable {
     var memo: String
     var sortOrder: Int
     var tagIDs: [UUID]
+    var vatCodeID: UUID?
+    var vatMode: VATMode?
+    var netMinor: Int64?
+    var taxMinor: Int64?
 }
 
 struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
@@ -226,6 +303,10 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
     var payeeID: UUID?
     var tagIDs: [UUID]
     var splits: [TransactionTemplateSplit]
+    var vatCodeID: UUID?
+    var vatMode: VATMode?
+    var netMinor: Int64?
+    var taxMinor: Int64?
 
     init(id: UUID = UUID(), name: String, transaction: FinanceTransaction) {
         self.id = id
@@ -245,13 +326,21 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
         memo = transaction.memo
         payeeID = transaction.payeeID
         tagIDs = transaction.tagIDs
+        vatCodeID = transaction.vatCodeID
+        vatMode = transaction.vatMode
+        netMinor = transaction.netMinor
+        taxMinor = transaction.taxMinor
         splits = transaction.splits.map {
             TransactionTemplateSplit(
                 categoryID: $0.categoryID,
                 amountMinor: $0.amountMinor,
                 memo: $0.memo,
                 sortOrder: $0.sortOrder,
-                tagIDs: $0.tagIDs
+                tagIDs: $0.tagIDs,
+                vatCodeID: $0.vatCodeID,
+                vatMode: $0.vatMode,
+                netMinor: $0.netMinor,
+                taxMinor: $0.taxMinor
             )
         }
     }
@@ -279,11 +368,19 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
                     amountMinor: $0.amountMinor,
                     memo: $0.memo,
                     sortOrder: $0.sortOrder,
-                    tagIDs: $0.tagIDs
+                    tagIDs: $0.tagIDs,
+                    vatCodeID: $0.vatCodeID,
+                    vatMode: $0.vatMode ?? .none,
+                    netMinor: $0.netMinor ?? 0,
+                    taxMinor: $0.taxMinor ?? 0
                 )
             },
             payeeID: payeeID,
-            tagIDs: tagIDs
+            tagIDs: tagIDs,
+            vatCodeID: vatCodeID,
+            vatMode: vatMode ?? .none,
+            netMinor: netMinor ?? 0,
+            taxMinor: taxMinor ?? 0
         )
     }
 }
