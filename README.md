@@ -73,6 +73,17 @@ werden. Bestands- und QIF-Konten werden in Bankkonten, Kreditkarten, Bargeld,
 Depots, Kredite, Vermögen, Verbindlichkeiten, Forderungen oder Sonstige
 einsortiert.
 
+## Berichtswerkstatt
+
+Die Berichtswerkstatt wertet Buchungen als unveränderliche Live-Momentaufnahme
+aus. Filter kombinieren Zeitraum, Konten und Gruppen, Kategorieunterbäume,
+Klassen/Tags, Empfänger, Status, Betragsspanne, Volltext und Währung.
+Ausgeblendete Konten, von Berichten ausgeschlossene Konten, Umbuchungen und
+die Einzelauflösung von Splits sind explizite Optionen. Gruppiert wird nach
+Kategorie, Empfänger, Konto oder Klasse/Tag; jede Gruppe besitzt einen
+Drill-down bis zu ihren Buchungen und Splitzeilen. Währungen werden niemals
+unbemerkt addiert.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand

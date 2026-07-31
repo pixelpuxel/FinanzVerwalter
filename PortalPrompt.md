@@ -127,7 +127,7 @@ validierte Wiederherstellung, Kategorisierungsregeln und ein erster
 Serientermin-/Prognose-Slice sowie monatliche Kategorie-Budgets sind
 implementiert. Zusätzlich ist ein rein lokaler Banking-Simulator mit
 Zahlungsaufträgen und SCA-Zustandsautomat vorhanden. Die Testsuite umfasst
-aktuell sechsundzwanzig erfolgreiche
+aktuell achtundzwanzig erfolgreiche
 XCTest-Fälle. Debug- und Release-Build wurden
 erfolgreich ausgeführt; der Release-Stand ist lokal installiert und sichtbar
 geprüft. Details und Screenshots stehen in `Gedächtnis.md`.
@@ -177,6 +177,25 @@ Der bestehende Kategoriebericht ist ausdrücklich kein vollständiges
 Berichtssystem. Die verbindliche Query-, Snapshot-, Drill-down-, Vorlagen-,
 Druck- und Exportarchitektur sowie die recherchierten offiziellen
 Referenzfunktionen stehen in `docs/Berichtswerkstatt.md`.
+
+Der implementierte erste Berichtswerkstatt-Slice verwendet
+`TransactionReportQuery`, `TransactionReportFact`,
+`TransactionReportGroup`, `TransactionReportSnapshot` und
+`TransactionReportEngine`. Die Engine expandiert eine Splitbuchung entweder
+in exakt ihre Splitzeilen oder wertet sie als Gesamtbuchung; Haupt- und
+Splitbetrag dürfen nie gleichzeitig summiert werden. Filter werden als
+UND-Verknüpfung angewandt. Mehrere gewählte Einzelkonten und Kontengruppen
+bilden innerhalb der Kontodimension eine Vereinigungsmenge. Kategorien und
+Tags können ihre Nachkommen einschließen. Status, Empfänger, Betragsspanne,
+Volltext, Währung, versteckte Konten, Berichts-Ausschluss und Transfers sind
+weitere unabhängige Dimensionen.
+
+Gruppen nach Kategorie, Empfänger, Konto oder Klasse/Tag enthalten
+währungsgetrennte Einnahmen, Ausgaben, Saldo und die Menge ihrer
+Auswertungsfakt-IDs. Der Drill-down darf ausschließlich Fakten dieser
+ID-Menge zeigen. Gruppensummen verschiedener Währungen werden nie addiert.
+Die reale QIF-Abnahme muss für jede importierte Buchung beweisen, dass die
+Summe ihrer Berichtsfakten wieder exakt dem Originalbetrag entspricht.
 
 Die Massenkategorisierung erhält eine Menge Buchungs-UUIDs und eine optionale
 Zielkategorie. Prüfe vor jeder Mutation, dass alle UUIDs existieren, die

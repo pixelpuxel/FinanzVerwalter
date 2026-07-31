@@ -1,0 +1,462 @@
+import Foundation
+
+enum ReportGrouping: String, CaseIterable, Identifiable, Sendable {
+    case category
+    case payee
+    case account
+    case tag
+    case none
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .category: "Kategorie"
+        case .payee: "Empfänger"
+        case .account: "Konto"
+        case .tag: "Klasse/Tag"
+        case .none: "Keine Gruppierung"
+        }
+    }
+}
+
+enum ReportSort: String, CaseIterable, Identifiable, Sendable {
+    case labelAscending
+    case amountDescending
+    case amountAscending
+    case dateDescending
+    case dateAscending
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .labelAscending: "Bezeichnung A–Z"
+        case .amountDescending: "Betrag absteigend"
+        case .amountAscending: "Betrag aufsteigend"
+        case .dateDescending: "Datum neu nach alt"
+        case .dateAscending: "Datum alt nach neu"
+        }
+    }
+}
+
+struct TransactionReportQuery: Equatable, Sendable {
+    var dateFrom: Date?
+    var dateThrough: Date?
+    var accountIDs: Set<UUID> = []
+    var accountGroupIDs: Set<UUID> = []
+    var categoryIDs: Set<UUID> = []
+    var includeCategoryDescendants = true
+    var tagIDs: Set<UUID> = []
+    var payeeIDs: Set<UUID> = []
+    var statuses: Set<TransactionStatus> = Set(
+        TransactionStatus.allCases.filter { $0 != .cancelled }
+    )
+    var minimumAmountMinor: Int64?
+    var maximumAmountMinor: Int64?
+    var text = ""
+    var currencies: Set<String> = []
+    var includeHiddenAccounts = false
+    var includeAccountsExcludedFromReports = false
+    var includeTransfers = false
+    var expandSplits = true
+    var grouping: ReportGrouping = .category
+    var sort: ReportSort = .amountDescending
+}
+
+struct TransactionReportFact: Identifiable, Hashable, Sendable {
+    let id: String
+    let transactionID: UUID
+    let splitID: UUID?
+    let bookingDate: Date
+    let accountID: UUID
+    let accountName: String
+    let payee: String
+    let payeeID: UUID?
+    let purpose: String
+    let detail: String
+    let categoryID: UUID?
+    let categoryPath: String
+    let tagIDs: [UUID]
+    let tagPaths: [String]
+    let status: TransactionStatus
+    let amountMinor: Int64
+    let currency: String
+    let isTransfer: Bool
+}
+
+struct TransactionReportGroup: Identifiable, Hashable, Sendable {
+    let id: String
+    let label: String
+    let currency: String
+    let incomeMinor: Int64
+    let expenseMinor: Int64
+    let netMinor: Int64
+    let factIDs: Set<String>
+
+    var bookingCount: Int { factIDs.count }
+}
+
+struct TransactionReportCurrencyTotal: Identifiable, Hashable, Sendable {
+    var id: String { currency }
+    let currency: String
+    let incomeMinor: Int64
+    let expenseMinor: Int64
+    let netMinor: Int64
+}
+
+struct TransactionReportSnapshot: Equatable, Sendable {
+    let facts: [TransactionReportFact]
+    let groups: [TransactionReportGroup]
+    let totals: [TransactionReportCurrencyTotal]
+
+    func facts(inGroupID id: String?) -> [TransactionReportFact] {
+        guard let id, let group = groups.first(where: { $0.id == id }) else {
+            return []
+        }
+        return facts.filter { group.factIDs.contains($0.id) }
+    }
+}
+
+enum TransactionReportEngine {
+    static func snapshot(
+        query: TransactionReportQuery,
+        transactions: [FinanceTransaction],
+        accounts: [FinanceAccount],
+        categories: [FinanceCategory],
+        tags: [FinanceTag]
+    ) -> TransactionReportSnapshot {
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        let categoriesByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let tagsByID = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0) })
+        let normalizedCurrencies = Set(query.currencies.map { $0.uppercased() })
+        let allowedCategories = descendantIDs(
+            selected: query.categoryIDs,
+            parents: Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0.parentID) }),
+            includeDescendants: query.includeCategoryDescendants
+        )
+        let allowedTags = descendantIDs(
+            selected: query.tagIDs,
+            parents: Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0.parentID) }),
+            includeDescendants: true
+        )
+        let normalizedText = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var facts: [TransactionReportFact] = []
+        for transaction in transactions {
+            guard let account = accountsByID[transaction.accountID] else { continue }
+            guard accountMatches(account, query: query) else { continue }
+            guard query.statuses.contains(transaction.status) else { continue }
+            guard query.includeTransfers || transaction.transferID == nil else { continue }
+            guard query.dateFrom.map({ transaction.bookingDate >= $0 }) ?? true else { continue }
+            guard query.dateThrough.map({ transaction.bookingDate <= $0 }) ?? true else { continue }
+            guard normalizedCurrencies.isEmpty
+                || normalizedCurrencies.contains(transaction.currency.uppercased())
+            else { continue }
+            guard query.payeeIDs.isEmpty
+                || transaction.payeeID.map(query.payeeIDs.contains) == true
+            else { continue }
+
+            let candidates = expandedFacts(
+                transaction: transaction,
+                account: account,
+                categoriesByID: categoriesByID,
+                tagsByID: tagsByID,
+                expandSplits: query.expandSplits
+            )
+            facts.append(
+                contentsOf: candidates.filter { fact in
+                    let absoluteAmount = fact.amountMinor == Int64.min
+                        ? Int64.max
+                        : abs(fact.amountMinor)
+                    let amountMatches =
+                        (query.minimumAmountMinor.map { absoluteAmount >= $0 } ?? true)
+                        && (query.maximumAmountMinor.map { absoluteAmount <= $0 } ?? true)
+                    let categoryMatches = allowedCategories.isEmpty
+                        || fact.categoryID.map(allowedCategories.contains) == true
+                    let tagMatches = allowedTags.isEmpty
+                        || !allowedTags.isDisjoint(with: fact.tagIDs)
+                    let textMatches = normalizedText.isEmpty
+                        || searchableText(for: fact).localizedCaseInsensitiveContains(normalizedText)
+                    return amountMatches && categoryMatches && tagMatches && textMatches
+                }
+            )
+        }
+
+        facts = sortFacts(facts, by: query.sort)
+        let groups = makeGroups(facts: facts, grouping: query.grouping, sort: query.sort)
+        let totals = makeTotals(facts)
+        return TransactionReportSnapshot(facts: facts, groups: groups, totals: totals)
+    }
+
+    private static func accountMatches(
+        _ account: FinanceAccount,
+        query: TransactionReportQuery
+    ) -> Bool {
+        guard query.includeHiddenAccounts || (!account.isHidden && !account.isClosed) else {
+            return false
+        }
+        guard query.includeAccountsExcludedFromReports || account.includeReports else {
+            return false
+        }
+        if query.accountIDs.isEmpty && query.accountGroupIDs.isEmpty {
+            return true
+        }
+        return query.accountIDs.contains(account.id)
+            || account.groupID.map(query.accountGroupIDs.contains) == true
+    }
+
+    private static func expandedFacts(
+        transaction: FinanceTransaction,
+        account: FinanceAccount,
+        categoriesByID: [UUID: FinanceCategory],
+        tagsByID: [UUID: FinanceTag],
+        expandSplits: Bool
+    ) -> [TransactionReportFact] {
+        if expandSplits, !transaction.splits.isEmpty {
+            return transaction.splits.sorted { $0.sortOrder < $1.sortOrder }.map { split in
+                let combinedTagIDs = unique(transaction.tagIDs + split.tagIDs)
+                return TransactionReportFact(
+                    id: "\(transaction.id.uuidString):\(split.id.uuidString)",
+                    transactionID: transaction.id,
+                    splitID: split.id,
+                    bookingDate: transaction.bookingDate,
+                    accountID: transaction.accountID,
+                    accountName: account.name,
+                    payee: transaction.payee,
+                    payeeID: transaction.payeeID,
+                    purpose: transaction.purpose,
+                    detail: [transaction.memo, transaction.reference, split.memo]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · "),
+                    categoryID: split.categoryID,
+                    categoryPath: hierarchyPath(split.categoryID, values: categoriesByID),
+                    tagIDs: combinedTagIDs,
+                    tagPaths: combinedTagIDs.map { hierarchyPath($0, values: tagsByID) },
+                    status: transaction.status,
+                    amountMinor: split.amountMinor,
+                    currency: transaction.currency,
+                    isTransfer: transaction.transferID != nil
+                )
+            }
+        }
+        let tagIDs = unique(transaction.tagIDs)
+        return [
+            TransactionReportFact(
+                id: transaction.id.uuidString,
+                transactionID: transaction.id,
+                splitID: nil,
+                bookingDate: transaction.bookingDate,
+                accountID: transaction.accountID,
+                accountName: account.name,
+                payee: transaction.payee,
+                payeeID: transaction.payeeID,
+                purpose: transaction.purpose,
+                detail: [transaction.memo, transaction.reference]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " · "),
+                categoryID: transaction.categoryID,
+                categoryPath: hierarchyPath(transaction.categoryID, values: categoriesByID),
+                tagIDs: tagIDs,
+                tagPaths: tagIDs.map { hierarchyPath($0, values: tagsByID) },
+                status: transaction.status,
+                amountMinor: transaction.amountMinor,
+                currency: transaction.currency,
+                isTransfer: transaction.transferID != nil
+            )
+        ]
+    }
+
+    private static func makeGroups(
+        facts: [TransactionReportFact],
+        grouping: ReportGrouping,
+        sort: ReportSort
+    ) -> [TransactionReportGroup] {
+        guard grouping != .none else { return [] }
+        let grouped = Dictionary(grouping: facts) { fact in
+            "\(groupLabel(for: fact, grouping: grouping))\u{1F}\(fact.currency)"
+        }
+        let result = grouped.map { key, values in
+            let parts = key.components(separatedBy: "\u{1F}")
+            let income = values.filter { $0.amountMinor > 0 }
+                .reduce(Int64.zero) { $0 + $1.amountMinor }
+            let expense = values.filter { $0.amountMinor < 0 }
+                .reduce(Int64.zero) { $0 - $1.amountMinor }
+            return TransactionReportGroup(
+                id: key,
+                label: parts.first ?? "Ohne Zuordnung",
+                currency: parts.count > 1 ? parts[1] : "EUR",
+                incomeMinor: income,
+                expenseMinor: expense,
+                netMinor: income - expense,
+                factIDs: Set(values.map(\.id))
+            )
+        }
+        return result.sorted { lhs, rhs in
+            switch sort {
+            case .amountDescending:
+                return absoluteNet(lhs) == absoluteNet(rhs)
+                    ? lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+                    : absoluteNet(lhs) > absoluteNet(rhs)
+            case .amountAscending:
+                return absoluteNet(lhs) == absoluteNet(rhs)
+                    ? lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+                    : absoluteNet(lhs) < absoluteNet(rhs)
+            default:
+                return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+            }
+        }
+    }
+
+    private static func makeTotals(
+        _ facts: [TransactionReportFact]
+    ) -> [TransactionReportCurrencyTotal] {
+        Dictionary(grouping: facts, by: \.currency)
+            .map { currency, values in
+                let income = values.filter { $0.amountMinor > 0 }
+                    .reduce(Int64.zero) { $0 + $1.amountMinor }
+                let expense = values.filter { $0.amountMinor < 0 }
+                    .reduce(Int64.zero) { $0 - $1.amountMinor }
+                return TransactionReportCurrencyTotal(
+                    currency: currency,
+                    incomeMinor: income,
+                    expenseMinor: expense,
+                    netMinor: income - expense
+                )
+            }
+            .sorted { $0.currency < $1.currency }
+    }
+
+    private static func sortFacts(
+        _ facts: [TransactionReportFact],
+        by sort: ReportSort
+    ) -> [TransactionReportFact] {
+        facts.sorted { lhs, rhs in
+            switch sort {
+            case .dateAscending:
+                return dateOrder(lhs, rhs, ascending: true)
+            case .dateDescending:
+                return dateOrder(lhs, rhs, ascending: false)
+            case .amountAscending:
+                return lhs.amountMinor == rhs.amountMinor
+                    ? dateOrder(lhs, rhs, ascending: false)
+                    : lhs.amountMinor < rhs.amountMinor
+            case .amountDescending:
+                return lhs.amountMinor == rhs.amountMinor
+                    ? dateOrder(lhs, rhs, ascending: false)
+                    : lhs.amountMinor > rhs.amountMinor
+            case .labelAscending:
+                let lhsLabel = lhs.payee.isEmpty ? lhs.purpose : lhs.payee
+                let rhsLabel = rhs.payee.isEmpty ? rhs.purpose : rhs.payee
+                let comparison = lhsLabel.localizedCaseInsensitiveCompare(rhsLabel)
+                return comparison == .orderedSame
+                    ? dateOrder(lhs, rhs, ascending: false)
+                    : comparison == .orderedAscending
+            }
+        }
+    }
+
+    private static func dateOrder(
+        _ lhs: TransactionReportFact,
+        _ rhs: TransactionReportFact,
+        ascending: Bool
+    ) -> Bool {
+        if lhs.bookingDate == rhs.bookingDate {
+            return ascending ? lhs.id < rhs.id : lhs.id > rhs.id
+        }
+        return ascending
+            ? lhs.bookingDate < rhs.bookingDate
+            : lhs.bookingDate > rhs.bookingDate
+    }
+
+    private static func groupLabel(
+        for fact: TransactionReportFact,
+        grouping: ReportGrouping
+    ) -> String {
+        switch grouping {
+        case .category:
+            fact.categoryPath
+        case .payee:
+            fact.payee.isEmpty ? "Ohne Empfänger" : fact.payee
+        case .account:
+            fact.accountName
+        case .tag:
+            fact.tagPaths.isEmpty ? "Ohne Klasse/Tag" : fact.tagPaths.joined(separator: " + ")
+        case .none:
+            "Alle Buchungen"
+        }
+    }
+
+    private static func searchableText(for fact: TransactionReportFact) -> String {
+        [
+            fact.payee, fact.purpose, fact.detail, fact.categoryPath,
+            fact.accountName, fact.status.title, fact.tagPaths.joined(separator: " ")
+        ].joined(separator: "\n")
+    }
+
+    private static func descendantIDs(
+        selected: Set<UUID>,
+        parents: [UUID: UUID?],
+        includeDescendants: Bool
+    ) -> Set<UUID> {
+        guard includeDescendants, !selected.isEmpty else { return selected }
+        var result = selected
+        for candidate in parents.keys {
+            var current = parents[candidate] ?? nil
+            var visited = Set<UUID>()
+            while let id = current, visited.insert(id).inserted {
+                if selected.contains(id) {
+                    result.insert(candidate)
+                    break
+                }
+                current = parents[id] ?? nil
+            }
+        }
+        return result
+    }
+
+    private static func hierarchyPath<Value>(
+        _ id: UUID?,
+        values: [UUID: Value]
+    ) -> String where Value: HierarchyNamedValue {
+        guard let id, let value = values[id] else { return "Nicht zugeordnet" }
+        var names = [value.hierarchyName]
+        var current = value.hierarchyParentID
+        var visited = Set([id])
+        while let parentID = current,
+              visited.insert(parentID).inserted,
+              let parent = values[parentID] {
+            names.insert(parent.hierarchyName, at: 0)
+            current = parent.hierarchyParentID
+        }
+        return names.joined(separator: " › ")
+    }
+
+    private static func unique(_ values: [UUID]) -> [UUID] {
+        values.reduce(into: [UUID]()) { result, value in
+            if !result.contains(value) {
+                result.append(value)
+            }
+        }
+    }
+
+    private static func absoluteNet(_ group: TransactionReportGroup) -> Int64 {
+        group.netMinor == Int64.min ? Int64.max : abs(group.netMinor)
+    }
+}
+
+private protocol HierarchyNamedValue {
+    var hierarchyName: String { get }
+    var hierarchyParentID: UUID? { get }
+}
+
+extension FinanceCategory: HierarchyNamedValue {
+    fileprivate var hierarchyName: String { name }
+    fileprivate var hierarchyParentID: UUID? { parentID }
+}
+
+extension FinanceTag: HierarchyNamedValue {
+    fileprivate var hierarchyName: String { name }
+    fileprivate var hierarchyParentID: UUID? { parentID }
+}
+

@@ -686,47 +686,632 @@ struct ReconciliationView: View {
 
 struct ReportsView: View {
     @EnvironmentObject private var store: FinanceAppStore
+    @State private var period: ReportPeriodPreset = .all
+    @State private var customStart = Calendar.current.date(
+        byAdding: .month,
+        value: -1,
+        to: .now
+    ) ?? .now
+    @State private var customEnd = Date.now
+    @State private var selectedAccountIDs = Set<UUID>()
+    @State private var selectedGroupIDs = Set<UUID>()
+    @State private var selectedCategoryIDs = Set<UUID>()
+    @State private var includeCategoryDescendants = true
+    @State private var selectedTagIDs = Set<UUID>()
+    @State private var selectedPayeeIDs = Set<UUID>()
+    @State private var statuses = Set(
+        TransactionStatus.allCases.filter { $0 != .cancelled }
+    )
+    @State private var selectedCurrencies = Set<String>()
+    @State private var minimumAmount = ""
+    @State private var maximumAmount = ""
+    @State private var reportText = ""
+    @State private var includeHiddenAccounts = false
+    @State private var includeExcludedAccounts = false
+    @State private var includeTransfers = false
+    @State private var expandSplits = true
+    @State private var grouping: ReportGrouping = .category
+    @State private var sort: ReportSort = .amountDescending
+    @State private var selectedReportGroupID: String?
+
+    private var query: TransactionReportQuery {
+        let range = period.range(customStart: customStart, customEnd: customEnd)
+        return TransactionReportQuery(
+            dateFrom: range.start,
+            dateThrough: range.end,
+            accountIDs: selectedAccountIDs,
+            accountGroupIDs: selectedGroupIDs,
+            categoryIDs: selectedCategoryIDs,
+            includeCategoryDescendants: includeCategoryDescendants,
+            tagIDs: selectedTagIDs,
+            payeeIDs: selectedPayeeIDs,
+            statuses: statuses,
+            minimumAmountMinor: parsedAbsoluteAmount(minimumAmount),
+            maximumAmountMinor: parsedAbsoluteAmount(maximumAmount),
+            text: reportText,
+            currencies: selectedCurrencies,
+            includeHiddenAccounts: includeHiddenAccounts,
+            includeAccountsExcludedFromReports: includeExcludedAccounts,
+            includeTransfers: includeTransfers,
+            expandSplits: expandSplits,
+            grouping: grouping,
+            sort: sort
+        )
+    }
 
     var body: some View {
+        let snapshot = store.transactionReport(query)
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Einnahmen und Ausgaben nach Kategorie")
-                    .font(.title2.bold())
-                Text("Umbuchungen werden nicht als Einnahme oder Ausgabe gezählt.")
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Berichtswerkstatt")
+                        .font(.title2.bold())
+                    Text("Live-Auswertung mit Filtern, Gruppierung und Buchungs-Drill-down")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(snapshot.facts.count) Auswertungspositionen")
+                        .font(.headline)
+                    Text(
+                        expandSplits
+                            ? "Splitbuchungen werden nach Splitzeilen ausgewertet."
+                            : "Splitbuchungen werden als Gesamtbuchung ausgewertet."
+                    )
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                }
             }
             .padding(16)
             Divider()
-            HSplitView {
-                Table(store.reportRows) {
-                    TableColumn("Kategorie", value: \.name)
-                    TableColumn("Einnahmen") {
-                        Text(Money(minorUnits: $0.incomeMinor).formatted)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .monospacedDigit()
+
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    Picker("Zeitraum", selection: $period) {
+                        ForEach(ReportPeriodPreset.allCases) {
+                            Text($0.title).tag($0)
+                        }
                     }
-                    TableColumn("Ausgaben") {
-                        Text(Money(minorUnits: $0.expenseMinor).formatted)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .monospacedDigit()
+                    .frame(width: 175)
+                    if period == .custom {
+                        DatePicker("Von", selection: $customStart, displayedComponents: .date)
+                            .labelsHidden()
+                        Text("bis").foregroundStyle(.secondary)
+                        DatePicker("Bis", selection: $customEnd, displayedComponents: .date)
+                            .labelsHidden()
                     }
-                    TableColumn("Saldo") {
-                        Text(Money(minorUnits: $0.incomeMinor - $0.expenseMinor).formatted)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .monospacedDigit()
-                    }
+                    accountFilterMenu
+                    categoryFilterMenu
+                    tagFilterMenu
+                    payeeFilterMenu
+                    statusFilterMenu
+                    currencyFilterMenu
+                    Spacer()
                 }
-                Chart(store.reportRows) { row in
-                    BarMark(
-                        x: .value("Betrag", Decimal(row.expenseMinor) / Decimal(100)),
-                        y: .value("Kategorie", row.name)
-                    )
-                    .foregroundStyle(Color(red: 0.08, green: 0.45, blue: 0.24).gradient)
+
+                HStack(spacing: 10) {
+                    TextField("Volltext: Empfänger, Zweck, Memo, Kategorie …", text: $reportText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 240, maxWidth: 390)
+                    TextField("Betrag von", text: $minimumAmount)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                    TextField("bis", text: $maximumAmount)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                    Picker("Gruppieren", selection: $grouping) {
+                        ForEach(ReportGrouping.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 175)
+                    Picker("Sortieren", selection: $sort) {
+                        ForEach(ReportSort.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 185)
+                    optionsMenu
+                    Spacer()
+                    Button("Zurücksetzen", systemImage: "arrow.counterclockwise") {
+                        resetFilters()
+                    }
+                    .disabled(!hasActiveFilter)
                 }
-                .padding()
-                .frame(minWidth: 340)
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            if grouping == .none {
+                reportFactsTable(snapshot.facts)
+            } else {
+                HSplitView {
+                    reportGroupsTable(snapshot.groups)
+                        .frame(minWidth: 370, idealWidth: 470)
+                    VStack(spacing: 0) {
+                        if let selectedReportGroupID,
+                           let group = snapshot.groups.first(where: {
+                               $0.id == selectedReportGroupID
+                           }) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(group.label).font(.headline)
+                                    Text(
+                                        "\(group.bookingCount) Positionen · "
+                                            + Money(
+                                                minorUnits: group.netMinor,
+                                                currency: group.currency
+                                            ).formatted
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("Drill-down")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            Divider()
+                            reportFactsTable(snapshot.facts(inGroupID: selectedReportGroupID))
+                        } else {
+                            ContentUnavailableView(
+                                "Gruppe auswählen",
+                                systemImage: "cursorarrow.click.2",
+                                description: Text(
+                                    "Wähle links eine Gruppe, um die zugrunde liegenden "
+                                        + "Buchungen und Splitzeilen zu sehen."
+                                )
+                            )
+                        }
+                    }
+                    .frame(minWidth: 500)
+                }
+            }
+
+            Divider()
+            reportTotals(snapshot.totals)
+        }
+        .onChange(of: grouping) {
+            selectedReportGroupID = nil
+        }
+        .onChange(of: snapshot.groups.map(\.id)) {
+            if let selectedReportGroupID,
+               !snapshot.groups.contains(where: { $0.id == selectedReportGroupID }) {
+                self.selectedReportGroupID = nil
             }
         }
+    }
+
+    private var accountFilterMenu: some View {
+        Menu {
+            Button("Alle Konten") {
+                selectedAccountIDs.removeAll()
+                selectedGroupIDs.removeAll()
+            }
+            if !store.accountGroups.isEmpty {
+                Section("Kontengruppen") {
+                    ForEach(store.accountGroups.filter(\.isActive)) { group in
+                        Toggle(
+                            group.name,
+                            isOn: memberBinding(group.id, in: $selectedGroupIDs)
+                        )
+                    }
+                }
+            }
+            Section("Einzelkonten") {
+                ForEach(store.accounts) { account in
+                    Toggle(
+                        account.name,
+                        isOn: memberBinding(account.id, in: $selectedAccountIDs)
+                    )
+                }
+            }
+        } label: {
+            Label(
+                filterTitle(
+                    "Konten",
+                    count: selectedAccountIDs.count + selectedGroupIDs.count
+                ),
+                systemImage: "building.columns"
+            )
+        }
+    }
+
+    private var categoryFilterMenu: some View {
+        Menu {
+            Button("Alle Kategorien") { selectedCategoryIDs.removeAll() }
+            Toggle("Unterkategorien einbeziehen", isOn: $includeCategoryDescendants)
+            Divider()
+            ForEach(store.categoriesByPath.filter(\.isActive)) { category in
+                Toggle(
+                    store.categoryPath(category.id),
+                    isOn: memberBinding(category.id, in: $selectedCategoryIDs)
+                )
+            }
+        } label: {
+            Label(
+                filterTitle("Kategorien", count: selectedCategoryIDs.count),
+                systemImage: "tag"
+            )
+        }
+    }
+
+    private var tagFilterMenu: some View {
+        Menu {
+            Button("Alle Klassen/Tags") { selectedTagIDs.removeAll() }
+            ForEach(store.tags.filter(\.isActive)) { tag in
+                Toggle(
+                    store.tagName(tag.id),
+                    isOn: memberBinding(tag.id, in: $selectedTagIDs)
+                )
+            }
+        } label: {
+            Label(
+                filterTitle("Klassen/Tags", count: selectedTagIDs.count),
+                systemImage: "number"
+            )
+        }
+    }
+
+    private var payeeFilterMenu: some View {
+        Menu {
+            Button("Alle Empfänger") { selectedPayeeIDs.removeAll() }
+            ForEach(store.payees.filter(\.isActive)) { payee in
+                Toggle(
+                    payee.canonicalName,
+                    isOn: memberBinding(payee.id, in: $selectedPayeeIDs)
+                )
+            }
+        } label: {
+            Label(
+                filterTitle("Empfänger", count: selectedPayeeIDs.count),
+                systemImage: "person"
+            )
+        }
+    }
+
+    private var statusFilterMenu: some View {
+        Menu {
+            Button("Alle regulären Status") {
+                statuses = Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+            }
+            Button("Alle einschließlich Storniert") {
+                statuses = Set(TransactionStatus.allCases)
+            }
+            Divider()
+            ForEach(TransactionStatus.allCases, id: \.self) { status in
+                Toggle(
+                    status.title,
+                    isOn: memberBinding(status, in: $statuses)
+                )
+            }
+        } label: {
+            Label(
+                "Status \(statuses.count)/\(TransactionStatus.allCases.count)",
+                systemImage: "checkmark.circle"
+            )
+        }
+    }
+
+    private var currencyFilterMenu: some View {
+        let currencies = Set(store.transactions.map { $0.currency.uppercased() }).sorted()
+        return Menu {
+            Button("Alle Währungen") { selectedCurrencies.removeAll() }
+            ForEach(currencies, id: \.self) { currency in
+                Toggle(
+                    currency,
+                    isOn: memberBinding(currency, in: $selectedCurrencies)
+                )
+            }
+        } label: {
+            Label(
+                filterTitle("Währungen", count: selectedCurrencies.count),
+                systemImage: "eurosign.arrow.circlepath"
+            )
+        }
+    }
+
+    private var optionsMenu: some View {
+        Menu {
+            Toggle("Umbuchungen einbeziehen", isOn: $includeTransfers)
+            Toggle("Splitzeilen einzeln auswerten", isOn: $expandSplits)
+            Toggle("Ausgeblendete/geschlossene Konten", isOn: $includeHiddenAccounts)
+            Toggle(
+                "Von Berichten ausgeschlossene Konten",
+                isOn: $includeExcludedAccounts
+            )
+        } label: {
+            Label("Optionen", systemImage: "slider.horizontal.3")
+        }
+    }
+
+    private func reportGroupsTable(
+        _ groups: [TransactionReportGroup]
+    ) -> some View {
+        Table(groups, selection: $selectedReportGroupID) {
+            TableColumn(grouping.title) { group in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(group.label)
+                        .lineLimit(2)
+                    Text("\(group.bookingCount) Positionen · \(group.currency)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .width(min: 150, ideal: 220)
+            TableColumn("Einnahmen") { group in
+                reportMoney(group.incomeMinor, currency: group.currency)
+            }
+            .width(105)
+            TableColumn("Ausgaben") { group in
+                reportMoney(group.expenseMinor, currency: group.currency)
+            }
+            .width(105)
+            TableColumn("Saldo") { group in
+                reportMoney(group.netMinor, currency: group.currency)
+            }
+            .width(105)
+        }
+        .overlay {
+            if groups.isEmpty {
+                ContentUnavailableView(
+                    "Keine Gruppen",
+                    systemImage: "chart.bar.doc.horizontal",
+                    description: Text("Die gewählten Filter liefern keine auswertbaren Positionen.")
+                )
+            }
+        }
+    }
+
+    private func reportFactsTable(
+        _ facts: [TransactionReportFact]
+    ) -> some View {
+        Table(facts) {
+            TableColumn("Datum") {
+                Text($0.bookingDate, format: .dateTime.day().month(.twoDigits).year())
+                    .monospacedDigit()
+            }
+            .width(90)
+            TableColumn("Konto") {
+                Text($0.accountName).lineLimit(1)
+            }
+            .width(min: 105, ideal: 135)
+            TableColumn("Empfänger") {
+                Text($0.payee.isEmpty ? "—" : $0.payee).lineLimit(1)
+            }
+            .width(min: 115, ideal: 155)
+            TableColumn("Verwendungszweck") { fact in
+                Text(fact.purpose)
+                    .lineLimit(1)
+                    .help([fact.purpose, fact.detail].filter { !$0.isEmpty }.joined(separator: "\n"))
+            }
+            .width(min: 150, ideal: 220)
+            TableColumn("Kategorie") {
+                Text($0.categoryPath)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help($0.categoryPath)
+            }
+            .width(min: 150, ideal: 210)
+            TableColumn("Status") {
+                Text($0.splitID == nil ? $0.status.title : "\($0.status.title) · Split")
+            }
+            .width(105)
+            TableColumn("Betrag") { fact in
+                reportMoney(fact.amountMinor, currency: fact.currency)
+            }
+            .width(115)
+        }
+        .overlay {
+            if facts.isEmpty {
+                ContentUnavailableView(
+                    "Keine Buchungen",
+                    systemImage: "list.bullet.rectangle",
+                    description: Text("Passe die Filter an oder wähle eine andere Gruppe.")
+                )
+            }
+        }
+    }
+
+    private func reportTotals(
+        _ totals: [TransactionReportCurrencyTotal]
+    ) -> some View {
+        HStack(spacing: 14) {
+            Text("Gesamtsummen")
+                .fontWeight(.semibold)
+            ForEach(totals) { total in
+                Text(
+                    "\(total.currency): "
+                        + "Einnahmen \(Money(minorUnits: total.incomeMinor, currency: total.currency).formatted) · "
+                        + "Ausgaben \(Money(minorUnits: total.expenseMinor, currency: total.currency).formatted) · "
+                        + "Saldo \(Money(minorUnits: total.netMinor, currency: total.currency).formatted)"
+                )
+                .monospacedDigit()
+            }
+            if totals.isEmpty {
+                Text("Keine Werte").foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("Live-Momentaufnahme")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+    }
+
+    private func reportMoney(_ amount: Int64, currency: String) -> some View {
+        Text(Money(minorUnits: amount, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+    }
+
+    private func memberBinding<Value: Hashable>(
+        _ value: Value,
+        in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { isSelected in
+                if isSelected {
+                    selection.wrappedValue.insert(value)
+                } else {
+                    selection.wrappedValue.remove(value)
+                }
+            }
+        )
+    }
+
+    private func filterTitle(_ title: String, count: Int) -> String {
+        count == 0 ? title : "\(title) (\(count))"
+    }
+
+    private func parsedAbsoluteAmount(_ value: String) -> Int64? {
+        guard let parsed = try? Money(parsing: value).minorUnits else { return nil }
+        return parsed == Int64.min ? Int64.max : abs(parsed)
+    }
+
+    private var hasActiveFilter: Bool {
+        period != .all
+            || !selectedAccountIDs.isEmpty
+            || !selectedGroupIDs.isEmpty
+            || !selectedCategoryIDs.isEmpty
+            || !selectedTagIDs.isEmpty
+            || !selectedPayeeIDs.isEmpty
+            || statuses != Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+            || !selectedCurrencies.isEmpty
+            || !minimumAmount.isEmpty
+            || !maximumAmount.isEmpty
+            || !reportText.isEmpty
+            || includeHiddenAccounts
+            || includeExcludedAccounts
+            || includeTransfers
+            || !expandSplits
+            || grouping != .category
+            || sort != .amountDescending
+    }
+
+    private func resetFilters() {
+        period = .all
+        selectedAccountIDs.removeAll()
+        selectedGroupIDs.removeAll()
+        selectedCategoryIDs.removeAll()
+        includeCategoryDescendants = true
+        selectedTagIDs.removeAll()
+        selectedPayeeIDs.removeAll()
+        statuses = Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+        selectedCurrencies.removeAll()
+        minimumAmount = ""
+        maximumAmount = ""
+        reportText = ""
+        includeHiddenAccounts = false
+        includeExcludedAccounts = false
+        includeTransfers = false
+        expandSplits = true
+        grouping = .category
+        sort = .amountDescending
+        selectedReportGroupID = nil
+    }
+}
+
+private enum ReportPeriodPreset: String, CaseIterable, Identifiable {
+    case all
+    case currentMonth
+    case currentQuarter
+    case currentYear
+    case previousYear
+    case rolling30
+    case rolling90
+    case rolling365
+    case custom
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: "Gesamter Zeitraum"
+        case .currentMonth: "Aktueller Monat"
+        case .currentQuarter: "Aktuelles Quartal"
+        case .currentYear: "Aktuelles Jahr"
+        case .previousYear: "Vorjahr"
+        case .rolling30: "Letzte 30 Tage"
+        case .rolling90: "Letzte 90 Tage"
+        case .rolling365: "Letzte 365 Tage"
+        case .custom: "Benutzerdefiniert"
+        }
+    }
+
+    func range(
+        now: Date = .now,
+        customStart: Date,
+        customEnd: Date
+    ) -> (start: Date?, end: Date?) {
+        let calendar = Calendar.current
+        switch self {
+        case .all:
+            return (nil, nil)
+        case .currentMonth:
+            return intervalRange(calendar.dateInterval(of: .month, for: now), calendar: calendar)
+        case .currentQuarter:
+            let components = calendar.dateComponents([.year, .month], from: now)
+            let month = components.month ?? 1
+            let quarterStartMonth = ((month - 1) / 3) * 3 + 1
+            let start = calendar.date(
+                from: DateComponents(year: components.year, month: quarterStartMonth, day: 1)
+            ) ?? now
+            let end = calendar.date(byAdding: .month, value: 3, to: start) ?? now
+            return (start, end.addingTimeInterval(-0.001))
+        case .currentYear:
+            return intervalRange(calendar.dateInterval(of: .year, for: now), calendar: calendar)
+        case .previousYear:
+            let prior = calendar.date(byAdding: .year, value: -1, to: now) ?? now
+            return intervalRange(calendar.dateInterval(of: .year, for: prior), calendar: calendar)
+        case .rolling30:
+            return rollingRange(days: 30, now: now, calendar: calendar)
+        case .rolling90:
+            return rollingRange(days: 90, now: now, calendar: calendar)
+        case .rolling365:
+            return rollingRange(days: 365, now: now, calendar: calendar)
+        case .custom:
+            let start = calendar.startOfDay(for: min(customStart, customEnd))
+            let nextDay = calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: calendar.startOfDay(for: max(customStart, customEnd))
+            ) ?? max(customStart, customEnd)
+            return (start, nextDay.addingTimeInterval(-0.001))
+        }
+    }
+
+    private func intervalRange(
+        _ interval: DateInterval?,
+        calendar: Calendar
+    ) -> (start: Date?, end: Date?) {
+        guard let interval else { return (nil, nil) }
+        return (interval.start, interval.end.addingTimeInterval(-0.001))
+    }
+
+    private func rollingRange(
+        days: Int,
+        now: Date,
+        calendar: Calendar
+    ) -> (start: Date?, end: Date?) {
+        let endOfToday = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: now)
+        )?.addingTimeInterval(-0.001) ?? now
+        let start = calendar.date(
+            byAdding: .day,
+            value: -(days - 1),
+            to: calendar.startOfDay(for: now)
+        )
+        return (start, endOfToday)
     }
 }
 

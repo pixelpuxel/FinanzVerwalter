@@ -355,3 +355,23 @@ Rechtsberatung.
   `docs/Berichtswerkstatt.md` in ein reproduzierbares Query-, Snapshot-,
   Drill-down- und Ausgabeziel überführt. Der bestehende Kategoriebericht
   bleibt ausdrücklich nur ein Teilstand.
+- Der erste Berichtswerkstatt-Slice ist implementiert. Eine unveränderliche
+  Live-Query kombiniert Zeitraum, Konten/Gruppen, Kategorieunterbäume,
+  Klassen/Tags, Empfänger, Status, absolute Betragsspanne, Volltext,
+  Währungen sowie explizite Schalter für Transfers, Splitauflösung,
+  ausgeblendete und von Berichten ausgeschlossene Konten.
+- Splitbuchungen werden entweder ausschließlich als Gesamtbuchung oder
+  ausschließlich als einzelne Splitfakten ausgewertet. Gruppen nach
+  Kategorie, Empfänger, Konto oder Klasse/Tag bleiben währungsgetrennt und
+  referenzieren ihre Fakten für den Buchungs-Drill-down.
+- 28 XCTest-Fälle bestehen. Die reale 2025-QIF-Abnahme führt alle 2.170
+  Buchungen durch die Berichtspipeline und prüft für jede Buchung, dass die
+  Summe ihrer erzeugten Fakten exakt dem Originalbetrag entspricht.
+- Die installierte Release-App zeigte 2.313 Auswertungspositionen aus dem
+  realen Bestand. Der sichtbare Volltextfilter `Grundsteuer` reduzierte die
+  Live-Auswertung auf 68 Positionen und zeigte getrennte vollständige
+  Immobilien-Kategoriepfade. Ein gewählter Pfad lieferte ausschließlich seine
+  13 zugrunde liegenden Buchungs-/Splitpositionen. Screenshot:
+  `build/berichtswerkstatt-drilldown.png`.
+- Dieser Berichtswerkstatt-Stand wurde mit dem Screenshot im
+  Telegram-Projektthread 894 als Nachricht 932 veröffentlicht.

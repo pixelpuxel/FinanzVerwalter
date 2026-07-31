@@ -20,7 +20,7 @@ fertigen Funktionsbereich.
 | P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Idempotenz; Profilassistent, OFX/QFX, MT940, camt und ISO-20022 fehlen |
 | P0 | Kontoabgleich | Teilweise | Exakter Endsaldo und Sperre vorhanden; Startsaldo, Markierdialog, Rücknahme und explizite Ausgleichsbuchung fehlen |
 | P0 | Sammelkontoblatt | Teilweise | Kontenübergreifende Liste, Zukunft und Summe; benannte Kombinationen, Mehrfachbearbeitung, zwei Ansichten und Export fehlen |
-| P0 | Berichte, Druck und Export | Teilweise | Kategoriebericht und Budget-Drill-down vorhanden; recherchierter reproduzierbarer Sollentwurf in `docs/Berichtswerkstatt.md`; Querymodell, Standardberichte, Vorlagen, Druck sowie PDF/XLSX/HTML/CSV-Golden-Tests fehlen |
+| P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen nach Kategorie/Empfänger/Konto/Tag und Buchungs-Drill-down vorhanden; Vorlagen, zweite Dimension, weitere Standardberichte, Druck sowie PDF/XLSX/HTML/CSV-Golden-Tests fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Offen | Derzeit nur lokaler Zahlungs-/SCA-Simulator; FinTS/PSD2-Verträge, Kontakte, Konto- und Umsatzabruf fehlen |
 | P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA und Idempotenz; Dauerauftrag, Lastschrift, Sammler, EPC-QR und pain-Dateien fehlen |
@@ -42,8 +42,7 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Berichtswerkstatt: Buchungsbericht-Builder mit vollständigem Filtermodell,
-   Gruppierung und Drill-down.
+1. Berichtswerkstatt: gespeicherte Vorlagen, Snapshot-Drucklayout und CSV.
 2. P0-Kontoblatt: konfigurierbare Spalten, gespeicherte Ansichten und
    Tastaturworkflow.
 3. Import-/Bankumsatz-Matching mit gestuften Fingerabdrücken.

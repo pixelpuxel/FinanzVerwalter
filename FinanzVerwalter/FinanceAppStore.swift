@@ -105,6 +105,18 @@ final class FinanceAppStore: ObservableObject {
         return result
     }
 
+    func transactionReport(
+        _ query: TransactionReportQuery
+    ) -> TransactionReportSnapshot {
+        TransactionReportEngine.snapshot(
+            query: query,
+            transactions: transactions,
+            accounts: accounts,
+            categories: categories,
+            tags: tags
+        )
+    }
+
     func reload() {
         do {
             try load()

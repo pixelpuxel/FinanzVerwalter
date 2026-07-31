@@ -295,6 +295,28 @@ final class FinanzVerwalterTests: XCTestCase {
             try context.store.accounts().count,
             package.accountsToCreate.count
         )
+        let importedTransactions = try context.store.transactions()
+        let report = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(),
+            transactions: importedTransactions,
+            accounts: try context.store.accounts(),
+            categories: try context.store.categories(),
+            tags: try context.store.tags()
+        )
+        let reportAmountsByTransaction = Dictionary(
+            grouping: report.facts,
+            by: \.transactionID
+        ).mapValues { $0.reduce(Int64.zero) { $0 + $1.amountMinor } }
+        for transaction in importedTransactions
+            where transaction.status != .cancelled && transaction.transferID == nil {
+            XCTAssertEqual(
+                reportAmountsByTransaction[transaction.id],
+                transaction.amountMinor,
+                "Der Bericht muss jede reale QIF-Buchung genau einmal auswerten."
+            )
+        }
+        XCTAssertFalse(report.groups.isEmpty)
+        XCTAssertFalse(report.totals.isEmpty)
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
@@ -1217,6 +1239,205 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(balances[euroFirst.id], 8_500)
         XCTAssertEqual(balances[euroCancelled.id], 8_500)
         XCTAssertEqual(balances[dollarValue.id], 22_500)
+    }
+
+    func testTransactionReportExpandsSplitsWithoutDoubleCountingAndDrillsDown() throws {
+        let account = FinanceAccount(
+            id: UUID(), name: "Haushaltskonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let expense = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Ausgaben",
+            kind: .expense, color: "#AA0000", isActive: true
+        )
+        let groceries = FinanceCategory(
+            id: UUID(), parentID: expense.id, name: "Lebensmittel",
+            kind: .expense, color: "#AA0000", isActive: true
+        )
+        let utilities = FinanceCategory(
+            id: UUID(), parentID: expense.id, name: "Nebenkosten",
+            kind: .expense, color: "#AA0000", isActive: true
+        )
+        let income = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Gehalt",
+            kind: .income, color: "#00AA00", isActive: true
+        )
+        let property = FinanceTag(
+            id: UUID(), parentID: nil, name: "Immobilien",
+            color: "#336699", description: "", isActive: true
+        )
+        let home = FinanceTag(
+            id: UUID(), parentID: property.id, name: "Wohnung A",
+            color: "#336699", description: "", isActive: true
+        )
+        let splitTransaction = FinanceTransaction(
+            id: UUID(), accountID: account.id,
+            bookingDate: Date(timeIntervalSince1970: 1_735_689_600),
+            valueDate: nil, payee: "Supermarkt", purpose: "Einkauf und Strom",
+            categoryID: nil, amountMinor: -1_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: groceries.id, amountMinor: -600,
+                    memo: "Wocheneinkauf", sortOrder: 0, tagIDs: [home.id]
+                ),
+                FinanceSplit(
+                    id: UUID(), categoryID: utilities.id, amountMinor: -400,
+                    memo: "Abschlag", sortOrder: 1
+                )
+            ],
+            tagIDs: [property.id]
+        )
+        let salary = FinanceTransaction(
+            id: UUID(), accountID: account.id,
+            bookingDate: Date(timeIntervalSince1970: 1_735_776_000),
+            valueDate: nil, payee: "Arbeitgeber", purpose: "Gehalt",
+            categoryID: income.id, amountMinor: 2_000, currency: "EUR", status: .cleared,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        let cancelled = FinanceTransaction(
+            id: UUID(), accountID: account.id,
+            bookingDate: Date(timeIntervalSince1970: 1_735_776_000),
+            valueDate: nil, payee: "Storno", purpose: "",
+            categoryID: utilities.id, amountMinor: -300, currency: "EUR",
+            status: .cancelled, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+
+        let snapshot = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(),
+            transactions: [splitTransaction, salary, cancelled],
+            accounts: [account],
+            categories: [expense, groceries, utilities, income],
+            tags: [property, home]
+        )
+
+        XCTAssertEqual(snapshot.facts.count, 3)
+        XCTAssertFalse(snapshot.facts.contains { $0.id == splitTransaction.id.uuidString })
+        XCTAssertEqual(
+            snapshot.facts.filter { $0.transactionID == splitTransaction.id }
+                .reduce(Int64.zero) { $0 + $1.amountMinor },
+            -1_000
+        )
+        let total = try XCTUnwrap(snapshot.totals.first)
+        XCTAssertEqual(total.currency, "EUR")
+        XCTAssertEqual(total.incomeMinor, 2_000)
+        XCTAssertEqual(total.expenseMinor, 1_000)
+        XCTAssertEqual(total.netMinor, 1_000)
+        XCTAssertEqual(snapshot.groups.count, 3)
+        let groceriesGroup = try XCTUnwrap(
+            snapshot.groups.first { $0.label == "Ausgaben › Lebensmittel" }
+        )
+        XCTAssertEqual(groceriesGroup.expenseMinor, 600)
+        let drillDown = snapshot.facts(inGroupID: groceriesGroup.id)
+        XCTAssertEqual(drillDown.count, 1)
+        XCTAssertNotNil(drillDown.first?.splitID)
+        XCTAssertEqual(
+            drillDown.first?.tagPaths,
+            ["Immobilien", "Immobilien › Wohnung A"]
+        )
+    }
+
+    func testTransactionReportCombinesAllCoreFiltersAndExplicitInclusions() throws {
+        let groupID = UUID()
+        let visible = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0, groupID: groupID
+        )
+        let hidden = FinanceAccount(
+            id: UUID(), name: "Archiv", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: true, isClosed: false, sortOrder: 1,
+            groupID: groupID, includeReports: false
+        )
+        let housing = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Immobilie A",
+            kind: .expense, color: "", isActive: true
+        )
+        let tax = FinanceCategory(
+            id: UUID(), parentID: housing.id, name: "Grundsteuer",
+            kind: .expense, color: "", isActive: true
+        )
+        let propertyTag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Objekte",
+            color: "", description: "", isActive: true
+        )
+        let propertyATag = FinanceTag(
+            id: UUID(), parentID: propertyTag.id, name: "Objekt A",
+            color: "", description: "", isActive: true
+        )
+        let payeeID = UUID()
+        let date = Date(timeIntervalSince1970: 1_735_689_600)
+
+        func transaction(
+            accountID: UUID,
+            status: TransactionStatus = .booked,
+            transferID: UUID? = nil
+        ) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: accountID, bookingDate: date, valueDate: nil,
+                payee: "Gemeinde", purpose: "Nebenkosten Grundsteuer",
+                categoryID: tax.id, amountMinor: -600, currency: "EUR", status: status,
+                memo: "Bescheid", reference: "", transferID: transferID,
+                importFingerprint: nil, splits: [], payeeID: payeeID,
+                tagIDs: [propertyATag.id]
+            )
+        }
+        let normal = transaction(accountID: visible.id)
+        let hiddenValue = transaction(accountID: hidden.id)
+        let transfer = transaction(accountID: visible.id, transferID: UUID())
+        let cancelled = transaction(accountID: visible.id, status: .cancelled)
+
+        var query = TransactionReportQuery(
+            dateFrom: date.addingTimeInterval(-10),
+            dateThrough: date.addingTimeInterval(10),
+            accountGroupIDs: [groupID],
+            categoryIDs: [housing.id],
+            tagIDs: [propertyTag.id],
+            payeeIDs: [payeeID],
+            statuses: [.booked],
+            minimumAmountMinor: 500,
+            maximumAmountMinor: 700,
+            text: "Bescheid",
+            currencies: ["EUR"],
+            grouping: .account,
+            sort: .dateAscending
+        )
+        let allTransactions = [normal, hiddenValue, transfer, cancelled]
+        let base = TransactionReportEngine.snapshot(
+            query: query,
+            transactions: allTransactions,
+            accounts: [visible, hidden],
+            categories: [housing, tax],
+            tags: [propertyTag, propertyATag]
+        )
+        XCTAssertEqual(base.facts.map(\.transactionID), [normal.id])
+        XCTAssertEqual(base.groups.map(\.label), ["Giro"])
+
+        query.includeHiddenAccounts = true
+        let stillReportEligibleOnly = TransactionReportEngine.snapshot(
+            query: query,
+            transactions: allTransactions,
+            accounts: [visible, hidden],
+            categories: [housing, tax],
+            tags: [propertyTag, propertyATag]
+        )
+        XCTAssertEqual(stillReportEligibleOnly.facts.count, 1)
+
+        query.includeAccountsExcludedFromReports = true
+        query.includeTransfers = true
+        query.statuses.insert(.cancelled)
+        let explicitlyIncluded = TransactionReportEngine.snapshot(
+            query: query,
+            transactions: allTransactions,
+            accounts: [visible, hidden],
+            categories: [housing, tax],
+            tags: [propertyTag, propertyATag]
+        )
+        XCTAssertEqual(explicitlyIncluded.facts.count, 4)
+        XCTAssertEqual(Set(explicitlyIncluded.groups.map(\.label)), ["Giro", "Archiv"])
     }
 }
 

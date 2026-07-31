@@ -7,6 +7,26 @@ FinanzVerwalter-Berichtswerkstatt. Der gegenwärtige Kategoriebericht ist nur
 ein erster vertikaler Slice und erfüllt diesen Sollzustand ausdrücklich noch
 nicht.
 
+## Implementierter Stand
+
+Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
+
+- `TransactionReportQuery` bildet Zeitraum, Konten/Gruppen, Kategorien mit
+  Unterbäumen, Klassen/Tags, Empfänger, Status, Betragsspanne, Volltext,
+  Währungen sowie versteckte und ausgeschlossene Konten ab.
+- Umbuchungen und Splitauflösung sind explizite Optionen.
+- `TransactionReportEngine` erzeugt unveränderliche Fakten, trennt Währungen
+  und verhindert die Doppelzählung von Haupt- und Splitbuchung.
+- Gruppierung nach Kategorie, Empfänger, Konto oder Klasse/Tag liefert
+  Einnahmen, Ausgaben, Saldo und referenzierte Fakten.
+- Die SwiftUI-Werkstatt zeigt die Gruppen und einen Buchungs-Drill-down.
+- Zwei Engine-Tests und die vollständige reale 2025-QIF-Abnahme prüfen
+  Filterkombinationen und Splitinvarianten.
+
+Noch offen sind gespeicherte Vorlagen, zweite Spaltendimensionen,
+Zwischensummen, Vergleichsspalten, weitere Diagramme sowie die
+druckoptimierten und exportierten Snapshots.
+
 ## Verifizierte Referenzfunktionen
 
 Die Recherche stützt sich auf offizielle Lexware-Quellen:
@@ -109,10 +129,8 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 
 ## Umsetzungsreihenfolge
 
-1. Buchungsbericht-Builder mit vollständigem Filtermodell
-2. Gruppierung nach Konto, Kategorie oder Empfänger
-3. Drill-down und gespeicherte Vorlagen
-4. druckbares Snapshot-Layout und CSV
-5. weitere Standardberichte und Diagrammtypen
-6. PDF/XLSX/HTML sowie Golden-Tests
-
+1. gespeicherte, versionierte Berichtsvorlagen
+2. druckbares Snapshot-Layout und CSV
+3. zweite Dimension, Zwischensummen und Zeitvergleiche
+4. weitere Standardberichte und Diagrammtypen
+5. PDF/XLSX/HTML sowie Golden-Tests
