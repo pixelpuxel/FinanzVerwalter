@@ -1209,3 +1209,8 @@ Rechtsberatung.
   auf `agent/qif-mehrkontenimport` festgeschrieben. Der exakte
   Zielzählerstand vor Dokumentationscommit und Veröffentlichung beträgt
   8.677.004 Tokens.
+- Dokumentationscommit `ab04d25` wurde zusammen mit `c8cf402` auf GitHub
+  gepusht; Draft-PR 1 trägt nun den SEPA-, Saldo-, Schema-22-, Release- und
+  Teststatus. Telegram-Nachricht 952 im Projektthread 894 (`/quicken`)
+  enthält denselben Zwischenstand und den exakten Zielzählerstand von
+  8.690.206 Tokens, wegen des gesperrten Macs weiterhin ohne Screenshot.
