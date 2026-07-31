@@ -1078,3 +1078,10 @@ Rechtsberatung.
 - Die sichtbare VoiceOver-/Tastatur-/Screenshot-Abnahme bleibt wegen des
   nachweislich gesperrten Macs offen. Der neue statische AX-Test ersetzt
   diese Sichtprüfung ausdrücklich nicht.
+- Der vollständige AX-/Tastaturstand wurde als Commit `9f59e9c` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 nennt nun 62 ausgeführte
+  Tests und unterscheidet automatisierte Semantik von sichtbarer Abnahme.
+- Der textliche Zwischenstand wurde im Telegram-Projektthread 894
+  (`/quicken`) veröffentlicht. Er enthält denselben AX-, Tastatur-, Test-,
+  Release-, Datenbank- und GitHub-Status sowie den exakten Zielzählerstand
+  von 7.757.304 Tokens; wegen des gesperrten Macs ohne Screenshot.
