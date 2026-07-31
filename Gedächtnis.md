@@ -1441,3 +1441,63 @@ Rechtsberatung.
   veröffentlicht. Sie enthält denselben verifizierten Release-, Datenbank-,
   GitHub- und Teststand sowie den Zielzählerstand von 9.973.156 Tokens. Wegen
   der gesperrten macOS-Sitzung wurde bewusst kein Screenshot vorgetäuscht.
+
+## 2026-07-31 – Laufender Saldo und sichere pain.002-Statusberichte
+
+- Das Kontenblatt besitzt weiterhin die dynamische Spalte `Saldo`. Sie zeigt
+  pro Buchung den echten laufenden Kontostand aus Eröffnungssaldo und allen
+  chronologisch vorhergehenden, nicht stornierten Buchungen des jeweiligen
+  Kontos. Darstellung und Accessibility verwenden die Kontowährung und
+  monospaced Ziffern; Ein- und Zweizeilenmodus ändern die Berechnung nicht.
+- Die Einstellungenmigration wurde auf
+  `registerVisibleColumnsIncludesBalanceV4` angehoben. Dadurch erhalten auch
+  ältere lokale Spaltenkonfigurationen und gespeicherte Kontenblattansichten
+  die Saldo-Spalte beim nächsten Start genau einmal. Danach bleibt sie über
+  `Sichtbare Spalten` normal ein- und ausblendbar.
+- SQLite-Migration 26 ergänzt unveränderliche
+  `payment_status_reports` und `payment_status_report_items` samt
+  Finanzdateibindung, SHA-256-Fingerabdruck, Originalreferenzen, Bankstatus und
+  -gründen, lokaler Zielzuordnung sowie vorherigem und angewandtem Status.
+- Der neue Parser akzeptiert ausschließlich höchstens 10 MB große
+  `pain.002.001.10`-Dokumente im exakten ISO-Namespace und höchstens 20.000
+  Positionen. DTD/ENTITY, externe Entitäten, falsche Namespaces und
+  unvollständige Pflichtstruktur werden abgewiesen.
+- Die Vorschau ordnet ausschließlich exakte, von den eigenen pain-Exporten
+  erzeugte Nachrichten-, Zahlungsblock- und End-to-End-IDs zu. Nur `ACSC` und
+  `RJCT` dürfen eingereichte oder unklare lokale Aufträge final annehmen oder
+  ablehnen. Zwischenstände bleiben reine Historie und erzeugen keine
+  Geldwirkung. Mitgliedszeilen eines Sammlers werden nicht einzeln angewandt.
+- Direkt vor dem Commit wird die gesamte Zuordnung erneut gegen SQLite
+  berechnet. Bericht, Positionen, Statuswechsel und genau-einmalige Buchungen
+  werden in derselben äußeren Transaktion gespeichert; bestehende
+  Store-Transaktionen verwenden dafür Savepoints. Einzel- und Sammelantworten
+  sind damit atomar, veraltete Vorschauen und doppelte Fingerabdrücke werden
+  abgewiesen.
+- Der Zahlungsverkehr besitzt nun ein fünftes Segment `Statusberichte` mit
+  sicherem XML-Dateiimport, positionsweiser Vorschau, zweiter Bestätigung,
+  persistenter Berichtsliste und vollständiger Positionshistorie.
+- Die vollständige Suite führte 75 Tests aus: 74 bestanden, der private
+  opt-in-Real-QIF-Test wurde ohne Pfad erwartungsgemäß übersprungen, 0 Fehler.
+  Das Ergebnis liegt unter
+  `/tmp/FinanzVerwalter-FullTests-Schema26-Saldo.xcresult`. Saldo-/Ansichten-,
+  Parserhärtungs-, Einzelstatus-, Sammlerstatus-, Migration- und
+  Integritätstests sind enthalten.
+- Der private echte 2025-QIF-Test wurde anschließend separat mit einer
+  SHA-256-identischen temporären Kopie ausgeführt und bestand. Die Kopie wurde
+  danach gelöscht; Quelldatei, privater Pfad und Inhalte bleiben außerhalb
+  des Repositorys.
+- Vor der Produktivmigration wurde
+  `Vor Migration 26 pain.002-Status und Saldo.qbackup` erstellt und geprüft:
+  Schema 25, Integrität `ok`, 97 Konten und 2.170 Buchungen. Der optimierte
+  Release-Build bestand und wurde signaturgeprüft.
+- Die bisherige App liegt reversibel und von Git ignoriert unter
+  `build/FinanzVerwalter-vor-pain002-saldo-20260731-1542.app`. Der neue Release
+  ist unter `~/Applications/FinanzVerwalter.app` installiert und gestartet.
+- Nach kontrolliertem WAL-Checkpoint meldet die Produktivdatei Schema 26,
+  Integrität `ok`, unverändert 97 Konten und 2.170 Buchungen sowie 0
+  Statusberichte und 0 Statuspositionen. Ihr neuer stabiler SHA-256-Wert ist
+  `fd7a49fd63d4cb45fdef487afaf6324de6b85f4a7a93a256d486492a3121441c`.
+- Die Computersteuerung bestätigte erneut, dass die macOS-Sitzung gesperrt ist
+  und nicht automatisch entsperrt werden kann. Eine sichtbare UI-/VoiceOver-
+  Abnahme und ein echter neuer Screenshot bleiben deshalb offen und werden
+  nicht vorgetäuscht.

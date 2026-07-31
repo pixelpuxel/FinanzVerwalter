@@ -388,6 +388,17 @@ schreibt ein gemeinsames `pain.001.001.09` beziehungsweise
 `pain.008.001.08` mit `BtchBookg`, Kontrollsumme und allen Positionen und
 sendet weiterhin keine Daten an eine Bank.
 
+Bankseitige Zahlungsstatusberichte können lokal als streng geprüftes
+`pain.002.001.10` importiert werden. Vor dem Commit zeigt FinanzVerwalter jede
+unveränderliche Originalreferenz, den Bankstatus, Ablehnungsgründe, die exakt
+zugeordnete lokale Zahlung und den möglichen Statuswechsel. Nur `ACSC` und
+`RJCT` dürfen einen eingereichten Einzel- oder Sammelauftrag finalisieren;
+Zwischenstände wie `ACTC`, `ACCP`, `ACSP`, `PDNG` oder `PART` werden nur in der
+Historie gespeichert. Ein angenommenes Sammelpaket wird samt Mitgliedern und
+Buchungen in einer SQLite-Transaktion abgeschlossen. Dateifingerabdrücke
+verhindern Doppelimporte; XML-DTDs, externe Entitäten, falsche Namespaces und
+veraltete Vorschauen werden abgewiesen.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand

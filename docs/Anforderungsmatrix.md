@@ -9,7 +9,7 @@ fertigen Funktionsbereich.
 
 | Priorität | Anforderung | Status | Nachweis / nächste Lücke |
 |---|---|---|---|
-| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–25, Integritätstest, append-only Auditereignisse |
+| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–26, Integritätstest, append-only Auditereignisse |
 | P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; externe und lokale Konten werden beim Simulatorabruf sichtbar eins zu eins zugeordnet |
 | P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo einschließlich Bestands- und Ansichtenmigration, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Klassen-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenorganisation, vollständige Kategorie- und Klassenpfade, elf dynamische Standardspalten, benannte Ansichten, persistente Mehrkonto-Tabs, F3-Auswahlfilter, direkter PDF-/Systemdruck, zehn anpassbare konfliktgeprüfte Shortcuts, währungs-/splitkorrekter Minireport, zweites Kontoblatt sowie semantische Saldo-/Filter-/Tabellen-/Zellbeschriftungen und getrennt bedienbare Tabaktionen vorhanden; vollständige sichtbare Tastatur-/VoiceOver-/UI-Abnahme fehlt |
 | P0 | Kategorien und Unterkategorien | Erfüllt für lokalen Kern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade, Beschreibung, Budgetierbarkeit, Standard-MwSt.-Schlüssel sowie deutsche und optionale US-Steuerzuordnung |
@@ -23,7 +23,7 @@ fertigen Funktionsbereich.
 | P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; das Kontoblatt besitzt direkten Systemdruck, die Berichtswerkstatt noch nicht; zweite Dimension, weitere Standardberichte sowie XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Erfüllt für Simulator-Kern | Getrennter Read-only-Adaptervertrag, deterministischer Simulator für Konten, Salden, gebuchte/vorgemerkte Umsätze, Daueraufträge und Terminüberweisungen, explizite Kontenzuordnung, Regel-/Matching-Vorschau, Abbruchschutz, Rohhash, Diagnose, Abrufhistorie und atomarer Commit; echte FinTS-/PSD2-Verbindungen, SCA-Dialoge, Depots und Kurse fehlen und bleiben sichtbar deaktiviert |
-| P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, unveränderlicher Empfänger-/Bankdaten-Schnappschuss, SEPA-Core-Lastschrift mit Gläubiger-ID, Bankverbindung, Mandat, doppelter Bestätigung und genau-einmaliger Gutschrift, atomare Sammelüberweisungen und Sammellastschriften mit gemeinsamer Vorschau, Gesamtsumme, Mitgliedsschutz, genau-einmaliger Buchung und Mehrpositions-pain-Export, SCA-Simulation, Idempotenz, versionierte pain.001.001.09- und pain.008.001.08-Exporte sowie lokale Daueraufträge mit Pause/Ende, Wochenendregel, genau-einmaliger Entwurfserzeugung und Historie; Feiertagskalender, EPC-QR sowie pain.001-/pain.008-Import und pain.002 fehlen |
+| P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, unveränderlicher Empfänger-/Bankdaten-Schnappschuss, SEPA-Core-Lastschrift mit Gläubiger-ID, Bankverbindung, Mandat, doppelter Bestätigung und genau-einmaliger Gutschrift, atomare Sammelüberweisungen und Sammellastschriften mit gemeinsamer Vorschau, Gesamtsumme, Mitgliedsschutz, genau-einmaliger Buchung und Mehrpositions-pain-Export, SCA-Simulation, Idempotenz, versionierte pain.001.001.09- und pain.008.001.08-Exporte, sicherer idempotenter pain.002.001.10-Statusimport mit exakter Referenzzuordnung, Vorschau, finaler ACSC-/RJCT-Semantik, Zwischenstandshistorie und atomarer Einzel-/Sammlerverarbeitung sowie lokale Daueraufträge mit Pause/Ende, Wochenendregel, genau-einmaliger Entwurfserzeugung und Historie; Feiertagskalender, EPC-QR und pain.001-/pain.008-Import fehlen |
 | P1 | Kalender und Prognose | Teilweise | Regelmäßige Vorgänge, Monatsende und 30/90/180/365-Tage-Prognose; Wochenansicht, Ausnahmen, Feiertage, Drag-and-drop und Szenarien fehlen |
 | P1 | Budgets | Teilweise | Mehrere Budgets, Geschäftsjahr, Monatsplan, Ist/Abweichung, Roll-over-Schalter; Jahreswerte, Reserve, Kopie und Berichte fehlen |
 | P1 | Wertpapiere und Depots | Teilweise | Stammdaten, Mikroeinheiten, FIFO-Lots, Allokation und Kurse; weitere Transaktionen, Lotmethoden, Performance und Import fehlen |
@@ -44,7 +44,7 @@ fertigen Funktionsbereich.
 
 1. Vollständige Kontoblatt-Tastatur-/Accessibility-/UI-Abnahme nach dem
    manuellen Entsperren des Macs.
-2. pain.001-/pain.008-Import und pain.002-Statusrückmeldungen mit sicherer
-   Vorschau, Zuordnung und Idempotenz ergänzen.
+2. pain.001-/pain.008-Import mit sicherer Vorschau, Zuordnung und Idempotenz
+   ergänzen; den vorhandenen pain.002-Kern mit weiteren Bankvarianten härten.
 3. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,
    SCA-, Datenschutz- und Sicherheitsarchitektur.

@@ -121,9 +121,9 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 25 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 26 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 71 ausgeführte XCTest-Fälle: 70
+implementiert. Die Suite umfasst aktuell 75 ausgeführte XCTest-Fälle: 74
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -404,7 +404,44 @@ Für Sammelüberweisungen und Sammellastschriften gilt reproduzierbar:
 - Prüfe beide Sammlerarten als Datenbank-Rundlauf einschließlich
   Deduplizierung, Schutz individueller Mitglieder, aller Zustandsübergänge,
   genau-einmaliger Buchung, deterministischem Mehrpositions-XML,
-  Migration 14→25 und Migration 22→25.
+  Migration 14→26 und Migration 22→26.
+
+Für eingehende Zahlungsstatusberichte gilt reproduzierbar:
+
+- Migration 26 erzeugt `payment_status_reports` und
+  `payment_status_report_items`. Der Bericht speichert SHA-256-Fingerabdruck,
+  Finanzdatei, Banknachrichtenkennung, Quell-/Importzeit, Positions-,
+  Anwendungs- und Warnungszahl. Jede Position bewahrt Originalreferenzen,
+  Zielart/-UUID/-titel, Bankstatus und -grund sowie vorherigen und tatsächlich
+  angewandten lokalen Status unveränderlich auf.
+- Akzeptiere ausschließlich höchstens 10 MB große `pain.002.001.10`-Dokumente
+  im exakten ISO-Namespace und höchstens 20.000 Positionen. Verwirf DTD,
+  ENTITY, externe Entitäten, falsche Namespaces und strukturell unvollständige
+  Dokumente. Ein SHA-256-Fingerabdruck macht den Import dateiweit idempotent.
+- Ordne ausschließlich über die vom eigenen Export erzeugten exakten
+  Nachrichten-/Zahlungsblockkennungen und End-to-End-IDs zu. Eine
+  Transaktionsreferenz darf nur ein einzelnes Mitglied treffen, niemals den
+  Sammler selbst. Enthaltene Mitglieder sind nur informativ; der Sammler wird
+  ausschließlich auf Gruppen- oder Zahlungsblockebene atomar bestätigt.
+- Behandle `ACSC` als finale Annahme und `RJCT` als finale Ablehnung. Nur diese
+  beiden Codes können einen lokalen Status ändern. `ACTC`, `ACCP`, `ACSP`,
+  `PDNG`, `PART` und unbekannte Codes bleiben reine Historie und erzeugen
+  keine Geldwirkung. Ein zuvor unklarer lokaler Status darf durch einen echten
+  Bericht final aufgelöst werden, aber niemals automatisch erneut gesendet
+  werden.
+- Zeige vor dem Commit jede Position mit Originalreferenz, Bankstatus,
+  Gründen, lokalem Ziel und Statuswechsel; nur anwendbare finale Positionen
+  sind auswählbar. Verlange eine zweite Bestätigung. Berechne die Zuordnung im
+  Commit erneut und lehne veraltete Vorschauen ab.
+- Speichere Berichtshistorie, Statuswechsel und genau-einmalige Buchungen in
+  derselben äußeren SQLite-Transaktion. Verschachtelte Store-Aktionen verwenden
+  Savepoints. Bei einem Fehler werden Bericht, Status und Geldwirkung
+  vollständig zurückgerollt. Eine `ACSC`-Bestätigung erzeugt höchstens die
+  bereits domänenseitig definierte Buchung; `RJCT` erzeugt keine.
+- Zeige im fünften Zahlungsverkehrssegment eine persistente Berichtsliste,
+  vollständige Positionshistorie und einen sicheren XML-Dateiimport. Prüfe
+  Parserhärtung, exakte Finalsemantik, atomare Einzel- und Sammlerverarbeitung,
+  Deduplizierung, Migrationen und Datenbankintegrität automatisiert.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 
