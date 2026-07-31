@@ -564,9 +564,10 @@ Migration 17 erzeugt `transaction_templates` mit Finanzdatei-ID, eindeutigem
 Namen, deterministisch codiertem JSON-Payload, Zeitstempeln und Version.
 Der Payload enthält Konto, Empfänger, Zweck, Kategorie, Betrag, Währung,
 normalisierten Status, Memo, Empfängerakte, Tags und sämtliche Splits samt
-Split-Tags. Eine abgeglichene Quellbuchung wird als gebuchte Vorlage
-gespeichert. Beim Anwenden entstehen neue Buchungs- und Split-IDs sowie das
-heutige Datum; Referenz, Transfer-ID und Importfingerprint bleiben leer.
+Split-Tags. Eine abgeglichene oder stornierte Quellbuchung wird als gebuchte
+Vorlage gespeichert; eine einzelne Umbuchungsseite wird abgelehnt. Beim
+Anwenden entstehen neue Buchungs- und Split-IDs sowie das heutige Datum;
+Referenz, Transfer-ID und Importfingerprint bleiben leer.
 
 Vor dem Mehrfachlöschen müssen alle ausgewählten IDs existieren und alle
 ausgewählten Buchungen sowie beide Seiten betroffener Umbuchungen

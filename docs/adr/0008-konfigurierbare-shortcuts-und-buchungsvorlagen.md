@@ -29,8 +29,9 @@ Finanzdatei gebundene Persistenz.
   der SQLite-Finanzdatei gespeichert. Konto, Betrag, Empfänger, Kategorie,
   Status, Memo, Tags und Splits werden übernommen; Datum, Belegnummer,
   Transfer- und Importidentität nie.
-- Eine abgeglichene Quellbuchung wird in der Vorlage wieder zu `Gebucht`.
-  Jede Verwendung erzeugt neue Buchungs- und Split-IDs.
+- Eine abgeglichene oder stornierte Quellbuchung wird in der Vorlage wieder
+  zu `Gebucht`. Umbuchungsseiten werden nicht als irreführende Einzelvorlage
+  zugelassen. Jede Verwendung erzeugt neue Buchungs- und Split-IDs.
 - Mehrfachlöschen prüft die vollständige Auswahl sowie beide Seiten einer
   Umbuchung vor der ersten Änderung. Abgeglichene Buchungen sperren den
   gesamten Vorgang; erst nach ausdrücklicher Bestätigung wird atomar

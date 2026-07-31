@@ -66,7 +66,7 @@ Eine im Kontoblatt markierte Buchung kann mit dem zugeordneten Befehl als
 Vorlage gespeichert und aus dem Menü `Vorlagen` als neuer Entwurf geöffnet
 werden. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen auch
 Splits und Tags, aber niemals altes Datum, Belegnummer, Transfer- oder
-Importidentität.
+Importidentität. Eine einzelne Umbuchungsseite ist keine zulässige Vorlage.
 
 Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
 QIF-, OFX- und QFX-Dateien ausdrücklich aus.

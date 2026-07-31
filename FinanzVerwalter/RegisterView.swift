@@ -428,6 +428,10 @@ struct RegisterView: View {
             store.statusText = "Für eine Vorlage bitte genau eine Buchung markieren"
             return
         }
+        guard value.transferID == nil else {
+            store.errorMessage = "Eine Umbuchung kann nicht als einzelne Buchungsvorlage gespeichert werden."
+            return
+        }
         templateSource = value
         let suggested = value.payee.isEmpty ? value.purpose : value.payee
         templateName = suggested.isEmpty ? "Neue Buchungsvorlage" : suggested

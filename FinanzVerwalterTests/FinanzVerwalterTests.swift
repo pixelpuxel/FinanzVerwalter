@@ -2438,6 +2438,15 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(restored.name, "Monatsmiete")
         XCTAssertEqual(restored.status, .booked)
         XCTAssertEqual(restored.splits.map(\.amountMinor), [-80_000, -20_000])
+        var cancelledSource = source
+        cancelledSource.status = .cancelled
+        XCTAssertEqual(
+            TransactionTemplate(
+                name: "Stornierte Quelle",
+                transaction: cancelledSource
+            ).status,
+            .booked
+        )
 
         let date = Date(timeIntervalSince1970: 500)
         let draft = restored.transaction(on: date)
@@ -2452,6 +2461,38 @@ final class FinanzVerwalterTests: XCTestCase {
         try context.store.deleteTransactionTemplate(id: restored.id)
         XCTAssertTrue(try context.store.transactionTemplates().isEmpty)
         XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    @MainActor
+    func testTransactionTemplateRejectsSingleTransferSide() throws {
+        let context = try TestDatabase()
+        let source = FinanceAccount(
+            id: UUID(), name: "Quelle", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let target = FinanceAccount(
+            id: UUID(), name: "Ziel", institution: "", type: .savings,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(source)
+        try context.store.saveAccount(target)
+        try context.store.createTransfer(
+            from: source,
+            to: target,
+            amountMinor: 1_000,
+            date: .now,
+            purpose: "Rücklage"
+        )
+        let side = try XCTUnwrap(context.store.transactions().first)
+        let appStore = FinanceAppStore(repository: context.store)
+        XCTAssertFalse(
+            appStore.saveTransactionTemplate(name: "Falsche Einzelvorlage", from: side)
+        )
+        XCTAssertTrue(appStore.transactionTemplates.isEmpty)
+        XCTAssertNotNil(appStore.errorMessage)
+        XCTAssertTrue(try context.store.transactionTemplates().isEmpty)
     }
 
     func testConfirmedBulkDeleteIsAtomicAndProtectsReconciledTransactions() throws {

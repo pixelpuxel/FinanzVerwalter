@@ -236,7 +236,12 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
         categoryID = transaction.categoryID
         amountMinor = transaction.amountMinor
         currency = transaction.currency
-        status = transaction.status == .reconciled ? .booked : transaction.status
+        switch transaction.status {
+        case .reconciled, .cancelled:
+            status = .booked
+        default:
+            status = transaction.status
+        }
         memo = transaction.memo
         payeeID = transaction.payeeID
         tagIDs = transaction.tagIDs

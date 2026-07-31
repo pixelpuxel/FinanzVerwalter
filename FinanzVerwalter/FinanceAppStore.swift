@@ -154,6 +154,10 @@ final class FinanceAppStore: ObservableObject {
 
     func saveTransactionTemplate(name: String, from transaction: FinanceTransaction) -> Bool {
         guard let repository else { return false }
+        guard transaction.transferID == nil else {
+            errorMessage = "Umbuchungen können nur als zusammengehöriges Buchungspaar wiederverwendet werden und sind deshalb keine Einzelvorlage."
+            return false
+        }
         do {
             let template = TransactionTemplate(
                 name: name.trimmingCharacters(in: .whitespacesAndNewlines),

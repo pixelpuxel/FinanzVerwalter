@@ -624,12 +624,13 @@ Rechtsberatung.
 - Migration 17 ergänzt dateigebundene Buchungsvorlagen. `Als Vorlage
   merken` übernimmt Betrag, Konto, Empfänger, Kategorie, Status, Memo,
   Tags und Splits, normalisiert `Abgeglichen` zu `Gebucht` und entfernt
-  Datum, Beleg-, Transfer- und Importidentität. Jede Anwendung erzeugt neue
-  IDs und einen neuen Entwurf.
+  Datum, Beleg- und Importidentität. Einzelne Umbuchungsseiten werden als
+  irreführende Vorlage abgelehnt. Jede Anwendung erzeugt neue IDs und einen
+  neuen Entwurf.
 - Drei neue Tests prüfen Shortcut-Roundtrip, Konflikte und sichere
   Tastenbelegungen, den vollständigen Buchungsvorlagen-Roundtrip samt
   Splits sowie den atomaren Löschschutz. Die vollständige Suite besteht
-  damit aus 41 regulären Tests und einem erwartungsgemäß übersprungenen
+  damit aus 42 regulären Tests und einem erwartungsgemäß übersprungenen
   opt-in-Real-QIF-Test.
 - Vor der produktiven Migration wurde ausschließlich lokal die validierte
   Datei `Vor Migration 17 Shortcuts und Buchungsvorlagen.qbackup`
