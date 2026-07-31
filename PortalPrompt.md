@@ -384,6 +384,31 @@ Für die Berichtswerkstatt gilt zusätzlich:
   Erzeuge Bildschirmtabelle, deterministisches Semikolon-CSV, mehrseitiges
   A4-PDF in beiden Ausrichtungen und direkten Systemdruck aus genau demselben
   unveränderlichen Snapshot.
+- Implementiere einen eigenständigen `PeriodComparisonEngine`. Berechne für
+  zwei inklusive Datumsintervalle Einnahmen, Ausgaben oder Saldo mit der
+  vorhandenen splitkorrekten Buchungsfakten-Pipeline. Erlaube Gruppierung nach
+  Kategorie, Empfänger, Konto, Klasse/Tag oder keine Gruppierung. Richte
+  Gruppen stabil nach Bezeichnung und Währung aus, auch wenn sie nur in einem
+  Zeitraum vorkommen. Der Referenzwert ist wahlweise die Gesamtsumme oder der
+  durch die Anzahl berührter Kalendermonate geteilte Monatsdurchschnitt.
+  Zeige aktuellen Wert, Referenz, Differenz und auf Basispunkte gerundete
+  prozentuale Änderung; bei Referenz null bleibt der Prozentsatz leer. Halte
+  getrennte Fakten-IDs für den Drill-down beider Zeiträume und bilde
+  Gesamtsummen ausschließlich je Währung.
+- Implementiere einen eigenständigen `BudgetReportEngine`. Ein Bericht umfasst
+  wahlweise alle zwölf Monate des frei beginnenden Geschäftsjahres oder einen
+  ausgewählten Monat. Werte nur offene Konten in der Budgetwährung mit
+  `includeBudget = true` aus, ignoriere Stornos und Umbuchungen und expandiere
+  Splits ohne Doppelzählung. Verwende nur direkte Kategorieanteile, damit
+  Elternkategorien nicht zusätzlich summiert werden. Zeige den vollständigen
+  Kategoriepfad, Einnahme/Ausgabe, Plan, Ist, Abweichung und Zielerreichung;
+  Plan und Ist sind fachlich positive Beträge, die Abweichung ist `Ist - Plan`.
+  Optional bleiben leere Plan-/Ist-Zeilen sichtbar. Drill-down-IDs dürfen nur
+  die jeweilige Kategoriezeile enthalten.
+- Zeit- und Budgetvergleich erzeugen deterministisches Semikolon-CSV,
+  mehrseitiges A4-PDF in beiden Ausrichtungen und direkten Systemdruck aus
+  demselben Snapshot. CSV und PDF enthalten währungsgetrennte Gesamtsummen;
+  die Oberfläche darf keine neue Berechnung für den Export durchführen.
 - Erlaube neben der Primärgruppierung optional eine davon abweichende zweite
   Dimension aus Kategorie, Empfänger, Konto und Klasse/Tag. `Keine
   Gruppierung` bleibt nur als ausgeschaltete Sekundärdimension beziehungsweise

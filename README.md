@@ -379,6 +379,20 @@ und Saldo stehen nebeneinander; Aktiva, Passiva und Nettovermögen werden je
 Währung getrennt summiert. Die gleiche Momentaufnahme speist Bildschirm,
 deterministisches CSV, mehrseitiges A4-PDF und direkten Systemdruck.
 
+`Zeitvergleich` stellt zwei frei wählbare Zeiträume gegenüber. Als Kennzahl
+stehen Einnahmen, Ausgaben oder Saldo bereit; gruppiert wird nach Kategorie,
+Empfänger, Konto, Klasse/Tag oder gar nicht. Der Vergleich kann als Summe oder
+als Monatsdurchschnitt berechnet werden. Betrag, Abweichung und prozentuale
+Änderung werden einschließlich währungsgetrennter Gesamtsummen angezeigt,
+und beide Zeiträume besitzen einen eigenen Buchungs-Drill-down.
+
+`Budget Plan/Ist/Abweichung` wertet ein vorhandenes Budget über dessen
+zwölfmonatiges Geschäftsjahr oder einen einzelnen Monat aus. Es berücksichtigt
+nur offene, budgetfähige Konten in der Budgetwährung und löst Splitbuchungen
+ohne Doppelzählung auf. Vollständige Kategoriepfade, Einnahmen-/Ausgabenart,
+Plan, Ist, Abweichung und Zielerreichung bleiben in Bildschirm, CSV,
+mehrseitigem PDF und direktem Druck identisch.
+
 ## Zahlungsverkehr
 
 Der Zahlungsverkehr ist ausdrücklich ein lokaler Simulator ohne echte

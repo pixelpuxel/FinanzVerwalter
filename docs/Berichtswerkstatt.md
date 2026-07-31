@@ -49,9 +49,21 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   und ausgeschlossene Konten sind filterbar. Aktiva, Passiva und Netto werden
   strikt je Währung ausgewiesen; Tabelle, CSV, mehrseitiges PDF und direkter
   Druck verwenden denselben Stichtagssnapshot.
+- `Zeitvergleich` stellt zwei frei wählbare Intervalle als Gesamtsumme oder
+  Monatsdurchschnitt gegenüber. Einnahmen, Ausgaben und Saldo können nach
+  Kategorie, Empfänger, Konto, Klasse/Tag oder ungruppiert ausgewertet werden.
+  Fehlende Vergleichsgruppen, Differenz, Prozentwert, getrennte Drill-downs
+  und währungsgetrennte Gesamtsummen werden aus einem Snapshot erzeugt.
+- `Budget Plan/Ist/Abweichung` wertet alle zwölf Monate eines frei beginnenden
+  Geschäftsjahres oder einen Einzelmonat aus. Budgetfähige offene Konten,
+  Splitanteile, vollständige Kategoriepfade, Plan, Ist, Abweichung,
+  Zielerreichung und Drill-down werden fachlich konsistent behandelt.
+- Beide Vergleichsberichte besitzen deterministisches Semikolon-CSV,
+  mehrseitiges A4-PDF in Hoch-/Querformat und direkten Systemdruck aus
+  derselben Momentaufnahme.
 
-Noch offen sind Zwischensummen, Zeit- und Budgetvergleiche, weitere Diagramme
-sowie XLSX, HTML und Zwischenablage.
+Noch offen sind frei konfigurierbare Zwischensummen, weitere Diagramme sowie
+XLSX, HTML und Zwischenablage.
 
 ## Verifizierte Referenzfunktionen
 
@@ -123,7 +135,8 @@ P0:
 - Cashflow *(Konto/Kategorie-Preset umgesetzt)*
 - Kontosalden und Nettovermögen *(Stichtagslogik, CSV, PDF und Druck umgesetzt)*
 - Kategorie-, Klassen- und Tagbericht *(Kategorie/Klasse-Preset umgesetzt)*
-- Zeitvergleich und Budgetabweichung
+- Zeitvergleich *(Summe/Monatsdurchschnitt, Drill-down, CSV, PDF und Druck umgesetzt)*
+- Budgetabweichung *(Geschäftsjahr/Monat, Drill-down, CSV, PDF und Druck umgesetzt)*
 
 P1:
 
@@ -155,7 +168,7 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 
 ## Umsetzungsreihenfolge
 
-1. zweite Dimension, Zwischensummen und Zeitvergleiche
+1. frei konfigurierbare Zwischensummen
 2. weitere Standardberichte und Diagrammtypen
-3. direkter Systemdruckdialog und Zwischenablage
+3. Zwischenablage
 4. XLSX/HTML sowie Golden-Tests

@@ -1874,3 +1874,56 @@ Rechtsberatung.
   Funktions-, Test-, Release-, Datenbank- und GitHub-Stand sowie dem exakten
   Zielzählerstand von 11.954.069 Tokens veröffentlicht. Wegen der
   Bildschirmsperre enthält sie ausdrücklich keinen vorgetäuschten Screenshot.
+
+## 2026-07-31 – Zeitvergleich und Budget-Plan/Ist-Bericht
+
+- `PeriodComparisonEngine` berechnet zwei frei gewählte inklusive Zeiträume
+  über dieselbe unveränderliche, splitkorrekte Faktenpipeline wie die freie
+  Berichtswerkstatt. Einnahmen, Ausgaben oder Saldo können nach Kategorie,
+  Empfänger, Konto, Klasse/Tag oder ungruppiert gegenübergestellt werden.
+  Gruppen, die nur auf einer Seite vorkommen, bleiben sichtbar; die
+  Referenz ist wahlweise Summe oder Monatsdurchschnitt.
+- Jede Zeile zeigt aktuellen Wert, Referenz, Differenz und auf Basispunkte
+  gerundete prozentuale Änderung. Beide Zeiträume behalten getrennte
+  Fakten-IDs für den Drill-down. Gesamtsummen bleiben streng nach Währung
+  getrennt.
+- `BudgetReportEngine` wertet wahlweise die zwölf Monate eines frei
+  beginnenden Geschäftsjahres oder einen Einzelmonat aus. Berücksichtigt
+  werden nur offene, budgetfähige Konten in Budgetwährung; Stornos und
+  Umbuchungen werden ausgeschlossen, Splits ohne Doppelzählung expandiert.
+  Direkte Kategorieanteile verhindern Elternsummen-Doppelzählung.
+- Die Budgettabelle zeigt vollständige Kategoriepfade, Art, Plan, Ist,
+  Abweichung und Zielerreichung. Zeilen können bei Plan und Ist null optional
+  eingeblendet werden; ein Klick öffnet den Buchungs-Drill-down.
+- Beide Berichte stehen im Menü `Standardberichte` bereit. Bildschirm,
+  deterministisches Semikolon-CSV, mehrseitiges A4-PDF in Hoch-/Querformat
+  und direkter macOS-Systemdruck verwenden denselben Snapshot einschließlich
+  Summenzeilen.
+- Drei neue Tests prüfen Zeitraumausrichtung, fehlende Gruppen,
+  Monatsdurchschnitt, Prozentrechnung, vollständige Kategoriepfade,
+  Geschäftsjahr ab Juli, Monatsauswahl, Kontenausschluss, Split-Ist,
+  Drill-down, Summen sowie deterministisches CSV und ein lesbares
+  mehrseitiges PDF. Die vollständige Suite unter
+  `/tmp/FinanzVerwalter-FullTests-ComparisonReports-20260731-1801.xcresult`
+  führte 90 Tests aus: 89 bestanden, der private opt-in-QIF-Test wurde ohne
+  Pfad planmäßig übersprungen, 0 Fehler.
+- Der separate Echtdatenlauf wurde anschließend ausschließlich über den
+  temporären Pfad `/tmp/finanzverwalter-real-qif-acceptance.qif` gestartet.
+  Das externe Volume blockierte diesmal bereits beim Systemaufruf zum Öffnen
+  der Quelldatei; ein Prozess-Sample bestätigte den wartenden `open`-Aufruf.
+  Der Lauf wurde beendet und der temporäre Verweis mit `unlink` entfernt.
+  Es fand kein Import und keine Änderung an der Produktivdatei statt.
+- Der optimierte arm64-Release unter `build/DerivedData-ComparisonReports`
+  bestand und wurde streng signaturgeprüft. Das vorherige Bundle liegt
+  reversibel unter
+  `build/FinanzVerwalter-vor-vergleichsberichten-20260731-1808.app`. Der neue
+  ausführbare Code hat SHA-256
+  `856af6e2209f1d2ad9612b8af2765ff8ea393be92527e0a037f8c0a21d6ddbd6`.
+  Die installierte App läuft als Prozess 67261.
+- Die Produktivdatei blieb bytegleich bei SHA-256
+  `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
+  und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.
+- Implementierung und Tests sind in Commit `592ac3b` festgeschrieben. Die
+  Systemzustandsprüfung meldet weiterhin ausdrücklich
+  `CGSSessionScreenIsLocked = Yes`; deshalb sind eine sichtbare UI-Abnahme und
+  ein neuer ehrlicher Screenshot in diesem Lauf nicht möglich.
