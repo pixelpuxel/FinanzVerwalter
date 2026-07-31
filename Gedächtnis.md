@@ -788,3 +788,9 @@ Rechtsberatung.
 - Computer Use meldet auch für die installierte Regeloberfläche den
   gesperrten Mac. Die sichtbare Abnahme und ein echter Screenshot bleiben
   bis zum manuellen Entsperren offen.
+- Der Regel-/Undo-Stand ist als Commit `e13058a` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 zeigt auf genau diesen
+  Commit und dokumentiert Schema 20 sowie 48 ausgeführte Tests.
+- Telegram-Nachricht 942 wurde im Projektthread 894 veröffentlicht. Sie
+  enthält den geprüften Regel-, Undo-, Release- und Teststatus und weist
+  ausdrücklich auf den fehlenden Screenshot wegen der macOS-Sperre hin.
