@@ -375,3 +375,24 @@ Rechtsberatung.
   `build/berichtswerkstatt-drilldown.png`.
 - Dieser Berichtswerkstatt-Stand wurde mit dem Screenshot im
   Telegram-Projektthread 894 als Nachricht 932 veröffentlicht.
+- Migration 13 speichert versionierte Berichtsvorlagen als Query-JSON mit
+  eindeutigem Namen. Persistenz, Aktualisierung und Löschung sind getestet
+  und auditiert.
+- Der CSV-Exporter schreibt denselben Snapshot mit Metadatenblock, wählbarem
+  Semikolon/Komma/Tabulator, UTF-8 oder ISO-8859-1, deutschem Minor-Units-
+  Zahlenformat und korrektem Quote-/Zeilenumbruch-Escaping. Ein bytegenauer
+  Golden-Test schützt das Format.
+- 30 XCTest-Fälle einschließlich Vorlagen-Roundtrip und CSV-Golden-Test
+  bestehen zusammen mit der vollständigen realen 2025-QIF-Abnahme.
+- Vor der lokalen Schema-13-Migration wurde
+  `Vor Migration 13 Berichtsvorlagen.qbackup` erstellt und mit Schema 12,
+  97 Konten, 2.170 Buchungen und Integrität `ok` geprüft. Die migrierte
+  Finanzdatei meldet Schema 13 und Integrität `ok`.
+- In der installierten Release-App wurde die Vorlage
+  `Gesamt nach Kategorie` gespeichert. Nach einem abweichenden
+  `Grundsteuer`-Volltextfilter stellte `Vorlage laden` den gespeicherten
+  Gesamtbericht mit 2.313 Positionen wieder her. Der CSV-Exportdialog öffnete
+  mit `Gesamt-nach-Kategorie.csv` und wurde ohne Testdatei im Benutzerordner
+  geschlossen.
+- Der Vorlagen-/CSV-Stand wurde mit `build/berichtsvorlage-csv.png` im
+  Telegram-Projektthread 894 als Nachricht 933 veröffentlicht.

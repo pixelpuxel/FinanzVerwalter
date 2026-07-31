@@ -830,6 +830,29 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 12")
             }
         }
+        if version < 13 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE report_templates (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id) ON DELETE CASCADE,
+                        name TEXT NOT NULL COLLATE NOCASE,
+                        definition_version INTEGER NOT NULL,
+                        query_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX report_templates_name ON report_templates(finance_file_id,name)"
+                )
+                try execute("PRAGMA user_version = 13")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2739,6 +2762,97 @@ final class SQLiteFinanceStore {
             )
         }
         return rows
+    }
+
+    func reportTemplates() throws -> [SavedReportTemplate] {
+        var templates: [SavedReportTemplate] = []
+        let decoder = JSONDecoder()
+        try query(
+            """
+            SELECT id,name,definition_version,query_json
+            FROM report_templates
+            ORDER BY name COLLATE NOCASE
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let data = Self.text(statement, 3).data(using: .utf8)
+            else {
+                throw FinanceError.database("Eine Berichtsvorlage ist beschädigt.")
+            }
+            do {
+                templates.append(
+                    SavedReportTemplate(
+                        id: id,
+                        name: Self.text(statement, 1),
+                        definitionVersion: Int(sqlite3_column_int64(statement, 2)),
+                        query: try decoder.decode(TransactionReportQuery.self, from: data)
+                    )
+                )
+            } catch {
+                throw FinanceError.database(
+                    "Die Berichtsvorlage „\(Self.text(statement, 1))“ kann nicht gelesen werden."
+                )
+            }
+        }
+        return templates
+    }
+
+    func saveReportTemplate(_ template: SavedReportTemplate) throws {
+        let name = template.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Die Berichtsvorlage benötigt einen Namen.")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let json = String(data: try encoder.encode(template.query), encoding: .utf8) else {
+            throw FinanceError.database("Die Berichtsvorlage konnte nicht codiert werden.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO report_templates(
+                    id,finance_file_id,name,definition_version,query_json,
+                    created_at,updated_at
+                )
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    definition_version=excluded.definition_version,
+                    query_json=excluded.query_json,
+                    updated_at=excluded.updated_at,
+                    version=report_templates.version+1
+                """,
+                [
+                    .text(template.id.uuidString),
+                    .text(info.id.uuidString),
+                    .text(name),
+                    .integer(Int64(template.definitionVersion)),
+                    .text(json),
+                    .text(now),
+                    .text(now)
+                ]
+            )
+            try audit(
+                entity: "report-template",
+                id: template.id,
+                action: "save",
+                details: name
+            )
+        }
+    }
+
+    func deleteReportTemplate(id: UUID) throws {
+        try transaction {
+            try run("DELETE FROM report_templates WHERE id=?", [.text(id.uuidString)])
+            try audit(
+                entity: "report-template",
+                id: id,
+                action: "delete",
+                details: ""
+            )
+        }
     }
 
     func reconcile(account: FinanceAccount, endingBalanceMinor: Int64, date: Date) throws {

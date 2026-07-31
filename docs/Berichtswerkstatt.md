@@ -22,10 +22,14 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Die SwiftUI-Werkstatt zeigt die Gruppen und einen Buchungs-Drill-down.
 - Zwei Engine-Tests und die vollständige reale 2025-QIF-Abnahme prüfen
   Filterkombinationen und Splitinvarianten.
+- Migration 13 speichert versionierte Query-Vorlagen mit eindeutigem Namen;
+  Anlegen, Aktualisieren, Laden und Löschen sind in der Werkstatt verfügbar.
+- CSV entsteht direkt aus dem Snapshot mit Metadatenblock, Semikolon, Komma
+  oder Tabulator, UTF-8 oder ISO-8859-1 und deutschem Zahlenformat. Der
+  Exporter besitzt einen bytegenauen Golden-Test.
 
-Noch offen sind gespeicherte Vorlagen, zweite Spaltendimensionen,
-Zwischensummen, Vergleichsspalten, weitere Diagramme sowie die
-druckoptimierten und exportierten Snapshots.
+Noch offen sind zweite Spaltendimensionen, Zwischensummen, Vergleichsspalten,
+weitere Diagramme sowie Druck, PDF, XLSX und HTML.
 
 ## Verifizierte Referenzfunktionen
 
@@ -129,8 +133,7 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 
 ## Umsetzungsreihenfolge
 
-1. gespeicherte, versionierte Berichtsvorlagen
-2. druckbares Snapshot-Layout und CSV
-3. zweite Dimension, Zwischensummen und Zeitvergleiche
-4. weitere Standardberichte und Diagrammtypen
-5. PDF/XLSX/HTML sowie Golden-Tests
+1. druckbares Snapshot-Layout und PDF
+2. zweite Dimension, Zwischensummen und Zeitvergleiche
+3. weitere Standardberichte und Diagrammtypen
+4. XLSX/HTML sowie Golden-Tests

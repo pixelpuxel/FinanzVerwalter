@@ -713,6 +713,13 @@ struct ReportsView: View {
     @State private var grouping: ReportGrouping = .category
     @State private var sort: ReportSort = .amountDescending
     @State private var selectedReportGroupID: String?
+    @State private var selectedTemplateID: UUID?
+    @State private var showTemplateSave = false
+    @State private var templateName = ""
+    @State private var csvSeparator: ReportCSVSeparator = .semicolon
+    @State private var csvEncoding: ReportCSVEncoding = .utf8
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var showCSVExporter = false
 
     private var query: TransactionReportQuery {
         let range = period.range(customStart: customStart, customEnd: customEnd)
@@ -766,6 +773,46 @@ struct ReportsView: View {
             Divider()
 
             VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    Picker("Vorlage", selection: $selectedTemplateID) {
+                        Text("Keine Vorlage").tag(UUID?.none)
+                        ForEach(store.reportTemplates) { template in
+                            Text(template.name).tag(UUID?.some(template.id))
+                        }
+                    }
+                    .frame(width: 270)
+                    Button("Vorlage laden", systemImage: "doc.text.magnifyingglass") {
+                        loadSelectedTemplate()
+                    }
+                    .disabled(selectedTemplateID == nil)
+                    Button("Vorlage speichern …", systemImage: "square.and.arrow.down") {
+                        templateName = selectedTemplateID.flatMap { id in
+                            store.reportTemplates.first { $0.id == id }?.name
+                        } ?? ""
+                        showTemplateSave = true
+                    }
+                    Button("Vorlage löschen", systemImage: "trash", role: .destructive) {
+                        deleteSelectedTemplate()
+                    }
+                    .disabled(selectedTemplateID == nil)
+                    Spacer()
+                    Picker("Trennzeichen", selection: $csvSeparator) {
+                        ForEach(ReportCSVSeparator.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 145)
+                    Picker("Encoding", selection: $csvEncoding) {
+                        ForEach(ReportCSVEncoding.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 130)
+                    Button("CSV exportieren …", systemImage: "tablecells") {
+                        prepareCSVExport(snapshot)
+                    }
+                }
+
                 HStack(spacing: 10) {
                     Picker("Zeitraum", selection: $period) {
                         ForEach(ReportPeriodPreset.allCases) {
@@ -883,6 +930,44 @@ struct ReportsView: View {
             if let selectedReportGroupID,
                !snapshot.groups.contains(where: { $0.id == selectedReportGroupID }) {
                 self.selectedReportGroupID = nil
+            }
+        }
+        .sheet(isPresented: $showTemplateSave) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Berichtsvorlage speichern")
+                    .font(.title2.bold())
+                Text(
+                    "Gespeichert werden alle aktuellen Filter, die Splitbehandlung, "
+                        + "Gruppierung und Sortierung."
+                )
+                .foregroundStyle(.secondary)
+                TextField("Name der Vorlage", text: $templateName)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Abbrechen", role: .cancel) { showTemplateSave = false }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Speichern") { saveCurrentTemplate() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(
+                            templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
+                }
+            }
+            .padding(24)
+            .frame(width: 480)
+        }
+        .fileExporter(
+            isPresented: $showCSVExporter,
+            document: csvDocument,
+            contentType: .commaSeparatedText,
+            defaultFilename: exportFilename
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Bericht als CSV exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
             }
         }
     }
@@ -1216,6 +1301,132 @@ struct ReportsView: View {
         grouping = .category
         sort = .amountDescending
         selectedReportGroupID = nil
+        selectedTemplateID = nil
+    }
+
+    private func saveCurrentTemplate() {
+        let id = selectedTemplateID ?? UUID()
+        let template = SavedReportTemplate(
+            id: id,
+            name: templateName,
+            definitionVersion: 1,
+            query: query
+        )
+        if store.saveReportTemplate(template) {
+            selectedTemplateID = id
+            showTemplateSave = false
+        }
+    }
+
+    private func loadSelectedTemplate() {
+        guard let selectedTemplateID,
+              let template = store.reportTemplates.first(where: { $0.id == selectedTemplateID })
+        else { return }
+        apply(template.query)
+    }
+
+    private func deleteSelectedTemplate() {
+        guard let selectedTemplateID,
+              let template = store.reportTemplates.first(where: { $0.id == selectedTemplateID })
+        else { return }
+        store.deleteReportTemplate(template)
+        self.selectedTemplateID = nil
+    }
+
+    private func apply(_ savedQuery: TransactionReportQuery) {
+        if savedQuery.dateFrom == nil && savedQuery.dateThrough == nil {
+            period = .all
+        } else {
+            period = .custom
+            customStart = savedQuery.dateFrom ?? savedQuery.dateThrough ?? .now
+            customEnd = savedQuery.dateThrough ?? savedQuery.dateFrom ?? .now
+        }
+        selectedAccountIDs = savedQuery.accountIDs
+        selectedGroupIDs = savedQuery.accountGroupIDs
+        selectedCategoryIDs = savedQuery.categoryIDs
+        includeCategoryDescendants = savedQuery.includeCategoryDescendants
+        selectedTagIDs = savedQuery.tagIDs
+        selectedPayeeIDs = savedQuery.payeeIDs
+        statuses = savedQuery.statuses
+        selectedCurrencies = savedQuery.currencies
+        minimumAmount = savedQuery.minimumAmountMinor.map(decimalAmount) ?? ""
+        maximumAmount = savedQuery.maximumAmountMinor.map(decimalAmount) ?? ""
+        reportText = savedQuery.text
+        includeHiddenAccounts = savedQuery.includeHiddenAccounts
+        includeExcludedAccounts = savedQuery.includeAccountsExcludedFromReports
+        includeTransfers = savedQuery.includeTransfers
+        expandSplits = savedQuery.expandSplits
+        grouping = savedQuery.grouping
+        sort = savedQuery.sort
+        selectedReportGroupID = nil
+    }
+
+    private func prepareCSVExport(_ snapshot: TransactionReportSnapshot) {
+        do {
+            let options = ReportCSVOptions(
+                separator: csvSeparator,
+                encoding: csvEncoding
+            )
+            let metadata = ReportExportMetadata(
+                title: selectedTemplateID.flatMap { id in
+                    store.reportTemplates.first { $0.id == id }?.name
+                } ?? "\(grouping.title)-Bericht",
+                dateLabel: reportDateLabel,
+                filterSummary: reportFilterSummary,
+                baseCurrency: store.fileInfo?.baseCurrency ?? "EUR",
+                generatedAt: .now
+            )
+            csvDocument = ReportCSVDocument(
+                data: try TransactionReportCSVExporter.data(
+                    snapshot: snapshot,
+                    metadata: metadata,
+                    options: options
+                )
+            )
+            showCSVExporter = true
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private var reportDateLabel: String {
+        guard period == .custom else { return period.title }
+        return "\(customStart.formatted(date: .numeric, time: .omitted))"
+            + " – \(customEnd.formatted(date: .numeric, time: .omitted))"
+    }
+
+    private var reportFilterSummary: String {
+        [
+            selectedAccountIDs.isEmpty && selectedGroupIDs.isEmpty
+                ? "alle Berichtskonten"
+                : "\(selectedAccountIDs.count) Konten, \(selectedGroupIDs.count) Gruppen",
+            selectedCategoryIDs.isEmpty
+                ? "alle Kategorien"
+                : "\(selectedCategoryIDs.count) Kategorien",
+            selectedTagIDs.isEmpty ? "alle Klassen/Tags" : "\(selectedTagIDs.count) Klassen/Tags",
+            selectedPayeeIDs.isEmpty ? "alle Empfänger" : "\(selectedPayeeIDs.count) Empfänger",
+            "Status \(statuses.count)/\(TransactionStatus.allCases.count)",
+            reportText.isEmpty ? "kein Volltext" : "Volltext: \(reportText)",
+            includeTransfers ? "mit Umbuchungen" : "ohne Umbuchungen",
+            expandSplits ? "Splitzeilen" : "Gesamtbuchungen"
+        ].joined(separator: " · ")
+    }
+
+    private var exportFilename: String {
+        let raw = selectedTemplateID.flatMap { id in
+            store.reportTemplates.first { $0.id == id }?.name
+        } ?? "FinanzVerwalter-Bericht"
+        let safe = raw.replacingOccurrences(
+            of: #"[^A-Za-z0-9ÄÖÜäöüß_-]+"#,
+            with: "-",
+            options: .regularExpression
+        )
+        return safe.isEmpty ? "FinanzVerwalter-Bericht" : safe
+    }
+
+    private func decimalAmount(_ minorUnits: Int64) -> String {
+        let magnitude = minorUnits.magnitude
+        return "\(magnitude / 100),\(magnitude % 100 < 10 ? "0" : "")\(magnitude % 100)"
     }
 }
 
@@ -1312,6 +1523,23 @@ private enum ReportPeriodPreset: String, CaseIterable, Identifiable {
             to: calendar.startOfDay(for: now)
         )
         return (start, endOfToday)
+    }
+}
+
+private struct ReportCSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

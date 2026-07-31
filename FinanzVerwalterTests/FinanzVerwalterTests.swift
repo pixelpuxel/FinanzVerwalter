@@ -1439,6 +1439,119 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(explicitlyIncluded.facts.count, 4)
         XCTAssertEqual(Set(explicitlyIncluded.groups.map(\.label)), ["Giro", "Archiv"])
     }
+
+    func testSavedReportTemplateRoundTripsVersionedQueryAndCanBeDeleted() throws {
+        let context = try TestDatabase()
+        var query = TransactionReportQuery(
+            dateFrom: Date(timeIntervalSince1970: 1_700_000_000),
+            dateThrough: Date(timeIntervalSince1970: 1_710_000_000),
+            accountIDs: [UUID()],
+            accountGroupIDs: [UUID()],
+            categoryIDs: [UUID()],
+            includeCategoryDescendants: false,
+            tagIDs: [UUID()],
+            payeeIDs: [UUID()],
+            statuses: [.booked, .reconciled],
+            minimumAmountMinor: 1_000,
+            maximumAmountMinor: 50_000,
+            text: "Grundsteuer",
+            currencies: ["EUR"],
+            includeHiddenAccounts: true,
+            includeAccountsExcludedFromReports: true,
+            includeTransfers: true,
+            expandSplits: false,
+            grouping: .account,
+            sort: .dateAscending
+        )
+        let id = UUID()
+        try context.store.saveReportTemplate(
+            SavedReportTemplate(
+                id: id,
+                name: "Immobiliensteuer",
+                definitionVersion: 1,
+                query: query
+            )
+        )
+        let restored = try XCTUnwrap(context.store.reportTemplates().first)
+        XCTAssertEqual(restored.id, id)
+        XCTAssertEqual(restored.name, "Immobiliensteuer")
+        XCTAssertEqual(restored.definitionVersion, 1)
+        XCTAssertEqual(restored.query, query)
+
+        query.text = "aktualisiert"
+        try context.store.saveReportTemplate(
+            SavedReportTemplate(
+                id: id,
+                name: "Immobiliensteuer aktualisiert",
+                definitionVersion: 1,
+                query: query
+            )
+        )
+        XCTAssertEqual(try context.store.reportTemplates().count, 1)
+        XCTAssertEqual(try context.store.reportTemplates().first?.query.text, "aktualisiert")
+        try context.store.deleteReportTemplate(id: id)
+        XCTAssertTrue(try context.store.reportTemplates().isEmpty)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testReportCSVExportIsDeterministicEscapedAndUsesGermanMinorUnits() throws {
+        let fact = TransactionReportFact(
+            id: "fact-1",
+            transactionID: UUID(),
+            splitID: UUID(),
+            bookingDate: Date(timeIntervalSince1970: 0),
+            accountID: UUID(),
+            accountName: "Giro;Privat",
+            payee: "Händler \"Nord\"",
+            payeeID: nil,
+            purpose: "Zeile 1\nZeile 2",
+            detail: "",
+            categoryID: nil,
+            categoryPath: "Haushalt › Lebensmittel",
+            tagIDs: [],
+            tagPaths: [],
+            status: .booked,
+            amountMinor: -123_456,
+            currency: "EUR",
+            isTransfer: false
+        )
+        let snapshot = TransactionReportSnapshot(
+            facts: [fact],
+            groups: [],
+            totals: [
+                TransactionReportCurrencyTotal(
+                    currency: "EUR",
+                    incomeMinor: 0,
+                    expenseMinor: 123_456,
+                    netMinor: -123_456
+                )
+            ]
+        )
+        let data = try TransactionReportCSVExporter.data(
+            snapshot: snapshot,
+            metadata: ReportExportMetadata(
+                title: "Buchungsbericht",
+                dateLabel: "Gesamter Zeitraum",
+                filterSummary: "ohne Umbuchungen",
+                baseCurrency: "EUR",
+                generatedAt: Date(timeIntervalSince1970: 0)
+            ),
+            options: ReportCSVOptions(separator: .semicolon, encoding: .utf8)
+        )
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let expected = [
+            "Bericht;Buchungsbericht",
+            "Zeitraum;Gesamter Zeitraum",
+            "Filter;ohne Umbuchungen",
+            "Erstellt;1970-01-01T00:00:00Z",
+            "Basiswährung;EUR",
+            "",
+            "Datum;Konto;Empfänger;Verwendungszweck;Kategorie;Status;Betrag;Währung;Split",
+            "1970-01-01;\"Giro;Privat\";\"Händler \"\"Nord\"\"\";"
+                + "\"Zeile 1\nZeile 2\";Haushalt › Lebensmittel;Gebucht;-1234,56;EUR;Ja"
+        ].joined(separator: "\r\n") + "\r\n"
+        XCTAssertEqual(text, expected)
+    }
 }
 
 private final class TestDatabase {

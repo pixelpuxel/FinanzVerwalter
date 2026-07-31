@@ -121,13 +121,13 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 12, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
+Migrationen 1 bis 13, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
 Transfers, QIF/CSV, Kontoabgleich, Sammelkontoblatt, Bericht, Backup,
 validierte Wiederherstellung, Kategorisierungsregeln und ein erster
 Serientermin-/Prognose-Slice sowie monatliche Kategorie-Budgets sind
 implementiert. Zusätzlich ist ein rein lokaler Banking-Simulator mit
 Zahlungsaufträgen und SCA-Zustandsautomat vorhanden. Die Testsuite umfasst
-aktuell achtundzwanzig erfolgreiche
+aktuell dreißig erfolgreiche
 XCTest-Fälle. Debug- und Release-Build wurden
 erfolgreich ausgeführt; der Release-Stand ist lokal installiert und sichtbar
 geprüft. Details und Screenshots stehen in `Gedächtnis.md`.
@@ -196,6 +196,21 @@ Auswertungsfakt-IDs. Der Drill-down darf ausschließlich Fakten dieser
 ID-Menge zeigen. Gruppensummen verschiedener Währungen werden nie addiert.
 Die reale QIF-Abnahme muss für jede importierte Buchung beweisen, dass die
 Summe ihrer Berichtsfakten wieder exakt dem Originalbetrag entspricht.
+
+Migration 13 speichert Berichtsvorlagen in `report_templates`. Eine Vorlage
+besitzt UUID, innerhalb der Finanzdatei eindeutigen Namen, fachliche
+Definitionsversion und das mit sortierten Schlüsseln codierte
+`TransactionReportQuery`-JSON. Anlegen/Aktualisieren und Löschen laufen in
+einer SQLite-Transaktion mit Audit. Beim Laden werden alle UI-Filter,
+Splitoption, Gruppierung und Sortierung aus der Query wiederhergestellt.
+
+`TransactionReportCSVExporter` erzeugt ausschließlich aus einem bereits
+berechneten Snapshot. Vor der Tabelle stehen Berichtstitel, Zeitraum,
+Filterzusammenfassung, Erstellungszeit und Basiswährung. Unterstützt werden
+Semikolon, Komma und Tabulator sowie UTF-8 und ISO-8859-1 ohne verlustbehaftete
+Konvertierung. Geld wird deterministisch aus Minor-Units als deutsches
+Dezimalformat ohne Binär-Float geschrieben; Felder mit Trennzeichen,
+Anführungszeichen oder Zeilenumbrüchen folgen RFC-4180-Escaping.
 
 Die Massenkategorisierung erhält eine Menge Buchungs-UUIDs und eine optionale
 Zielkategorie. Prüfe vor jeder Mutation, dass alle UUIDs existieren, die

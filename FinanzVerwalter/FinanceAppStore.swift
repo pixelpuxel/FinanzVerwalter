@@ -10,6 +10,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var transactions: [FinanceTransaction] = []
     @Published private(set) var balances: [UUID: Int64] = [:]
     @Published private(set) var reportRows: [CategoryReportRow] = []
+    @Published private(set) var reportTemplates: [SavedReportTemplate] = []
     @Published private(set) var categorizationRules: [CategorizationRule] = []
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var budgets: [FinanceBudget] = []
@@ -115,6 +116,30 @@ final class FinanceAppStore: ObservableObject {
             categories: categories,
             tags: tags
         )
+    }
+
+    func saveReportTemplate(_ template: SavedReportTemplate) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveReportTemplate(template)
+            reportTemplates = try repository.reportTemplates()
+            statusText = "Berichtsvorlage gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func deleteReportTemplate(_ template: SavedReportTemplate) {
+        guard let repository else { return }
+        do {
+            try repository.deleteReportTemplate(id: template.id)
+            reportTemplates = try repository.reportTemplates()
+            statusText = "Berichtsvorlage gelöscht"
+        } catch {
+            present(error)
+        }
     }
 
     func reload() {
@@ -1117,6 +1142,7 @@ final class FinanceAppStore: ObservableObject {
         categories = try repository.categories()
         transactions = try repository.transactions()
         reportRows = try repository.categoryReport()
+        reportTemplates = try repository.reportTemplates()
         categorizationRules = try repository.categorizationRules()
         scheduledTransactions = try repository.scheduledTransactions()
         budgets = try repository.budgets()

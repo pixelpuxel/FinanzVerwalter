@@ -1,6 +1,6 @@
 import Foundation
 
-enum ReportGrouping: String, CaseIterable, Identifiable, Sendable {
+enum ReportGrouping: String, CaseIterable, Codable, Identifiable, Sendable {
     case category
     case payee
     case account
@@ -20,7 +20,7 @@ enum ReportGrouping: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum ReportSort: String, CaseIterable, Identifiable, Sendable {
+enum ReportSort: String, CaseIterable, Codable, Identifiable, Sendable {
     case labelAscending
     case amountDescending
     case amountAscending
@@ -40,7 +40,7 @@ enum ReportSort: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct TransactionReportQuery: Equatable, Sendable {
+struct TransactionReportQuery: Codable, Equatable, Sendable {
     var dateFrom: Date?
     var dateThrough: Date?
     var accountIDs: Set<UUID> = []
@@ -62,6 +62,13 @@ struct TransactionReportQuery: Equatable, Sendable {
     var expandSplits = true
     var grouping: ReportGrouping = .category
     var sort: ReportSort = .amountDescending
+}
+
+struct SavedReportTemplate: Identifiable, Equatable, Sendable {
+    let id: UUID
+    var name: String
+    var definitionVersion: Int
+    var query: TransactionReportQuery
 }
 
 struct TransactionReportFact: Identifiable, Hashable, Sendable {
@@ -445,6 +452,135 @@ enum TransactionReportEngine {
     }
 }
 
+enum ReportCSVSeparator: String, CaseIterable, Identifiable, Sendable {
+    case semicolon = ";"
+    case comma = ","
+    case tab = "\t"
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .semicolon: "Semikolon"
+        case .comma: "Komma"
+        case .tab: "Tabulator"
+        }
+    }
+}
+
+enum ReportCSVEncoding: String, CaseIterable, Identifiable, Sendable {
+    case utf8
+    case isoLatin1
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .utf8: "UTF-8"
+        case .isoLatin1: "ISO-8859-1"
+        }
+    }
+}
+
+struct ReportCSVOptions: Equatable, Sendable {
+    var separator: ReportCSVSeparator = .semicolon
+    var encoding: ReportCSVEncoding = .utf8
+}
+
+struct ReportExportMetadata: Equatable, Sendable {
+    var title: String
+    var dateLabel: String
+    var filterSummary: String
+    var baseCurrency: String
+    var generatedAt: Date
+}
+
+enum TransactionReportCSVExporter {
+    static func data(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata,
+        options: ReportCSVOptions
+    ) throws -> Data {
+        let delimiter = options.separator.rawValue
+        var rows = [
+            ["Bericht", metadata.title],
+            ["Zeitraum", metadata.dateLabel],
+            ["Filter", metadata.filterSummary],
+            ["Erstellt", isoDateTime(metadata.generatedAt)],
+            ["Basiswährung", metadata.baseCurrency],
+            [],
+            [
+                "Datum", "Konto", "Empfänger", "Verwendungszweck", "Kategorie",
+                "Status", "Betrag", "Währung", "Split"
+            ]
+        ]
+        rows.append(
+            contentsOf: snapshot.facts.map { fact in
+                [
+                    isoDate(fact.bookingDate),
+                    fact.accountName,
+                    fact.payee,
+                    fact.purpose,
+                    fact.categoryPath,
+                    fact.status.title,
+                    germanAmount(fact.amountMinor),
+                    fact.currency,
+                    fact.splitID == nil ? "Nein" : "Ja"
+                ]
+            }
+        )
+        let text = rows.map { row in
+            row.map { escape($0, delimiter: delimiter) }.joined(separator: delimiter)
+        }.joined(separator: "\r\n") + "\r\n"
+        switch options.encoding {
+        case .utf8:
+            return Data(text.utf8)
+        case .isoLatin1:
+            guard let data = text.data(using: .isoLatin1, allowLossyConversion: false) else {
+                throw FinanceError.database(
+                    "Der Bericht enthält Zeichen, die ISO-8859-1 nicht darstellen kann."
+                )
+            }
+            return data
+        }
+    }
+
+    private static func escape(_ value: String, delimiter: String) -> String {
+        guard value.contains(delimiter)
+            || value.contains("\"")
+            || value.contains("\n")
+            || value.contains("\r")
+        else {
+            return value
+        }
+        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
+    private static func germanAmount(_ minorUnits: Int64) -> String {
+        let magnitude = minorUnits.magnitude
+        let units = magnitude / 100
+        let cents = magnitude % 100
+        return "\(minorUnits < 0 ? "-" : "")\(units),\(cents < 10 ? "0" : "")\(cents)"
+    }
+
+    private static func isoDate(_ date: Date) -> String {
+        dateFormatter.string(from: date)
+    }
+
+    private static func isoDateTime(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+}
+
 private protocol HierarchyNamedValue {
     var hierarchyName: String { get }
     var hierarchyParentID: UUID? { get }
@@ -459,4 +595,3 @@ extension FinanceTag: HierarchyNamedValue {
     fileprivate var hierarchyName: String { name }
     fileprivate var hierarchyParentID: UUID? { parentID }
 }
-

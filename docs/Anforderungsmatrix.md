@@ -9,7 +9,7 @@ fertigen Funktionsbereich.
 
 | Priorität | Anforderung | Status | Nachweis / nächste Lücke |
 |---|---|---|---|
-| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–12, Integritätstest, append-only Auditereignisse |
+| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–13, Integritätstest, append-only Auditereignisse |
 | P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; Bankabrufdaten bleiben Adapteraufgabe |
 | P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung und vollständige Kategoriepfade vorhanden; konfigurierbare Spalten, Tabs, gespeicherte Ansichten, Druck und F3 fehlen |
 | P0 | Kategorien und Unterkategorien | Erfüllt für Basiskern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade; MwSt.- und Steuerzuordnungen fehlen |
@@ -20,7 +20,7 @@ fertigen Funktionsbereich.
 | P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Idempotenz; Profilassistent, OFX/QFX, MT940, camt und ISO-20022 fehlen |
 | P0 | Kontoabgleich | Teilweise | Exakter Endsaldo und Sperre vorhanden; Startsaldo, Markierdialog, Rücknahme und explizite Ausgleichsbuchung fehlen |
 | P0 | Sammelkontoblatt | Teilweise | Kontenübergreifende Liste, Zukunft und Summe; benannte Kombinationen, Mehrfachbearbeitung, zwei Ansichten und Export fehlen |
-| P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen nach Kategorie/Empfänger/Konto/Tag und Buchungs-Drill-down vorhanden; Vorlagen, zweite Dimension, weitere Standardberichte, Druck sowie PDF/XLSX/HTML/CSV-Golden-Tests fehlen |
+| P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen und CSV mit Golden-Test vorhanden; zweite Dimension, weitere Standardberichte, Druck sowie PDF/XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Offen | Derzeit nur lokaler Zahlungs-/SCA-Simulator; FinTS/PSD2-Verträge, Kontakte, Konto- und Umsatzabruf fehlen |
 | P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA und Idempotenz; Dauerauftrag, Lastschrift, Sammler, EPC-QR und pain-Dateien fehlen |
@@ -42,7 +42,7 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Berichtswerkstatt: gespeicherte Vorlagen, Snapshot-Drucklayout und CSV.
+1. Berichtswerkstatt: Snapshot-Drucklayout und PDF mit Golden-Test.
 2. P0-Kontoblatt: konfigurierbare Spalten, gespeicherte Ansichten und
    Tastaturworkflow.
 3. Import-/Bankumsatz-Matching mit gestuften Fingerabdrücken.
