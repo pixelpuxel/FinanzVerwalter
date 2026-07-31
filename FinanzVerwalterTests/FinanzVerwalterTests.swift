@@ -1842,6 +1842,267 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testDirectDebitOrderRequiresActiveSnapshotsAndMaterializesExactlyOnce() throws {
+        let context = try TestDatabase()
+        var creditorAccount = FinanceAccount(
+            id: UUID(), name: "Vereinskonto", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        creditorAccount.ownerName = "Musterverein e.V."
+        creditorAccount.iban = "DE89370400440532013000"
+        creditorAccount.bic = "COBADEFFXXX"
+        try context.store.saveAccount(creditorAccount)
+        let debtor = FinancePayee(
+            id: UUID(), canonicalName: "Mitglied Beispiel", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        try context.store.savePayee(debtor)
+        var bankAccount = FinancePayeeBankAccount(
+            id: UUID(), payeeID: debtor.id, label: "Beitragskonto",
+            accountHolder: "Mitglied Beispiel",
+            iban: "DE12500105170648489890", bic: "INGDDEFFXXX",
+            bankName: "Zahlerbank", isDefault: true, isActive: true
+        )
+        try context.store.savePayeeBankAccount(bankAccount)
+        let signedOn = Pain008Exporter.gregorianDate(
+            year: 2026, month: 1, day: 15
+        )
+        var mandate = FinanceSEPAMandate(
+            id: UUID(), payeeID: debtor.id, reference: "MITGLIED-2026-42",
+            signedOn: signedOn, sequenceType: .recurring,
+            note: "Mitgliedsbeitrag", isActive: true
+        )
+        try context.store.saveSEPAMandate(mandate)
+        let collectionDate = Pain008Exporter.gregorianDate(
+            year: 2026, month: 8, day: 15
+        )
+        let now = Pain008Exporter.gregorianDate(
+            year: 2026, month: 7, day: 31
+        )
+        let order = DirectDebitOrder(
+            id: UUID(), creditorAccountID: creditorAccount.id,
+            debtorPayeeID: debtor.id,
+            debtorBankAccountID: bankAccount.id,
+            mandateID: mandate.id,
+            creditorName: creditorAccount.ownerName,
+            creditorID: "DE98ZZZ09999999999",
+            creditorIBAN: creditorAccount.iban,
+            creditorBIC: creditorAccount.bic,
+            debtorName: bankAccount.accountHolder,
+            debtorIBAN: bankAccount.iban,
+            debtorBIC: bankAccount.bic,
+            amountMinor: 4_250, currency: "EUR",
+            collectionDate: collectionDate,
+            purpose: "Mitgliedsbeitrag August",
+            endToEndID: "BEITRAG-2026-08",
+            mandateReference: mandate.reference,
+            mandateSignedOn: signedOn,
+            sequenceType: mandate.sequenceType,
+            status: .draft,
+            idempotencyKey: "direct-debit-member-42-2026-08",
+            bankReference: "", createdAt: now, updatedAt: now
+        )
+        try context.store.createDirectDebitOrder(order)
+        XCTAssertThrowsError(try context.store.createDirectDebitOrder(order)) {
+            XCTAssertEqual($0 as? FinanceError, .duplicateDirectDebitOrder)
+        }
+        let stored = try XCTUnwrap(context.store.directDebitOrders().first)
+        XCTAssertEqual(stored, order)
+
+        var tampered = order
+        tampered = DirectDebitOrder(
+            id: UUID(), creditorAccountID: order.creditorAccountID,
+            debtorPayeeID: order.debtorPayeeID,
+            debtorBankAccountID: order.debtorBankAccountID,
+            mandateID: order.mandateID,
+            creditorName: order.creditorName, creditorID: order.creditorID,
+            creditorIBAN: order.creditorIBAN, creditorBIC: order.creditorBIC,
+            debtorName: "Manipulierter Zahler", debtorIBAN: order.debtorIBAN,
+            debtorBIC: order.debtorBIC, amountMinor: order.amountMinor,
+            currency: order.currency, collectionDate: order.collectionDate,
+            purpose: order.purpose, endToEndID: order.endToEndID,
+            mandateReference: order.mandateReference,
+            mandateSignedOn: order.mandateSignedOn,
+            sequenceType: order.sequenceType, status: .draft,
+            idempotencyKey: "tampered-direct-debit", bankReference: "",
+            createdAt: now, updatedAt: now
+        )
+        XCTAssertThrowsError(try context.store.createDirectDebitOrder(tampered))
+
+        bankAccount.isActive = false
+        bankAccount.isDefault = false
+        try context.store.savePayeeBankAccount(bankAccount)
+        var inactiveBankOrder = tampered
+        inactiveBankOrder = DirectDebitOrder(
+            id: UUID(), creditorAccountID: order.creditorAccountID,
+            debtorPayeeID: order.debtorPayeeID,
+            debtorBankAccountID: order.debtorBankAccountID,
+            mandateID: order.mandateID,
+            creditorName: order.creditorName, creditorID: order.creditorID,
+            creditorIBAN: order.creditorIBAN, creditorBIC: order.creditorBIC,
+            debtorName: order.debtorName, debtorIBAN: order.debtorIBAN,
+            debtorBIC: order.debtorBIC, amountMinor: order.amountMinor,
+            currency: order.currency, collectionDate: order.collectionDate,
+            purpose: order.purpose, endToEndID: order.endToEndID,
+            mandateReference: order.mandateReference,
+            mandateSignedOn: order.mandateSignedOn,
+            sequenceType: order.sequenceType, status: .draft,
+            idempotencyKey: "inactive-bank-direct-debit", bankReference: "",
+            createdAt: now, updatedAt: now
+        )
+        XCTAssertThrowsError(
+            try context.store.createDirectDebitOrder(inactiveBankOrder)
+        )
+
+        mandate.sequenceType = .final
+        try context.store.saveSEPAMandate(mandate)
+        XCTAssertEqual(
+            try context.store.directDebitOrders().first?.sequenceType,
+            .recurring,
+            "Ein bestehender Auftrag behält den Mandatsschnappschuss."
+        )
+        for status in [
+            PaymentStatus.initiated, .challengeReceived, .awaitingUser,
+            .submitted, .accepted
+        ] {
+            try context.store.transitionDirectDebitOrder(id: order.id, to: status)
+        }
+        let accepted = try XCTUnwrap(context.store.directDebitOrders().first)
+        XCTAssertEqual(accepted.status, .accepted)
+        XCTAssertTrue(accepted.bankReference.hasPrefix("SIM-DD-"))
+        let materialized = try context.store.transactions().filter {
+            $0.reference == "direct-debit:\(order.id.uuidString)"
+        }
+        XCTAssertEqual(materialized.count, 1)
+        XCTAssertEqual(materialized.first?.amountMinor, 4_250)
+        XCTAssertEqual(materialized.first?.payeeID, debtor.id)
+        XCTAssertEqual(materialized.first?.mandateReference, mandate.reference)
+        XCTAssertThrowsError(
+            try context.store.transitionDirectDebitOrder(id: order.id, to: .submitted)
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testPain008ExportIsDeterministicEscapedAndUsesEPC2025Rules() throws {
+        let accountID = UUID(uuidString: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")!
+        let orderID = UUID(uuidString: "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC")!
+        var account = FinanceAccount(
+            id: accountID, name: "Vereinskonto", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Müller & Partner e.V."
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        let signedOn = Pain008Exporter.gregorianDate(
+            year: 2026, month: 1, day: 15
+        )
+        let collectionDate = Pain008Exporter.gregorianDate(
+            year: 2026, month: 8, day: 15
+        )
+        let creationDate = Pain008Exporter.gregorianDate(
+            year: 2026, month: 7, day: 31
+        )
+        var order = DirectDebitOrder(
+            id: orderID, creditorAccountID: accountID,
+            debtorPayeeID: UUID(), debtorBankAccountID: UUID(),
+            mandateID: UUID(), creditorName: account.ownerName,
+            creditorID: "DE98ZZZ09999999999",
+            creditorIBAN: account.iban, creditorBIC: account.bic,
+            debtorName: "Zahler <Nord>",
+            debtorIBAN: "DE12500105170648489890",
+            debtorBIC: "INGDDEFFXXX", amountMinor: 123_456,
+            currency: "EUR", collectionDate: collectionDate,
+            purpose: "Beitrag & Vertrag 42", endToEndID: "E2E-DD-42",
+            mandateReference: "MANDAT-42", mandateSignedOn: signedOn,
+            sequenceType: .recurring, status: .draft,
+            idempotencyKey: "pain008-test", bankReference: "",
+            createdAt: creationDate, updatedAt: creationDate
+        )
+
+        let first = try Pain008Exporter.export(
+            order: order, account: account, createdAt: creationDate,
+            messageID: "MSG-DD-2026-0001"
+        )
+        let second = try Pain008Exporter.export(
+            order: order, account: account, createdAt: creationDate,
+            messageID: "MSG-DD-2026-0001"
+        )
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.rulePackage, .epc2025)
+        XCTAssertEqual(first.fileName, "pain.008-2026-08-15-CCCCCCCC.xml")
+        let document = try XMLDocument(data: first.data)
+        XCTAssertEqual(
+            document.rootElement()?.namespace(forPrefix: "")?.stringValue,
+            Pain008RulePackage.epc2025.namespace
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='PmtMtd']"
+            ).first?.stringValue,
+            "DD"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='LclInstrm']/*[local-name()='Cd']"
+            ).first?.stringValue,
+            "CORE"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='SeqTp']"
+            ).first?.stringValue,
+            "RCUR"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='MndtId']"
+            ).first?.stringValue,
+            "MANDAT-42"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='DtOfSgntr']"
+            ).first?.stringValue,
+            "2026-01-15"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='CtrlSum']"
+            ).compactMap(\.stringValue),
+            ["1234.56", "1234.56"]
+        )
+        let rawXML = try XCTUnwrap(String(data: first.data, encoding: .utf8))
+        XCTAssertTrue(rawXML.contains("Müller &amp; Partner e.V."))
+        XCTAssertTrue(rawXML.contains("Zahler &lt;Nord&gt;"))
+        XCTAssertTrue(rawXML.contains("<ReqdColltnDt>2026-08-15</ReqdColltnDt>"))
+        XCTAssertTrue(rawXML.contains("<Prtry>SEPA</Prtry>"))
+
+        order.mandateReference = "/nicht-erlaubt"
+        XCTAssertThrowsError(
+            try Pain008Exporter.export(
+                order: order, account: account, createdAt: creationDate
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? Pain008ExportError,
+                .invalidIdentifier("Mandatsreferenz")
+            )
+        }
+        order.mandateReference = "MANDAT-42"
+        order.status = .unknown
+        XCTAssertThrowsError(
+            try Pain008Exporter.export(
+                order: order, account: account, createdAt: creationDate
+            )
+        ) {
+            XCTAssertEqual($0 as? Pain008ExportError, .nonDraftOrder)
+        }
+    }
+
     func testStandingOrderMaterializationIsIdempotentAuditedAndWeekendSafe() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -2774,7 +3035,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To23PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To24PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -2889,11 +3150,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 23)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 24)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To23PromotesLegacyPayeeBankData() throws {
+    func testMigration22To24PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -2920,6 +3181,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         let downgradeSQL = """
+        DROP TABLE direct_debit_orders;
         ALTER TABLE payment_orders DROP COLUMN payee_bank_account_id;
         ALTER TABLE payment_orders DROP COLUMN payee_id;
         DROP TABLE payee_bank_accounts;
@@ -4650,6 +4912,7 @@ private final class TestDatabase {
     }
 
     deinit {
+        store.close()
         try? FileManager.default.removeItem(at: directory)
     }
 }

@@ -5152,15 +5152,18 @@ private struct BankingDownloadPreviewSheet: View {
 struct PaymentsView: View {
     private enum PaymentSection: String, CaseIterable, Identifiable {
         case payments = "Überweisungen"
+        case directDebits = "Lastschriften"
         case standingOrders = "Daueraufträge"
         var id: Self { self }
     }
 
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selectedID: UUID?
+    @State private var selectedDirectDebitID: UUID?
     @State private var selectedStandingOrderID: UUID?
     @State private var section: PaymentSection = .payments
     @State private var showNewPayment = false
+    @State private var showNewDirectDebit = false
     @State private var editedStandingOrder: StandingOrder?
 
     private var selectedOrder: PaymentOrder? {
@@ -5169,6 +5172,10 @@ struct PaymentsView: View {
 
     private var selectedStandingOrder: StandingOrder? {
         store.standingOrders.first { $0.id == selectedStandingOrderID }
+    }
+
+    private var selectedDirectDebit: DirectDebitOrder? {
+        store.directDebitOrders.first { $0.id == selectedDirectDebitID }
     }
 
     var body: some View {
@@ -5191,11 +5198,13 @@ struct PaymentsView: View {
                     ForEach(PaymentSection.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 260)
+                .frame(width: 390)
                 Button {
                     switch section {
                     case .payments:
                         showNewPayment = true
+                    case .directDebits:
+                        showNewDirectDebit = true
                     case .standingOrders:
                         guard let account = store.accounts.first(where: {
                             !$0.isClosed && $0.currency == "EUR"
@@ -5216,17 +5225,19 @@ struct PaymentsView: View {
                     }
                 } label: {
                     Label(
-                        section == .payments ? "Überweisung" : "Dauerauftrag",
+                        section == .payments
+                            ? "Überweisung"
+                            : (section == .directDebits ? "Lastschrift" : "Dauerauftrag"),
                         systemImage: "plus"
                     )
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(
-                    section == PaymentSection.payments
-                        ? store.accounts.isEmpty
-                        : !store.accounts.contains(where: {
+                    section == PaymentSection.standingOrders
+                        ? !store.accounts.contains(where: {
                             !$0.isClosed && $0.currency == "EUR"
                         })
+                        : store.accounts.isEmpty
                 )
             }
             .padding(12)
@@ -5234,18 +5245,26 @@ struct PaymentsView: View {
             switch section {
             case .payments:
                 paymentOrdersContent
+            case .directDebits:
+                directDebitsContent
             case .standingOrders:
                 standingOrdersContent
             }
         }
         .onAppear {
             if selectedID == nil { selectedID = store.paymentOrders.first?.id }
+            if selectedDirectDebitID == nil {
+                selectedDirectDebitID = store.directDebitOrders.first?.id
+            }
             if selectedStandingOrderID == nil {
                 selectedStandingOrderID = store.standingOrders.first?.id
             }
         }
         .sheet(isPresented: $showNewPayment) {
             PaymentDraftEditor()
+        }
+        .sheet(isPresented: $showNewDirectDebit) {
+            DirectDebitDraftEditor()
         }
         .sheet(item: $editedStandingOrder) {
             StandingOrderEditor(value: $0)
@@ -5371,6 +5390,69 @@ struct PaymentsView: View {
                     "Kein Dauerauftrag ausgewählt",
                     systemImage: "repeat.circle",
                     description: Text("Wähle links einen Dauerauftrag.")
+                )
+                .frame(minWidth: 520)
+            }
+        }
+    }
+
+    private var directDebitsContent: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("SEPA-Basislastschriften").font(.headline)
+                    Spacer()
+                    Text("\(store.directDebitOrders.count)")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                Divider()
+                if store.directDebitOrders.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Lastschriftaufträge",
+                        systemImage: "arrow.down.to.line.compact",
+                        description: Text(
+                            "Lege einen lokalen Entwurf aus Zahlerakte, Bankverbindung und aktivem Mandat an."
+                        )
+                    )
+                } else {
+                    List(selection: $selectedDirectDebitID) {
+                        ForEach(store.directDebitOrders) { order in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(order.debtorName).fontWeight(.medium)
+                                    Spacer()
+                                    Text(Money(minorUnits: order.amountMinor).formatted)
+                                        .monospacedDigit()
+                                }
+                                HStack {
+                                    PaymentStatusBadge(status: order.status)
+                                    Text(
+                                        order.collectionDate,
+                                        format: .dateTime.day().month().year()
+                                    )
+                                    Spacer()
+                                    Text(order.sequenceType.title)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .tag(order.id)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 390, idealWidth: 470)
+
+            if let selectedDirectDebit {
+                DirectDebitOrderDetail(order: selectedDirectDebit)
+                    .id(selectedDirectDebit)
+                    .frame(minWidth: 520)
+            } else {
+                ContentUnavailableView(
+                    "Keine Lastschrift ausgewählt",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Wähle links einen Lastschriftauftrag.")
                 )
                 .frame(minWidth: 520)
             }
@@ -5881,6 +5963,419 @@ private struct Pain001Document: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct DirectDebitDraftEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var creditorAccountID: UUID?
+    @State private var debtorPayeeID: UUID?
+    @State private var debtorBankAccountID: UUID?
+    @State private var mandateID: UUID?
+    @State private var creditorID = ""
+    @State private var amount = ""
+    @State private var collectionDate = Date()
+    @State private var purpose = ""
+    @State private var endToEndID = "NOTPROVIDED"
+
+    private var creditorAccounts: [FinanceAccount] {
+        store.accounts.filter { !$0.isClosed && $0.currency == "EUR" }
+    }
+
+    private var debtorBankAccounts: [FinancePayeeBankAccount] {
+        guard let debtorPayeeID else { return [] }
+        return store.payeeBankAccounts.filter {
+            $0.payeeID == debtorPayeeID && $0.isActive
+        }
+    }
+
+    private var mandates: [FinanceSEPAMandate] {
+        guard let debtorPayeeID else { return [] }
+        return store.sepaMandates.filter {
+            $0.payeeID == debtorPayeeID
+                && $0.isActive
+                && $0.signedOn != nil
+        }
+    }
+
+    private var eligiblePayees: [FinancePayee] {
+        store.payees.filter { payee in
+            payee.isActive
+                && store.payeeBankAccounts.contains {
+                    $0.payeeID == payee.id && $0.isActive
+                }
+                && store.sepaMandates.contains {
+                    $0.payeeID == payee.id && $0.isActive && $0.signedOn != nil
+                }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("SEPA-Basislastschrift").font(.title2.bold())
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Entwurf anlegen") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        creditorAccountID == nil
+                            || debtorPayeeID == nil
+                            || debtorBankAccountID == nil
+                            || mandateID == nil
+                            || creditorID.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                            || amount.isEmpty
+                            || purpose.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                    )
+            }
+            .padding(14)
+            Divider()
+            Form {
+                Section("Gläubiger") {
+                    Picker("Gutschrift auf Konto", selection: $creditorAccountID) {
+                        Text("Konto wählen").tag(UUID?.none)
+                        ForEach(creditorAccounts) { account in
+                            Text(account.name).tag(UUID?.some(account.id))
+                        }
+                    }
+                    TextField("SEPA-Gläubiger-ID", text: $creditorID)
+                    if let account = creditorAccounts.first(where: {
+                        $0.id == creditorAccountID
+                    }) {
+                        LabeledContent("Gläubigername", value: account.ownerName)
+                        LabeledContent("Gläubiger-IBAN", value: account.iban)
+                    }
+                    Text(
+                        "Die Gläubiger-ID gehört zum Kontoinhaber, der den Betrag einzieht."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Section("Zahler und Mandat") {
+                    Picker("Zahlerakte", selection: $debtorPayeeID) {
+                        Text("Zahler wählen").tag(UUID?.none)
+                        ForEach(eligiblePayees) { payee in
+                            Text(payee.canonicalName).tag(UUID?.some(payee.id))
+                        }
+                    }
+                    .onChange(of: debtorPayeeID) { applySelectedPayee() }
+                    Picker("Bankverbindung", selection: $debtorBankAccountID) {
+                        Text("Bankverbindung wählen").tag(UUID?.none)
+                        ForEach(debtorBankAccounts) { bankAccount in
+                            Text(
+                                bankAccount.label
+                                    + (bankAccount.isDefault ? " · Standard" : "")
+                                    + " · " + bankAccount.iban
+                            )
+                            .tag(UUID?.some(bankAccount.id))
+                        }
+                    }
+                    .disabled(debtorPayeeID == nil)
+                    Picker("SEPA-Mandat", selection: $mandateID) {
+                        Text("Mandat wählen").tag(UUID?.none)
+                        ForEach(mandates) { mandate in
+                            Text(
+                                mandate.reference + " · " + mandate.sequenceType.title
+                            )
+                            .tag(UUID?.some(mandate.id))
+                        }
+                    }
+                    .disabled(debtorPayeeID == nil)
+                    if let mandate = mandates.first(where: { $0.id == mandateID }),
+                       let signedOn = mandate.signedOn {
+                        LabeledContent("Unterzeichnet") {
+                            Text(signedOn, format: .dateTime.day().month().year())
+                        }
+                    }
+                }
+                Section("Einzug") {
+                    TextField("Betrag", text: $amount)
+                        .multilineTextAlignment(.trailing)
+                    DatePicker(
+                        "Fälligkeit", selection: $collectionDate,
+                        displayedComponents: .date
+                    )
+                    TextField("Verwendungszweck", text: $purpose)
+                    TextField("End-to-End-ID", text: $endToEndID)
+                }
+                Section {
+                    Label(
+                        "Der Entwurf speichert Konto-, Zahler-, Bank- und Mandatsdaten unveränderlich. Es erfolgt keine echte Bankübermittlung.",
+                        systemImage: "lock.shield"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 700, height: 780)
+        .onAppear {
+            creditorAccountID = creditorAccountID ?? creditorAccounts.first?.id
+        }
+    }
+
+    private func applySelectedPayee() {
+        debtorBankAccountID = debtorBankAccounts.first(where: \.isDefault)?.id
+            ?? debtorBankAccounts.first?.id
+        mandateID = mandates.count == 1 ? mandates.first?.id : nil
+    }
+
+    private func save() {
+        guard let creditorAccountID,
+              let debtorPayeeID,
+              let debtorBankAccountID,
+              let mandateID else { return }
+        if store.createDirectDebitOrder(
+            creditorAccountID: creditorAccountID,
+            debtorPayeeID: debtorPayeeID,
+            debtorBankAccountID: debtorBankAccountID,
+            mandateID: mandateID,
+            creditorID: creditorID,
+            amount: amount,
+            collectionDate: collectionDate,
+            purpose: purpose,
+            endToEndID: endToEndID
+        ) {
+            dismiss()
+        }
+    }
+}
+
+private struct DirectDebitOrderDetail: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let order: DirectDebitOrder
+    @State private var confirmInitiation = false
+    @State private var authorizationCode = ""
+    @State private var showPain008Exporter = false
+    @State private var pain008Document = Pain001Document(data: Data())
+    @State private var pain008FileName = "pain.008.xml"
+
+    private var statusPath: [PaymentStatus] {
+        var values: [PaymentStatus] = [
+            .initiated, .challengeReceived, .awaitingUser, .submitted
+        ]
+        if [.accepted, .rejected, .unknown, .cancelled].contains(order.status) {
+            values.append(order.status)
+        }
+        return values
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(order.debtorName).font(.title2.bold())
+                        Text("SEPA-Basislastschrift · \(order.sequenceType.title)")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    PaymentStatusBadge(status: order.status)
+                }
+                GroupBox("Unveränderliche Lastschriftzusammenfassung") {
+                    Grid(
+                        alignment: .leading,
+                        horizontalSpacing: 18,
+                        verticalSpacing: 8
+                    ) {
+                        GridRow {
+                            Text("Gläubigerkonto").foregroundStyle(.secondary)
+                            Text(store.accountName(order.creditorAccountID))
+                        }
+                        GridRow {
+                            Text("Gläubiger").foregroundStyle(.secondary)
+                            Text(order.creditorName)
+                        }
+                        GridRow {
+                            Text("Gläubiger-ID").foregroundStyle(.secondary)
+                            Text(order.creditorID).monospaced()
+                        }
+                        GridRow {
+                            Text("Zahler").foregroundStyle(.secondary)
+                            Text(order.debtorName)
+                        }
+                        GridRow {
+                            Text("Zahler-IBAN").foregroundStyle(.secondary)
+                            Text(order.debtorIBAN).monospaced()
+                        }
+                        GridRow {
+                            Text("Betrag").foregroundStyle(.secondary)
+                            Text(Money(minorUnits: order.amountMinor).formatted).bold()
+                        }
+                        GridRow {
+                            Text("Fälligkeit").foregroundStyle(.secondary)
+                            Text(
+                                order.collectionDate,
+                                format: .dateTime.day().month().year()
+                            )
+                        }
+                        GridRow {
+                            Text("Mandatsreferenz").foregroundStyle(.secondary)
+                            Text(order.mandateReference).monospaced()
+                        }
+                        GridRow {
+                            Text("Mandatsdatum").foregroundStyle(.secondary)
+                            Text(
+                                order.mandateSignedOn,
+                                format: .dateTime.day().month().year()
+                            )
+                        }
+                        GridRow {
+                            Text("Verwendungszweck").foregroundStyle(.secondary)
+                            Text(order.purpose)
+                        }
+                        GridRow {
+                            Text("End-to-End-ID").foregroundStyle(.secondary)
+                            Text(order.endToEndID).monospaced()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+                GroupBox("Lokaler Übermittlungszustand") {
+                    HStack(spacing: 5) {
+                        ForEach(statusPath, id: \.self) { status in
+                            PaymentStatusBadge(status: status)
+                            if status != statusPath.last {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                actionArea
+                Button("pain.008 exportieren …", systemImage: "doc.badge.arrow.up") {
+                    preparePain008Export()
+                }
+                .disabled(order.status != .draft)
+                .help(
+                    order.status == .draft
+                        ? "Erzeugt eine lokale SEPA-XML-Datei nach "
+                            + Pain008RulePackage.epc2025.source
+                        : "Nur unveränderte Entwürfe können als pain.008 exportiert werden."
+                )
+                if order.status == .unknown {
+                    Label(
+                        "Der Status ist unbekannt. Die Lastschrift wird niemals automatisch erneut eingereicht.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                }
+                Text("Idempotenz: \(order.idempotencyKey.prefix(20))…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(18)
+        }
+        .alert("Lastschrift vorbereiten?", isPresented: $confirmInitiation) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Im Simulator initialisieren") {
+                _ = store.transitionDirectDebit(order, to: .initiated)
+            }
+        } message: {
+            Text(
+                "Von \(order.debtorName) werden \(Money(minorUnits: order.amountMinor).formatted) eingezogen. Dies ist ausschließlich eine lokale Simulation."
+            )
+        }
+        .fileExporter(
+            isPresented: $showPain008Exporter,
+            document: pain008Document,
+            contentType: .xml,
+            defaultFilename: pain008FileName
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Lastschrift als pain.008 exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func preparePain008Export() {
+        guard let account = store.accounts.first(where: {
+            $0.id == order.creditorAccountID
+        }) else {
+            store.errorMessage = FinanceError.missingAccount.localizedDescription
+            return
+        }
+        do {
+            let result = try Pain008Exporter.export(order: order, account: account)
+            pain008Document = Pain001Document(data: result.data)
+            pain008FileName = result.fileName
+            showPain008Exporter = true
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private var actionArea: some View {
+        switch order.status {
+        case .draft:
+            Button("Einreichung vorbereiten …") {
+                confirmInitiation = true
+            }
+            .buttonStyle(.borderedProminent)
+        case .initiated:
+            Button("Bank-Challenge simulieren") {
+                _ = store.transitionDirectDebit(order, to: .challengeReceived)
+            }
+            .buttonStyle(.borderedProminent)
+        case .challengeReceived:
+            Button("Freigabedialog öffnen") {
+                _ = store.transitionDirectDebit(order, to: .awaitingUser)
+            }
+            .buttonStyle(.borderedProminent)
+        case .awaitingUser:
+            VStack(alignment: .leading, spacing: 8) {
+                SecureField("Simulierter Freigabecode", text: $authorizationCode)
+                    .frame(maxWidth: 320)
+                Text("Der Code wird niemals gespeichert oder protokolliert.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Freigabe übermitteln") {
+                    if store.submitDirectDebit(
+                        order, authorizationCode: authorizationCode
+                    ) {
+                        authorizationCode = ""
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        case .submitted:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Simulator-Ergebnis").font(.headline)
+                HStack {
+                    ForEach(SimulatorOutcome.allCases) { outcome in
+                        Button(outcome.title) {
+                            _ = store.simulateDirectDebitDecision(
+                                order, outcome: outcome
+                            )
+                        }
+                    }
+                }
+            }
+        case .accepted:
+            Label(
+                "Angenommen · als erwartete Gutschrift im Kontoblatt materialisiert",
+                systemImage: "checkmark.seal.fill"
+            )
+            .foregroundStyle(.green)
+        case .rejected:
+            Label("Vom Simulator abgelehnt", systemImage: "xmark.octagon.fill")
+                .foregroundStyle(.red)
+        case .unknown:
+            EmptyView()
+        case .cancelled:
+            Label("Auftrag abgebrochen", systemImage: "nosign")
+        }
     }
 }
 

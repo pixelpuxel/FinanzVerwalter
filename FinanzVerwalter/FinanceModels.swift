@@ -920,6 +920,69 @@ struct PaymentOrder: Identifiable, Hashable, Sendable {
     }
 }
 
+struct DirectDebitOrder: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var creditorAccountID: UUID
+    var debtorPayeeID: UUID
+    var debtorBankAccountID: UUID
+    var mandateID: UUID
+    var creditorName: String
+    var creditorID: String
+    var creditorIBAN: String
+    var creditorBIC: String
+    var debtorName: String
+    var debtorIBAN: String
+    var debtorBIC: String
+    var amountMinor: Int64
+    var currency: String
+    var collectionDate: Date
+    var purpose: String
+    var endToEndID: String
+    var mandateReference: String
+    var mandateSignedOn: Date
+    var sequenceType: SEPAMandateSequenceType
+    var status: PaymentStatus
+    var idempotencyKey: String
+    var bankReference: String
+    var createdAt: Date
+    var updatedAt: Date
+
+    func validate() throws {
+        guard !creditorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !debtorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !mandateReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              amountMinor > 0 else {
+            throw FinanceError.invalidDirectDebit(
+                "Gläubiger, Zahler, Mandat, Verwendungszweck und positiver Betrag sind erforderlich."
+            )
+        }
+        guard currency.uppercased() == "EUR" else {
+            throw FinanceError.invalidDirectDebit(
+                "SEPA-Basislastschriften erfordern EUR."
+            )
+        }
+        guard IBANValidator.isValid(debtorIBAN) else {
+            throw FinanceError.invalidIBAN
+        }
+        guard IBANValidator.isValid(creditorIBAN) else {
+            throw FinanceError.invalidDirectDebit(
+                "Die IBAN des Gläubigerkontos ist ungültig."
+            )
+        }
+        guard SEPACreditorIDValidator.isValid(creditorID) else {
+            throw FinanceError.invalidDirectDebit(
+                "Die SEPA-Gläubiger-ID ist ungültig."
+            )
+        }
+        guard mandateSignedOn <= collectionDate else {
+            throw FinanceError.invalidDirectDebit(
+                "Das Mandat darf nicht nach dem Fälligkeitsdatum unterzeichnet sein."
+            )
+        }
+    }
+}
+
 enum StandingOrderStatus: String, Codable, CaseIterable, Identifiable, Sendable {
     case active
     case paused

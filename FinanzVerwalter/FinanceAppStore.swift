@@ -92,6 +92,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
+    @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
     @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
     @Published private(set) var payeeBankAccounts: [FinancePayeeBankAccount] = []
@@ -1575,6 +1576,122 @@ final class FinanceAppStore: ObservableObject {
         transitionPayment(order, to: outcome.paymentStatus)
     }
 
+    func createDirectDebitOrder(
+        creditorAccountID: UUID,
+        debtorPayeeID: UUID,
+        debtorBankAccountID: UUID,
+        mandateID: UUID,
+        creditorID: String,
+        amount: String,
+        collectionDate: Date,
+        purpose: String,
+        endToEndID: String
+    ) -> Bool {
+        guard let repository,
+              let account = accounts.first(where: { $0.id == creditorAccountID }),
+              let bankAccount = payeeBankAccounts.first(where: {
+                  $0.id == debtorBankAccountID
+                      && $0.payeeID == debtorPayeeID
+              }),
+              let mandate = sepaMandates.first(where: {
+                  $0.id == mandateID && $0.payeeID == debtorPayeeID
+              }),
+              let mandateSignedOn = mandate.signedOn
+        else {
+            errorMessage = "Für die Lastschrift fehlen Konto, Zahler, Bankverbindung oder unterzeichnetes Mandat."
+            return false
+        }
+        do {
+            let money = try Money(parsing: amount, currency: account.currency)
+            let collectionDay = collectionDate.formatted(
+                .iso8601.year().month().day().dateSeparator(.dash)
+            )
+            let canonical = [
+                creditorAccountID.uuidString,
+                debtorPayeeID.uuidString,
+                debtorBankAccountID.uuidString,
+                mandateID.uuidString,
+                SEPACreditorIDValidator.normalized(creditorID),
+                String(abs(money.minorUnits)), collectionDay,
+                purpose.trimmingCharacters(in: .whitespacesAndNewlines),
+                endToEndID.trimmingCharacters(in: .whitespacesAndNewlines)
+            ].joined(separator: "|")
+            let idempotencyKey = SHA256.hash(data: Data(canonical.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            let now = Date()
+            try repository.createDirectDebitOrder(
+                DirectDebitOrder(
+                    id: UUID(), creditorAccountID: account.id,
+                    debtorPayeeID: debtorPayeeID,
+                    debtorBankAccountID: bankAccount.id,
+                    mandateID: mandate.id,
+                    creditorName: account.ownerName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                    creditorID: SEPACreditorIDValidator.normalized(creditorID),
+                    creditorIBAN: IBANValidator.normalized(account.iban),
+                    creditorBIC: account.bic.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                    debtorName: bankAccount.accountHolder,
+                    debtorIBAN: IBANValidator.normalized(bankAccount.iban),
+                    debtorBIC: bankAccount.bic,
+                    amountMinor: abs(money.minorUnits), currency: account.currency,
+                    collectionDate: collectionDate,
+                    purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),
+                    endToEndID: endToEndID.trimmingCharacters(in: .whitespacesAndNewlines),
+                    mandateReference: mandate.reference,
+                    mandateSignedOn: mandateSignedOn,
+                    sequenceType: mandate.sequenceType,
+                    status: .draft, idempotencyKey: idempotencyKey,
+                    bankReference: "", createdAt: now, updatedAt: now
+                )
+            )
+            try load()
+            statusText = "Lastschriftentwurf angelegt"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func transitionDirectDebit(
+        _ order: DirectDebitOrder,
+        to target: PaymentStatus
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.transitionDirectDebitOrder(id: order.id, to: target)
+            try load()
+            statusText = "Lastschriftstatus: \(target.title)"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func submitDirectDebit(
+        _ order: DirectDebitOrder,
+        authorizationCode: String
+    ) -> Bool {
+        guard !authorizationCode.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            errorMessage = "Für die Simulation ist ein Freigabecode erforderlich. Er wird nicht gespeichert."
+            return false
+        }
+        return transitionDirectDebit(order, to: .submitted)
+    }
+
+    func simulateDirectDebitDecision(
+        _ order: DirectDebitOrder,
+        outcome: SimulatorOutcome
+    ) -> Bool {
+        transitionDirectDebit(order, to: outcome.paymentStatus)
+    }
+
     func saveStandingOrder(_ value: StandingOrder) -> Bool {
         guard let repository else { return false }
         do {
@@ -1928,6 +2045,7 @@ final class FinanceAppStore: ObservableObject {
         scheduledTransactions = try repository.scheduledTransactions()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()
+        directDebitOrders = try repository.directDebitOrders()
         standingOrders = try repository.standingOrders()
         payees = try repository.payees()
         payeeBankAccounts = try repository.payeeBankAccounts()

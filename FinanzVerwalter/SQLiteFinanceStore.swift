@@ -1402,6 +1402,50 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 23")
             }
         }
+        if version < 24 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE direct_debit_orders (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        creditor_account_id TEXT NOT NULL REFERENCES accounts(id),
+                        debtor_payee_id TEXT NOT NULL REFERENCES payees(id),
+                        debtor_bank_account_id TEXT NOT NULL REFERENCES payee_bank_accounts(id),
+                        mandate_id TEXT NOT NULL REFERENCES sepa_mandates(id),
+                        creditor_name TEXT NOT NULL,
+                        creditor_id TEXT NOT NULL,
+                        creditor_iban TEXT NOT NULL,
+                        creditor_bic TEXT NOT NULL DEFAULT '',
+                        debtor_name TEXT NOT NULL,
+                        debtor_iban TEXT NOT NULL,
+                        debtor_bic TEXT NOT NULL DEFAULT '',
+                        amount_minor INTEGER NOT NULL CHECK(amount_minor>0),
+                        currency TEXT NOT NULL CHECK(currency='EUR'),
+                        collection_date TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        end_to_end_id TEXT NOT NULL,
+                        mandate_reference TEXT NOT NULL,
+                        mandate_signed_on TEXT NOT NULL,
+                        sequence_type TEXT NOT NULL CHECK(sequence_type IN ('oneOff','first','recurring','final')),
+                        status TEXT NOT NULL CHECK(status IN ('draft','initiated','challengeReceived','awaitingUser','submitted','accepted','rejected','unknown','cancelled')),
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        bank_reference TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX direct_debit_orders_collection
+                    ON direct_debit_orders(collection_date,status,id)
+                    """
+                )
+                try execute("PRAGMA user_version = 24")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2113,6 +2157,68 @@ final class SQLiteFinanceStore {
                     payeeID: Self.optionalText($0, 16).flatMap(UUID.init(uuidString:)),
                     payeeBankAccountID: Self.optionalText($0, 17)
                         .flatMap(UUID.init(uuidString:))
+                )
+            )
+        }
+        return values
+    }
+
+    func directDebitOrders() throws -> [DirectDebitOrder] {
+        var values: [DirectDebitOrder] = []
+        try query(
+            """
+            SELECT id,creditor_account_id,debtor_payee_id,debtor_bank_account_id,
+                   mandate_id,creditor_name,creditor_id,creditor_iban,creditor_bic,
+                   debtor_name,debtor_iban,debtor_bic,amount_minor,currency,
+                   collection_date,purpose,end_to_end_id,mandate_reference,
+                   mandate_signed_on,sequence_type,status,idempotency_key,
+                   bank_reference,created_at,updated_at
+            FROM direct_debit_orders
+            ORDER BY created_at DESC,id DESC
+            """
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let creditorAccountID = UUID(uuidString: Self.text($0, 1)),
+                let debtorPayeeID = UUID(uuidString: Self.text($0, 2)),
+                let debtorBankAccountID = UUID(uuidString: Self.text($0, 3)),
+                let mandateID = UUID(uuidString: Self.text($0, 4)),
+                let collectionDate = Self.date(Self.text($0, 14)),
+                let mandateSignedOn = Self.date(Self.text($0, 18)),
+                let sequenceType = SEPAMandateSequenceType(
+                    rawValue: Self.text($0, 19)
+                ),
+                let status = PaymentStatus(rawValue: Self.text($0, 20)),
+                let createdAt = Self.timestampDate(Self.text($0, 23)),
+                let updatedAt = Self.timestampDate(Self.text($0, 24))
+            else { return }
+            values.append(
+                DirectDebitOrder(
+                    id: id,
+                    creditorAccountID: creditorAccountID,
+                    debtorPayeeID: debtorPayeeID,
+                    debtorBankAccountID: debtorBankAccountID,
+                    mandateID: mandateID,
+                    creditorName: Self.text($0, 5),
+                    creditorID: Self.text($0, 6),
+                    creditorIBAN: Self.text($0, 7),
+                    creditorBIC: Self.text($0, 8),
+                    debtorName: Self.text($0, 9),
+                    debtorIBAN: Self.text($0, 10),
+                    debtorBIC: Self.text($0, 11),
+                    amountMinor: sqlite3_column_int64($0, 12),
+                    currency: Self.text($0, 13),
+                    collectionDate: collectionDate,
+                    purpose: Self.text($0, 15),
+                    endToEndID: Self.text($0, 16),
+                    mandateReference: Self.text($0, 17),
+                    mandateSignedOn: mandateSignedOn,
+                    sequenceType: sequenceType,
+                    status: status,
+                    idempotencyKey: Self.text($0, 21),
+                    bankReference: Self.text($0, 22),
+                    createdAt: createdAt,
+                    updatedAt: updatedAt
                 )
             )
         }
@@ -3917,6 +4023,188 @@ final class SQLiteFinanceStore {
             }
             try audit(
                 entity: "payment_order", id: id, action: "transition",
+                details: "\(current.status.rawValue)->\(target.rawValue)"
+            )
+        }
+    }
+
+    func createDirectDebitOrder(_ value: DirectDebitOrder) throws {
+        try value.validate()
+        guard value.status == .draft else {
+            throw FinanceError.invalidDirectDebit(
+                "Neue Lastschriften müssen als unveränderter Entwurf beginnen."
+            )
+        }
+        guard let account = try accounts().first(where: {
+            $0.id == value.creditorAccountID
+        }), !account.isClosed, account.currency.uppercased() == "EUR" else {
+            throw FinanceError.invalidDirectDebit(
+                "Das Gläubigerkonto fehlt, ist geschlossen oder führt keine EUR."
+            )
+        }
+        let accountOwner = account.ownerName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !accountOwner.isEmpty,
+              accountOwner == value.creditorName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              IBANValidator.normalized(account.iban)
+                == IBANValidator.normalized(value.creditorIBAN),
+              account.bic.uppercased().filter({ !$0.isWhitespace })
+                == value.creditorBIC.uppercased().filter({ !$0.isWhitespace })
+        else {
+            throw FinanceError.invalidDirectDebit(
+                "Der Gläubiger-Schnappschuss stimmt nicht mit dem ausgewählten Konto überein."
+            )
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payees WHERE id=? AND is_active=1",
+            [.text(value.debtorPayeeID.uuidString)]
+        ) == 1 else {
+            throw FinanceError.invalidDirectDebit(
+                "Die Zahlerakte fehlt oder ist inaktiv."
+            )
+        }
+        guard let bankAccount = try payeeBankAccounts(
+            payeeID: value.debtorPayeeID
+        ).first(where: { $0.id == value.debtorBankAccountID }),
+              bankAccount.isActive,
+              bankAccount.accountHolder == value.debtorName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              IBANValidator.normalized(bankAccount.iban)
+                == IBANValidator.normalized(value.debtorIBAN),
+              bankAccount.bic.uppercased().filter({ !$0.isWhitespace })
+                == value.debtorBIC.uppercased().filter({ !$0.isWhitespace })
+        else {
+            throw FinanceError.invalidDirectDebit(
+                "Die aktive Zahler-Bankverbindung fehlt oder stimmt nicht mit dem Schnappschuss überein."
+            )
+        }
+        guard let mandate = try sepaMandates(
+            payeeID: value.debtorPayeeID
+        ).first(where: { $0.id == value.mandateID }),
+              mandate.isActive,
+              mandate.reference == value.mandateReference,
+              mandate.signedOn.map({ Self.day($0) })
+                == Self.day(value.mandateSignedOn),
+              mandate.sequenceType == value.sequenceType
+        else {
+            throw FinanceError.invalidDirectDebit(
+                "Das aktive SEPA-Mandat fehlt oder stimmt nicht mit dem Schnappschuss überein."
+            )
+        }
+        if try scalarInt(
+            "SELECT COUNT(*) FROM direct_debit_orders WHERE idempotency_key=?",
+            [.text(value.idempotencyKey)]
+        ) > 0 {
+            throw FinanceError.duplicateDirectDebitOrder
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO direct_debit_orders(
+                    id,finance_file_id,creditor_account_id,debtor_payee_id,
+                    debtor_bank_account_id,mandate_id,creditor_name,creditor_id,
+                    creditor_iban,creditor_bic,debtor_name,debtor_iban,debtor_bic,
+                    amount_minor,currency,collection_date,purpose,end_to_end_id,
+                    mandate_reference,mandate_signed_on,sequence_type,status,
+                    idempotency_key,bank_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(value.creditorAccountID.uuidString),
+                    .text(value.debtorPayeeID.uuidString),
+                    .text(value.debtorBankAccountID.uuidString),
+                    .text(value.mandateID.uuidString),
+                    .text(value.creditorName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(SEPACreditorIDValidator.normalized(value.creditorID)),
+                    .text(IBANValidator.normalized(value.creditorIBAN)),
+                    .text(value.creditorBIC.uppercased().filter { !$0.isWhitespace }),
+                    .text(value.debtorName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(IBANValidator.normalized(value.debtorIBAN)),
+                    .text(value.debtorBIC.uppercased().filter { !$0.isWhitespace }),
+                    .integer(value.amountMinor), .text("EUR"),
+                    .text(Self.day(value.collectionDate)),
+                    .text(value.purpose.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.endToEndID.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.mandateReference),
+                    .text(Self.day(value.mandateSignedOn)),
+                    .text(value.sequenceType.rawValue),
+                    .text(value.status.rawValue), .text(value.idempotencyKey),
+                    .text(value.bankReference), .text(now),
+                    .text(Self.timestamp(value.updatedAt))
+                ]
+            )
+            try audit(
+                entity: "direct_debit_order", id: value.id, action: "create",
+                details: "payee=\(value.debtorPayeeID.uuidString);mandate=\(value.mandateID.uuidString)"
+            )
+        }
+    }
+
+    func transitionDirectDebitOrder(id: UUID, to target: PaymentStatus) throws {
+        guard let current = try directDebitOrders().first(where: { $0.id == id })
+        else {
+            throw FinanceError.invalidDirectDebit("Der Lastschriftauftrag fehlt.")
+        }
+        guard current.status.canTransition(to: target) else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            let bankReference = target == .accepted
+                ? "SIM-DD-\(id.uuidString.prefix(8).uppercased())"
+                : current.bankReference
+            try run(
+                """
+                UPDATE direct_debit_orders
+                SET status=?,bank_reference=?,updated_at=?,version=version+1
+                WHERE id=? AND status=?
+                """,
+                [
+                    .text(target.rawValue), .text(bankReference), .text(now),
+                    .text(id.uuidString), .text(current.status.rawValue)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.invalidPaymentTransition
+            }
+            if target == .accepted {
+                let reference = "direct-debit:\(id.uuidString)"
+                if try scalarInt(
+                    "SELECT COUNT(*) FROM transactions WHERE reference=?",
+                    [.text(reference)]
+                ) == 0 {
+                    try writeTransaction(
+                        FinanceTransaction(
+                            id: UUID(), accountID: current.creditorAccountID,
+                            bookingDate: current.collectionDate,
+                            valueDate: current.collectionDate,
+                            payee: current.debtorName, purpose: current.purpose,
+                            categoryID: nil, amountMinor: current.amountMinor,
+                            currency: current.currency, status: .pending,
+                            memo: "SEPA-Basislastschrift", reference: reference,
+                            transferID: nil, importFingerprint: nil, splits: [],
+                            payeeID: current.debtorPayeeID,
+                            origin: .manual,
+                            counterpartyIBAN: current.debtorIBAN,
+                            endToEndID: current.endToEndID,
+                            mandateReference: current.mandateReference,
+                            counterpartyBIC: current.debtorBIC,
+                            creditorID: current.creditorID,
+                            bookingText: "SEPA-Basislastschrift"
+                        ),
+                        now: now
+                    )
+                }
+            }
+            try audit(
+                entity: "direct_debit_order", id: id, action: "transition",
                 details: "\(current.status.rawValue)->\(target.rawValue)"
             )
         }

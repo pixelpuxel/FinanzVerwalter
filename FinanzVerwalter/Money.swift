@@ -122,6 +122,8 @@ enum FinanceError: LocalizedError, Equatable {
     case invalidIBAN
     case invalidPaymentTransition
     case duplicatePaymentOrder
+    case invalidDirectDebit(String)
+    case duplicateDirectDebitOrder
     case invalidStandingOrder(String)
     case inactiveStandingOrder
     case standingOrderRunFinalized
@@ -155,6 +157,10 @@ enum FinanceError: LocalizedError, Equatable {
         case .invalidIBAN: "Die IBAN-Prüfsumme ist ungültig."
         case .invalidPaymentTransition: "Dieser Zahlungsstatus darf nicht in den gewünschten Zustand wechseln."
         case .duplicatePaymentOrder: "Dieser Zahlungsauftrag wurde mit derselben Idempotenzkennung bereits angelegt."
+        case .invalidDirectDebit(let message):
+            "Die Lastschrift ist ungültig: \(message)"
+        case .duplicateDirectDebitOrder:
+            "Diese Lastschrift wurde mit derselben Idempotenzkennung bereits angelegt."
         case .invalidStandingOrder(let message): "Der Dauerauftrag ist ungültig: \(message)"
         case .inactiveStandingOrder: "Nur aktive Daueraufträge können vorbereitet oder übersprungen werden."
         case .standingOrderRunFinalized:
