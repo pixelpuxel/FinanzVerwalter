@@ -376,6 +376,18 @@ eine vorgemerkte Gutschrift. Entwürfe können lokal als
 `pain.008.001.08` nach dem datierten Regelpaket `EPC-SDD-CORE-2025-V1.1`
 exportiert werden. Es findet keine echte Bankübermittlung statt.
 
+Mehrere kompatible Entwürfe lassen sich als unveränderlicher
+Sammelzahlungsauftrag bündeln. Sammelüberweisungen verlangen dasselbe offene
+EUR-Auftraggeberkonto, denselben Ausführungstag und denselben Auftragstyp;
+Sammellastschriften zusätzlich dieselbe Gläubigeridentität, Sequenz und
+Fälligkeit. Die Detailansicht zeigt Anzahl, Gesamtsumme und alle Positionen
+vor der doppelten Bestätigung. Statusübergänge und die genau-einmalige
+Erzeugung vorgemerkter Buchungen erfolgen für den gesamten Sammler atomar;
+Einzelaktionen auf enthaltenen Aufträgen sind gesperrt. Der lokale Export
+schreibt ein gemeinsames `pain.001.001.09` beziehungsweise
+`pain.008.001.08` mit `BtchBookg`, Kontrollsumme und allen Positionen und
+sendet weiterhin keine Daten an eine Bank.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand

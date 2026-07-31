@@ -121,9 +121,9 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 24 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 25 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 69 ausgeführte XCTest-Fälle: 68
+implementiert. Die Suite umfasst aktuell 71 ausgeführte XCTest-Fälle: 70
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -370,6 +370,41 @@ Für SEPA-Core-Lastschriften gilt reproduzierbar:
   unveränderliche Lastschriftzusammenfassung sichtbar und doppelt bestätigt
   sein. Prüfe Rundlauf, Manipulationsschutz, Idempotenz, Zustandsübergänge,
   genau-einmalige Buchung und deterministischen XML-Export.
+
+Für Sammelüberweisungen und Sammellastschriften gilt reproduzierbar:
+
+- Migration 25 erzeugt `payment_batches` und `payment_batch_items`. Ein
+  Sammler besitzt Art, Namen, gemeinsames Konto und Datum, Status,
+  Idempotenzkennung, geordnete unveränderliche Mitglieder und Zeitstempel.
+  Derselbe Einzelauftrag darf durch partielle Unique-Indizes höchstens einem
+  Sammler angehören.
+- Erlaube nur mindestens zwei freie Entwürfe. Sammelüberweisungen müssen
+  offenes EUR-Konto, Auftragstyp und Ausführungstag teilen;
+  Sammellastschriften zusätzlich Fälligkeit, Sequenztyp und den vollständigen
+  Gläubigerschnappschuss. Prüfe diese Invarianten vor und erneut innerhalb
+  derselben SQLite-Transaktion. Summiere ausschließlich überlaufgeschützt in
+  Minor-Units und beachte den pain-Höchstbetrag.
+- Bewege Sammler und sämtliche Mitglieder atomar durch dieselbe strikte
+  Zahlungszustandsmaschine. Sperre individuelle Statusaktionen für gebündelte
+  Mitglieder. Bei Annahme entstehen pro Mitglied genau einmal vorgemerkte
+  Buchungen mit `payment:<UUID>` beziehungsweise `direct-debit:<UUID>`;
+  Teilzustände und Teilbuchungen sind unzulässig.
+- Zeige im vierten Zahlungsverkehrssegment Art, Anzahl, Gesamtsumme, Konto,
+  Termin, unveränderliche geordnete Positionen und Statuspfad. Verlange vor
+  der Simulation Zusammenfassungs- und Ausführungsbestätigung; ein
+  Freigabecode bleibt flüchtiger UI-Zustand. Aus `unknown` erfolgt kein
+  automatischer Retry.
+- Exportiere ausschließlich Sammler im Entwurfszustand als ein gemeinsames
+  `pain.001.001.09` oder `pain.008.001.08`. Prüfe exakte Mitgliedschaft und
+  Reihenfolge, gemeinsame Invarianten sowie jeden Schnappschuss. Schreibe
+  `BtchBookg=true`, Anzahl und Kontrollsumme auf Gruppen- und
+  Zahlungsblockebene sowie je Mitglied genau einen Transaktionsblock.
+  Einzel- und Sammelexport sind deterministisch, XML-escaped, lokal und
+  verändern weder Status noch Buchungen.
+- Prüfe beide Sammlerarten als Datenbank-Rundlauf einschließlich
+  Deduplizierung, Schutz individueller Mitglieder, aller Zustandsübergänge,
+  genau-einmaliger Buchung, deterministischem Mehrpositions-XML,
+  Migration 14→25 und Migration 22→25.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 

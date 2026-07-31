@@ -1374,3 +1374,65 @@ Rechtsberatung.
   veröffentlicht. Sie enthält den verifizierten Release-, Datenbank-, GitHub-
   und Teststand sowie den Zielzählerstand von 9.651.001 Tokens; wegen der
   gesperrten Sitzung bewusst ohne Screenshot.
+
+## 2026-07-31 – Atomare Sammelüberweisungen und Sammellastschriften
+
+- SQLite-Migration 25 ergänzt `payment_batches` und
+  `payment_batch_items`. Ein Sammler speichert Art, Namen, gemeinsames Konto
+  und Datum, Status, eindeutige Idempotenzkennung sowie die stabil geordnete
+  Mitgliedschaft. Partielle Unique-Indizes verhindern, dass ein Einzelauftrag
+  gleichzeitig mehreren Sammlern angehört.
+- Sammelüberweisungen akzeptieren mindestens zwei freie Entwürfe mit offenem
+  EUR-Konto, identischem Auftragstyp und Ausführungstag.
+  Sammellastschriften verlangen zusätzlich identische Fälligkeit, Sequenz und
+  Gläubigerschnappschüsse. Alle Prüfungen werden vor und innerhalb derselben
+  Transaktion wiederholt; Beträge werden überlaufgeschützt in Minor-Units
+  summiert.
+- Die gesamte Gruppe durchläuft atomar die sichere Zustandsmaschine. Eine
+  individuelle Statusänderung gebündelter Mitglieder wird im Store abgewiesen.
+  Bei Annahme entstehen pro Überweisung genau eine negative und pro
+  Lastschrift genau eine positive vorgemerkte Buchung mit der bestehenden
+  stabilen Herkunftskennung. Teilzustände und Teilbuchungen sind damit
+  ausgeschlossen.
+- Der Zahlungsverkehr besitzt jetzt die vier Bereiche Überweisungen,
+  Lastschriften, Sammler und Daueraufträge. Der Sammlereditor zeigt nur freie
+  kompatible Entwürfe; die Detailansicht zeigt Art, Konto, Datum, Anzahl,
+  Gesamtsumme, unveränderliche geordnete Positionen und Statuspfad. Vor der
+  simulierten Ausführung sind Zusammenfassung und Ausführung doppelt zu
+  bestätigen; Freigabecodes werden nicht gespeichert.
+- `Pain001Exporter` und `Pain008Exporter` erzeugen für Sammler jeweils eine
+  gemeinsame deterministische XML-Datei mit `BtchBookg=true`, Anzahl und
+  Kontrollsumme auf Gruppen- und Zahlungsblockebene sowie genau einem
+  Transaktionsblock pro Mitglied. Exakte Mitgliedschaft, Reihenfolge,
+  gemeinsame Invarianten, Einzelwerte, XML-Escaping und bestehende datierte
+  EPC-Regelpakete werden geprüft; der Export bleibt lokal und statusneutral.
+- Zwei neue Integrationstests prüfen beide Sammlerarten vollständig:
+  Persistenz, Deduplizierung, Schutz individueller Mitglieder, atomare
+  Statusübergänge, genau-einmalige Buchungen, deterministischen Mehrpositions-
+  pain.001-/pain.008-Export und Integrität. Die Migrationstests prüfen nun
+  14→25 und 22→25.
+- Der optimierte Release-Build besteht. Die vollständige Suite führte 71
+  Tests aus: 70 bestanden, der private opt-in-Real-QIF-Test wurde ohne Pfad
+  erwartungsgemäß übersprungen, 0 Fehler. Das Ergebnis liegt lokal unter
+  `/tmp/FinanzVerwalter-FullTests-Schema25.xcresult`.
+- Der private Test wurde anschließend separat mit einer SHA-256-identischen,
+  nur temporär nach `/tmp` kopierten echten 2025-QIF-Datei ausgeführt und
+  bestand in 1,000 Sekunden. Die temporäre Kopie wurde danach gelöscht; Datei,
+  Inhalt und privater Quellpfad werden nicht versioniert.
+- Vor der Produktivmigration wurde
+  `Vor Migration 25 SEPA-Sammler.qbackup` erstellt und geprüft: Schema 24,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen und 0 Lastschriftaufträge.
+- Der optimierte Release wurde signaturgeprüft, unter
+  `~/Applications/FinanzVerwalter.app` installiert und gestartet. Der
+  Vorgänger liegt reversibel und von Git ignoriert unter
+  `build/FinanzVerwalter-vor-sepa-sammlern-20260731-1515.app`.
+- Nach der Migration und kontrolliertem WAL-Checkpoint meldet die
+  Produktivdatei Schema 25, Integrität `ok`, unverändert 97 Konten und 2.170
+  Buchungen, 0 Lastschriftaufträge, 0 Sammler und 0 Sammlerpositionen sowie
+  SHA-256
+  `1ffa1d0f17dbd24cdc33863232ce5fbf482c6daf597ee2c51387e761719d518b`.
+  Die installierte App wurde danach wieder gestartet.
+- Implementierung und Tests sind als Commit `0b3f795` auf
+  `agent/qif-mehrkontenimport` festgeschrieben. Die GitHub- und
+  Telegram-Veröffentlichung wird im Anschluss an diesen reproduzierbaren
+  Installationsstand protokolliert.
