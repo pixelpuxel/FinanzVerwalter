@@ -1766,3 +1766,14 @@ Rechtsberatung.
   Die App läuft als Prozess 63177; die Produktivdatei blieb bytegleich bei
   SHA-256 `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
   und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.
+- Implementierung und Tests sind als Commit `6e765eb`, die reproduzierbare
+  Dokumentation als `eb4b0d6` auf `agent/qif-mehrkontenimport`
+  festgeschrieben und nach GitHub gepusht. Draft-PR 1 beschreibt jetzt die
+  zweite Gruppierung, Vorlagenkompatibilität, 83-Test-Vollsuite und die noch
+  offenen Standardberichte sowie XLSX-/HTML-Ausgaben.
+- Telegram-Nachricht 975 wurde im Projektthread 894 (`/quicken`) mit demselben
+  Funktions-, Test-, Release-, Datenbank- und GitHub-Stand veröffentlicht.
+  Der zunächst vor dem Messaufruf eingesetzte Zählerplatzhalter wurde sofort
+  auf den exakten Zielzählerstand von 11.462.415 Tokens berichtigt. Wegen der
+  weiterhin gesperrten macOS-Sitzung wurde kein Screenshot angehängt oder
+  vorgetäuscht.
