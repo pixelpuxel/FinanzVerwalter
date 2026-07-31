@@ -1833,6 +1833,81 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testPayeeSmartFillRanksPrefixesUsageAndAliasesDeterministically() {
+        let aliasPrefix = FinancePayee(
+            id: UUID(), canonicalName: "EDEKA", aliases: ["Markt Center"],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        let canonicalPrefix = FinancePayee(
+            id: UUID(), canonicalName: "Markthalle", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        let frequentContains = FinancePayee(
+            id: UUID(), canonicalName: "Supermarkt Nord", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        let diacriticAlias = FinancePayee(
+            id: UUID(), canonicalName: "Bäckerei", aliases: ["Café Central"],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        let inactive = FinancePayee(
+            id: UUID(), canonicalName: "Markt Ruhe", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: false
+        )
+        let accountID = UUID()
+        func transaction(payeeID: UUID) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: accountID, bookingDate: Date(), valueDate: nil,
+                payee: "", purpose: "", categoryID: nil,
+                amountMinor: -100, currency: "EUR", status: .booked,
+                memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: [], payeeID: payeeID
+            )
+        }
+        let transactions = [
+            transaction(payeeID: aliasPrefix.id),
+            transaction(payeeID: canonicalPrefix.id),
+            transaction(payeeID: canonicalPrefix.id),
+            transaction(payeeID: frequentContains.id),
+            transaction(payeeID: frequentContains.id),
+            transaction(payeeID: frequentContains.id)
+        ]
+        let payees = [
+            frequentContains, inactive, aliasPrefix, diacriticAlias,
+            canonicalPrefix
+        ]
+
+        let results = PayeeSmartFill.suggestions(
+            payees: payees,
+            transactions: transactions,
+            query: "markt"
+        )
+        XCTAssertEqual(
+            results.map(\.payee.id),
+            [canonicalPrefix.id, aliasPrefix.id, frequentContains.id]
+        )
+        XCTAssertEqual(results[1].matchedAlias, "Markt Center")
+        XCTAssertEqual(results.map(\.usageCount), [2, 1, 3])
+        XCTAssertEqual(
+            PayeeSmartFill.suggestions(
+                payees: payees,
+                transactions: transactions,
+                query: "cafe"
+            ).map(\.payee.id),
+            [diacriticAlias.id]
+        )
+    }
+
     func testPayeeAliasesAndTransactionAndSplitTagsRoundTrip() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(

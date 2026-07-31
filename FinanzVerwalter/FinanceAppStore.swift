@@ -1,6 +1,75 @@
 import CryptoKit
 import Foundation
 
+struct PayeeSmartFillSuggestion: Identifiable, Equatable, Sendable {
+    let payee: FinancePayee
+    let matchedAlias: String?
+    let usageCount: Int
+    let hasPrefixMatch: Bool
+
+    var id: UUID { payee.id }
+}
+
+enum PayeeSmartFill {
+    static func suggestions(
+        payees: [FinancePayee],
+        transactions: [FinanceTransaction],
+        query: String
+    ) -> [PayeeSmartFillSuggestion] {
+        let needle = normalized(query)
+        let usageCounts = Dictionary(
+            grouping: transactions.compactMap(\.payeeID),
+            by: { $0 }
+        ).mapValues(\.count)
+
+        return payees.compactMap { payee in
+            guard payee.isActive else { return nil }
+            let canonical = normalized(payee.canonicalName)
+            let aliases = payee.aliases.sorted {
+                normalized($0) < normalized($1)
+            }
+            let matchingAliases = aliases.filter {
+                needle.isEmpty || normalized($0).contains(needle)
+            }
+            let canonicalMatches = needle.isEmpty || canonical.contains(needle)
+            guard canonicalMatches || !matchingAliases.isEmpty else { return nil }
+            let prefixAliases = matchingAliases.filter {
+                normalized($0).hasPrefix(needle)
+            }
+            return PayeeSmartFillSuggestion(
+                payee: payee,
+                matchedAlias: canonicalMatches
+                    ? nil : (prefixAliases.first ?? matchingAliases.first),
+                usageCount: usageCounts[payee.id, default: 0],
+                hasPrefixMatch: needle.isEmpty
+                    || canonical.hasPrefix(needle)
+                    || !prefixAliases.isEmpty
+            )
+        }.sorted { left, right in
+            if left.hasPrefixMatch != right.hasPrefixMatch {
+                return left.hasPrefixMatch
+            }
+            if left.usageCount != right.usageCount {
+                return left.usageCount > right.usageCount
+            }
+            let leftName = normalized(left.payee.canonicalName)
+            let rightName = normalized(right.payee.canonicalName)
+            if leftName != rightName { return leftName < rightName }
+            return left.payee.id.uuidString < right.payee.id.uuidString
+        }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        let locale = Locale(identifier: "de_DE")
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: locale
+            )
+            .lowercased(with: locale)
+    }
+}
+
 @MainActor
 final class FinanceAppStore: ObservableObject {
     @Published private(set) var fileInfo: FinanceFileInfo?
@@ -285,27 +354,17 @@ final class FinanceAppStore: ObservableObject {
     }
 
     func payeeSuggestions(for query: String) -> [FinancePayee] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return payees
-            .filter { payee in
-                payee.isActive && (
-                    trimmed.isEmpty
-                    || payee.canonicalName.localizedCaseInsensitiveContains(trimmed)
-                    || payee.aliases.contains {
-                        $0.localizedCaseInsensitiveContains(trimmed)
-                    }
-                )
-            }
-            .sorted { left, right in
-                let query = trimmed.lowercased()
-                let leftPrefix = left.canonicalName.lowercased().hasPrefix(query)
-                let rightPrefix = right.canonicalName.lowercased().hasPrefix(query)
-                if leftPrefix != rightPrefix { return leftPrefix }
-                let leftCount = transactions.filter { $0.payeeID == left.id }.count
-                let rightCount = transactions.filter { $0.payeeID == right.id }.count
-                if leftCount != rightCount { return leftCount > rightCount }
-                return left.canonicalName.localizedCaseInsensitiveCompare(right.canonicalName) == .orderedAscending
-            }
+        payeeSmartFillSuggestions(for: query).map(\.payee)
+    }
+
+    func payeeSmartFillSuggestions(
+        for query: String
+    ) -> [PayeeSmartFillSuggestion] {
+        PayeeSmartFill.suggestions(
+            payees: payees,
+            transactions: transactions,
+            query: query
+        )
     }
 
     func saveAccount(

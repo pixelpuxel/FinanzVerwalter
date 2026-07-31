@@ -1615,12 +1615,31 @@ struct TransactionEditorView: View {
                 }
                 DatePicker("Datum", selection: $date, displayedComponents: .date)
                 TextField("Empfänger", text: $payee)
-                Picker("Empfängerakte", selection: $payeeID) {
+                    .onChange(of: payee) {
+                        guard let payeeID,
+                              let selected = store.payees.first(where: {
+                                  $0.id == payeeID
+                              })
+                        else { return }
+                        let entered = payee.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+                        if entered.compare(
+                            selected.canonicalName,
+                            options: [.caseInsensitive, .diacriticInsensitive]
+                        ) != .orderedSame {
+                            self.payeeID = nil
+                        }
+                    }
+                Picker("SmartFill-Empfänger", selection: $payeeID) {
                     Text("Nur Freitext").tag(UUID?.none)
-                    ForEach(store.payeeSuggestions(for: payee)) {
-                        Text($0.canonicalName).tag(Optional($0.id))
+                    ForEach(store.payeeSmartFillSuggestions(for: payee)) {
+                        Text(smartFillLabel($0)).tag(Optional($0.payee.id))
                     }
                 }
+                .help(
+                    "Filtert Empfängernamen und Aliase; Präfixtreffer und häufig verwendete Akten stehen zuerst."
+                )
                 .onChange(of: payeeID) {
                     guard let selected = store.payees.first(where: { $0.id == payeeID }) else {
                         return
@@ -1957,6 +1976,21 @@ struct TransactionEditorView: View {
                 store.errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func smartFillLabel(
+        _ suggestion: PayeeSmartFillSuggestion
+    ) -> String {
+        var details: [String] = []
+        if let alias = suggestion.matchedAlias {
+            details.append("Alias: \(alias)")
+        }
+        if suggestion.usageCount > 0 {
+            details.append("\(suggestion.usageCount)× verwendet")
+        }
+        guard !details.isEmpty else { return suggestion.payee.canonicalName }
+        return suggestion.payee.canonicalName
+            + " — " + details.joined(separator: " · ")
     }
 
     private func resolvedSimpleVAT() throws -> (
