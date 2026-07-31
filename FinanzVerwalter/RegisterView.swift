@@ -266,6 +266,19 @@ struct RegisterView: View {
             )
             .monospacedDigit()
             .frame(height: rowMode.rowHeight)
+        case .valueDate:
+            Text(
+                value.valueDate ?? value.bookingDate,
+                format: .dateTime.day().month(.twoDigits).year()
+            )
+            .monospacedDigit()
+            .foregroundStyle(value.valueDate == nil ? .secondary : .primary)
+            .frame(height: rowMode.rowHeight)
+        case .reference:
+            Text(value.reference.isEmpty ? "–" : value.reference)
+                .lineLimit(1)
+                .help(value.reference)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
         case .status:
             Image(systemName: statusIcon(value.status))
                 .foregroundStyle(statusColor(value.status))
@@ -314,6 +327,13 @@ struct RegisterView: View {
                 .lineLimit(rowMode == .twoLines ? 2 : 1)
                 .truncationMode(.middle)
                 .help(path)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .tags:
+            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            Text(tags.isEmpty ? "–" : tags)
+                .lineLimit(rowMode == .twoLines ? 2 : 1)
+                .truncationMode(.middle)
+                .help(tags)
                 .frame(height: rowMode.rowHeight, alignment: .leading)
         case .account:
             Text(store.accountName(value.accountID))
@@ -1089,6 +1109,18 @@ struct CombinedRegisterView: View {
             )
             .foregroundStyle(value.bookingDate > Date() ? .blue : .primary)
             .frame(height: rowMode.rowHeight)
+        case .valueDate:
+            Text(
+                value.valueDate ?? value.bookingDate,
+                format: .dateTime.day().month(.twoDigits).year()
+            )
+            .foregroundStyle(value.valueDate == nil ? .secondary : .primary)
+            .frame(height: rowMode.rowHeight)
+        case .reference:
+            Text(value.reference.isEmpty ? "–" : value.reference)
+                .lineLimit(1)
+                .help(value.reference)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
         case .status:
             Text(value.status.title)
                 .frame(height: rowMode.rowHeight, alignment: .leading)
@@ -1117,6 +1149,13 @@ struct CombinedRegisterView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(path)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .tags:
+            let tags = value.tagIDs.map(store.tagName).joined(separator: ", ")
+            Text(tags.isEmpty ? "–" : tags)
+                .lineLimit(rowMode == .twoLines ? 2 : 1)
+                .truncationMode(.middle)
+                .help(tags)
                 .frame(height: rowMode.rowHeight, alignment: .leading)
         case .account:
             Text(store.accountName(value.accountID))

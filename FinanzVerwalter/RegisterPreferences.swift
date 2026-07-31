@@ -2,10 +2,13 @@ import Foundation
 
 enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case date
+    case valueDate
+    case reference
     case status
     case payee
     case purpose
     case category
+    case tags
     case account
     case amount
     case balance
@@ -15,10 +18,13 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
     var title: String {
         switch self {
         case .date: "Datum"
+        case .valueDate: "Wertstellung"
+        case .reference: "Belegnummer"
         case .status: "Status"
         case .payee: "Empfänger"
         case .purpose: "Verwendungszweck"
         case .category: "Kategorie"
+        case .tags: "Klasse/Tags"
         case .account: "Konto"
         case .amount: "Betrag"
         case .balance: "Saldo"
@@ -27,11 +33,13 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
 
     var minimumWidth: CGFloat {
         switch self {
-        case .date: 82
+        case .date, .valueDate: 82
+        case .reference: 90
         case .status: 44
         case .payee: 130
         case .purpose: 170
         case .category: 150
+        case .tags: 110
         case .account: 100
         case .amount, .balance: 105
         }
@@ -39,11 +47,13 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
 
     var idealWidth: CGFloat {
         switch self {
-        case .date: 92
+        case .date, .valueDate: 92
+        case .reference: 120
         case .status: 70
         case .payee: 180
         case .purpose: 260
         case .category: 220
+        case .tags: 150
         case .account: 140
         case .amount: 120
         case .balance: 125

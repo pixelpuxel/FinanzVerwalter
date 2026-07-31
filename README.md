@@ -71,10 +71,11 @@ Darstellung kann dauerhaft zwischen einer kompakten Einzeile und einer
 zweizeiligen Ansicht mit Wertstellung, Memo, Referenz und Tags umgeschaltet
 werden. Bestands- und QIF-Konten werden in Bankkonten, Kreditkarten, Bargeld,
 Depots, Kredite, Vermögen, Verbindlichkeiten, Forderungen oder Sonstige
-einsortiert. Datum, Status, Empfänger, Verwendungszweck, Kategorie, Konto,
-Betrag und Saldo lassen sich vollständig ein- oder ausblenden. Benannte
-Ansichten speichern Konto, Filter, Zeitraum, Zeilenmodus und Spaltenauswahl
-und können später wieder geladen oder gelöscht werden.
+einsortiert. Datum, Wertstellung, Belegnummer, Status, Empfänger,
+Verwendungszweck, Kategorie, Klasse/Tags, Konto, Betrag und Saldo lassen sich
+vollständig ein- oder ausblenden. Benannte Ansichten speichern Konto, Filter,
+Zeitraum, Zeilenmodus und Spaltenauswahl und können später wieder geladen
+oder gelöscht werden.
 
 ## Berichtswerkstatt
 

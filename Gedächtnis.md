@@ -415,10 +415,10 @@ Rechtsberatung.
 - Die gerenderte erste PDF-Seite und der grüne 31/31-Teststand wurden im
   Telegram-Projektthread 894 als Nachricht 934 veröffentlicht.
 - Konto- und Sammelkontoblatt erzeugen ihre Spalten nun datengetrieben.
-  Datum, Status, Empfänger, Verwendungszweck, Kategorie, Konto, Betrag und
-  Saldo können vollständig ein- oder ausgeblendet werden; mindestens eine
-  Spalte bleibt sichtbar. Beide Kontenblätter teilen dieselbe dauerhafte
-  Spaltenauswahl.
+  Datum, Wertstellung, Belegnummer, Status, Empfänger, Verwendungszweck,
+  Kategorie, Klasse/Tags, Konto, Betrag und Saldo können vollständig ein-
+  oder ausgeblendet werden; mindestens eine Spalte bleibt sichtbar. Beide
+  Kontenblätter teilen dieselbe dauerhafte Spaltenauswahl.
 - Benannte Kontoblatt-Ansichten speichern Zielkonto, Status- und
   Kategoriefilter, Zeitraum einschließlich eigener Grenzen, Ein-/Zweizeile
   und sichtbare Spalten. Gleichnamiges Speichern aktualisiert die vorhandene
