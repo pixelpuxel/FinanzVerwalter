@@ -414,3 +414,26 @@ Rechtsberatung.
   der Mac beim Installationsabschluss gesperrt war.
 - Die gerenderte erste PDF-Seite und der grüne 31/31-Teststand wurden im
   Telegram-Projektthread 894 als Nachricht 934 veröffentlicht.
+- Konto- und Sammelkontoblatt erzeugen ihre Spalten nun datengetrieben.
+  Datum, Status, Empfänger, Verwendungszweck, Kategorie, Konto, Betrag und
+  Saldo können vollständig ein- oder ausgeblendet werden; mindestens eine
+  Spalte bleibt sichtbar. Beide Kontenblätter teilen dieselbe dauerhafte
+  Spaltenauswahl.
+- Benannte Kontoblatt-Ansichten speichern Zielkonto, Status- und
+  Kategoriefilter, Zeitraum einschließlich eigener Grenzen, Ein-/Zweizeile
+  und sichtbare Spalten. Gleichnamiges Speichern aktualisiert die vorhandene
+  Ansicht; fehlende Konten werden ignoriert und fehlende Kategorien fallen
+  auf `Alle Kategorien` zurück.
+- Die Präferenzdekodierung ist fehlertolerant und verwendet bei leerem oder
+  beschädigtem Spaltensatz alle Standardspalten. Der deterministische
+  Roundtrip ist als 32. XCTest-Fall abgedeckt.
+- Die vollständige externe 2025-QIF-Abnahme besteht mit 32/32 Tests:
+  97 Konten, 2.170 Buchungen, keine abgelehnte normale Buchung.
+- Für echte dynamische SwiftUI-Tabellenspalten wurde das Mindestziel
+  dokumentiert von macOS 14.0 auf 14.4 angehoben; der Zielrechner läuft auf
+  macOS 26. ADR 0004 hält die Entscheidung und ihre Folgen fest.
+- Der optimierte Release-Build wurde erfolgreich erstellt, unter
+  `~/Applications/FinanzVerwalter.app` installiert und ad hoc signiert.
+  Schema 13 und die reale Finanzdatei blieben mit 97 Konten, 2.170 Buchungen
+  und Integrität `ok` unverändert. Die visuelle UI-Abnahme wartet weiterhin
+  auf das Entsperren des Mac.

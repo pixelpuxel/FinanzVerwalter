@@ -360,6 +360,25 @@ Für Kredite und Vermögenswerte gilt reproduzierbar:
 - Noch offen sind die automatische Splitbuchung realer Raten, der
   Ist-Abgleich, Szenarien und der optionale Debt-Reduction-Planner.
 
+Für konfigurierbare Kontoblattansichten gilt reproduzierbar:
+
+- Spalten besitzen stabile fachliche IDs und werden nicht über ihre
+  lokalisierten Überschriften persistiert.
+- Leere oder nicht dekodierbare Spaltenmengen fallen auf den vollständigen
+  Standardsatz zurück; die Oberfläche verhindert, dass die letzte sichtbare
+  Spalte entfernt wird.
+- Konto- und Sammelkontoblatt lesen dieselbe Spalteneinstellung.
+- Eine benannte Ansicht enthält Konto, Status, Kategorieauswahl, Zeitraum,
+  benutzerdefinierte Datumsgrenzen, Zeilenmodus und sichtbare Spalten.
+- Beim Laden werden externe UUID-Referenzen validiert. Ein nicht mehr
+  vorhandenes Konto verändert das aktuelle Konto nicht; eine nicht mehr
+  vorhandene Kategorie wird zu `Alle Kategorien`.
+- Gleichnamiges Speichern aktualisiert statt eine schwer unterscheidbare
+  Dublette anzulegen. JSON-Daten verwenden ISO-8601-Daten und sortierte
+  Schlüssel für reproduzierbare Tests.
+- Echte bedingte SwiftUI-Tabellenspalten benötigen macOS 14.4. Das Projekt
+  setzt deshalb dieses Mindestziel für App und Tests konsistent.
+
 ## Qualitätsschleife
 
 ### Reproduzierbarer PDF-Bericht

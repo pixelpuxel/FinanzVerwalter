@@ -11,7 +11,7 @@ fertigen Funktionsbereich.
 |---|---|---|---|
 | P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–13, Integritätstest, append-only Auditereignisse |
 | P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; Bankabrufdaten bleiben Adapteraufgabe |
-| P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung und vollständige Kategoriepfade vorhanden; konfigurierbare Spalten, Tabs, gespeicherte Ansichten, Druck und F3 fehlen |
+| P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung, vollständige Kategoriepfade, acht dynamische Spalten und benannte Ansichten mit Konto/Filtern/Zeilenmodus/Spalten vorhanden; Tabs, Druck und vollständiger F3-Tastaturworkflow fehlen |
 | P0 | Kategorien und Unterkategorien | Erfüllt für Basiskern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade; MwSt.- und Steuerzuordnungen fehlen |
 | P0 | Klassen/Mehrfach-Tags | Teilweise | Hierarchische Tags auf Buchungen und Splits vorhanden; eigenständige Klassenfilter und Massenbearbeitung fehlen |
 | P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten und Vorschläge vorhanden; Mandate und Gläubiger-ID fehlen |
@@ -43,8 +43,7 @@ fertigen Funktionsbereich.
 ## Aktuelle Reihenfolge
 
 1. Berichtswerkstatt: zweite Dimension, Zwischensummen und Zeitvergleich.
-2. P0-Kontoblatt: konfigurierbare Spalten, gespeicherte Ansichten und
-   Tastaturworkflow.
+2. P0-Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
 3. Import-/Bankumsatz-Matching mit gestuften Fingerabdrücken.
 4. Kontoabgleich mit markierbaren Buchungen und Rücknahme.
 5. Regelketten und Vorlagen.

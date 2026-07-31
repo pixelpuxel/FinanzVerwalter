@@ -1,0 +1,124 @@
+import Foundation
+
+enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
+    case date
+    case status
+    case payee
+    case purpose
+    case category
+    case account
+    case amount
+    case balance
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .date: "Datum"
+        case .status: "Status"
+        case .payee: "Empfänger"
+        case .purpose: "Verwendungszweck"
+        case .category: "Kategorie"
+        case .account: "Konto"
+        case .amount: "Betrag"
+        case .balance: "Saldo"
+        }
+    }
+
+    var minimumWidth: CGFloat {
+        switch self {
+        case .date: 82
+        case .status: 44
+        case .payee: 130
+        case .purpose: 170
+        case .category: 150
+        case .account: 100
+        case .amount, .balance: 105
+        }
+    }
+
+    var idealWidth: CGFloat {
+        switch self {
+        case .date: 92
+        case .status: 70
+        case .payee: 180
+        case .purpose: 260
+        case .category: 220
+        case .account: 140
+        case .amount: 120
+        case .balance: 125
+        }
+    }
+
+    static let defaultSet = Set(allCases)
+}
+
+enum RegisterCategorySelection: Codable, Equatable, Sendable {
+    case all
+    case uncategorized
+    case category(UUID)
+}
+
+struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    var name: String
+    var accountID: UUID?
+    var statusRawValue: String?
+    var categorySelection: RegisterCategorySelection
+    var periodRawValue: String
+    var customStart: Date
+    var customEnd: Date
+    var rowModeRawValue: String
+    var visibleColumns: Set<RegisterColumn>
+}
+
+enum RegisterPreferencesCodec {
+    static func encodeColumns(_ columns: Set<RegisterColumn>) -> String {
+        normalized(columns).map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    static func decodeColumns(_ value: String) -> Set<RegisterColumn> {
+        let decoded = Set(
+            value.split(separator: ",").compactMap {
+                RegisterColumn(rawValue: String($0))
+            }
+        )
+        return decoded.isEmpty ? RegisterColumn.defaultSet : decoded
+    }
+
+    static func encodeViews(_ views: [SavedRegisterView]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(views), as: UTF8.self)
+    }
+
+    static func decodeViews(_ value: String) -> [SavedRegisterView] {
+        guard !value.isEmpty, let data = value.data(using: .utf8) else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let decoded = try? decoder.decode([SavedRegisterView].self, from: data) else {
+            return []
+        }
+        var seen = Set<UUID>()
+        return decoded
+            .filter { seen.insert($0.id).inserted }
+            .map { view in
+                var normalizedView = view
+                normalizedView.name = view.name.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                normalizedView.visibleColumns = normalized(view.visibleColumns)
+                return normalizedView
+            }
+            .filter { !$0.name.isEmpty }
+    }
+
+    private static func normalized(
+        _ columns: Set<RegisterColumn>
+    ) -> Set<RegisterColumn> {
+        columns.isEmpty ? RegisterColumn.defaultSet : columns
+    }
+}

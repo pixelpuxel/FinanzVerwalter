@@ -1633,6 +1633,53 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(text.contains("Seite 1"))
         XCTAssertTrue(text.contains("Seite \(document.pageCount)"))
     }
+
+    func testRegisterPreferencesRoundTripColumnsAndNamedViewDeterministically() throws {
+        let columns: Set<RegisterColumn> = [
+            .date, .payee, .category, .amount, .balance
+        ]
+        let encodedColumns = RegisterPreferencesCodec.encodeColumns(columns)
+        XCTAssertEqual(
+            encodedColumns,
+            "amount,balance,category,date,payee"
+        )
+        XCTAssertEqual(
+            RegisterPreferencesCodec.decodeColumns(encodedColumns),
+            columns
+        )
+        XCTAssertEqual(
+            RegisterPreferencesCodec.decodeColumns(""),
+            RegisterColumn.defaultSet
+        )
+
+        let view = SavedRegisterView(
+            id: UUID(),
+            name: "  Grundsteuer kompakt  ",
+            accountID: UUID(),
+            statusRawValue: TransactionStatus.booked.rawValue,
+            categorySelection: .category(UUID()),
+            periodRawValue: "currentYear",
+            customStart: Date(timeIntervalSince1970: 1_704_067_200),
+            customEnd: Date(timeIntervalSince1970: 1_735_603_199),
+            rowModeRawValue: "twoLines",
+            visibleColumns: columns
+        )
+        let encodedViews = try RegisterPreferencesCodec.encodeViews([view])
+        let restored = try XCTUnwrap(
+            RegisterPreferencesCodec.decodeViews(encodedViews).first
+        )
+        XCTAssertEqual(restored.id, view.id)
+        XCTAssertEqual(restored.name, "Grundsteuer kompakt")
+        XCTAssertEqual(restored.accountID, view.accountID)
+        XCTAssertEqual(restored.statusRawValue, view.statusRawValue)
+        XCTAssertEqual(restored.categorySelection, view.categorySelection)
+        XCTAssertEqual(restored.periodRawValue, view.periodRawValue)
+        XCTAssertEqual(restored.rowModeRawValue, view.rowModeRawValue)
+        XCTAssertEqual(restored.visibleColumns, columns)
+        XCTAssertTrue(
+            RegisterPreferencesCodec.decodeViews("{nicht-json").isEmpty
+        )
+    }
 }
 
 private final class TestDatabase {

@@ -11,11 +11,27 @@ struct RegisterView: View {
     @State private var periodFilter: RegisterPeriodFilter = .all
     @State private var customStart = Calendar.current.date(byAdding: .month, value: -1, to: .now) ?? .now
     @State private var customEnd = Date.now
+    @State private var selectedSavedViewID: UUID?
+    @State private var showSaveView = false
+    @State private var savedViewName = ""
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
+    @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
+    @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
         nonmutating set { rowModeRaw = newValue.rawValue }
+    }
+
+    private var visibleColumns: Set<RegisterColumn> {
+        get { RegisterPreferencesCodec.decodeColumns(visibleColumnsRaw) }
+        nonmutating set {
+            visibleColumnsRaw = RegisterPreferencesCodec.encodeColumns(newValue)
+        }
+    }
+
+    private var savedViews: [SavedRegisterView] {
+        RegisterPreferencesCodec.decodeViews(savedViewsRaw)
     }
 
     private var visibleTransactions: [FinanceTransaction] {
@@ -105,6 +121,7 @@ struct RegisterView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 175)
+                registerViewMenu
                 if periodFilter == .custom {
                     DatePicker("Von", selection: $customStart, displayedComponents: .date)
                         .labelsHidden()
@@ -127,84 +144,16 @@ struct RegisterView: View {
             Divider()
 
             Table(visibleTransactions, selection: $selection) {
-                TableColumn("Datum") { value in
-                    Text(value.bookingDate, format: .dateTime.day().month(.twoDigits).year())
-                        .monospacedDigit()
-                        .frame(height: rowMode.rowHeight)
-                }
-                .width(min: 82, ideal: 92)
-                TableColumn("Status") { value in
-                    Image(systemName: statusIcon(value.status))
-                        .foregroundStyle(statusColor(value.status))
-                        .help(value.status.title)
-                        .frame(height: rowMode.rowHeight)
-                }
-                .width(44)
-                TableColumn("Empfänger") { value in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(value.payee)
-                            .lineLimit(rowMode == .twoLines ? 2 : 1)
-                        if rowMode == .twoLines,
-                           let valueDate = value.valueDate,
-                           !Calendar.current.isDate(valueDate, inSameDayAs: value.bookingDate) {
-                            Text("Wertstellung \(valueDate.formatted(date: .numeric, time: .omitted))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                TableColumnForEach(orderedVisibleColumns) { column in
+                    TableColumn(column.title) { value in
+                        registerCell(
+                            value,
+                            column: column,
+                            runningBalances: runningBalances
+                        )
                     }
-                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                    .width(min: column.minimumWidth, ideal: column.idealWidth)
                 }
-                    .width(min: 130, ideal: 180)
-                TableColumn("Verwendungszweck") { value in
-                    let detail = transactionDetail(value)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(value.purpose)
-                            .lineLimit(rowMode == .twoLines && detail.isEmpty ? 2 : 1)
-                        if rowMode == .twoLines, !detail.isEmpty {
-                            Text(detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    .frame(height: rowMode.rowHeight, alignment: .leading)
-                    .help([value.purpose, detail].filter { !$0.isEmpty }.joined(separator: "\n"))
-                }
-                    .width(min: 170, ideal: 260)
-                TableColumn("Kategorie") { value in
-                    let path = store.transactionCategoryPath(value)
-                    Text(path)
-                        .lineLimit(rowMode == .twoLines ? 2 : 1)
-                        .truncationMode(.middle)
-                        .help(path)
-                        .frame(height: rowMode.rowHeight, alignment: .leading)
-                }
-                .width(min: 150, ideal: 220)
-                TableColumn("Konto") { value in
-                    Text(store.accountName(value.accountID))
-                        .frame(height: rowMode.rowHeight, alignment: .leading)
-                }
-                    .width(min: 100, ideal: 140)
-                TableColumn("Betrag") { value in
-                    Text(Money(minorUnits: value.amountMinor, currency: value.currency).formatted)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .monospacedDigit()
-                        .foregroundStyle(value.amountMinor < 0 ? .primary : Color.green)
-                        .frame(height: rowMode.rowHeight)
-                }
-                .width(min: 105, ideal: 120)
-                TableColumn("Saldo") { value in
-                    Text(
-                        Money(
-                            minorUnits: runningBalances[value.id] ?? 0,
-                            currency: value.currency
-                        ).formatted
-                    )
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .monospacedDigit()
-                    .frame(height: rowMode.rowHeight)
-                }
-                .width(min: 105, ideal: 125)
             }
             .contextMenu(forSelectionType: UUID.self) { ids in
                 if ids.count == 1 {
@@ -267,8 +216,266 @@ struct RegisterView: View {
                 selection.removeAll()
             }
         }
+        .sheet(isPresented: $showSaveView) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Kontoblatt-Ansicht speichern")
+                    .font(.title2.bold())
+                Text(
+                    "Gespeichert werden Konto, Filter, Zeitraum, Zeilenmodus "
+                        + "und die sichtbaren Spalten."
+                )
+                .foregroundStyle(.secondary)
+                TextField("Name der Ansicht", text: $savedViewName)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Abbrechen", role: .cancel) { showSaveView = false }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Speichern") { saveCurrentView() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(
+                            savedViewName.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                        )
+                }
+            }
+            .padding(24)
+            .frame(width: 480)
+        }
         .onChange(of: visibleTransactions.map(\.id)) {
             selection.formIntersection(Set(visibleTransactions.map(\.id)))
+        }
+    }
+
+    private var orderedVisibleColumns: [RegisterColumn] {
+        RegisterColumn.allCases.filter(visibleColumns.contains)
+    }
+
+    @ViewBuilder
+    private func registerCell(
+        _ value: FinanceTransaction,
+        column: RegisterColumn,
+        runningBalances: [UUID: Int64]
+    ) -> some View {
+        switch column {
+        case .date:
+            Text(
+                value.bookingDate,
+                format: .dateTime.day().month(.twoDigits).year()
+            )
+            .monospacedDigit()
+            .frame(height: rowMode.rowHeight)
+        case .status:
+            Image(systemName: statusIcon(value.status))
+                .foregroundStyle(statusColor(value.status))
+                .help(value.status.title)
+                .frame(height: rowMode.rowHeight)
+        case .payee:
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value.payee)
+                    .lineLimit(rowMode == .twoLines ? 2 : 1)
+                if rowMode == .twoLines,
+                   let valueDate = value.valueDate,
+                   !Calendar.current.isDate(
+                    valueDate,
+                    inSameDayAs: value.bookingDate
+                   ) {
+                    Text(
+                        "Wertstellung "
+                            + valueDate.formatted(date: .numeric, time: .omitted)
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .purpose:
+            let detail = transactionDetail(value)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value.purpose)
+                    .lineLimit(rowMode == .twoLines && detail.isEmpty ? 2 : 1)
+                if rowMode == .twoLines, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(height: rowMode.rowHeight, alignment: .leading)
+            .help(
+                [value.purpose, detail]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+            )
+        case .category:
+            let path = store.transactionCategoryPath(value)
+            Text(path)
+                .lineLimit(rowMode == .twoLines ? 2 : 1)
+                .truncationMode(.middle)
+                .help(path)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .account:
+            Text(store.accountName(value.accountID))
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .amount:
+            Text(
+                Money(
+                    minorUnits: value.amountMinor,
+                    currency: value.currency
+                ).formatted
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+            .foregroundStyle(value.amountMinor < 0 ? .primary : Color.green)
+            .frame(height: rowMode.rowHeight)
+        case .balance:
+            Text(
+                Money(
+                    minorUnits: runningBalances[value.id] ?? 0,
+                    currency: value.currency
+                ).formatted
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+            .frame(height: rowMode.rowHeight)
+        }
+    }
+
+    private var registerViewMenu: some View {
+        Menu {
+            if savedViews.isEmpty {
+                Text("Noch keine gespeicherte Ansicht")
+            } else {
+                ForEach(savedViews) { view in
+                    Button {
+                        apply(view)
+                    } label: {
+                        if selectedSavedViewID == view.id {
+                            Label(view.name, systemImage: "checkmark")
+                        } else {
+                            Text(view.name)
+                        }
+                    }
+                }
+                Divider()
+            }
+            Button("Aktuelle Ansicht speichern …", systemImage: "plus") {
+                savedViewName = selectedSavedViewID.flatMap { id in
+                    savedViews.first { $0.id == id }?.name
+                } ?? ""
+                showSaveView = true
+            }
+            Button("Ausgewählte Ansicht löschen", systemImage: "trash", role: .destructive) {
+                deleteSelectedView()
+            }
+            .disabled(selectedSavedViewID == nil)
+            Divider()
+            Menu("Sichtbare Spalten", systemImage: "rectangle.split.3x1") {
+                ForEach(RegisterColumn.allCases) { column in
+                    Toggle(
+                        column.title,
+                        isOn: Binding(
+                            get: { visibleColumns.contains(column) },
+                            set: { _ in toggle(column) }
+                        )
+                    )
+                    .disabled(
+                        visibleColumns.count == 1 && visibleColumns.contains(column)
+                    )
+                }
+                Divider()
+                Button("Standardspalten wiederherstellen") {
+                    visibleColumns = RegisterColumn.defaultSet
+                }
+            }
+        } label: {
+            Label(
+                selectedSavedViewID.flatMap { id in
+                    savedViews.first { $0.id == id }?.name
+                } ?? "Ansicht",
+                systemImage: "tablecells.badge.ellipsis"
+            )
+        }
+    }
+
+    private func toggle(_ column: RegisterColumn) {
+        var columns = visibleColumns
+        if columns.contains(column), columns.count > 1 {
+            columns.remove(column)
+        } else {
+            columns.insert(column)
+        }
+        visibleColumns = columns
+        selectedSavedViewID = nil
+    }
+
+    private func saveCurrentView() {
+        let name = savedViewName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingID = savedViews.first {
+            $0.name.compare(name, options: .caseInsensitive) == .orderedSame
+        }?.id
+        let id = selectedSavedViewID ?? existingID ?? UUID()
+        let view = SavedRegisterView(
+            id: id,
+            name: name,
+            accountID: store.selectedAccountID,
+            statusRawValue: statusFilter?.rawValue,
+            categorySelection: categoryFilter.savedSelection,
+            periodRawValue: periodFilter.rawValue,
+            customStart: customStart,
+            customEnd: customEnd,
+            rowModeRawValue: rowMode.rawValue,
+            visibleColumns: visibleColumns
+        )
+        var values = savedViews.filter { $0.id != id }
+        values.append(view)
+        values.sort {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        do {
+            savedViewsRaw = try RegisterPreferencesCodec.encodeViews(values)
+            selectedSavedViewID = id
+            showSaveView = false
+            store.statusText = "Kontoblatt-Ansicht „\(view.name)“ gespeichert"
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func apply(_ view: SavedRegisterView) {
+        if let accountID = view.accountID,
+           store.accounts.contains(where: { $0.id == accountID }) {
+            store.selectedAccountID = accountID
+        } else if view.accountID == nil {
+            store.selectedAccountID = nil
+        }
+        statusFilter = view.statusRawValue.flatMap(TransactionStatus.init(rawValue:))
+        let savedCategoryFilter = RegisterCategoryFilter(view.categorySelection)
+        if case .category(let categoryID) = savedCategoryFilter,
+           !store.categories.contains(where: { $0.id == categoryID }) {
+            categoryFilter = .all
+        } else {
+            categoryFilter = savedCategoryFilter
+        }
+        periodFilter = RegisterPeriodFilter(rawValue: view.periodRawValue) ?? .all
+        customStart = view.customStart
+        customEnd = view.customEnd
+        rowMode = RegisterRowMode(rawValue: view.rowModeRawValue) ?? .single
+        visibleColumns = view.visibleColumns
+        selectedSavedViewID = view.id
+        selection.removeAll()
+    }
+
+    private func deleteSelectedView() {
+        guard let selectedSavedViewID else { return }
+        let values = savedViews.filter { $0.id != selectedSavedViewID }
+        do {
+            savedViewsRaw = try RegisterPreferencesCodec.encodeViews(values)
+            self.selectedSavedViewID = nil
+            store.statusText = "Kontoblatt-Ansicht gelöscht"
+        } catch {
+            store.errorMessage = error.localizedDescription
         }
     }
 
@@ -321,6 +528,22 @@ private enum RegisterCategoryFilter: Hashable {
     case all
     case uncategorized
     case category(UUID)
+
+    init(_ saved: RegisterCategorySelection) {
+        switch saved {
+        case .all: self = .all
+        case .uncategorized: self = .uncategorized
+        case .category(let id): self = .category(id)
+        }
+    }
+
+    var savedSelection: RegisterCategorySelection {
+        switch self {
+        case .all: .all
+        case .uncategorized: .uncategorized
+        case .category(let id): .category(id)
+        }
+    }
 }
 
 private enum RegisterPeriodFilter: String, CaseIterable, Identifiable {
@@ -767,10 +990,18 @@ struct CombinedRegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selection = Set<UUID>()
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
+    @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
         nonmutating set { rowModeRaw = newValue.rawValue }
+    }
+
+    private var visibleColumns: Set<RegisterColumn> {
+        get { RegisterPreferencesCodec.decodeColumns(visibleColumnsRaw) }
+        nonmutating set {
+            visibleColumnsRaw = RegisterPreferencesCodec.encodeColumns(newValue)
+        }
     }
 
     private var visible: [FinanceTransaction] {
@@ -806,6 +1037,7 @@ struct CombinedRegisterView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 175)
+                registerColumnMenu
                 VStack(alignment: .trailing) {
                     Text(store.searchText.isEmpty ? "Summe ohne Umbuchungen" : "Gefilterte Summe")
                         .font(.caption).foregroundStyle(.secondary)
@@ -816,66 +1048,16 @@ struct CombinedRegisterView: View {
             .padding(14)
             Divider()
             Table(visible, selection: $selection) {
-                TableColumn("Datum") {
-                    Text($0.bookingDate, format: .dateTime.day().month(.twoDigits).year())
-                        .foregroundStyle($0.bookingDate > Date() ? .blue : .primary)
-                        .frame(height: rowMode.rowHeight)
-                }
-                .width(90)
-                TableColumn("Konto") {
-                    Text(store.accountName($0.accountID))
-                        .frame(height: rowMode.rowHeight, alignment: .leading)
-                }
-                TableColumn("Empfänger") { value in
-                    Text(value.payee)
-                        .lineLimit(rowMode == .twoLines ? 2 : 1)
-                        .frame(height: rowMode.rowHeight, alignment: .leading)
-                }
-                TableColumn("Verwendungszweck") { value in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(value.purpose).lineLimit(rowMode == .twoLines ? 2 : 1)
-                        if rowMode == .twoLines,
-                           !value.memo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(value.memo)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                TableColumnForEach(orderedVisibleColumns) { column in
+                    TableColumn(column.title) { value in
+                        combinedRegisterCell(
+                            value,
+                            column: column,
+                            runningBalances: runningBalances
+                        )
                     }
-                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                    .width(min: column.minimumWidth, ideal: column.idealWidth)
                 }
-                TableColumn("Kategorie") {
-                    let path = store.transactionCategoryPath($0)
-                    Text(path)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(path)
-                        .frame(height: rowMode.rowHeight, alignment: .leading)
-                }
-                TableColumn("Status") {
-                    Text($0.status.title)
-                        .frame(height: rowMode.rowHeight, alignment: .leading)
-                }
-                .width(90)
-                TableColumn("Betrag") {
-                    Text(Money(minorUnits: $0.amountMinor, currency: $0.currency).formatted)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .monospacedDigit()
-                        .frame(height: rowMode.rowHeight)
-                }
-                .width(115)
-                TableColumn("Saldo") {
-                    Text(
-                        Money(
-                            minorUnits: runningBalances[$0.id] ?? 0,
-                            currency: $0.currency
-                        ).formatted
-                    )
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .monospacedDigit()
-                    .frame(height: rowMode.rowHeight)
-                }
-                .width(125)
             }
             HStack {
                 Rectangle().fill(.blue).frame(width: 36, height: 2)
@@ -887,5 +1069,111 @@ struct CombinedRegisterView: View {
             .foregroundStyle(.secondary)
             .padding(8)
         }
+    }
+
+    private var orderedVisibleColumns: [RegisterColumn] {
+        RegisterColumn.allCases.filter(visibleColumns.contains)
+    }
+
+    @ViewBuilder
+    private func combinedRegisterCell(
+        _ value: FinanceTransaction,
+        column: RegisterColumn,
+        runningBalances: [UUID: Int64]
+    ) -> some View {
+        switch column {
+        case .date:
+            Text(
+                value.bookingDate,
+                format: .dateTime.day().month(.twoDigits).year()
+            )
+            .foregroundStyle(value.bookingDate > Date() ? .blue : .primary)
+            .frame(height: rowMode.rowHeight)
+        case .status:
+            Text(value.status.title)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .payee:
+            Text(value.payee)
+                .lineLimit(rowMode == .twoLines ? 2 : 1)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .purpose:
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value.purpose)
+                    .lineLimit(rowMode == .twoLines ? 2 : 1)
+                if rowMode == .twoLines,
+                   !value.memo.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                   ).isEmpty {
+                    Text(value.memo)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .category:
+            let path = store.transactionCategoryPath(value)
+            Text(path)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(path)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .account:
+            Text(store.accountName(value.accountID))
+                .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .amount:
+            Text(
+                Money(
+                    minorUnits: value.amountMinor,
+                    currency: value.currency
+                ).formatted
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+            .frame(height: rowMode.rowHeight)
+        case .balance:
+            Text(
+                Money(
+                    minorUnits: runningBalances[value.id] ?? 0,
+                    currency: value.currency
+                ).formatted
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+            .frame(height: rowMode.rowHeight)
+        }
+    }
+
+    private var registerColumnMenu: some View {
+        Menu {
+            ForEach(RegisterColumn.allCases) { column in
+                Toggle(
+                    column.title,
+                    isOn: Binding(
+                        get: { visibleColumns.contains(column) },
+                        set: { _ in toggle(column) }
+                    )
+                )
+                .disabled(
+                    visibleColumns.count == 1 && visibleColumns.contains(column)
+                )
+            }
+            Divider()
+            Button("Standardspalten wiederherstellen") {
+                visibleColumns = RegisterColumn.defaultSet
+            }
+        } label: {
+            Label("Spalten", systemImage: "rectangle.split.3x1")
+        }
+    }
+
+    private func toggle(_ column: RegisterColumn) {
+        var columns = visibleColumns
+        if columns.contains(column), columns.count > 1 {
+            columns.remove(column)
+        } else {
+            columns.insert(column)
+        }
+        visibleColumns = columns
     }
 }
