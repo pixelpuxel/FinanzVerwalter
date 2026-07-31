@@ -358,6 +358,16 @@ Für den Banking-Simulator gilt reproduzierbar:
 
 Für die Berichtswerkstatt gilt zusätzlich:
 
+- Erlaube neben der Primärgruppierung optional eine davon abweichende zweite
+  Dimension aus Kategorie, Empfänger, Konto und Klasse/Tag. `Keine
+  Gruppierung` bleibt nur als ausgeschaltete Sekundärdimension beziehungsweise
+  als vollständig ungruppierte Primäransicht zulässig. Erzeuge stabile
+  kombinierte Gruppenkennungen und sichtbare Labels `Primär › Sekundär`, ohne
+  Währungen zusammenzurechnen. Drill-down, CSV, PDF und Druck müssen dieselbe
+  Gruppenmenge verwenden.
+- Speichere die Sekundärdimension in Berichtsvorlagen ab Definitionsversion 2.
+  Das Feld ist optional zu codieren, damit Vorlagen der Version 1 ohne dieses
+  JSON-Feld weiterhin als eindimensionale Auswertung lesbar bleiben.
 - PDF-Export und direkter Systemdruck müssen denselben unveränderlichen
   `TransactionReportSnapshot`, dieselben Filtermetadaten und dieselbe gewählte
   Hoch-/Querformatausrichtung verwenden. Erzeuge den PDF-Datenstrom genau

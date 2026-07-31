@@ -351,8 +351,11 @@ aus. Filter kombinieren Zeitraum, Konten und Gruppen, Kategorieunterbäume,
 Klassen/Tags, Empfänger, Status, Betragsspanne, Volltext und Währung.
 Ausgeblendete Konten, von Berichten ausgeschlossene Konten, Umbuchungen und
 die Einzelauflösung von Splits sind explizite Optionen. Gruppiert wird nach
-Kategorie, Empfänger, Konto oder Klasse/Tag; jede Gruppe besitzt einen
-Drill-down bis zu ihren Buchungen und Splitzeilen. Währungen werden niemals
+Kategorie, Empfänger, Konto oder Klasse/Tag; optional teilt eine zweite,
+abweichende Dimension jede Primärgruppe weiter auf. Kombinierte Bezeichnungen
+wie `Kategorie › Konto` bleiben in Tabelle, Drill-down, CSV, PDF und Druck
+identisch. Jede Gruppe besitzt einen Drill-down bis zu ihren Buchungen und
+Splitzeilen. Währungen werden niemals
 unbemerkt addiert. Filter, Gruppierung und Sortierung lassen sich als
 versionierte Vorlage speichern. CSV-Ausgaben unterstützen Semikolon, Komma
 oder Tabulator sowie UTF-8 oder ISO-8859-1 und verwenden ein deterministisches

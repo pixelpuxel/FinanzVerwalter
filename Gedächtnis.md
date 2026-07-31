@@ -1732,3 +1732,37 @@ Rechtsberatung.
   (`/quicken`) mit demselben Stand und dem Zielzählerstand 11.379.062 Tokens
   veröffentlicht. Wegen der weiterhin bestätigten Bildschirmsperre wurde
   kein Screenshot angehängt oder vorgetäuscht.
+
+## 2026-07-31 – Zweite Gruppierungsdimension in Berichten
+
+- Die Berichtswerkstatt besitzt neben `Gruppieren` nun `Dann nach`. Kategorie,
+  Empfänger, Konto und Klasse/Tag können in beliebiger unterschiedlicher
+  Reihenfolge kombiniert werden; gleiche oder bei ungruppierter Primäransicht
+  unzulässige Kombinationen fallen sichtbar auf keine Sekundärdimension
+  zurück.
+- Die Engine bildet stabile Schlüssel aus Primärlabel, Sekundärlabel und
+  Währung. Sichtbare Labels verwenden `Primär › Sekundär`; dieselben Gruppen
+  speisen Tabelle, Drill-down, CSV, PDF und direkten Druck. Währungen bleiben
+  strikt getrennt.
+- `TransactionReportQuery.secondaryGrouping` ist optional und deshalb mit
+  bestehenden Vorlagen ohne JSON-Feld rückwärtskompatibel. Neu über die UI
+  gespeicherte Vorlagen verwenden Definitionsversion 2. Zurücksetzen,
+  Laden, Filterbeschreibung und Exporttitel berücksichtigen beide Dimensionen.
+- Ein neuer Test prüft drei kombinierte Kategorie-/Kontogruppen, stabile
+  Positionszahlen und das Decodieren eines künstlichen Legacy-JSON ohne
+  Sekundärfeld. Vorlagenrundlauf, CSV und mehrseitiges PDF wurden gemeinsam
+  gezielt geprüft.
+- Die vollständige Suite unter
+  `/tmp/FinanzVerwalter-FullTests-ReportGrouping.xcresult` führte 83 Tests aus:
+  82 bestanden, der private opt-in-QIF-Test wurde ohne Pfad erwartungsgemäß
+  übersprungen, 0 Fehler. Der echte private 2025-QIF-Test bestand anschließend
+  separat mit einer nur temporären, danach gelöschten Kopie.
+- Der optimierte Release unter `build/DerivedData-ReportGrouping` bestand,
+  wurde ad hoc signiert, streng geprüft und kontrolliert installiert. Das
+  vorherige Bundle liegt reversibel unter
+  `build/FinanzVerwalter-vor-zweiter-berichtsgruppe-20260731-171346.app`.
+  Der neue ausführbare Code hat SHA-256
+  `ed5fd2007b61ef9617d66928ca17377fc0ce2dbcaaff6217a1be6289567fcc1b`.
+  Die App läuft als Prozess 63177; die Produktivdatei blieb bytegleich bei
+  SHA-256 `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
+  und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.
