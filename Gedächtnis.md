@@ -1,0 +1,273 @@
+# Gedächtnis – FinanzVerwalter-Desktopprojekt
+
+Letzte Aktualisierung: 31.07.2026
+
+## Auftrag
+
+Im Ordner `/Users/gabrielschreiber/Documents/iPhone Apps/FinanzVerwalter` entsteht
+eine vollständig neue, eigenständige Desktop-Finanzverwaltung. Das vorhandene
+Projekt `Banking` und andere App-Projekte werden weder als Quellcodebasis noch
+als UI-Vorlage verwendet.
+
+Die fachliche Produktspezifikation liegt als externe Master-Datei außerhalb
+des Repositorys vor.
+
+Der verbindliche Produkt-, App-, Target- und Verzeichnisname ist
+**FinanzVerwalter**. Die fremde Bezeichnung „Quicken“ darf ausschließlich als
+sachlich erforderlicher Hinweis auf eine tatsächlich vorhandene
+Datei-/Importkompatibilität erscheinen. FinanzVerwalter darf keine Verbindung,
+Autorisierung oder Herkunft vom fremden Rechteinhaber nahelegen. Arbeitsleitplanke
+ist § 23 Abs. 1 Nr. 3 in Verbindung mit Abs. 2 MarkenG; dies ist keine
+Rechtsberatung.
+
+## Verbindliche Arbeitsregeln
+
+- Desktop-first, local-first und ohne Cloud-Anmeldung nutzbar.
+- Neue Oberfläche in SwiftUI; deutsche Benutzertexte, englische Typnamen.
+- Keine Drittanbieterabhängigkeiten ohne vorherige Rücksprache.
+- Geldwerte nie als binäre Fließkommazahlen persistieren.
+- Finanzielle Änderungen transaktional, validiert und auditierbar ausführen.
+- Nach Änderungen kompilieren, relevante Tests ausführen und die Mac-App
+  sichtbar prüfen.
+- Andere Projekte bleiben unverändert.
+- Zwischenstände und Sichtnachweise werden in den vereinbarten
+  Telegram-Projektthread (Thread-ID 894) gesendet; Zugangsdaten werden nie
+  ausgegeben oder gespeichert.
+
+## Architekturentscheidungen
+
+- Native macOS-App statt Erweiterung einer bestehenden iPhone-/Banking-App.
+- SwiftUI und AppKit-Systemintegration ohne externe Abhängigkeiten.
+- SQLite aus dem Betriebssystem, WAL-Modus und versionierte Migrationen.
+- Geldbeträge als `Int64` in Minor-Units; Eingabe über `Decimal`.
+- Mindestfenster 960 × 640, Standardfenster 1380 × 860.
+- Klassisches, dichtes Desktop-Bedienmodell mit Menü, Werkzeugleiste,
+  Kontenleiste, Kontoblatt und Statuszeile.
+
+## Bisher umgesetzt
+
+- vollständig neues Xcode-Projekt `FinanzVerwalter.xcodeproj`
+- macOS-App-Target und Unit-Test-Target
+- App-Einstieg mit Desktop-Kommandos für neue Buchung, Suche und Abgleich
+- Grundmodelle für Finanzdatei, Konten, Kategorien, Buchungen und Splits
+- centgenauer `Money`-Typ mit deutscher Eingabe und Ausgabe
+- Split-Invariante im Domänenmodell
+- versioniertes SQLite-Schema mit WAL, Foreign Keys und zehn Migrationen
+- Tabellen für Finanzdatei, Konten, Kategorien, Buchungen, Splits,
+  Importpakete und append-only Auditereignisse
+- atomare Konto-, Kategorie-, Buchungs-, Import- und Transfer-Use-Cases
+- Import-Idempotenz über SHA-256 des vollständigen CSV-Pakets
+- SQLite-Backup über die Backup-API mit anschließender Integritätsprüfung
+- klassische Desktop-Shell mit Menü, Werkzeugleiste, Navigation,
+  Kontenleiste, Arbeitsfläche und Statuszeile
+- Cockpit mit Nettovermögen, Konten, Einnahmen-/Ausgaben-Chart, letzten
+  Buchungen und lokalem Systemstatus
+- Kontenübersicht und Kontoanlage
+- dichtes Kontoblatt mit Kontoauswahl, Status, Empfänger, Zweck, Kategorie,
+  Konto und Betrag
+- Buchungseditor, Suche, Kontextbearbeitung und Löschen
+- eigener Umbuchungsdialog; zwei Kontoseiten werden atomar gespeichert
+- Einnahmen-/Ausgaben-Kategoriebericht
+- CSV-/TSV-Import mit Vorschau und ausdrücklicher Übernahme
+- Kategorienverwaltung und Datenbank-Integritätsprüfung
+- reproduzierbarer Demo-Sichtprüfmodus ausschließlich über `-demo`
+- SQLite-Migration 2 mit dokumentierten Kontoabgleichen
+- Splitdialog mit beliebig ergänzbaren Zeilen, Kategorie, Notiz,
+  Restbetragsanzeige und „Rest zuweisen“
+- QIF-Import mit Empfänger, Memo, Referenz, Kategorien und exakten Splits
+- Kontoabgleich nur bei centgenau passendem Auszugssaldo
+- abgeglichene Buchungen gegen unbeabsichtigte Änderungen geschützt
+- Sammelkontoblatt mit allen Konten, Status, Heute-Grenze und Summe ohne
+  Umbuchungen
+- validierte Wiederherstellung mit automatischer Sicherheitskopie der
+  bisherigen Finanzdatei
+- deterministische Kategorisierungsregeln mit Priorität, Aktivstatus,
+  Empfänger-/Zweck-/Betragsbedingungen, Vorschau und geschützter Anwendung
+- SQLite-Migration 3 für persistente Kategorisierungsregeln
+- SQLite-Migration 4 für persistente regelmäßige Vorgänge
+- tägliche, wöchentliche, zweiwöchentliche, monatliche, zweimonatliche,
+  quartalsweise, halbjährliche und jährliche Rhythmen
+- stabile Monatsende-Berechnung über Monats- und Schaltjahresgrenzen
+- Editor für regelmäßige Vorgänge mit Konto, Kategorie, Betrag, Fälligkeit,
+  optionalem Ende, Aktion, Erinnerungsfrist und Aktivstatus
+- Liquiditätsvorschau mit 30/90/180/365-Tage-Horizont, Herkunft je Position
+  und projiziertem Kontostand
+- Herkunftskennungen verhindern die doppelte Prognose bereits als erwartete
+  Buchung materialisierter Serientermine
+- SQLite-Migration 5 für mehrere benannte Kalender- oder
+  Geschäftsjahresbudgets und monatliche Kategoriepläne
+- Budgetansicht mit Ausgabenplan, unveränderlichem Ist aus Buchungen,
+  centgenauer Abweichung, gerundetem Erfüllungsgrad und Kategorie-Drill-down
+- Budgeteditor für monatlichen Plan sowie positiven und optional negativen
+  Roll-over je Kategorie
+- SQLite-Migration 6 für lokale Zahlungsaufträge mit eindeutiger
+  Idempotenzkennung und versioniertem Status
+- SEPA-, Echtzeit- und Terminüberweisungsentwürfe mit IBAN-Mod-97-Prüfung,
+  Pflichtfeldern, Ausführungsdatum und End-to-End-ID
+- vollständig lokaler Banking-Simulator mit der SCA-Kette
+  `initiated -> challenge_received -> awaiting_user -> submitted ->
+  accepted/rejected/unknown`
+- unveränderliche Auftragszusammenfassung und erneute Bestätigung vor der
+  simulierten Initialisierung
+- Freigabecode bleibt ausschließlich im Arbeitsspeicher und wird weder
+  persistiert noch protokolliert
+- angenommener Auftrag materialisiert atomar genau eine vorgemerkte Buchung;
+  `unknown` kann nicht automatisch oder per Zustandswechsel neu gesendet werden
+- SQLite-Migration 7 für Empfängerakten, Aliase, hierarchische Klassen/Tags,
+  Buchungs-Tags und eigene Tags je Splitzeile
+- Empfängerakte mit kanonischem Namen, Aliasen, Kontakt- und Bankdaten,
+  Standardkategorie, bevorzugtem Konto, Notiz und Aktivstatus
+- SmartFill-Auswahl im Buchungseditor normalisiert den sichtbaren Empfänger
+  und übernimmt vorhandene Vorgaben ohne selbstständig zu speichern
+- unabhängige Mehrfach-Tags auf Hauptbuchung und Splitzeilen; Tags fließen
+  in die globale Suche ein
+- SQLite-Migration 8 für Wertpapierstammdaten, Vermögensklassen,
+  Allokationen, Transaktionen, einzelne Anschaffungslots, Lot-Verbräuche
+  und historische Kurse
+- Stückzahlen als `Int64` mit sechs Dezimalstellen; Kurse und Kostenbasis
+  ohne binäre Fließkommazahlen
+- atomare Käufe und FIFO-Teilverkäufe mit Gebühren, Steuern,
+  Reststücken, fortgeschriebener Restkostenbasis und realisiertem Gewinn
+- Depotpositionen mit Bestand, Kostenbasis, letztem Kurs, Marktwert und
+  unrealisiertem Gewinn sowie Transaktionshistorie
+- Vermögensklassen-Zuordnung kann nur mit exakt 100 % gespeichert werden
+- Verkäufe über den vorhandenen Bestand werden vor jeder Mutation
+  abgewiesen; Short-Verkäufe sind im aktuellen UI ausdrücklich deaktiviert
+- SQLite-Migration 9 für Darlehen, historisierte Zinssätze,
+  Sondertilgungen, vorbereitete Ist-Zuordnungen, Vermögenswerte und
+  datierte Bewertungen
+- centgenauer Tilgungsplan mit Rate, Tilgung, Zins, Gebühr,
+  Sondertilgung und Restschuld je Fälligkeit
+- Zinsänderungen gelten ab einem expliziten Datum; die Berechnung nutzt
+  einen gregorianischen UTC-Kalender und bleibt über Sommerzeitgrenzen stabil
+- Vermögenswerte für Immobilien, Fahrzeuge, Sammlerstücke und Sonstiges
+  mit Kaufwert, aktuellem Wert, Wertverlauf und optional verknüpftem Kredit
+- Kredit- und Vermögensübersicht mit aggregierter Restschuld, aktuellem
+  Vermögen und kreditbereinigtem Nettoanteil
+- persistenter Erscheinungsbild-Schalter für Hell, Dunkel und System;
+  die weitere Sichtprüfung erfolgt im Light Mode
+- SQLite-Migration 10 für Verträge, Dokumentmetadaten, Inventargegenstände
+  und Anhangsmetadaten
+- Verträge mit Anbieter, Nummer, Typ, Beginn, Mindestlaufzeit,
+  Verlängerung, Kündigungsfrist, Zahlfrequenz, Konto, Kategorie,
+  Erinnerung und erwarteten Jahreskosten
+- Inventar mit Kategorie, Raum, Kauf-/aktuellem/Versicherungswert,
+  Händler, Seriennummer, Garantieende und Notiz
+- eigener Hauptbereich „Kategorien“ mit Ober-/Unterkategorien, vollständigen
+  Pfaden, Farbe, Art und Aktivstatus
+- zyklische Kategoriehierarchien sowie Eltern anderer Einnahmen-/Ausgabenart
+  werden vor jeder Speicherung abgewiesen
+- Buchungs-, Split-, Regel-, Empfänger-, Vertrags- und Serientermindialoge
+  zeigen Kategorien als vollständigen Pfad
+
+## Noch offen
+
+- vollständige Regelketten mit Stop-Logik und Editor für Betragsgrenzen
+- tiefere Kategorieverwaltung, MwSt.- und Steuerzuordnungen sowie
+  Auswertungsfilter für Klassen/Tags
+- benutzerdefinierte Rhythmen, Feiertags-/Bankarbeitstagsregeln,
+  einzelne Serienausnahmen und automatische Materialisierung
+- OFX-/camt-Import sowie offene JSON-Gesamtexporte
+- mehrere frei wählbare Finanzdateien
+- Budgetkopie/-umbenennung/-löschung, Jahreswerte, Roll-over-Reserve und
+  Budgetberichte
+- Monats-/Wochen-Kalender, Drag-and-drop und Was-wäre-wenn-Szenarien
+- read-only Banking-Adapter, Umsatz-/Saldoabruf, FinTS/PSD2-Kontakte,
+  Daueraufträge, Lastschriften, Sammelaufträge und ISO-20022-Dateiformate
+- weitere Wertpapierarten, spezifische Lot-Auswahl, Durchschnittsmethode,
+  Short-Positionen, Kapitalmaßnahmen, Dividenden, TWR/IRR und Kursimport
+- automatische Ratensplitbuchung und Ist-Abgleich, Kredit-Szenarien,
+  Debt-Reduction-Planner, Verträge, Inventar und Freistellungsaufträge
+- vollständige Accessibility-, Performance-, Security- und UI-Testabdeckung
+- Release-Build, signierte Auslieferung und finale Abweichungsdokumentation
+
+## Verifikationsstand
+
+- Debug- und optimierter Release-Build am 31.07.2026 erfolgreich
+- 18 XCTest-Fälle erfolgreich:
+  - deutsche Geldbeträge und Rundung
+  - Split-Invariante
+  - Migration, Persistenz und Saldo
+  - atomarer Transfer
+  - idempotenter CSV-Import
+  - unabhängiges, valides Backup
+  - QIF-Import mit exakten Splits
+  - Kontoabgleich und Schutz abgeglichener Buchungen
+  - Abweisung ungültiger Sicherungen
+  - deterministische Kategorisierungsregel mit Schutz abgeglichener Buchungen
+  - persistenter Monatsende-Serientermin über das Schaltjahr 2024 und
+    Ausschluss einer bereits materialisierten Herkunft aus der Prognose
+  - Geschäftsjahresbudget April bis März, persistenter Monatsplan,
+    Abweichung und dezimal gerundeter Erfüllungsgrad
+  - IBAN-Prüfsumme, Zahlungsidempotenz, vollständiger SCA-Zustandsautomat,
+    einmalige Buchungsmaterialisierung und Neuversandverbot bei `unknown`
+  - Empfänger-/Alias-Roundtrip, Tag-Hierarchie sowie Mehrfach-Tags auf
+    Buchung und einzelnen Splitzeilen
+  - Festkomma-Stückzahlen, exakt 100-%-Allokation, zwei FIFO-Lots,
+    Teilverkauf, Restkostenbasis, realisierter/unrealisierter Gewinn und
+    unveränderter Bestand nach abgewiesenem Überverkauf
+  - Darlehen mit versioniertem Zins über eine Sommerzeitgrenze,
+    Sondertilgung, centgenauer Restschuldinvariante, Wertverlauf und
+    kreditbereinigtem Nettoanteil
+  - Vertragsjahreskosten, rollierende Verlängerung, Kündigungsfrist und
+    persistenter Inventar-/Versicherungswert
+  - persistente Unterkategorien sowie Abweisung von Zyklen und
+    artfremden Oberkategorien
+- installiert unter `/Users/gabrielschreiber/Applications/FinanzVerwalter.app`
+- installierte App mit `-demo` gestartet
+- Cockpit und Kontoblatt über Accessibility-Struktur und sichtbaren
+  Screenshot geprüft
+- Screenshots:
+  - `build/Screenshots/01-cockpit.png`
+  - `build/Screenshots/02-kontoblatt.png`
+  - `build/Screenshots/03-sammelkontoblatt.png`
+  - `build/Screenshots/04-splitdialog.png`
+  - `build/Screenshots/05-split-gespeichert.png`
+  - `build/Screenshots/06-kalender-prognose.png`
+  - `build/Screenshots/07-budget.png`
+  - `build/Screenshots/08-banking-simulator.png`
+  - `build/Screenshots/09-empfaenger-tags.png`
+  - `build/Screenshots/10-depot-fifo.png`
+  - `build/Screenshots/11-kredite-vermoegen.png`
+- Zwischenstände samt Screenshots im Telegram-Projektthread
+  (Thread-ID 894) gepostet
+- lokales Git-Repository auf Branch `main`; erster Commit `ddad814`
+- Splitdialog über die installierte Release-App mit einem Betrag von
+  -100,00 EUR und zwei Zeilen von -60,00/-40,00 EUR funktional geprüft;
+  Rest 0,00 EUR und Speicherung erfolgreich
+- Kalender-/Prognoseansicht der installierten Release-App zeigt im
+  isolierten Demo-Modus drei aktive Serien und 16 erwartete Termine über
+  mehrere Monatsgrenzen; der vollständige Serientermin-Editor wurde über
+  seine Accessibility-Struktur geprüft
+- Budgetansicht der installierten Release-App zeigt ein Haushaltsbudget mit
+  Plan, Ist, Abweichung und korrekten Prozentwerten; der Drill-down weist
+  den Planwert, Roll-over-Schalter und die zugrunde liegende EDEKA-Buchung
+  als nicht editierbares Ist aus
+- Banking-Simulator der installierten Release-App über Accessibility und
+  Screenshot geprüft; ein neuer Auftrag über 12,34 EUR wurde vom Entwurf
+  über Bestätigung, Challenge, Freigabecode und Übermittlung bis
+  `accepted` geführt und erzeugte genau eine vorgemerkte Buchung
+- der bei der Sichtprüfung verwendete simulierte Freigabecode `123456`
+  wurde anschließend nachweislich nicht in der isolierten Demo-Datenbank
+  gefunden
+- Einstellungen zeigen die EDEKA-Empfängerakte mit zwei Aliasen und zwei
+  aktive Tags; Empfängereditor sowie Buchungseditor mit SmartFill-Auswahl
+  und beiden Tag-Umschaltern wurden über Accessibility sichtbar geprüft
+- Depotansicht der installierten Release-App zeigt zwei Positionen mit
+  1.885,00 EUR Marktwert, 1.673,57 EUR Kostenbasis und 211,43 EUR
+  unrealisiertem Gewinn; Wertpapierhistorie, 100-%-Allokationseditor und
+  Kauf-/Verkaufseditor wurden sichtbar geprüft
+- Kreditansicht der installierten Release-App zeigt ein Darlehen mit
+  300.000,00 EUR Ursprung, 269.411,37 EUR aktueller Restschuld, 290
+  berechneten Raten und einer datierten Sondertilgung; die Vermögensansicht
+  zeigt 455.000,00 EUR aktuellen Immobilienwert und 185.588,63 EUR
+  kreditbereinigten Nettoanteil
+- GitHub-Repository `https://github.com/pixelpuxel/FinanzVerwalter` ist als
+  `origin` eingerichtet. Vor der öffentlichen Freigabe wird die erreichbare
+  Historie auf den bereinigten FinanzVerwalter-Stand verdichtet; Zugangsdaten
+  stehen weder in Remote-URL noch Projektdateien.
+- reale, ausschließlich extern gelesene ISO-8859-QIF-Datei als
+  Migrations-Use-Case analysiert: Mehrkontenpaket mit 4.565 Datensätzen,
+  97 Kontoblöcken, Kategorien, Klassen, Vorlagen und mehreren Kontotypen.
+  Die Datei wird nicht kopiert oder versioniert; ein solcher Export darf
+  nicht durch den bisherigen Ein-Konto-Import vermischt werden.

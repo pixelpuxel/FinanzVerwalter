@@ -1,0 +1,9 @@
+build/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+*.qdata
+*.qdata-shm
+*.qdata-wal
+*.qbackup
+

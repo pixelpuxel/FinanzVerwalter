@@ -1,0 +1,128 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 = {isa = PBXBuildFile; fileRef = A20000000000000000000001; };
+		A10000000000000000000002 = {isa = PBXBuildFile; fileRef = A20000000000000000000002; };
+		A10000000000000000000003 = {isa = PBXBuildFile; fileRef = A20000000000000000000003; };
+		A10000000000000000000004 = {isa = PBXBuildFile; fileRef = A20000000000000000000004; };
+		A10000000000000000000005 = {isa = PBXBuildFile; fileRef = A20000000000000000000005; };
+		A10000000000000000000006 = {isa = PBXBuildFile; fileRef = A20000000000000000000006; };
+		A10000000000000000000007 = {isa = PBXBuildFile; fileRef = A20000000000000000000007; };
+		A10000000000000000000008 = {isa = PBXBuildFile; fileRef = A20000000000000000000008; };
+		T10000000000000000000001 = {isa = PBXBuildFile; fileRef = T20000000000000000000001; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		T30000000000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A70000000000000000000001; proxyType = 1; remoteGlobalIDString = A50000000000000000000001; remoteInfo = FinanzVerwalter; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanzVerwalterApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Money.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanceModels.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteFinanceStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanceAppStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegisterView.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportingViews.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FinanzVerwalter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		T20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanzVerwalterTests.swift; sourceTree = "<group>"; };
+		T20000000000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FinanzVerwalterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		T30000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000000000000000000001 = {
+			isa = PBXGroup;
+			children = (A40000000000000000000002, T40000000000000000000001, A40000000000000000000003);
+			sourceTree = "<group>";
+		};
+		A40000000000000000000002 = {
+			isa = PBXGroup;
+			children = (A20000000000000000000001, A20000000000000000000002, A20000000000000000000003, A20000000000000000000004, A20000000000000000000005, A20000000000000000000006, A20000000000000000000007, A20000000000000000000008);
+			path = FinanzVerwalter;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000003 = {isa = PBXGroup; children = (A20000000000000000000009, T20000000000000000000002); name = Products; sourceTree = "<group>"; };
+		T40000000000000000000001 = {isa = PBXGroup; children = (T20000000000000000000001); path = FinanzVerwalterTests; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A60000000000000000000002;
+			buildPhases = (A30000000000000000000002, A30000000000000000000001, A30000000000000000000003);
+			buildRules = ();
+			dependencies = ();
+			name = FinanzVerwalter;
+			productName = FinanzVerwalter;
+			productReference = A20000000000000000000009;
+			productType = "com.apple.product-type.application";
+		};
+		T50000000000000000000001 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = T60000000000000000000001;
+			buildPhases = (T30000000000000000000003, T30000000000000000000002);
+			buildRules = ();
+			dependencies = (T70000000000000000000001);
+			name = FinanzVerwalterTests;
+			productName = FinanzVerwalterTests;
+			productReference = T20000000000000000000002;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A70000000000000000000001 = {
+			isa = PBXProject;
+			attributes = {BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 2600; TargetAttributes = {A50000000000000000000001 = {CreatedOnToolsVersion = 26.0;}; T50000000000000000000001 = {CreatedOnToolsVersion = 26.0; TestTargetID = A50000000000000000000001;};};};
+			buildConfigurationList = A60000000000000000000001;
+			developmentRegion = de;
+			knownRegions = (de, Base);
+			mainGroup = A40000000000000000000001;
+			productRefGroup = A40000000000000000000003;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (A50000000000000000000001, T50000000000000000000001);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A30000000000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A30000000000000000000002 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006, A10000000000000000000007, A10000000000000000000008); runOnlyForDeploymentPostprocessing = 0; };
+		T30000000000000000000003 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (T10000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		T70000000000000000000001 = {isa = PBXTargetDependency; target = A50000000000000000000001; targetProxy = T30000000000000000000001; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		B10000000000000000000001 = {isa = XCBuildConfiguration; buildSettings = {MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_VERSION = 5.0;}; name = Debug; };
+		B10000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = {MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 5.0;}; name = Release; };
+		B10000000000000000000003 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; ENABLE_HARDENED_RUNTIME = YES; ENABLE_TESTABILITY = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = FinanzVerwalter; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance"; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 0.1.0; OTHER_LDFLAGS = "-lsqlite3"; PRODUCT_BUNDLE_IDENTIFIER = de.pixelpuxel.finanzverwalter; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0;}; name = Debug; };
+		B10000000000000000000004 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = FinanzVerwalter; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance"; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 0.1.0; OTHER_LDFLAGS = "-lsqlite3"; PRODUCT_BUNDLE_IDENTIFIER = de.pixelpuxel.finanzverwalter; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0;}; name = Release; };
+		T80000000000000000000001 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = de.pixelpuxel.finanzverwalter.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FinanzVerwalter.app/Contents/MacOS/FinanzVerwalter";}; name = Debug; };
+		T80000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = de.pixelpuxel.finanzverwalter.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FinanzVerwalter.app/Contents/MacOS/FinanzVerwalter";}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A60000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (B10000000000000000000001, B10000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A60000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (B10000000000000000000003, B10000000000000000000004); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		T60000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (T80000000000000000000001, T80000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A70000000000000000000001;
+}
