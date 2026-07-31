@@ -1555,6 +1555,54 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 26")
             }
         }
+        if version < 27 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payment_instruction_imports (
+                        fingerprint TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        kind TEXT NOT NULL CHECK(kind IN ('creditTransfer','directDebit')),
+                        message_id TEXT NOT NULL,
+                        source_created_at TEXT,
+                        imported_at TEXT NOT NULL,
+                        record_count INTEGER NOT NULL CHECK(record_count>0),
+                        imported_count INTEGER NOT NULL CHECK(imported_count>=0),
+                        warning_count INTEGER NOT NULL CHECK(warning_count>=0)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE payment_instruction_import_items (
+                        id TEXT PRIMARY KEY,
+                        import_fingerprint TEXT NOT NULL REFERENCES payment_instruction_imports(fingerprint) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK(position>=0),
+                        kind TEXT NOT NULL CHECK(kind IN ('creditTransfer','directDebit')),
+                        payment_information_id TEXT NOT NULL,
+                        end_to_end_id TEXT NOT NULL,
+                        account_id TEXT REFERENCES accounts(id),
+                        account_title TEXT NOT NULL,
+                        target_order_id TEXT,
+                        counterparty_name TEXT NOT NULL,
+                        counterparty_iban TEXT NOT NULL,
+                        amount_minor INTEGER NOT NULL CHECK(amount_minor>0),
+                        requested_date TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        was_imported INTEGER NOT NULL CHECK(was_imported IN (0,1)),
+                        UNIQUE(import_fingerprint,position)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX payment_instruction_imports_date ON payment_instruction_imports(imported_at,fingerprint)"
+                )
+                try execute(
+                    "CREATE INDEX payment_instruction_items_target ON payment_instruction_import_items(target_order_id,position)"
+                )
+                try execute("PRAGMA user_version = 27")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2395,6 +2443,250 @@ final class SQLiteFinanceStore {
                 bankReference: header.bankReference,
                 memberOrderIDs: memberIDs, createdAt: header.createdAt,
                 updatedAt: header.updatedAt
+            )
+        }
+    }
+
+    func paymentInstructionImports() throws -> [PaymentInstructionImportSummary] {
+        var values: [PaymentInstructionImportSummary] = []
+        try query(
+            """
+            SELECT fingerprint,kind,message_id,source_created_at,imported_at,
+                   record_count,imported_count,warning_count
+            FROM payment_instruction_imports ORDER BY imported_at DESC,fingerprint
+            """
+        ) {
+            guard let kind = PainInstructionKind(rawValue: Self.text($0, 1)),
+                  let importedAt = Self.timestampDate(Self.text($0, 4)) else { return }
+            values.append(
+                PaymentInstructionImportSummary(
+                    id: Self.text($0, 0), kind: kind,
+                    messageID: Self.text($0, 2),
+                    sourceCreatedAt: Self.timestampDate(Self.text($0, 3)),
+                    importedAt: importedAt,
+                    recordCount: Int(sqlite3_column_int64($0, 5)),
+                    importedCount: Int(sqlite3_column_int64($0, 6)),
+                    warningCount: Int(sqlite3_column_int64($0, 7))
+                )
+            )
+        }
+        return values
+    }
+
+    func paymentInstructionImportItems(
+        importID: String
+    ) throws -> [PaymentInstructionImportItem] {
+        var values: [PaymentInstructionImportItem] = []
+        try query(
+            """
+            SELECT id,import_fingerprint,position,kind,payment_information_id,
+                   end_to_end_id,account_id,account_title,target_order_id,
+                   counterparty_name,counterparty_iban,amount_minor,
+                   requested_date,purpose,was_imported
+            FROM payment_instruction_import_items
+            WHERE import_fingerprint=? ORDER BY position
+            """,
+            [.text(importID)]
+        ) {
+            guard let id = UUID(uuidString: Self.text($0, 0)),
+                  let kind = PainInstructionKind(rawValue: Self.text($0, 3)),
+                  let requestedDate = Self.date(Self.text($0, 12)) else { return }
+            values.append(
+                PaymentInstructionImportItem(
+                    id: id, importID: Self.text($0, 1),
+                    position: Int(sqlite3_column_int64($0, 2)), kind: kind,
+                    paymentInformationID: Self.text($0, 4),
+                    endToEndID: Self.text($0, 5),
+                    accountID: UUID(uuidString: Self.text($0, 6)),
+                    accountTitle: Self.text($0, 7),
+                    targetOrderID: UUID(uuidString: Self.text($0, 8)),
+                    counterpartyName: Self.text($0, 9),
+                    counterpartyIBAN: Self.text($0, 10),
+                    amountMinor: sqlite3_column_int64($0, 11),
+                    requestedDate: requestedDate, purpose: Self.text($0, 13),
+                    imported: sqlite3_column_int64($0, 14) == 1
+                )
+            )
+        }
+        return values
+    }
+
+    func commitPaymentInstructionImport(
+        _ preview: PainInstructionPreview,
+        importing selectedMatchIDs: Set<UUID>
+    ) throws {
+        guard !selectedMatchIDs.isEmpty else {
+            throw FinanceError.invalidImportResolution(
+                "Es wurde keine importierbare Zahlungsposition ausgewählt."
+            )
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_instruction_imports WHERE fingerprint=?",
+            [.text(preview.document.fingerprint)]
+        ) == 0 else { throw FinanceError.duplicateImport }
+        let currentAccounts = try accounts()
+        let currentPayees = try payees()
+        let currentBanks = try payeeBankAccounts()
+        let currentMandates = try sepaMandates()
+        let fresh = PainInstructionImporter.preview(
+            document: preview.document, accounts: currentAccounts,
+            payees: currentPayees, bankAccounts: currentBanks,
+            mandates: currentMandates
+        )
+        let oldMapping = preview.matches.map {
+            ($0.id, $0.accountID, $0.payeeBankAccountID, $0.mandateID, $0.canImport)
+        }
+        let newMapping = fresh.matches.map {
+            ($0.id, $0.accountID, $0.payeeBankAccountID, $0.mandateID, $0.canImport)
+        }
+        guard oldMapping.elementsEqual(newMapping, by: {
+            $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2
+                && $0.3 == $1.3 && $0.4 == $1.4
+        }) else {
+            throw FinanceError.invalidImportResolution(
+                "Konto-, Empfänger- oder Mandatszuordnung hat sich geändert."
+            )
+        }
+        let selected = fresh.matches.filter { selectedMatchIDs.contains($0.id) }
+        guard selected.count == selectedMatchIDs.count,
+              selected.allSatisfy({ $0.canImport && $0.accountID != nil }) else {
+            throw FinanceError.invalidImportResolution(
+                "Mindestens eine gewählte Position ist nicht mehr importierbar."
+            )
+        }
+        let accountsByID = Dictionary(uniqueKeysWithValues: currentAccounts.map { ($0.id, $0) })
+        let banksByID = Dictionary(uniqueKeysWithValues: currentBanks.map { ($0.id, $0) })
+        let now = Date()
+        let info = try financeFileInfo()
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_instruction_imports(
+                    fingerprint,finance_file_id,kind,message_id,source_created_at,
+                    imported_at,record_count,imported_count,warning_count
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(preview.document.fingerprint), .text(info.id.uuidString),
+                    .text(preview.document.kind.rawValue),
+                    .text(preview.document.messageID),
+                    preview.document.createdAt.map { .text(Self.timestamp($0)) } ?? .null,
+                    .text(Self.timestamp(now)),
+                    .integer(Int64(fresh.matches.count)),
+                    .integer(Int64(selected.count)),
+                    .integer(Int64(preview.document.warnings.count))
+                ]
+            )
+            var importedOrderIDs: [UUID: UUID] = [:]
+            for match in selected {
+                let record = match.record
+                let account = accountsByID[match.accountID!]!
+                switch record.kind {
+                case .creditTransfer:
+                    let bank = match.payeeBankAccountID.flatMap { banksByID[$0] }
+                    try createPaymentOrder(
+                        PaymentOrder(
+                            id: match.id, accountID: account.id,
+                            type: record.isInstant ? .instantCreditTransfer : .sepaCreditTransfer,
+                            recipientName: record.counterpartyName,
+                            iban: record.counterpartyIBAN,
+                            bic: bank?.bic ?? record.counterpartyBIC,
+                            amountMinor: record.amountMinor, currency: "EUR",
+                            executionDate: record.requestedDate,
+                            purpose: record.purpose, endToEndID: record.endToEndID,
+                            status: .draft,
+                            idempotencyKey: "pain-instruction:\(preview.document.fingerprint):\(match.id.uuidString)",
+                            bankReference: "", createdAt: now, updatedAt: now,
+                            payeeID: match.payeeID,
+                            payeeBankAccountID: match.payeeBankAccountID
+                        )
+                    )
+                case .directDebit:
+                    let bank = banksByID[match.payeeBankAccountID!]!
+                    try createDirectDebitOrder(
+                        DirectDebitOrder(
+                            id: match.id, creditorAccountID: account.id,
+                            debtorPayeeID: match.payeeID!,
+                            debtorBankAccountID: bank.id, mandateID: match.mandateID!,
+                            creditorName: account.ownerName,
+                            creditorID: record.creditorID,
+                            creditorIBAN: IBANValidator.normalized(account.iban),
+                            creditorBIC: account.bic,
+                            debtorName: bank.accountHolder,
+                            debtorIBAN: IBANValidator.normalized(bank.iban),
+                            debtorBIC: bank.bic, amountMinor: record.amountMinor,
+                            currency: "EUR", collectionDate: record.requestedDate,
+                            purpose: record.purpose, endToEndID: record.endToEndID,
+                            mandateReference: record.mandateReference,
+                            mandateSignedOn: record.mandateSignedOn!,
+                            sequenceType: record.sequenceType!, status: .draft,
+                            idempotencyKey: "pain-instruction:\(preview.document.fingerprint):\(match.id.uuidString)",
+                            bankReference: "", createdAt: now, updatedAt: now
+                        )
+                    )
+                }
+                importedOrderIDs[match.id] = match.id
+            }
+            for (position, match) in fresh.matches.enumerated() {
+                let record = match.record
+                let imported = importedOrderIDs[match.id] != nil
+                try run(
+                    """
+                    INSERT INTO payment_instruction_import_items(
+                        id,import_fingerprint,position,kind,payment_information_id,
+                        end_to_end_id,account_id,account_title,target_order_id,
+                        counterparty_name,counterparty_iban,amount_minor,
+                        requested_date,purpose,was_imported
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(match.id.uuidString), .text(preview.document.fingerprint),
+                        .integer(Int64(position)), .text(record.kind.rawValue),
+                        .text(record.paymentInformationID), .text(record.endToEndID),
+                        match.accountID.map { .text($0.uuidString) } ?? .null,
+                        .text(match.accountTitle),
+                        imported ? .text(match.id.uuidString) : .null,
+                        .text(record.counterpartyName),
+                        .text(record.counterpartyIBAN),
+                        .integer(record.amountMinor), .text(Self.day(record.requestedDate)),
+                        .text(record.purpose), .integer(imported ? 1 : 0)
+                    ]
+                )
+            }
+            let selectedGroups = Dictionary(grouping: selected) {
+                "\($0.record.kind.rawValue)|\($0.record.paymentInformationID)"
+            }
+            for group in selectedGroups.values where group.count >= 2 {
+                let sourceCount = fresh.matches.filter {
+                    $0.record.kind == group[0].record.kind
+                        && $0.record.paymentInformationID
+                            == group[0].record.paymentInformationID
+                }.count
+                guard sourceCount == group.count else { continue }
+                let ordered = group.sorted {
+                    let left = fresh.matches.firstIndex(of: $0) ?? 0
+                    let right = fresh.matches.firstIndex(of: $1) ?? 0
+                    return left < right
+                }
+                try createPaymentBatch(
+                    PaymentBatch(
+                        id: UUID(),
+                        name: "Import \(group[0].record.paymentInformationID)",
+                        kind: group[0].record.kind == .creditTransfer
+                            ? .creditTransfer : .directDebit,
+                        accountID: group[0].accountID!,
+                        requestedDate: group[0].record.requestedDate,
+                        status: .draft,
+                        idempotencyKey: "pain-import-batch:\(preview.document.fingerprint):\(group[0].record.paymentInformationID)",
+                        bankReference: "", memberOrderIDs: ordered.map(\.id),
+                        createdAt: now, updatedAt: now
+                    )
+                )
+            }
+            try audit(
+                entity: "payment_instruction_import",
+                id: UUID(), action: "commit",
+                details: "fingerprint=\(preview.document.fingerprint);imported=\(selected.count)"
             )
         }
     }

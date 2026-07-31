@@ -5154,6 +5154,7 @@ struct PaymentsView: View {
         case payments = "Überweisungen"
         case directDebits = "Lastschriften"
         case batches = "Sammler"
+        case instructionImports = "Dateiimporte"
         case statusReports = "Statusberichte"
         case standingOrders = "Daueraufträge"
         var id: Self { self }
@@ -5165,12 +5166,15 @@ struct PaymentsView: View {
     @State private var selectedStandingOrderID: UUID?
     @State private var selectedBatchID: UUID?
     @State private var selectedStatusReportID: String?
+    @State private var selectedInstructionImportID: String?
     @State private var section: PaymentSection = .payments
     @State private var showNewPayment = false
     @State private var showNewDirectDebit = false
     @State private var showNewBatch = false
     @State private var showStatusImporter = false
+    @State private var showInstructionImporter = false
     @State private var statusPreview: Pain002Preview?
+    @State private var instructionPreview: PainInstructionPreview?
     @State private var editedStandingOrder: StandingOrder?
 
     private var selectedOrder: PaymentOrder? {
@@ -5209,7 +5213,7 @@ struct PaymentsView: View {
                     ForEach(PaymentSection.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 650)
+                .frame(width: 760)
                 Button {
                     switch section {
                     case .payments:
@@ -5218,6 +5222,8 @@ struct PaymentsView: View {
                         showNewDirectDebit = true
                     case .batches:
                         showNewBatch = true
+                    case .instructionImports:
+                        showInstructionImporter = true
                     case .statusReports:
                         showStatusImporter = true
                     case .standingOrders:
@@ -5246,15 +5252,18 @@ struct PaymentsView: View {
                                 ? "Lastschrift"
                                 : (section == .batches
                                     ? "Sammler"
-                                    : (section == .statusReports
-                                        ? "pain.002" : "Dauerauftrag"))),
+                                    : (section == .instructionImports
+                                        ? "pain.001/.008"
+                                        : (section == .statusReports
+                                            ? "pain.002" : "Dauerauftrag")))),
                         systemImage: section == .statusReports
+                            || section == .instructionImports
                             ? "doc.badge.arrow.down" : "plus"
                     )
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(
-                    section == .statusReports
+                    section == .statusReports || section == .instructionImports
                         ? false
                         : (section == PaymentSection.standingOrders
                         ? !store.accounts.contains(where: {
@@ -5277,6 +5286,8 @@ struct PaymentsView: View {
                 directDebitsContent
             case .batches:
                 batchesContent
+            case .instructionImports:
+                instructionImportsContent
             case .statusReports:
                 statusReportsContent
             case .standingOrders:
@@ -5297,6 +5308,9 @@ struct PaymentsView: View {
             if selectedStatusReportID == nil {
                 selectedStatusReportID = store.paymentStatusReports.first?.id
             }
+            if selectedInstructionImportID == nil {
+                selectedInstructionImportID = store.paymentInstructionImports.first?.id
+            }
         }
         .sheet(isPresented: $showNewPayment) {
             PaymentDraftEditor()
@@ -5310,6 +5324,9 @@ struct PaymentsView: View {
         .sheet(item: $statusPreview) { preview in
             Pain002PreviewSheet(preview: preview)
         }
+        .sheet(item: $instructionPreview) { preview in
+            PainInstructionPreviewSheet(preview: preview)
+        }
         .fileImporter(
             isPresented: $showStatusImporter,
             allowedContentTypes: [.xml], allowsMultipleSelection: false
@@ -5319,6 +5336,21 @@ struct PaymentsView: View {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 statusPreview = store.previewPaymentStatusReport(
+                    data: try Data(contentsOf: url)
+                )
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileImporter(
+            isPresented: $showInstructionImporter,
+            allowedContentTypes: [.xml], allowsMultipleSelection: false
+        ) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                instructionPreview = store.previewPaymentInstructionImport(
                     data: try Data(contentsOf: url)
                 )
             } catch {
@@ -5647,6 +5679,68 @@ struct PaymentsView: View {
         }
     }
 
+    private var instructionImportsContent: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("pain.001/.008-Importhistorie").font(.headline)
+                    Spacer()
+                    Text("\(store.paymentInstructionImports.count)")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                Divider()
+                if store.paymentInstructionImports.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Auftragsimporte",
+                        systemImage: "doc.badge.arrow.down",
+                        description: Text(
+                            "Importiere pain.001.001.09 oder pain.008.001.08 als lokale Entwürfe."
+                        )
+                    )
+                } else {
+                    List(selection: $selectedInstructionImportID) {
+                        ForEach(store.paymentInstructionImports) { value in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(value.messageID).fontWeight(.medium)
+                                HStack {
+                                    Text(value.kind.title)
+                                    Text("· \(value.importedCount)/\(value.recordCount) übernommen")
+                                    Spacer()
+                                    Text(
+                                        value.importedAt,
+                                        format: .dateTime.day().month().year().hour().minute()
+                                    )
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .tag(value.id)
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 390, idealWidth: 470)
+            if let importID = selectedInstructionImportID,
+               let value = store.paymentInstructionImports.first(where: {
+                   $0.id == importID
+               }) {
+                PaymentInstructionImportDetail(
+                    summary: value,
+                    items: store.paymentInstructionImportItems(importID: importID)
+                )
+                .id(importID)
+                .frame(minWidth: 520)
+            } else {
+                ContentUnavailableView(
+                    "Kein Auftragsimport ausgewählt",
+                    systemImage: "doc.text.magnifyingglass"
+                )
+                .frame(minWidth: 520)
+            }
+        }
+    }
+
     private func batchTotal(_ batch: PaymentBatch) -> Int64 {
         switch batch.kind {
         case .creditTransfer:
@@ -5657,6 +5751,165 @@ struct PaymentsView: View {
             return store.directDebitOrders
                 .filter { batch.memberOrderIDs.contains($0.id) }
                 .reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+    }
+}
+
+private struct PainInstructionPreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    let preview: PainInstructionPreview
+    @State private var selectedIDs: Set<UUID>
+    @State private var confirmImport = false
+
+    init(preview: PainInstructionPreview) {
+        self.preview = preview
+        _selectedIDs = State(
+            initialValue: Set(preview.matches.filter(\.canImport).map(\.id))
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(preview.document.kind.title)sdatei prüfen")
+                        .font(.title2.bold())
+                    Text("Nachricht \(preview.document.messageID)")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Auswahl als Entwürfe importieren …") {
+                    confirmImport = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedIDs.isEmpty)
+            }
+            .padding(14)
+            Divider()
+            HStack(spacing: 18) {
+                LabeledContent("Positionen", value: "\(preview.matches.count)")
+                LabeledContent("Importierbar", value: "\(preview.importableCount)")
+                LabeledContent("Ausgewählt", value: "\(selectedIDs.count)")
+                Spacer()
+            }
+            .padding(12)
+            Divider()
+            List {
+                ForEach(preview.matches) { match in
+                    Toggle(isOn: selection(match)) {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(match.record.counterpartyName).fontWeight(.medium)
+                                Text(match.record.purpose)
+                                Text(
+                                    "\(match.accountTitle) · \(match.record.counterpartyIBAN) · \(match.explanation)"
+                                )
+                                .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(
+                                    Money(
+                                        minorUnits: match.record.amountMinor,
+                                        currency: "EUR"
+                                    ).formatted
+                                )
+                                .monospacedDigit()
+                                Text(
+                                    match.record.requestedDate,
+                                    format: .dateTime.day().month().year()
+                                )
+                                .font(.caption)
+                            }
+                        }
+                    }
+                    .disabled(!match.canImport)
+                }
+                if !preview.document.warnings.isEmpty {
+                    Section("Hinweise") {
+                        ForEach(preview.document.warnings, id: \.self) {
+                            Label($0, systemImage: "exclamationmark.triangle")
+                        }
+                    }
+                }
+            }
+            Text(
+                "Der Import erzeugt ausschließlich lokale Entwürfe. Er sendet nichts, erzeugt keine Buchung und speichert keine Freigabedaten. Vollständig gewählte Mehrpositionsblöcke werden als Sammler rekonstruiert."
+            )
+            .font(.caption).foregroundStyle(.secondary).padding(12)
+        }
+        .frame(width: 980, height: 720)
+        .alert("Zahlungsdatei verbindlich importieren?", isPresented: $confirmImport) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("\(selectedIDs.count) Entwürfe importieren") {
+                if store.commitPaymentInstructionImport(
+                    preview, importing: selectedIDs
+                ) { dismiss() }
+            }
+        } message: {
+            Text(
+                "Zuordnungen werden unmittelbar vor dem atomaren Commit erneut geprüft. Derselbe Dateifingerprint kann nur einmal importiert werden."
+            )
+        }
+    }
+
+    private func selection(_ match: PainInstructionMatch) -> Binding<Bool> {
+        Binding(
+            get: { selectedIDs.contains(match.id) },
+            set: { value in
+                if value { selectedIDs.insert(match.id) }
+                else { selectedIDs.remove(match.id) }
+            }
+        )
+    }
+}
+
+private struct PaymentInstructionImportDetail: View {
+    let summary: PaymentInstructionImportSummary
+    let items: [PaymentInstructionImportItem]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(summary.messageID).font(.title2.bold())
+                GroupBox("Unveränderlicher Importnachweis") {
+                    Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                        GridRow { Text("Format"); Text(summary.kind.title) }
+                        GridRow { Text("Fingerprint"); Text(summary.id).font(.caption.monospaced()) }
+                        GridRow { Text("Importiert"); Text(summary.importedAt.formatted()) }
+                        GridRow { Text("Positionen"); Text("\(summary.recordCount)") }
+                        GridRow { Text("Entwürfe"); Text("\(summary.importedCount)") }
+                        GridRow { Text("Hinweise"); Text("\(summary.warningCount)") }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+                GroupBox("Auftragspositionen") {
+                    VStack(spacing: 0) {
+                        ForEach(items) { item in
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: item.imported ? "checkmark.circle.fill" : "minus.circle")
+                                    .foregroundStyle(item.imported ? .green : .secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.counterpartyName).fontWeight(.medium)
+                                    Text(item.purpose)
+                                    Text("\(item.accountTitle) · \(item.counterpartyIBAN)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(Money(minorUnits: item.amountMinor, currency: "EUR").formatted)
+                                    .monospacedDigit()
+                            }
+                            .padding(.vertical, 7)
+                            if item.id != items.last?.id { Divider() }
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+            }
+            .padding(20)
         }
     }
 }

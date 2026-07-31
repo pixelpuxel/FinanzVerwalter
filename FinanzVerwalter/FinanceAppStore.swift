@@ -95,6 +95,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
     @Published private(set) var paymentBatches: [PaymentBatch] = []
     @Published private(set) var paymentStatusReports: [PaymentStatusReportSummary] = []
+    @Published private(set) var paymentInstructionImports: [PaymentInstructionImportSummary] = []
     @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
     @Published private(set) var payeeBankAccounts: [FinancePayeeBankAccount] = []
@@ -1592,6 +1593,46 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func previewPaymentInstructionImport(
+        data: Data
+    ) -> PainInstructionPreview? {
+        do {
+            return PainInstructionImporter.preview(
+                document: try PainInstructionImporter.parse(data: data),
+                accounts: accounts, payees: payees,
+                bankAccounts: payeeBankAccounts, mandates: sepaMandates
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func commitPaymentInstructionImport(
+        _ preview: PainInstructionPreview,
+        importing selectedMatchIDs: Set<UUID>
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.commitPaymentInstructionImport(
+                preview, importing: selectedMatchIDs
+            )
+            try load()
+            statusText = "\(preview.document.kind.title)en als Entwürfe importiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func paymentInstructionImportItems(
+        importID: String
+    ) -> [PaymentInstructionImportItem] {
+        guard let repository else { return [] }
+        return (try? repository.paymentInstructionImportItems(importID: importID)) ?? []
+    }
+
     func commitPaymentStatusReport(
         _ preview: Pain002Preview,
         applying selectedMatchIDs: Set<UUID>
@@ -2182,6 +2223,7 @@ final class FinanceAppStore: ObservableObject {
         directDebitOrders = try repository.directDebitOrders()
         paymentBatches = try repository.paymentBatches()
         paymentStatusReports = try repository.paymentStatusReports()
+        paymentInstructionImports = try repository.paymentInstructionImports()
         standingOrders = try repository.standingOrders()
         payees = try repository.payees()
         payeeBankAccounts = try repository.payeeBankAccounts()

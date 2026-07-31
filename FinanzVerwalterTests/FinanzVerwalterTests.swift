@@ -4,6 +4,286 @@ import PDFKit
 @testable import FinanzVerwalter
 
 final class FinanzVerwalterTests: XCTestCase {
+    func testPainInstructionImporterRoundTripsCreditAndDebitExports() throws {
+        var account = FinanceAccount(
+            id: UUID(), name: "SEPA-Konto", institution: "Bank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Müller & Partner"
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        let creation = Pain001Exporter.gregorianDate(year: 2026, month: 7, day: 31)
+        let requested = Pain001Exporter.gregorianDate(year: 2026, month: 8, day: 3)
+        let payment = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .instantCreditTransfer,
+            recipientName: "Stadtwerke <Nord>", iban: "DE12500105170648489890",
+            bic: "INGDDEFFXXX", amountMinor: 123_456, currency: "EUR",
+            executionDate: requested, purpose: "Abschlag & Vertrag",
+            endToEndID: "IMPORT-E2E-1", status: .draft,
+            idempotencyKey: "instruction-payment", bankReference: "",
+            createdAt: creation, updatedAt: creation
+        )
+        let creditData = try Pain001Exporter.export(
+            order: payment, account: account, createdAt: creation,
+            messageID: "IMPORT-MSG-1"
+        ).data
+        let credit = try PainInstructionImporter.parse(data: creditData)
+        XCTAssertEqual(credit.kind, .creditTransfer)
+        XCTAssertEqual(credit.messageID, "IMPORT-MSG-1")
+        XCTAssertEqual(credit.records.count, 1)
+        XCTAssertEqual(credit.records[0].localIBAN, account.iban)
+        XCTAssertEqual(credit.records[0].counterpartyName, "Stadtwerke <Nord>")
+        XCTAssertEqual(credit.records[0].amountMinor, 123_456)
+        XCTAssertEqual(credit.records[0].purpose, "Abschlag & Vertrag")
+        XCTAssertTrue(credit.records[0].isInstant)
+
+        let debit = DirectDebitOrder(
+            id: UUID(), creditorAccountID: account.id,
+            debtorPayeeID: UUID(), debtorBankAccountID: UUID(),
+            mandateID: UUID(), creditorName: account.ownerName,
+            creditorID: "DE98ZZZ09999999999",
+            creditorIBAN: account.iban, creditorBIC: account.bic,
+            debtorName: "Zahler Süd", debtorIBAN: "DE12500105170648489890",
+            debtorBIC: "INGDDEFFXXX", amountMinor: 9_876, currency: "EUR",
+            collectionDate: requested, purpose: "Mitgliedsbeitrag",
+            endToEndID: "IMPORT-DD-E2E", mandateReference: "MANDAT-IMPORT-1",
+            mandateSignedOn: Pain008Exporter.gregorianDate(
+                year: 2026, month: 1, day: 15
+            ),
+            sequenceType: .recurring, status: .draft,
+            idempotencyKey: "instruction-debit", bankReference: "",
+            createdAt: creation, updatedAt: creation
+        )
+        let debitData = try Pain008Exporter.export(
+            order: debit, account: account, createdAt: creation,
+            messageID: "IMPORT-DD-MSG-1"
+        ).data
+        let direct = try PainInstructionImporter.parse(data: debitData)
+        XCTAssertEqual(direct.kind, .directDebit)
+        XCTAssertEqual(direct.records.count, 1)
+        XCTAssertEqual(direct.records[0].creditorID, "DE98ZZZ09999999999")
+        XCTAssertEqual(direct.records[0].mandateReference, "MANDAT-IMPORT-1")
+        XCTAssertEqual(direct.records[0].sequenceType, .recurring)
+        XCTAssertEqual(direct.records[0].amountMinor, 9_876)
+    }
+
+    func testPainInstructionImporterRejectsUnsafeWrongAndManipulatedXML() throws {
+        let unsafe = """
+        <!DOCTYPE x [<!ENTITY leak SYSTEM "file:///etc/passwd">]>
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">&leak;</Document>
+        """
+        XCTAssertThrowsError(
+            try PainInstructionImporter.parse(data: Data(unsafe.utf8))
+        )
+        let oldVersion = """
+        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03">
+          <CstmrCdtTrfInitn><GrpHdr><MsgId>OLD-1</MsgId></GrpHdr></CstmrCdtTrfInitn>
+        </Document>
+        """
+        XCTAssertThrowsError(
+            try PainInstructionImporter.parse(data: Data(oldVersion.utf8))
+        )
+
+        var account = FinanceAccount(
+            id: UUID(), name: "Konto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Firma"
+        account.iban = "DE89370400440532013000"
+        let date = Pain001Exporter.gregorianDate(year: 2026, month: 8, day: 3)
+        let order = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+            recipientName: "Empfänger", iban: "DE12500105170648489890",
+            bic: "", amountMinor: 1_000, currency: "EUR",
+            executionDate: date, purpose: "Zweck", endToEndID: "E2E-SAFE",
+            status: .draft, idempotencyKey: "safe", bankReference: "",
+            createdAt: date, updatedAt: date
+        )
+        let valid = try Pain001Exporter.export(
+            order: order, account: account, createdAt: date,
+            messageID: "SAFE-MSG"
+        ).data
+        let text = try XCTUnwrap(String(data: valid, encoding: .utf8))
+        let badControl = text.replacingOccurrences(
+            of: "<CtrlSum>10.00</CtrlSum>", with: "<CtrlSum>10.01</CtrlSum>"
+        )
+        XCTAssertThrowsError(
+            try PainInstructionImporter.parse(data: Data(badControl.utf8))
+        )
+        let badCurrency = text.replacingOccurrences(of: "Ccy=\"EUR\"", with: "Ccy=\"USD\"")
+        XCTAssertThrowsError(
+            try PainInstructionImporter.parse(data: Data(badCurrency.utf8))
+        )
+    }
+
+    func testPain001ImportCommitsDraftsBatchAndHistoryExactlyOnce() throws {
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Importkonto", institution: "Bank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 50_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Import Firma"
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        try context.store.saveAccount(account)
+        let created = Pain001Exporter.gregorianDate(year: 2026, month: 7, day: 31)
+        let execution = Pain001Exporter.gregorianDate(year: 2026, month: 8, day: 3)
+        let sourceOrders = [
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Empfänger Eins", iban: "DE12500105170648489890",
+                bic: "INGDDEFFXXX", amountMinor: 1_100, currency: "EUR",
+                executionDate: execution, purpose: "Eins", endToEndID: "IMP-B-1",
+                status: .draft, idempotencyKey: "source-1", bankReference: "",
+                createdAt: created, updatedAt: created
+            ),
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Empfänger Zwei", iban: "DE75512108001245126199",
+                bic: "", amountMinor: 2_200, currency: "EUR",
+                executionDate: execution, purpose: "Zwei", endToEndID: "IMP-B-2",
+                status: .draft, idempotencyKey: "source-2", bankReference: "",
+                createdAt: created, updatedAt: created
+            )
+        ]
+        let sourceBatch = PaymentBatch(
+            id: UUID(), name: "Quelldatei", kind: .creditTransfer,
+            accountID: account.id, requestedDate: execution, status: .draft,
+            idempotencyKey: "source-batch", bankReference: "",
+            memberOrderIDs: sourceOrders.map(\.id),
+            createdAt: created, updatedAt: created
+        )
+        let data = try Pain001Exporter.export(
+            batch: sourceBatch, orders: sourceOrders, account: account,
+            createdAt: created, messageID: "IMPORT-BATCH-MSG"
+        ).data
+        let document = try PainInstructionImporter.parse(data: data)
+        let preview = PainInstructionImporter.preview(
+            document: document, accounts: try context.store.accounts(),
+            payees: [], bankAccounts: [], mandates: []
+        )
+        XCTAssertEqual(preview.importableCount, 2)
+        XCTAssertTrue(preview.matches.allSatisfy(\.canImport))
+        let selected = Set(preview.matches.map(\.id))
+        try context.store.commitPaymentInstructionImport(
+            preview, importing: selected
+        )
+        XCTAssertEqual(try context.store.paymentOrders().count, 2)
+        XCTAssertTrue(try context.store.paymentOrders().allSatisfy {
+            $0.status == .draft
+        })
+        let batch = try XCTUnwrap(context.store.paymentBatches().first)
+        XCTAssertEqual(batch.kind, .creditTransfer)
+        XCTAssertEqual(batch.memberOrderIDs, preview.matches.map(\.id))
+        XCTAssertTrue(try context.store.transactions().isEmpty)
+        let history = try XCTUnwrap(context.store.paymentInstructionImports().first)
+        XCTAssertEqual(history.recordCount, 2)
+        XCTAssertEqual(history.importedCount, 2)
+        XCTAssertEqual(
+            try context.store.paymentInstructionImportItems(importID: history.id)
+                .filter(\.imported).count,
+            2
+        )
+        XCTAssertThrowsError(
+            try context.store.commitPaymentInstructionImport(
+                preview, importing: selected
+            )
+        ) { XCTAssertEqual($0 as? FinanceError, .duplicateImport) }
+        XCTAssertEqual(try context.store.paymentOrders().count, 2)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testPain008ImportRequiresAndRechecksExactActiveMandate() throws {
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Gläubigerkonto", institution: "Bank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.ownerName = "Verein Nord"
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        try context.store.saveAccount(account)
+        let payee = FinancePayee(
+            id: UUID(), canonicalName: "Zahler Süd", aliases: [],
+            address: "", email: "", phone: "", iban: "", bic: "",
+            defaultCategoryID: nil, preferredAccountID: nil,
+            note: "", isActive: true
+        )
+        try context.store.savePayee(payee)
+        let bank = FinancePayeeBankAccount(
+            id: UUID(), payeeID: payee.id, label: "Lastschrift",
+            accountHolder: "Zahler Süd", iban: "DE12500105170648489890",
+            bic: "INGDDEFFXXX", bankName: "", isDefault: true,
+            isActive: true
+        )
+        try context.store.savePayeeBankAccount(bank)
+        let signed = Pain008Exporter.gregorianDate(year: 2026, month: 1, day: 15)
+        let mandate = FinanceSEPAMandate(
+            id: UUID(), payeeID: payee.id, reference: "MANDAT-EXAKT",
+            signedOn: signed, sequenceType: .recurring,
+            note: "", isActive: true
+        )
+        try context.store.saveSEPAMandate(mandate)
+        let due = Pain008Exporter.gregorianDate(year: 2026, month: 8, day: 15)
+        let source = DirectDebitOrder(
+            id: UUID(), creditorAccountID: account.id,
+            debtorPayeeID: payee.id, debtorBankAccountID: bank.id,
+            mandateID: mandate.id, creditorName: account.ownerName,
+            creditorID: "DE98ZZZ09999999999",
+            creditorIBAN: account.iban, creditorBIC: account.bic,
+            debtorName: bank.accountHolder, debtorIBAN: bank.iban,
+            debtorBIC: bank.bic, amountMinor: 7_700, currency: "EUR",
+            collectionDate: due, purpose: "Beitrag", endToEndID: "DD-IMPORT-1",
+            mandateReference: mandate.reference, mandateSignedOn: signed,
+            sequenceType: .recurring, status: .draft,
+            idempotencyKey: "source-dd", bankReference: "",
+            createdAt: due, updatedAt: due
+        )
+        let data = try Pain008Exporter.export(
+            order: source, account: account, createdAt: due,
+            messageID: "DD-IMPORT-MSG"
+        ).data
+        let document = try PainInstructionImporter.parse(data: data)
+        let preview = PainInstructionImporter.preview(
+            document: document, accounts: try context.store.accounts(),
+            payees: try context.store.payees(),
+            bankAccounts: try context.store.payeeBankAccounts(),
+            mandates: try context.store.sepaMandates()
+        )
+        XCTAssertEqual(preview.importableCount, 1)
+        XCTAssertEqual(preview.matches[0].mandateID, mandate.id)
+        var inactive = mandate
+        inactive.isActive = false
+        try context.store.saveSEPAMandate(inactive)
+        XCTAssertThrowsError(
+            try context.store.commitPaymentInstructionImport(
+                preview, importing: [preview.matches[0].id]
+            )
+        )
+        XCTAssertTrue(try context.store.directDebitOrders().isEmpty)
+        XCTAssertTrue(try context.store.paymentInstructionImports().isEmpty)
+        inactive.isActive = true
+        try context.store.saveSEPAMandate(inactive)
+        let fresh = PainInstructionImporter.preview(
+            document: document, accounts: try context.store.accounts(),
+            payees: try context.store.payees(),
+            bankAccounts: try context.store.payeeBankAccounts(),
+            mandates: try context.store.sepaMandates()
+        )
+        try context.store.commitPaymentInstructionImport(
+            fresh, importing: [fresh.matches[0].id]
+        )
+        let imported = try XCTUnwrap(context.store.directDebitOrders().first)
+        XCTAssertEqual(imported.status, .draft)
+        XCTAssertEqual(imported.mandateID, mandate.id)
+        XCTAssertTrue(try context.store.transactions().isEmpty)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testPain002ParsesSafelyAndMatchesOnlyFinalExactReference() throws {
         let id = UUID(uuidString: "11111111-2222-4333-A444-555555555555")!
         let now = Date(timeIntervalSince1970: 1_788_000_000)
@@ -3548,7 +3828,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To26PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To27PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -3663,11 +3943,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 26)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 27)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To26PromotesLegacyPayeeBankData() throws {
+    func testMigration22To27PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -3694,6 +3974,8 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         let downgradeSQL = """
+        DROP TABLE payment_instruction_import_items;
+        DROP TABLE payment_instruction_imports;
         DROP TABLE payment_status_report_items;
         DROP TABLE payment_status_reports;
         DROP TABLE payment_batch_items;
