@@ -164,6 +164,19 @@ aktiviert die Splitbuchung. `F3` übernimmt aus genau einer markierten Buchung
 wahlweise Empfänger, Verwendungszweck, Kategorie, Konto oder Status als
 Filter; das gewünschte Feld wird direkt im Kontenblatt gewählt.
 
+Der einblendbare rechte Minireport folgt genau einer markierten Buchung und
+wertet wahlweise deren Empfänger, vollständige Kategorie oder erste
+Klasse/Tag aus. Einnahmen, Ausgaben und Saldo bleiben je Währung getrennt;
+bei Splitbuchungen zählt nur der fachlich passende Splitbetrag. Die letzten
+passenden Buchungen bleiben als kompakte Detailhistorie sichtbar.
+
+Mit `Teilen` öffnet sich daneben ein zweites Kontoblatt für ein anderes
+Konto. Es besitzt eine eigene Kontowahl sowie unabhängige Status-, Kategorie-
+und Zeitraumfilter, zeigt vollständige Kategoriepfade, Betrag und laufenden
+Saldo und kann Buchungen per Doppelklick bearbeiten. Minireport und geteilte
+Ansicht sind auf engem Raum wechselseitig, damit das Hauptkontenblatt nicht
+unter eine unbrauchbare Mindestbreite gedrückt wird.
+
 ## Kategorien und Mehrwertsteuer
 
 Kategorien besitzen neben einer beliebig tiefen Hierarchie eine Beschreibung,

@@ -22,6 +22,15 @@ struct RegisterView: View {
     @State private var savedViewName = ""
     @State private var showPDFExporter = false
     @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
+    @AppStorage("registerMiniReportVisibleV1")
+    private var showMiniReport = true
+    @AppStorage("registerMiniReportDimensionV1")
+    private var miniReportDimensionRaw =
+        RegisterMiniReportDimension.payee.rawValue
+    @AppStorage("registerSplitViewVisibleV1")
+    private var showSplitRegister = false
+    @AppStorage("registerSecondaryAccountIDV1")
+    private var secondaryAccountIDRaw = ""
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
     @AppStorage("registerVisibleColumnsIncludesBalanceV2")
@@ -158,6 +167,38 @@ struct RegisterView: View {
                 transactionTemplateMenu
                 registerOutputMenu(runningBalances: runningBalances)
                 f3FilterMenu
+                Button {
+                    if !showMiniReport { showSplitRegister = false }
+                    showMiniReport.toggle()
+                } label: {
+                    Label(
+                        "Minireport",
+                        systemImage: showMiniReport
+                            ? "sidebar.right" : "sidebar.right"
+                    )
+                }
+                .help(
+                    showMiniReport
+                        ? "Minireport ausblenden"
+                        : "Minireport für die markierte Buchung einblenden"
+                )
+                Button {
+                    if !showSplitRegister {
+                        showMiniReport = false
+                        ensureSecondaryAccount()
+                    }
+                    showSplitRegister.toggle()
+                } label: {
+                    Label(
+                        "Teilen",
+                        systemImage: "rectangle.split.2x1"
+                    )
+                }
+                .help(
+                    showSplitRegister
+                        ? "Zweites Kontoblatt schließen"
+                        : "Zweites Kontoblatt daneben öffnen"
+                )
                 if periodFilter == .custom {
                     DatePicker("Von", selection: $customStart, displayedComponents: .date)
                         .labelsHidden()
@@ -179,62 +220,98 @@ struct RegisterView: View {
 
             Divider()
 
-            Table(visibleTransactions, selection: $selection) {
-                TableColumnForEach(orderedVisibleColumns) { column in
-                    TableColumn(column.title) { value in
-                        registerCell(
-                            value,
-                            column: column,
-                            runningBalances: runningBalances
-                        )
+            HStack(spacing: 0) {
+                Table(visibleTransactions, selection: $selection) {
+                    TableColumnForEach(orderedVisibleColumns) { column in
+                        TableColumn(column.title) { value in
+                            registerCell(
+                                value,
+                                column: column,
+                                runningBalances: runningBalances
+                            )
+                        }
+                        .width(min: column.minimumWidth, ideal: column.idealWidth)
                     }
-                    .width(min: column.minimumWidth, ideal: column.idealWidth)
                 }
-            }
-            .contextMenu(forSelectionType: UUID.self) { ids in
-                if ids.count == 1 {
-                    Button("Bearbeiten") {
-                        editingTransaction = store.transactions.first { ids.contains($0.id) }
-                        editorTemplate = nil
-                        showEditor = editingTransaction != nil
-                    }
-                    Button("Als Vorlage merken …") {
-                        selection = ids
-                        prepareTemplateFromSelection()
-                    }
-                    if let transaction = store.transactions.first(
-                        where: { ids.contains($0.id) }
-                    ), transaction.categoryID != nil,
-                       transaction.splits.isEmpty {
-                        Button("Regel aus Buchung erstellen") {
-                            _ = store.createRule(from: transaction)
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    if ids.count == 1 {
+                        Button("Bearbeiten") {
+                            editingTransaction = store.transactions.first { ids.contains($0.id) }
+                            editorTemplate = nil
+                            showEditor = editingTransaction != nil
+                        }
+                        Button("Als Vorlage merken …") {
+                            selection = ids
+                            prepareTemplateFromSelection()
+                        }
+                        if let transaction = store.transactions.first(
+                            where: { ids.contains($0.id) }
+                        ), transaction.categoryID != nil,
+                           transaction.splits.isEmpty {
+                            Button("Regel aus Buchung erstellen") {
+                                _ = store.createRule(from: transaction)
+                            }
                         }
                     }
+                    Button("Kategorie für Auswahl ändern …") {
+                        selection = ids
+                        showBulkEditor = true
+                    }
+                    Button("Löschen", role: .destructive) {
+                        selection = ids
+                        prepareDeletion()
+                    }
+                } primaryAction: { ids in
+                    editingTransaction = store.transactions.first { ids.contains($0.id) }
+                    editorTemplate = nil
+                    showEditor = editingTransaction != nil
                 }
-                Button("Kategorie für Auswahl ändern …") {
-                    selection = ids
-                    showBulkEditor = true
+                .overlay {
+                    if visibleTransactions.isEmpty {
+                        ContentUnavailableView(
+                            "Keine Buchungen",
+                            systemImage: "list.bullet.rectangle",
+                            description: Text(
+                                store.transactions.isEmpty
+                                    ? "Lege eine Buchung an oder importiere Umsätze."
+                                    : "Die gewählten Filter liefern keine Treffer."
+                            )
+                        )
+                    }
                 }
-                Button("Löschen", role: .destructive) {
-                    selection = ids
-                    prepareDeletion()
+                if showSplitRegister {
+                    Divider()
+                    SecondaryRegisterPane(
+                        selectedAccountID: Binding(
+                            get: { secondaryAccountID },
+                            set: {
+                                secondaryAccountIDRaw =
+                                    $0?.uuidString ?? ""
+                            }
+                        ),
+                        excludedAccountID: store.selectedAccountID,
+                        edit: { transaction in
+                            editingTransaction = transaction
+                            editorTemplate = nil
+                            showEditor = true
+                        }
+                    )
+                    .frame(minWidth: 380, idealWidth: 520)
                 }
-            } primaryAction: { ids in
-                editingTransaction = store.transactions.first { ids.contains($0.id) }
-                editorTemplate = nil
-                showEditor = editingTransaction != nil
-            }
-            .overlay {
-                if visibleTransactions.isEmpty {
-                    ContentUnavailableView(
-                        "Keine Buchungen",
-                        systemImage: "list.bullet.rectangle",
-                        description: Text(
-                            store.transactions.isEmpty
-                                ? "Lege eine Buchung an oder importiere Umsätze."
-                                : "Die gewählten Filter liefern keine Treffer."
+                if showMiniReport {
+                    Divider()
+                    RegisterMiniReportPanel(
+                        selectedTransaction: selectedTransaction,
+                        dimension: Binding(
+                            get: {
+                                RegisterMiniReportDimension(
+                                    rawValue: miniReportDimensionRaw
+                                ) ?? .payee
+                            },
+                            set: { miniReportDimensionRaw = $0.rawValue }
                         )
                     )
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 340)
                 }
             }
             Divider()
@@ -350,6 +427,7 @@ struct RegisterView: View {
         }
         .onChange(of: store.selectedAccountID) {
             addSelectedAccountTabIfNeeded()
+            if showSplitRegister { ensureSecondaryAccount() }
         }
         .onChange(of: store.accounts.map(\.id)) {
             synchronizeAccountTabs()
@@ -358,6 +436,7 @@ struct RegisterView: View {
             migrateBalanceColumnIfNeeded()
             synchronizeAccountTabs()
             addSelectedAccountTabIfNeeded()
+            if showSplitRegister { ensureSecondaryAccount() }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .filterRegisterSelection)
@@ -426,6 +505,28 @@ struct RegisterView: View {
             Label("Vorlagen", systemImage: "doc.on.doc")
         }
         .help("Buchung aus einer gespeicherten Vorlage beginnen")
+    }
+
+    private var selectedTransaction: FinanceTransaction? {
+        guard selection.count == 1, let id = selection.first else {
+            return nil
+        }
+        return store.transactions.first { $0.id == id }
+    }
+
+    private var secondaryAccountID: UUID? {
+        UUID(uuidString: secondaryAccountIDRaw)
+    }
+
+    private func ensureSecondaryAccount() {
+        let available = store.accounts.filter {
+            !$0.isClosed && $0.id != store.selectedAccountID
+        }
+        if let secondaryAccountID,
+           available.contains(where: { $0.id == secondaryAccountID }) {
+            return
+        }
+        secondaryAccountIDRaw = available.first?.id.uuidString ?? ""
     }
 
     private func prepareTemplateFromSelection() {
@@ -1065,7 +1166,7 @@ private struct RegisterPDFDocument: FileDocument {
     }
 }
 
-private enum RegisterCategoryFilter: Hashable {
+enum RegisterCategoryFilter: Hashable {
     case all
     case uncategorized
     case category(UUID)
@@ -1087,7 +1188,7 @@ private enum RegisterCategoryFilter: Hashable {
     }
 }
 
-private enum RegisterPeriodFilter: String, CaseIterable, Identifiable {
+enum RegisterPeriodFilter: String, CaseIterable, Identifiable {
     case all
     case currentMonth
     case currentYear
@@ -1124,6 +1225,53 @@ private enum RegisterPeriodFilter: String, CaseIterable, Identifiable {
         }
     }
 
+}
+
+enum RegisterSecondaryQuery {
+    static func visible(
+        transactions: [FinanceTransaction],
+        accountID: UUID?,
+        status: TransactionStatus?,
+        category: RegisterCategoryFilter,
+        period: RegisterPeriodFilter,
+        customStart: Date,
+        customEnd: Date,
+        searchText: String,
+        categoryPath: (FinanceTransaction) -> String
+    ) -> [FinanceTransaction] {
+        guard let accountID else { return [] }
+        let search = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return transactions.filter { transaction in
+            guard transaction.accountID == accountID else { return false }
+            let statusMatches = status == nil || transaction.status == status
+            let categoryMatches: Bool
+            switch category {
+            case .all:
+                categoryMatches = true
+            case .uncategorized:
+                categoryMatches = transaction.categoryID == nil
+                    && transaction.transferID == nil
+            case .category(let id):
+                categoryMatches = transaction.categoryID == id
+                    || transaction.splits.contains { $0.categoryID == id }
+            }
+            let searchMatches = search.isEmpty
+                || transaction.payee.localizedCaseInsensitiveContains(search)
+                || transaction.purpose.localizedCaseInsensitiveContains(search)
+                || transaction.memo.localizedCaseInsensitiveContains(search)
+                || transaction.reference.localizedCaseInsensitiveContains(search)
+                || categoryPath(transaction)
+                    .localizedCaseInsensitiveContains(search)
+            return statusMatches && categoryMatches && searchMatches
+                && period.contains(
+                    transaction.bookingDate,
+                    customStart: customStart,
+                    customEnd: customEnd
+                )
+        }
+    }
 }
 
 private struct RegisterAccountTab: View {
@@ -1865,6 +2013,532 @@ private struct SplitDraft: Identifiable {
         self.vatCodeID = vatCodeID
         self.vatMode = vatMode
         self.manualTax = manualTax
+    }
+}
+
+private struct SecondaryRegisterPane: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Binding var selectedAccountID: UUID?
+    let excludedAccountID: UUID?
+    let edit: (FinanceTransaction) -> Void
+    @State private var selection = Set<UUID>()
+    @State private var statusFilter: TransactionStatus?
+    @State private var categoryFilter = RegisterCategoryFilter.all
+    @State private var periodFilter = RegisterPeriodFilter.all
+    @State private var customStart = Calendar.current.date(
+        byAdding: .month,
+        value: -1,
+        to: .now
+    ) ?? .now
+    @State private var customEnd = Date.now
+    @AppStorage("registerRowMode")
+    private var rowModeRaw = RegisterRowMode.single.rawValue
+
+    private var rowMode: RegisterRowMode {
+        RegisterRowMode(rawValue: rowModeRaw) ?? .single
+    }
+
+    private var availableAccounts: [FinanceAccount] {
+        store.accounts.filter { !$0.isClosed && $0.id != excludedAccountID }
+    }
+
+    private var account: FinanceAccount? {
+        selectedAccountID.flatMap { id in
+            store.accounts.first { $0.id == id }
+        }
+    }
+
+    private var visibleTransactions: [FinanceTransaction] {
+        RegisterSecondaryQuery.visible(
+            transactions: store.transactions,
+            accountID: selectedAccountID,
+            status: statusFilter,
+            category: categoryFilter,
+            period: periodFilter,
+            customStart: customStart,
+            customEnd: customEnd,
+            searchText: store.searchText
+        ) { transaction in
+            store.transactionCategoryPath(transaction)
+        }
+    }
+
+    var body: some View {
+        let runningBalances = store.runningBalances(
+            accountID: selectedAccountID
+        )
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account?.name ?? "Zweites Kontoblatt")
+                        .font(.headline)
+                    if let account {
+                        Text(
+                            Money(
+                                minorUnits: store.balances[account.id] ?? 0,
+                                currency: account.currency
+                            ).formatted
+                        )
+                        .font(.caption.bold().monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Picker("Zweites Konto", selection: $selectedAccountID) {
+                    ForEach(availableAccounts) { account in
+                        Text(account.name).tag(Optional(account.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 180)
+            }
+            .padding(10)
+            HStack(spacing: 8) {
+                Picker("Status", selection: $statusFilter) {
+                    Text("Alle Status").tag(TransactionStatus?.none)
+                    ForEach(TransactionStatus.allCases, id: \.self) {
+                        Text($0.title).tag(Optional($0))
+                    }
+                }
+                .frame(maxWidth: 130)
+                Picker("Kategorie", selection: $categoryFilter) {
+                    Text("Alle Kategorien").tag(RegisterCategoryFilter.all)
+                    Text("Nicht kategorisiert")
+                        .tag(RegisterCategoryFilter.uncategorized)
+                    Divider()
+                    ForEach(store.categoriesByPath.filter(\.isActive)) {
+                        Text(store.categoryPath($0.id))
+                            .tag(RegisterCategoryFilter.category($0.id))
+                    }
+                }
+                .frame(maxWidth: 170)
+                Picker("Zeitraum", selection: $periodFilter) {
+                    ForEach(RegisterPeriodFilter.allCases) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .frame(maxWidth: 130)
+            }
+            .controlSize(.mini)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 7)
+            Divider()
+            Table(visibleTransactions, selection: $selection) {
+                TableColumn("Datum") { transaction in
+                    Text(
+                        transaction.bookingDate,
+                        format: .dateTime.day().month(.twoDigits).year()
+                    )
+                    .monospacedDigit()
+                    .frame(height: rowMode.rowHeight)
+                }
+                .width(min: 78, ideal: 86)
+                TableColumn("Empfänger / Zweck") { transaction in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(transaction.payee).lineLimit(1)
+                        if rowMode == .twoLines {
+                            Text(transaction.purpose)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(height: rowMode.rowHeight, alignment: .leading)
+                    .help(
+                        [transaction.payee, transaction.purpose]
+                            .filter { !$0.isEmpty }
+                            .joined(separator: "\n")
+                    )
+                }
+                .width(min: 120, ideal: 190)
+                TableColumn("Kategorie") { transaction in
+                    let path = store.transactionCategoryPath(transaction)
+                    Text(path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(path)
+                        .frame(height: rowMode.rowHeight, alignment: .leading)
+                }
+                .width(min: 100, ideal: 145)
+                TableColumn("Betrag") { transaction in
+                    Text(
+                        Money(
+                            minorUnits: transaction.amountMinor,
+                            currency: transaction.currency
+                        ).formatted
+                    )
+                    .monospacedDigit()
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: rowMode.rowHeight,
+                        alignment: .trailing
+                    )
+                }
+                .width(min: 82, ideal: 100)
+                TableColumn("Saldo") { transaction in
+                    Text(
+                        Money(
+                            minorUnits: runningBalances[transaction.id] ?? 0,
+                            currency: transaction.currency
+                        ).formatted
+                    )
+                    .monospacedDigit()
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: rowMode.rowHeight,
+                        alignment: .trailing
+                    )
+                }
+                .width(min: 85, ideal: 105)
+            }
+            .contextMenu(forSelectionType: UUID.self) { ids in
+                if ids.count == 1,
+                   let transaction = store.transactions.first(where: {
+                       ids.contains($0.id)
+                   }) {
+                    Button("Bearbeiten") { edit(transaction) }
+                }
+            } primaryAction: { ids in
+                if let transaction = store.transactions.first(where: {
+                    ids.contains($0.id)
+                }) {
+                    edit(transaction)
+                }
+            }
+            .overlay {
+                if visibleTransactions.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Buchungen",
+                        systemImage: "rectangle.split.2x1",
+                        description: Text(
+                            account == nil
+                                ? "Ein zweites Konto ist nicht verfügbar."
+                                : "Die eigenen Filter liefern keine Treffer."
+                        )
+                    )
+                }
+            }
+            Divider()
+            HStack {
+                Text("\(visibleTransactions.count) Buchungen")
+                Spacer()
+                Text(filteredTotalText)
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+        }
+        .onChange(of: availableAccounts.map(\.id)) {
+            if let selectedAccountID,
+               availableAccounts.contains(where: {
+                   $0.id == selectedAccountID
+               }) {
+                return
+            }
+            selectedAccountID = availableAccounts.first?.id
+        }
+        .onChange(of: visibleTransactions.map(\.id)) {
+            selection.formIntersection(Set(visibleTransactions.map(\.id)))
+        }
+    }
+
+    private var filteredTotalText: String {
+        let totals = Dictionary(grouping: visibleTransactions.filter {
+            $0.transferID == nil && $0.status != .cancelled
+        }) { $0.currency }
+        .mapValues { values in
+            values.reduce(Int64.zero) { $0 + $1.amountMinor }
+        }
+        return totals.keys.sorted().map { currency in
+            Money(
+                minorUnits: totals[currency] ?? 0,
+                currency: currency
+            ).formatted
+        }.joined(separator: " · ")
+    }
+}
+
+enum RegisterMiniReportDimension: String, CaseIterable, Identifiable {
+    case payee
+    case category
+    case tag
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .payee: "Empfänger"
+        case .category: "Kategorie"
+        case .tag: "Klasse/Tag"
+        }
+    }
+}
+
+enum RegisterMiniReportSubject: Equatable {
+    case payee(String)
+    case category(UUID)
+    case tag(UUID)
+    case unavailable
+}
+
+struct RegisterMiniReportEntry: Identifiable, Equatable {
+    let transaction: FinanceTransaction
+    let contributionMinor: Int64
+    var id: UUID { transaction.id }
+}
+
+struct RegisterMiniReportCurrencyTotal: Identifiable, Equatable {
+    let currency: String
+    let incomeMinor: Int64
+    let expenseMinor: Int64
+    let netMinor: Int64
+    let transactionCount: Int
+    var id: String { currency }
+}
+
+struct RegisterMiniReportSnapshot: Equatable {
+    let dimension: RegisterMiniReportDimension
+    let subject: RegisterMiniReportSubject
+    let entries: [RegisterMiniReportEntry]
+    let totals: [RegisterMiniReportCurrencyTotal]
+
+    static func make(
+        selected: FinanceTransaction?,
+        dimension: RegisterMiniReportDimension,
+        transactions: [FinanceTransaction]
+    ) -> Self {
+        guard let selected else {
+            return Self(
+                dimension: dimension,
+                subject: .unavailable,
+                entries: [],
+                totals: []
+            )
+        }
+        let subject: RegisterMiniReportSubject
+        switch dimension {
+        case .payee:
+            let payee = selected.payee.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            subject = payee.isEmpty ? .unavailable : .payee(payee)
+        case .category:
+            let categoryID = selected.categoryID
+                ?? selected.splits.sorted { $0.sortOrder < $1.sortOrder }
+                    .compactMap(\.categoryID).first
+            subject = categoryID.map(RegisterMiniReportSubject.category)
+                ?? .unavailable
+        case .tag:
+            let tagID = (selected.tagIDs
+                + selected.splits.flatMap(\.tagIDs))
+                .sorted { $0.uuidString < $1.uuidString }
+                .first
+            subject = tagID.map(RegisterMiniReportSubject.tag)
+                ?? .unavailable
+        }
+        let entries: [RegisterMiniReportEntry] = transactions.compactMap {
+            (transaction: FinanceTransaction) -> RegisterMiniReportEntry? in
+            guard transaction.status != .cancelled else { return nil }
+            let contribution: Int64?
+            switch subject {
+            case .payee(let payee):
+                contribution = normalized(transaction.payee)
+                    == normalized(payee) ? transaction.amountMinor : nil
+            case .category(let categoryID):
+                if transaction.categoryID == categoryID {
+                    contribution = transaction.amountMinor
+                } else {
+                    let splitAmount = transaction.splits
+                        .filter { $0.categoryID == categoryID }
+                        .reduce(Int64.zero) { $0 + $1.amountMinor }
+                    contribution = splitAmount == 0 ? nil : splitAmount
+                }
+            case .tag(let tagID):
+                if transaction.tagIDs.contains(tagID) {
+                    contribution = transaction.amountMinor
+                } else {
+                    let splitAmount = transaction.splits
+                        .filter { $0.tagIDs.contains(tagID) }
+                        .reduce(Int64.zero) { $0 + $1.amountMinor }
+                    contribution = splitAmount == 0 ? nil : splitAmount
+                }
+            case .unavailable:
+                contribution = nil
+            }
+            guard let contribution else { return nil }
+            return RegisterMiniReportEntry(
+                transaction: transaction,
+                contributionMinor: contribution
+            )
+        }.sorted {
+            if $0.transaction.bookingDate != $1.transaction.bookingDate {
+                return $0.transaction.bookingDate > $1.transaction.bookingDate
+            }
+            return $0.id.uuidString > $1.id.uuidString
+        }
+        let entriesByCurrency: [String: [RegisterMiniReportEntry]] =
+            Dictionary(grouping: entries) { entry in
+                entry.transaction.currency
+            }
+        let totals: [RegisterMiniReportCurrencyTotal] =
+            entriesByCurrency.map { currency, values in
+            let income = values.reduce(Int64.zero) {
+                $0 + max($1.contributionMinor, 0)
+            }
+            let expense = values.reduce(Int64.zero) {
+                $0 + min($1.contributionMinor, 0)
+            }
+            return RegisterMiniReportCurrencyTotal(
+                currency: currency,
+                incomeMinor: income,
+                expenseMinor: expense,
+                netMinor: income + expense,
+                transactionCount: values.count
+            )
+        }.sorted { $0.currency < $1.currency }
+        return Self(
+            dimension: dimension,
+            subject: subject,
+            entries: entries,
+            totals: totals
+        )
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "de_DE")
+            )
+    }
+}
+
+private struct RegisterMiniReportPanel: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let selectedTransaction: FinanceTransaction?
+    @Binding var dimension: RegisterMiniReportDimension
+
+    private var snapshot: RegisterMiniReportSnapshot {
+        RegisterMiniReportSnapshot.make(
+            selected: selectedTransaction,
+            dimension: dimension,
+            transactions: store.transactions
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Minireport", systemImage: "chart.bar.doc.horizontal")
+                    .font(.headline)
+                Spacer()
+            }
+            Picker("Auswertung", selection: $dimension) {
+                ForEach(RegisterMiniReportDimension.allCases) {
+                    Text($0.title).tag($0)
+                }
+            }
+            .pickerStyle(.segmented)
+            if snapshot.subject == .unavailable {
+                ContentUnavailableView(
+                    "Eine Buchung markieren",
+                    systemImage: "cursorarrow.click.2",
+                    description: Text(
+                        selectedTransaction == nil
+                            ? "Der Minireport folgt genau einer markierten Buchung."
+                            : "Die markierte Buchung besitzt keinen Wert für \(dimension.title)."
+                    )
+                )
+            } else {
+                Text(subjectTitle)
+                    .font(.title3.bold())
+                    .lineLimit(2)
+                    .help(subjectTitle)
+                ForEach(snapshot.totals) { total in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("\(total.transactionCount) Buchungen")
+                            Spacer()
+                            Text(total.currency).fontWeight(.semibold)
+                        }
+                        miniTotal("Einnahmen", total.incomeMinor, total.currency)
+                        miniTotal("Ausgaben", total.expenseMinor, total.currency)
+                        Divider()
+                        miniTotal("Saldo", total.netMinor, total.currency)
+                            .fontWeight(.semibold)
+                    }
+                    .padding(9)
+                    .background(
+                        .quaternary.opacity(0.35),
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                }
+                Text("Letzte Buchungen")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(snapshot.entries.prefix(8)) { entry in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(
+                                        entry.transaction.bookingDate,
+                                        format: .dateTime.day().month().year()
+                                    )
+                                    Spacer()
+                                    Text(
+                                        Money(
+                                            minorUnits: entry.contributionMinor,
+                                            currency: entry.transaction.currency
+                                        ).formatted
+                                    )
+                                    .monospacedDigit()
+                                }
+                                Text(entry.transaction.payee)
+                                    .lineLimit(1)
+                                Text(entry.transaction.purpose)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .padding(.vertical, 7)
+                            Divider()
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var subjectTitle: String {
+        switch snapshot.subject {
+        case .payee(let name): name
+        case .category(let id): store.categoryPath(id)
+        case .tag(let id): store.tagName(id)
+        case .unavailable: "Kein Wert"
+        }
+    }
+
+    private func miniTotal(
+        _ title: String,
+        _ amountMinor: Int64,
+        _ currency: String
+    ) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(
+                Money(
+                    minorUnits: amountMinor,
+                    currency: currency
+                ).formatted
+            )
+            .monospacedDigit()
+        }
     }
 }
 

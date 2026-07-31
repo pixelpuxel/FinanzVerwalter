@@ -730,3 +730,31 @@ Bestände, einen vollständigen Abruflauf und Auditdaten gemeinsam in genau
 einer SQLite-Transaktion. Wiederholt sich derselbe Pakethash, sind nur
 Skip-Entscheidungen zulässig. Speichere niemals Rohantworten, PIN, TAN,
 Freigabecodes oder andere Bankgeheimnisse.
+
+# Reproduzierbarer Kontoblatt-Minireport und geteilte Ansicht
+
+Ergänze im normalen Kontoblatt einen ein-/ausblendbaren rechten Minireport.
+Er folgt nur dann einer Buchung, wenn genau eine Zeile markiert ist. Die
+Dimension ist zwischen Empfänger, Kategorie und Klasse/Tag umschaltbar. Für
+Empfänger vergleiche getrimmt, ohne Groß-/Kleinschreibung und ohne
+Diakritika. Für Kategorie und Tag verwende bei einer Splitbuchung nur die
+Summe der passenden Splitzeilen; eine direkt am Hauptsatz gesetzte Kategorie
+oder ein Haupt-Tag verwendet den Gesamtbetrag. Stornierte Buchungen zählen
+nicht. Addiere verschiedene Währungen niemals: Zeige pro Währung Anzahl,
+Einnahmen, Ausgaben, Saldo und die letzten acht Buchungen. Kategoriepfade
+und Namen erscheinen vollständig im Tooltip.
+
+Ergänze daneben eine persistierbar ein-/ausblendbare Zwei-Konten-Ansicht.
+Das zweite Kontoblatt darf nicht dasselbe Konto wie das Hauptkontenblatt
+verwenden und wählt nach Löschung oder Primärkontowechsel deterministisch ein
+anderes offenes Konto. Es besitzt eigene Status-, Kategorie- und
+Zeitraumfilter, übernimmt nur die globale Volltextsuche und zeigt mindestens
+Datum, Empfänger/Zweck, vollständige Kategorie, Betrag und kontenweisen
+laufenden Saldo. Ein Doppelklick öffnet denselben sicheren Buchungseditor.
+
+Minireport und zweites Kontoblatt sind bei kleiner Fensterbreite nicht
+gleichzeitig geöffnet: Das Aktivieren des einen blendet das andere aus.
+Beide Zustände und die sekundäre Konto-ID liegen nur in lokalen
+Benutzereinstellungen, nicht in der Finanzdatei. Teste die Minireport-
+Splitbeiträge, Währungstrennung, Stornoausschluss sowie die unabhängige
+Konto-/Status-/Kategorie-/Textfilterung als reine deterministische Logik.

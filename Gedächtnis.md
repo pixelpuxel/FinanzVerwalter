@@ -846,3 +846,34 @@ Rechtsberatung.
   sowie den ausdrücklichen Hinweis auf den fehlenden Screenshot wegen der
   macOS-Sperre. Der dort dokumentierte Zielzählerstand beträgt 6.793.516
   verbrauchte Tokens.
+- Das normale Kontenblatt besitzt nun einen persistent ein-/ausblendbaren
+  rechten Minireport. Er folgt genau einer markierten Buchung und wertet
+  wahlweise Empfänger, Kategorie oder Klasse/Tag aus. Text wird
+  diakritika- und großschreibungsunabhängig verglichen, Stornos zählen nicht,
+  Währungen bleiben getrennt und bei Splitbuchungen fließt nur der passende
+  Splitbetrag in Einnahmen, Ausgaben und Saldo ein. Die letzten acht
+  passenden Buchungen bleiben sichtbar.
+- `Teilen` öffnet ein zweites Kontoblatt für ein anderes offenes Konto. Es
+  besitzt eine eigene Kontowahl und unabhängige Status-, Kategorie- und
+  Zeitraumfilter, übernimmt die globale Volltextsuche und zeigt Datum,
+  Empfänger/Zweck, vollständigen Kategoriepfad, Betrag und kontenweisen
+  laufenden Saldo. Doppelklick und Kontextmenü verwenden denselben
+  Buchungseditor. Bei Primärkontowechsel oder gelöschtem Konto wird die
+  Sekundärwahl deterministisch repariert.
+- Minireport und Zwei-Konten-Ansicht schließen sich bei engem Desktoplayout
+  gegenseitig aus. Sichtbarkeit und sekundäre Konto-ID liegen ausschließlich
+  in lokalen Benutzereinstellungen und verändern die Finanzdatei nicht.
+- Zwei neue reine Logiktests prüfen Minireport-Splitbeiträge,
+  Stornoausschluss, Währungstrennung, diakritischen Empfängervergleich und
+  die unabhängige Konto-/Status-/Kategorie-/Textfilterung des zweiten
+  Kontenblatts. Die vollständige Abnahme führte 51 Tests aus: 50 bestanden,
+  der opt-in-Test mit der privaten Real-QIF-Datei wurde erwartungsgemäß
+  übersprungen, 0 Fehler. Test-Build und optimierter Release-Build bestehen.
+- Der Release ist unter `~/Applications/FinanzVerwalter.app` installiert,
+  ad hoc signaturgeprüft und gestartet. Die Produktivdatei blieb bei Schema
+  21 mit Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Banking-Verbindungen
+  und 0 Abrufläufen. Der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-minireport-split-20260731-1202.app`.
+- Computer Use meldet auch für diesen Release den gesperrten Mac. Eine
+  sichtbare Minireport-/Zwei-Konten-/Saldo-Abnahme und ein echter Screenshot
+  sind daher weiterhin offen und werden nicht als bestanden behauptet.

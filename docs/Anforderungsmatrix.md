@@ -11,7 +11,7 @@ fertigen Funktionsbereich.
 |---|---|---|---|
 | P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–21, Integritätstest, append-only Auditereignisse |
 | P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; externe und lokale Konten werden beim Simulatorabruf sichtbar eins zu eins zugeordnet |
-| P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo einschließlich Bestands- und Ansichtenmigration, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung, vollständige Kategoriepfade, elf dynamische Standardspalten, benannte Ansichten, persistente Mehrkonto-Tabs, F3-Auswahlfilter, direkter PDF-/Systemdruck und zehn sichtbar anpassbare, konfliktgeprüfte Shortcuts vorhanden; Minireport, geteiltes Kontoblatt und vollständige AX-/UI-Abnahme fehlen |
+| P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo einschließlich Bestands- und Ansichtenmigration, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung, vollständige Kategoriepfade, elf dynamische Standardspalten, benannte Ansichten, persistente Mehrkonto-Tabs, F3-Auswahlfilter, direkter PDF-/Systemdruck, zehn anpassbare konfliktgeprüfte Shortcuts, währungs-/splitkorrekter Minireport für Empfänger/Kategorie/Klasse sowie zweites Kontoblatt mit eigener Konto-/Filterwahl und Saldo vorhanden; vollständige Tastatur-/AX-/UI-Abnahme fehlt |
 | P0 | Kategorien und Unterkategorien | Erfüllt für lokalen Kern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade, Beschreibung, Budgetierbarkeit, Standard-MwSt.-Schlüssel sowie deutsche und optionale US-Steuerzuordnung |
 | P0 | Klassen/Mehrfach-Tags | Teilweise | Hierarchische Tags auf Buchungen und Splits vorhanden; eigenständige Klassenfilter und Massenbearbeitung fehlen |
 | P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten und Vorschläge vorhanden; Mandate und Gläubiger-ID fehlen |
@@ -42,7 +42,8 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Kontoblatt-Minireport, geteilte Ansicht und vollständige Tastatur-/AX-Abnahme.
+1. Vollständige Kontoblatt-Tastatur-/Accessibility-/UI-Abnahme und
+   Sammelkontoblatt-Ausbau.
 2. OFX/QFX-, MT940- und camt-Import über denselben sicheren Commitpfad.
 3. SmartFill-Nutzungsgewichtung und erweiterte Klassen-Massenbearbeitung.
 4. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,

@@ -3233,6 +3233,157 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testRegisterMiniReportUsesSplitContributionsAndKeepsCurrenciesSeparate() {
+        let accountID = UUID()
+        let categoryID = UUID()
+        let otherCategoryID = UUID()
+        let tagID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let selected = FinanceTransaction(
+            id: UUID(), accountID: accountID,
+            bookingDate: Date(timeIntervalSince1970: 300), valueDate: nil,
+            payee: "Müller GmbH", purpose: "Gemischter Beleg",
+            categoryID: nil, amountMinor: -10_000, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: categoryID,
+                    amountMinor: -6_000, memo: "Ziel", sortOrder: 0,
+                    tagIDs: [tagID]
+                ),
+                FinanceSplit(
+                    id: UUID(), categoryID: otherCategoryID,
+                    amountMinor: -4_000, memo: "Andere", sortOrder: 1
+                )
+            ]
+        )
+        let sameCategory = FinanceTransaction(
+            id: UUID(), accountID: accountID,
+            bookingDate: Date(timeIntervalSince1970: 200), valueDate: nil,
+            payee: "Andere Firma", purpose: "Direkt",
+            categoryID: categoryID, amountMinor: -5_000, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let samePayeeUSD = FinanceTransaction(
+            id: UUID(), accountID: accountID,
+            bookingDate: Date(timeIntervalSince1970: 100), valueDate: nil,
+            payee: "muller gmbh", purpose: "Erstattung",
+            categoryID: nil, amountMinor: 20_000, currency: "USD",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        var cancelled = sameCategory
+        cancelled = FinanceTransaction(
+            id: UUID(), accountID: cancelled.accountID,
+            bookingDate: cancelled.bookingDate, valueDate: nil,
+            payee: cancelled.payee, purpose: cancelled.purpose,
+            categoryID: categoryID, amountMinor: -99_999, currency: "EUR",
+            status: .cancelled, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let values = [selected, sameCategory, samePayeeUSD, cancelled]
+
+        let category = RegisterMiniReportSnapshot.make(
+            selected: selected,
+            dimension: .category,
+            transactions: values
+        )
+        XCTAssertEqual(category.entries.map(\.contributionMinor), [-6_000, -5_000])
+        XCTAssertEqual(
+            category.totals,
+            [
+                RegisterMiniReportCurrencyTotal(
+                    currency: "EUR", incomeMinor: 0,
+                    expenseMinor: -11_000, netMinor: -11_000,
+                    transactionCount: 2
+                )
+            ]
+        )
+
+        let tag = RegisterMiniReportSnapshot.make(
+            selected: selected,
+            dimension: .tag,
+            transactions: values
+        )
+        XCTAssertEqual(tag.entries.map(\.contributionMinor), [-6_000])
+
+        let payee = RegisterMiniReportSnapshot.make(
+            selected: selected,
+            dimension: .payee,
+            transactions: values
+        )
+        XCTAssertEqual(payee.entries.count, 2)
+        XCTAssertEqual(payee.totals.map(\.currency), ["EUR", "USD"])
+        XCTAssertEqual(payee.totals.map(\.netMinor), [-10_000, 20_000])
+    }
+
+    func testSecondaryRegisterQueryKeepsAccountAndFiltersIndependent() {
+        let firstAccountID = UUID()
+        let secondAccountID = UUID()
+        let categoryID = UUID()
+        let first = FinanceTransaction(
+            id: UUID(), accountID: firstAccountID,
+            bookingDate: Date(timeIntervalSince1970: 100), valueDate: nil,
+            payee: "Versorger", purpose: "Abschlag",
+            categoryID: categoryID, amountMinor: -5_000, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let expected = FinanceTransaction(
+            id: UUID(), accountID: firstAccountID,
+            bookingDate: Date(timeIntervalSince1970: 200), valueDate: nil,
+            payee: "Planung", purpose: "Später",
+            categoryID: nil, amountMinor: -1_000, currency: "EUR",
+            status: .expected, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let second = FinanceTransaction(
+            id: UUID(), accountID: secondAccountID,
+            bookingDate: Date(timeIntervalSince1970: 300), valueDate: nil,
+            payee: "Anderes Konto", purpose: "Unabhängig",
+            categoryID: categoryID, amountMinor: 7_000, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let values = [first, expected, second]
+        let secondRows = RegisterSecondaryQuery.visible(
+            transactions: values,
+            accountID: secondAccountID,
+            status: nil,
+            category: .all,
+            period: .all,
+            customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: ""
+        ) { _ in "Immobilie › Energie" }
+        XCTAssertEqual(secondRows.map(\.id), [second.id])
+
+        let filteredFirstRows = RegisterSecondaryQuery.visible(
+            transactions: values,
+            accountID: firstAccountID,
+            status: .booked,
+            category: .category(categoryID),
+            period: .all,
+            customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: "Immobilie"
+        ) { _ in "Immobilie › Energie" }
+        XCTAssertEqual(filteredFirstRows.map(\.id), [first.id])
+        XCTAssertTrue(
+            RegisterSecondaryQuery.visible(
+                transactions: values,
+                accountID: nil,
+                status: nil,
+                category: .all,
+                period: .all,
+                customStart: .distantPast,
+                customEnd: .distantFuture,
+                searchText: ""
+            ) { _ in "" }.isEmpty
+        )
+    }
+
     func testBankingDownloadCommitsAtomicallyAndIsIdempotent() async throws {
         let context = try TestDatabase()
         var account = FinanceAccount(
