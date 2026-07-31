@@ -1214,3 +1214,44 @@ Rechtsberatung.
   Teststatus. Telegram-Nachricht 952 im Projektthread 894 (`/quicken`)
   enthält denselben Zwischenstand und den exakten Zielzählerstand von
   8.690.206 Tokens, wegen des gesperrten Macs weiterhin ohne Screenshot.
+
+## 2026-07-31 – Duplizieren, Kopieren und atomar Verschieben
+
+- Das Kontoblatt besitzt im Kontextmenü einer einzelnen Buchung jetzt die
+  eigenständigen Aktionen `Duplizieren …`, `Kopieren` und `In anderes Konto
+  verschieben …`. Duplizieren verwendet den vorhandenen Vorlagenmechanismus
+  für einen frischen Editorentwurf: neue Transaktions-/Split-IDs, heutiges
+  Datum und gelöschte Referenz-, Transfer-, Import- und Bankidentitäten.
+  Abgeglichene oder stornierte Quellen werden als gebucht vorbereitet;
+  einzelne Umbuchungsseiten bleiben ausgeschlossen.
+- `Kopieren` legt deutsches Datum, Empfänger, Verwendungszweck, vollständigen
+  Kategoriepfad, Dezimalbetrag und ISO-Währung als stabile TSV-Zeile in die
+  macOS-Zwischenablage. Eingebettete Tabulatoren werden neutralisiert.
+- Der neue Verschieben-Dialog zeigt Quelle und Betrag und bietet nur weitere
+  offene Konten derselben Währung an. Die Store-Operation liest und prüft
+  Quelle und Ziel innerhalb einer einzigen SQLite-Transaktion, ändert nur
+  `account_id` und Version und schreibt `move-account` in die Auditspur.
+  Splitzeilen, Kategorien, Klassen/Tags, Steuer- und Bankmetadaten bleiben
+  erhalten. Identisches, geschlossenes oder fremdwährungsgeführtes Ziel,
+  abgeglichene Buchungen und einzelne Umbuchungsseiten werden abgewiesen.
+- Der neue Integrationstest prüft atomare Saldenverschiebung, Erhalt beider
+  Split-IDs und Bankmetadaten, sämtliche Negativfälle, Umbuchungs- und
+  Abgleichschutz sowie SQLite-Integrität. Der bestehende Accessibility-Test
+  prüft zusätzlich die exakte deutsche TSV-Ausgabe. Die Gesamtabnahme führte
+  65 Tests aus: 64 bestanden, der private opt-in-Real-QIF-Test wurde
+  erwartungsgemäß übersprungen, 0 Fehler. Debug- und optimierter Release-Build
+  bestehen.
+- Der optimierte arm64-Release ist ad hoc signiert, unter
+  `~/Applications/FinanzVerwalter.app` installiert und als Prozess gestartet.
+  Der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-buchungsaktionen-20260731-1355.app`.
+- Die Produktivdatei blieb nach Test, Installation und Start bytegenau
+  unverändert: Schema 22, Integrität `ok`, 97 Konten, 2.170 Buchungen, eine
+  Berichtsvorlage, 0 Banking-Verbindungen und SHA-256
+  `2f03b155d3e06c81114252fd05d3cdaa9f44bff7450b13ca7ff70379d20c073a`.
+- Die sichtbare Abnahme und ein neuer Screenshot werden nicht vorgetäuscht,
+  solange die macOS-Sitzung gesperrt bleibt.
+- Die geprüfte Implementierung ist als Commit `47fbca1` auf dem Branch
+  `agent/qif-mehrkontenimport` festgeschrieben.
+- Der exakte Zielzählerstand vor Dokumentationscommit und Veröffentlichung
+  beträgt 8.872.972 Tokens.

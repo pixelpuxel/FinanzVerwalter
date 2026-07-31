@@ -198,6 +198,18 @@ atomar; enthält die Auswahl abgeglichene Buchungen, Umbuchungen oder
 Splitbuchungen, wird sie vollständig abgewiesen. Kategoriepfade erscheinen
 einzeilig mit mittiger Kürzung und vollständig im Tooltip.
 
+Das Kontextmenü einer Buchung bietet Bearbeiten, Duplizieren, Kopieren und
+Verschieben. Duplizieren öffnet einen frischen Buchungsentwurf mit neuen
+Transaktions- und Split-IDs, heutigem Datum und ohne Import-, Referenz- oder
+Umbuchungsidentität; eine abgeglichene oder stornierte Quelle wird als
+normale gebuchte Buchung vorbereitet. Kopieren legt Datum, Empfänger,
+Verwendungszweck, vollständigen Kategoriepfad, Betrag und Währung als
+tabulatorgetrennte deutsche Zeile in die Zwischenablage. Verschieben erhält
+sämtliche Buchungs-, Split-, Steuer- und Organisationsdaten und ist nur in
+ein anderes offenes Konto derselben Währung möglich. Abgeglichene Buchungen
+und einzelne Umbuchungsseiten bleiben geschützt. Die Kontoänderung erfolgt
+atomar und wird in der Auditspur protokolliert.
+
 Direkt rechts neben dem Betrag steht der kontenweise laufende Saldo. Die
 Darstellung kann dauerhaft zwischen einer kompakten Einzeile und einer
 zweizeiligen Ansicht mit Wertstellung, Memo, Referenz und Tags umgeschaltet

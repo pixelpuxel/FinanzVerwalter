@@ -123,7 +123,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 Migrationen 1 bis 22 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 64 ausgeführte XCTest-Fälle: 63
+implementiert. Die Suite umfasst aktuell 65 ausgeführte XCTest-Fälle: 64
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -927,3 +927,38 @@ fehlende Kontokennung verwirft nur den betroffenen Auszug. Teste synthetisch
 mehrere MT940-Auszüge, strukturierte `:86:`-Felder, camt-Sammelbuchungen,
 Bankidentität, Metadatenpersistenz, DTD-/ENTITY-Abweisung, fehlerhafte Daten,
 atomaren SQLite-Commit, Paket-Idempotenz und Integrität.
+
+# Reproduzierbare Buchungsaktionen im Kontoblatt
+
+Ergänze das Kontextmenü einer einzeln markierten Buchung um `Duplizieren …`,
+`Kopieren` und `In anderes Konto verschieben …`. Duplizieren darf nicht
+direkt persistieren, sondern öffnet den vorhandenen Buchungseditor mit einem
+frischen, aus der Quelle erzeugten Entwurf. Verwende dabei die gleiche
+Normalisierung wie bei Buchungsvorlagen: neue Transaktions- und Split-UUIDs,
+aktuelles Buchungsdatum, keine Referenz-, Umbuchungs-, Import- oder externe
+Bankidentität und Status `gebucht`, falls die Quelle abgeglichen oder
+storniert war. Erhalte Empfänger, Zweck, Konto, Betrag, Währung, Kategorie,
+Klassen/Tags, Memo, Splitzeilen und Umsatzsteuer. Einzelne Umbuchungsseiten
+dürfen nicht dupliziert werden.
+
+Kopieren schreibt genau eine TSV-Zeile in die macOS-Zwischenablage. Die
+Spalten sind deutsches Datum `dd.MM.yyyy`, Empfänger, Verwendungszweck,
+vollständiger Kategoriepfad, deutscher Dezimalbetrag ohne Währungssymbol und
+ISO-Währung. Ersetze eingebettete Tabulatoren in Feldinhalten durch
+Leerzeichen, damit das Format stabil in Tabellenkalkulationen eingefügt
+werden kann.
+
+Verschieben ändert ausschließlich `transactions.account_id` in einer
+`BEGIN IMMEDIATE`-Transaktion und erhöht die Version. Lade und prüfe Quelle
+und Ziel innerhalb derselben Transaktion. Das Ziel muss existieren, offen,
+von der Quelle verschieden und in derselben Währung sein. Abgeglichene
+Buchungen und einzelne Seiten einer Umbuchung sind geschützt. Splitzeilen,
+Kategorien, Klassen/Tags, Steuerdaten, Bankmetadaten und Betrag bleiben
+unverändert. Schreibe bei Erfolg ein Auditereignis `move-account` mit Quell-
+und Zielkonto. Der Dialog bietet ausschließlich passende Ziele an und nennt
+Quelle, Betrag sowie die Schutzwirkung verständlich.
+
+Teste atomaren Kontowechsel, Salden beider Konten, Erhalt der Split-IDs und
+Bankmetadaten, identisches Ziel, geschlossenes Ziel, Währungsabweichung,
+Abgleichschutz, Umbuchungsschutz, SQLite-Integrität sowie die bytegenaue
+deutsche TSV-Zeile mit eingebetteten Tabulatoren.
