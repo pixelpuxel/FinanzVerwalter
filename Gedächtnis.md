@@ -1631,3 +1631,13 @@ Rechtsberatung.
   `4618e5cd9261b5e0c9e63296c8a04bbf47d0f51eed733d5c58b6f63d1a90dbc7`;
   die installierte App läuft nach dem finalen Neustart als Prozess 60289 und
   meldet weiterhin Schema 28, Integrität `ok`, 97 Konten und 2.170 Buchungen.
+- Implementierung und Tests sind als Commit `f543d7b`, die reproduzierbare
+  Dokumentation als `f3bbd88` auf `agent/qif-mehrkontenimport`
+  festgeschrieben und nach GitHub gepusht. Draft-PR 1 nennt jetzt Schema 28,
+  EPC-QR, Zweckcode, die vollständige Testabnahme und die Produktivmigration.
+- Die Computersteuerung bestätigte unmittelbar vor der Statusmeldung erneut
+  die gesperrte macOS-Sitzung; ein aktueller Screenshot war deshalb nicht
+  möglich und wurde nicht vorgetäuscht. Telegram-Nachricht 972 wurde im
+  Projektthread 894 (`/quicken`) veröffentlicht. Sie enthält den Schema-28-,
+  Test-, Release-, Datenbank- und GitHub-Stand sowie den Zielzählerstand von
+  11.074.428 Tokens und weist ausdrücklich auf den fehlenden Screenshot hin.
