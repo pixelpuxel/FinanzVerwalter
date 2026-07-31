@@ -93,6 +93,24 @@ deutsches Zahlenformat. Druckfertige PDF-Berichte entstehen wahlweise als
 A4-Hoch- oder Querformat mit Titel, Zeitraum, Filterbeschreibung,
 Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen.
 
+## Zahlungsverkehr
+
+Der Zahlungsverkehr ist ausdrücklich ein lokaler Simulator ohne echte
+Bankverbindung. Überweisungsentwürfe prüfen Empfänger, positiven Betrag und
+IBAN, zeigen vor der simulierten Übermittlung eine unveränderliche
+Zusammenfassung und speichern keine TAN oder Freigabecodes. Angenommene
+Aufträge werden idempotent als vorgemerkte Buchung materialisiert.
+
+Ein einzelner Auftrag kann als `pain.001.001.09`-XML exportiert werden. Der
+Writer verwendet das datierte Regelpaket `EPC-SCT-2025-V1.0`, schreibt
+Kontrollsummen, `SLEV`, Ausführungsdatum und bei Echtzeitüberweisungen
+`INST`. Vor dem Export werden Auftraggebername und -IBAN, EUR-Währung,
+BIC-Format, EPC-Längen sowie die Slash-Regeln für Kennungen geprüft. Ohne
+BIC des Auftraggeberinstituts wird regelkonform `NOTPROVIDED` geschrieben.
+Nur unveränderte Entwürfe können initiiert werden; terminale oder bereits
+übermittelte Aufträge sind gegen erneuten Export gesperrt. Die Funktion sendet
+die Datei nicht und behauptet keine bankseitige Annahme.
+
 ## Dokumentation
 
 - [Gedächtnis.md](Gedächtnis.md) – verifizierter Arbeits- und Teststand

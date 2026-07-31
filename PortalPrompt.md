@@ -296,6 +296,32 @@ Für den Banking-Simulator gilt reproduzierbar:
 - Der UI-Stand ist deutlich als Simulator ohne echte Bankverbindung
   gekennzeichnet und fordert vor der Initialisierung eine zweite
   Bestätigung anhand einer unveränderlichen Zusammenfassung.
+- Exportiere einen ausgewählten Überweisungsauftrag lokal als
+  `pain.001.001.09`. Kapsle die zeitabhängigen Regeln in
+  `Pain001RulePackage.epc2025` mit Kennung `EPC-SCT-2025-V1.0`,
+  Gültigkeitsbeginn 05.10.2025, Namespace und Quellenbezeichnung; streue
+  Versionswerte nicht in UI oder Domänenmodell.
+- Prüfe vor dem Export Auftrag/Konto-Zuordnung, Auftraggebername und -IBAN,
+  ausschließlich EUR, positiven pain-Wertebereich, BIC mit 8 oder 11
+  Zeichen, Namen/Verwendungszweck bis 140 Zeichen und Identifikatoren bis
+  35 Zeichen. Identifikatoren dürfen nicht mit `/` beginnen oder enden und
+  kein `//` enthalten.
+- Schreibe `NbOfTxs` und `CtrlSum` auf Gruppen- und Zahlungsblockebene,
+  `TRF`, `SEPA`, `SLEV`, `<ReqdExctnDt><Dt>…`, Konten als IBAN und den
+  Betrag aus Minor-Units mit exakt zwei Dezimalstellen. Für
+  Echtzeitüberweisungen ist `LclInstrm/INST` Pflicht.
+- Hat das Auftraggeberkonto keine BIC, schreibe unter `DbtrAgt` die
+  Kennung `NOTPROVIDED`. Fehlt die optionale Empfänger-BIC, lasse
+  `CdtrAgt` vollständig weg. XML-Inhalte müssen UTF-8-codiert und sicher
+  escaped werden.
+- Der Export öffnet einen lokalen Dateidialog, sendet nichts an eine Bank
+  und verändert weder Auftrag noch Buchungen. Prüfe deterministische
+  Ausgabe, XML-Escaping, EPC-Kernelemente, Negativfälle und zusätzlich die
+  generische Schema-Konformität mit einem `pain.001.001.09`-XSD.
+- Erlaube diesen Initiierungsexport ausschließlich im Zustand `draft` und
+  mit einem nicht geschlossenen Auftraggeberkonto. Ein bereits
+  initialisierter, übermittelter, angenommener, abgelehnter oder unbekannter
+  Auftrag darf dadurch niemals als vermeintlicher Retry exportiert werden.
 
 Für Empfänger und Klassen/Tags gilt reproduzierbar:
 

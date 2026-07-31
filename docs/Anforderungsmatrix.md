@@ -17,13 +17,13 @@ fertigen Funktionsbereich.
 | P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten und Vorschläge vorhanden; Mandate und Gläubiger-ID fehlen |
 | P0 | Buchungen, Splits und Transfers | Teilweise | Centgenaue Buchungen, Splitinvariante und atomare Transfers vorhanden; Fremdwährung, MwSt., Anhänge, Duplizieren/Verschieben und Undo fehlen |
 | P0 | Regeln | Teilweise | Deterministische Einzelregel mit Vorschau und Schutz abgeglichener Buchungen; AND/OR-Gruppen, Regex, Textaktionen, Spliterzeugung, Konflikte und Undo fehlen |
-| P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Idempotenz; Profilassistent, OFX/QFX, MT940, camt und ISO-20022 fehlen |
+| P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Idempotenz sowie pain.001.001.09-Export; Profilassistent, OFX/QFX, MT940, camt und ISO-20022-Import fehlen |
 | P0 | Kontoabgleich | Teilweise | Exakter Endsaldo und Sperre vorhanden; Startsaldo, Markierdialog, Rücknahme und explizite Ausgleichsbuchung fehlen |
 | P0 | Sammelkontoblatt | Teilweise | Kontenübergreifende Liste, Zukunft und Summe; benannte Kombinationen, Mehrfachbearbeitung, zwei Ansichten und Export fehlen |
 | P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; zweite Dimension, weitere Standardberichte, direkter Systemdruckdialog sowie XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Offen | Derzeit nur lokaler Zahlungs-/SCA-Simulator; FinTS/PSD2-Verträge, Kontakte, Konto- und Umsatzabruf fehlen |
-| P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA und Idempotenz; Dauerauftrag, Lastschrift, Sammler, EPC-QR und pain-Dateien fehlen |
+| P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA, Idempotenz und versionierter pain.001.001.09-Export nach EPC-SCT-2025-V1.0 mit XSD-Prüfung; Dauerauftrag, Lastschrift, Sammler, EPC-QR sowie pain.001-Import, pain.008 und pain.002 fehlen |
 | P1 | Kalender und Prognose | Teilweise | Regelmäßige Vorgänge, Monatsende und 30/90/180/365-Tage-Prognose; Wochenansicht, Ausnahmen, Feiertage, Drag-and-drop und Szenarien fehlen |
 | P1 | Budgets | Teilweise | Mehrere Budgets, Geschäftsjahr, Monatsplan, Ist/Abweichung, Roll-over-Schalter; Jahreswerte, Reserve, Kopie und Berichte fehlen |
 | P1 | Wertpapiere und Depots | Teilweise | Stammdaten, Mikroeinheiten, FIFO-Lots, Allokation und Kurse; weitere Transaktionen, Lotmethoden, Performance und Import fehlen |
@@ -42,7 +42,9 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Berichtswerkstatt: zweite Dimension, Zwischensummen und Zeitvergleich.
+1. Zahlungsverkehr: Dauerauftrag mit sicherer Materialisierung und Bearbeitung.
+2. Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
+3. Kategorien: MwSt.- und Steuerzuordnungen.
 2. P0-Kontoblatt: Tabs, Druck und vollständiger Tastaturworkflow.
 3. Import-/Bankumsatz-Matching mit gestuften Fingerabdrücken.
 4. Kontoabgleich mit markierbaren Buchungen und Rücknahme.

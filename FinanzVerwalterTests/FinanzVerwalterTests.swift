@@ -640,6 +640,153 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testPain001ExportIsDeterministicEscapedAndUsesEPC2025Rules() throws {
+        let accountID = UUID(uuidString: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")!
+        let orderID = UUID(uuidString: "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB")!
+        var account = FinanceAccount(
+            id: accountID, name: "Geschäftskonto", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.iban = "DE89370400440532013000"
+        account.ownerName = "Müller & Söhne"
+        let executionDate = Pain001Exporter.gregorianDate(
+            year: 2026, month: 8, day: 3
+        )
+        let creationDate = Pain001Exporter.gregorianDate(
+            year: 2026, month: 7, day: 31
+        )
+        let order = PaymentOrder(
+            id: orderID, accountID: accountID, type: .instantCreditTransfer,
+            recipientName: "Stadtwerke <Nord>", iban: "DE12500105170648489890",
+            bic: "INGDDEFFXXX", amountMinor: 123_456, currency: "EUR",
+            executionDate: executionDate, purpose: "Abschlag & Vertrag 42",
+            endToEndID: "E2E-42", status: .draft,
+            idempotencyKey: "pain-test", bankReference: "",
+            createdAt: creationDate, updatedAt: creationDate
+        )
+
+        let first = try Pain001Exporter.export(
+            order: order, account: account, createdAt: creationDate,
+            messageID: "MSG-2026-0001"
+        )
+        let second = try Pain001Exporter.export(
+            order: order, account: account, createdAt: creationDate,
+            messageID: "MSG-2026-0001"
+        )
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.rulePackage, .epc2025)
+        XCTAssertEqual(
+            first.fileName,
+            "pain.001-2026-08-03-BBBBBBBB.xml"
+        )
+
+        let document = try XMLDocument(data: first.data)
+        XCTAssertEqual(
+            document.rootElement()?.namespace(forPrefix: "")?.stringValue,
+            Pain001RulePackage.epc2025.namespace
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='CtrlSum']"
+            ).compactMap(\.stringValue),
+            ["1234.56", "1234.56"]
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='LclInstrm']/*[local-name()='Cd']"
+            ).first?.stringValue,
+            "INST"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='DbtrAgt']//*[local-name()='Id']"
+            ).first?.stringValue,
+            "NOTPROVIDED"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='Cdtr']/*[local-name()='Nm']"
+            ).first?.stringValue,
+            "Stadtwerke <Nord>"
+        )
+        XCTAssertEqual(
+            try document.nodes(
+                forXPath: "//*[local-name()='Ustrd']"
+            ).first?.stringValue,
+            "Abschlag & Vertrag 42"
+        )
+        let rawXML = try XCTUnwrap(String(data: first.data, encoding: .utf8))
+        XCTAssertTrue(rawXML.contains("Müller &amp; Söhne"))
+        XCTAssertTrue(rawXML.contains("Stadtwerke &lt;Nord&gt;"))
+        XCTAssertTrue(rawXML.contains("<ChrgBr>SLEV</ChrgBr>"))
+        XCTAssertTrue(rawXML.contains("<ReqdExctnDt><Dt>2026-08-03</Dt>"))
+        if let outputPath = ProcessInfo.processInfo.environment[
+            "FINANZVERWALTER_PAIN001_OUTPUT"
+        ] {
+            try first.data.write(to: URL(fileURLWithPath: outputPath))
+        }
+    }
+
+    func testPain001ExportRejectsUnsafeOrIncompleteSourceData() throws {
+        let accountID = UUID()
+        var account = FinanceAccount(
+            id: accountID, name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.iban = "DE89370400440532013001"
+        account.ownerName = "Testperson"
+        let date = Pain001Exporter.gregorianDate(
+            year: 2026, month: 8, day: 1
+        )
+        let order = PaymentOrder(
+            id: UUID(), accountID: accountID, type: .sepaCreditTransfer,
+            recipientName: "Empfänger", iban: "DE12500105170648489890",
+            bic: "", amountMinor: 100, currency: "EUR",
+            executionDate: date, purpose: "Test", endToEndID: "NOTPROVIDED",
+            status: .draft, idempotencyKey: "invalid-source",
+            bankReference: "", createdAt: date, updatedAt: date
+        )
+        XCTAssertThrowsError(
+            try Pain001Exporter.export(
+                order: order, account: account, createdAt: date
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? Pain001ExportError,
+                .invalidDebtorIBAN
+            )
+        }
+
+        account.iban = "DE89370400440532013000"
+        var unsafe = order
+        unsafe.endToEndID = "/nicht-erlaubt"
+        XCTAssertThrowsError(
+            try Pain001Exporter.export(
+                order: unsafe, account: account, createdAt: date
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? Pain001ExportError,
+                .invalidIdentifier("End-to-End-ID")
+            )
+        }
+
+        unsafe.endToEndID = "NOTPROVIDED"
+        unsafe.status = .unknown
+        XCTAssertThrowsError(
+            try Pain001Exporter.export(
+                order: unsafe, account: account, createdAt: date
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? Pain001ExportError,
+                .nonDraftOrder
+            )
+        }
+    }
+
     func testPayeeAliasesAndTransactionAndSplitTagsRoundTrip() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(

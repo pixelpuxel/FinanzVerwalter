@@ -437,3 +437,39 @@ Rechtsberatung.
   Schema 13 und die reale Finanzdatei blieben mit 97 Konten, 2.170 Buchungen
   und Integrität `ok` unverändert. Die visuelle UI-Abnahme wartet weiterhin
   auf das Entsperren des Mac.
+- Der Zahlungsverkehr exportiert einzelne SEPA-, Termin- und
+  Echtzeitüberweisungen als `pain.001.001.09`. Die zeitabhängigen Angaben
+  sind im Regelpaket `EPC-SCT-2025-V1.0` mit Gültigkeitsbeginn 05.10.2025
+  und Quelle `EPC132-08 SCT C2PSP IG 2025 V1.0` gekapselt.
+- Der Writer prüft Auftraggebername und -IBAN, EUR, BIC, Betragsgrenze,
+  EPC-Längen und Slash-Regeln. Er schreibt kontrollsummengenaue
+  Minor-Units, `SLEV`, `INST` bei Echtzeit, `NOTPROVIDED` ohne
+  Auftraggeber-BIC und lässt eine fehlende optionale Empfängerbank weg.
+- Als Retry-Schutz ist der Initiierungsexport nur für `draft` auf einem
+  nicht geschlossenen Auftraggeberkonto erlaubt. Insbesondere kann ein
+  Auftrag mit unbekanntem oder terminalem Status nicht erneut exportiert
+  werden.
+- Zwei gezielte XCTest-Fälle prüfen deterministische Bytes, XML-Escaping,
+  Kernelemente und Negativfälle. Eine aus demselben Test erzeugte
+  Beispieldatei bestand zusätzlich `xmllint` gegen eine öffentlich
+  zugängliche Kopie des generischen `pain.001.001.09`-XSD. Der offizielle
+  EPC-ZIP-Server antwortete bei automatisiertem Abruf mit HTTP 403; die
+  Geschäftsvorgaben wurden deshalb direkt anhand der offiziellen
+  EPC-Dokumente geprüft und nicht als XSD-Nachweis ausgegeben.
+- Die Gesamtregression besteht mit 33 regulären XCTest-Fällen; die opt-in
+  ausgeführte reale 2025-QIF-Abnahme bestand zusätzlich mit 97 Konten,
+  776 Kategorien, 2.170 Buchungen und 0 verworfenen Buchungen.
+- Der optimierte Release-Build mit pain.001-Export ist unter
+  `~/Applications/FinanzVerwalter.app` installiert und ad hoc signiert.
+  Die produktive Finanzdatei blieb auf Schema 13, 97 Konten und 2.170
+  Buchungen bei Integrität `ok`. Das vorherige Bundle liegt im ignorierten
+  Pfad `build/FinanzVerwalter-vor-pain001-20260731-0847.app`. Nach Ergänzung
+  des Entwurfs-/Wiederholungsschutzes wurde der Release erneut gebaut,
+  installiert und signaturgeprüft; der unmittelbar vorherige Stand liegt
+  zusätzlich unter
+  `build/FinanzVerwalter-vor-pain001-retryschutz-20260731-0855.app`.
+- Der XML-/Teststand wurde mit der echten erzeugten XML-Vorschau im
+  Telegram-Projektthread 894 als Nachricht 935 veröffentlicht. Die
+  Computer-Use-Abfrage lief bei weiterhin gesperrtem Mac in ein Timeout;
+  die visuelle Prüfung des Exportknopfs und Dateidialogs bleibt deshalb
+  offen und wird nicht als erledigt behauptet.

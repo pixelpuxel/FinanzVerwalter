@@ -3146,6 +3146,9 @@ private struct PaymentOrderDetail: View {
     let order: PaymentOrder
     @State private var confirmInitiation = false
     @State private var authorizationCode = ""
+    @State private var showPain001Exporter = false
+    @State private var pain001Document = Pain001Document(data: Data())
+    @State private var pain001FileName = "pain.001.xml"
 
     private var scaPath: [PaymentStatus] {
         var values: [PaymentStatus] = [
@@ -3192,6 +3195,16 @@ private struct PaymentOrderDetail: View {
                 .padding(.top, 4)
             }
             actionArea
+            Button("pain.001 exportieren …", systemImage: "doc.badge.arrow.up") {
+                preparePain001Export()
+            }
+            .disabled(order.status != .draft)
+            .help(
+                order.status == .draft
+                    ? "Erzeugt eine lokale SEPA-XML-Datei nach "
+                        + Pain001RulePackage.epc2025.source
+                    : "Nur unveränderte Entwürfe können als pain.001 initiiert werden."
+            )
             if order.status == .unknown {
                 Label(
                     "Der Status ist unbekannt. Der Auftrag wird niemals automatisch erneut gesendet. Zuerst muss der Bankstatus manuell geklärt werden.",
@@ -3214,6 +3227,34 @@ private struct PaymentOrderDetail: View {
             }
         } message: {
             Text("\(order.recipientName) erhält \(Money(minorUnits: order.amountMinor).formatted). Dies ist ausschließlich eine lokale Simulation.")
+        }
+        .fileExporter(
+            isPresented: $showPain001Exporter,
+            document: pain001Document,
+            contentType: .xml,
+            defaultFilename: pain001FileName
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Zahlungsauftrag als pain.001 exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func preparePain001Export() {
+        guard let account = store.accounts.first(where: { $0.id == order.accountID }) else {
+            store.errorMessage = FinanceError.missingAccount.localizedDescription
+            return
+        }
+        do {
+            let result = try Pain001Exporter.export(order: order, account: account)
+            pain001Document = Pain001Document(data: result.data)
+            pain001FileName = result.fileName
+            showPain001Exporter = true
+        } catch {
+            store.errorMessage = error.localizedDescription
         }
     }
 
@@ -3269,6 +3310,23 @@ private struct PaymentOrderDetail: View {
         case .cancelled:
             Label("Auftrag abgebrochen", systemImage: "nosign")
         }
+    }
+}
+
+private struct Pain001Document: FileDocument {
+    static var readableContentTypes: [UTType] { [.xml] }
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 
