@@ -61,6 +61,7 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var includeTransfers = false
     var expandSplits = true
     var grouping: ReportGrouping = .category
+    var secondaryGrouping: ReportGrouping? = nil
     var sort: ReportSort = .amountDescending
     var transactionIDs: Set<UUID>? = nil
     var exactPayee: String? = nil
@@ -201,7 +202,12 @@ enum TransactionReportEngine {
         }
 
         facts = sortFacts(facts, by: query.sort)
-        let groups = makeGroups(facts: facts, grouping: query.grouping, sort: query.sort)
+        let groups = makeGroups(
+            facts: facts,
+            grouping: query.grouping,
+            secondaryGrouping: query.secondaryGrouping,
+            sort: query.sort
+        )
         let totals = makeTotals(facts)
         return TransactionReportSnapshot(facts: facts, groups: groups, totals: totals)
     }
@@ -295,21 +301,34 @@ enum TransactionReportEngine {
     private static func makeGroups(
         facts: [TransactionReportFact],
         grouping: ReportGrouping,
+        secondaryGrouping: ReportGrouping?,
         sort: ReportSort
     ) -> [TransactionReportGroup] {
         guard grouping != .none else { return [] }
+        let secondary: ReportGrouping = secondaryGrouping == grouping
+            ? .none
+            : secondaryGrouping ?? .none
         let grouped = Dictionary(grouping: facts) { fact in
-            "\(groupLabel(for: fact, grouping: grouping))\u{1F}\(fact.currency)"
+            let primaryLabel = groupLabel(for: fact, grouping: grouping)
+            let secondaryLabel = secondary == .none
+                ? ""
+                : groupLabel(for: fact, grouping: secondary)
+            return "\(primaryLabel)\u{1E}\(secondaryLabel)\u{1F}\(fact.currency)"
         }
         let result = grouped.map { key, values in
             let parts = key.components(separatedBy: "\u{1F}")
+            let labels = (parts.first ?? "").components(separatedBy: "\u{1E}")
+            let primaryLabel = labels.first ?? "Ohne Zuordnung"
+            let secondaryLabel = labels.count > 1 ? labels[1] : ""
             let income = values.filter { $0.amountMinor > 0 }
                 .reduce(Int64.zero) { $0 + $1.amountMinor }
             let expense = values.filter { $0.amountMinor < 0 }
                 .reduce(Int64.zero) { $0 - $1.amountMinor }
             return TransactionReportGroup(
                 id: key,
-                label: parts.first ?? "Ohne Zuordnung",
+                label: secondaryLabel.isEmpty
+                    ? primaryLabel
+                    : "\(primaryLabel) › \(secondaryLabel)",
                 currency: parts.count > 1 ? parts[1] : "EUR",
                 incomeMinor: income,
                 expenseMinor: expense,

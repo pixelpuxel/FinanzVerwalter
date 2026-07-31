@@ -1011,6 +1011,7 @@ struct ReportsView: View {
     @State private var includeTransfers = false
     @State private var expandSplits = true
     @State private var grouping: ReportGrouping = .category
+    @State private var secondaryGrouping: ReportGrouping = .none
     @State private var sort: ReportSort = .amountDescending
     @State private var selectedReportGroupID: String?
     @State private var selectedTemplateID: UUID?
@@ -1048,6 +1049,8 @@ struct ReportsView: View {
             includeTransfers: includeTransfers,
             expandSplits: expandSplits,
             grouping: grouping,
+            secondaryGrouping: secondaryGrouping == .none
+                ? nil : secondaryGrouping,
             sort: sort,
             transactionIDs: constrainedTransactionIDs,
             exactPayee: exactPayee,
@@ -1205,6 +1208,13 @@ struct ReportsView: View {
                         }
                     }
                     .frame(width: 175)
+                    Picker("Dann nach", selection: $secondaryGrouping) {
+                        ForEach(ReportGrouping.allCases.filter { $0 != grouping }) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 175)
+                    .disabled(grouping == .none)
                     Picker("Sortieren", selection: $sort) {
                         ForEach(ReportSort.allCases) {
                             Text($0.title).tag($0)
@@ -1278,7 +1288,11 @@ struct ReportsView: View {
         }
         .onChange(of: grouping) {
             selectedReportGroupID = nil
+            if grouping == .none || secondaryGrouping == grouping {
+                secondaryGrouping = .none
+            }
         }
+        .onChange(of: secondaryGrouping) { selectedReportGroupID = nil }
         .onChange(of: snapshot.groups.map(\.id)) {
             if let selectedReportGroupID,
                !snapshot.groups.contains(where: { $0.id == selectedReportGroupID }) {
@@ -1491,7 +1505,7 @@ struct ReportsView: View {
         _ groups: [TransactionReportGroup]
     ) -> some View {
         Table(groups, selection: $selectedReportGroupID) {
-            TableColumn(grouping.title) { group in
+            TableColumn(reportGroupingTitle) { group in
                 VStack(alignment: .leading, spacing: 1) {
                     Text(group.label)
                         .lineLimit(2)
@@ -1650,6 +1664,7 @@ struct ReportsView: View {
             || includeTransfers
             || !expandSplits
             || grouping != .category
+            || secondaryGrouping != .none
             || sort != .amountDescending
             || constrainedTransactionIDs != nil
             || exactPayee != nil
@@ -1674,6 +1689,7 @@ struct ReportsView: View {
         includeTransfers = false
         expandSplits = true
         grouping = .category
+        secondaryGrouping = .none
         sort = .amountDescending
         constrainedTransactionIDs = nil
         exactPayee = nil
@@ -1687,7 +1703,7 @@ struct ReportsView: View {
         let template = SavedReportTemplate(
             id: id,
             name: templateName,
-            definitionVersion: 1,
+            definitionVersion: 2,
             query: query
         )
         if store.saveReportTemplate(template) {
@@ -1735,6 +1751,8 @@ struct ReportsView: View {
         includeTransfers = savedQuery.includeTransfers
         expandSplits = savedQuery.expandSplits
         grouping = savedQuery.grouping
+        secondaryGrouping = savedQuery.secondaryGrouping ?? .none
+        if secondaryGrouping == grouping { secondaryGrouping = .none }
         sort = savedQuery.sort
         constrainedTransactionIDs = savedQuery.transactionIDs
         exactPayee = savedQuery.exactPayee
@@ -1751,7 +1769,7 @@ struct ReportsView: View {
             let metadata = ReportExportMetadata(
                 title: selectedTemplateID.flatMap { id in
                     store.reportTemplates.first { $0.id == id }?.name
-                } ?? "\(grouping.title)-Bericht",
+                } ?? "\(reportGroupingTitle)-Bericht",
                 dateLabel: reportDateLabel,
                 filterSummary: reportFilterSummary,
                 baseCurrency: store.fileInfo?.baseCurrency ?? "EUR",
@@ -1799,7 +1817,7 @@ struct ReportsView: View {
         ReportExportMetadata(
             title: selectedTemplateID.flatMap { id in
                 store.reportTemplates.first { $0.id == id }?.name
-            } ?? "\(grouping.title)-Bericht",
+            } ?? "\(reportGroupingTitle)-Bericht",
             dateLabel: reportDateLabel,
             filterSummary: reportFilterSummary,
             baseCurrency: store.fileInfo?.baseCurrency ?? "EUR",
@@ -1826,8 +1844,16 @@ struct ReportsView: View {
             "Status \(statuses.count)/\(TransactionStatus.allCases.count)",
             reportText.isEmpty ? "kein Volltext" : "Volltext: \(reportText)",
             includeTransfers ? "mit Umbuchungen" : "ohne Umbuchungen",
-            expandSplits ? "Splitzeilen" : "Gesamtbuchungen"
+            expandSplits ? "Splitzeilen" : "Gesamtbuchungen",
+            "Gruppierung \(reportGroupingTitle)"
         ].joined(separator: " · ")
+    }
+
+    private var reportGroupingTitle: String {
+        guard secondaryGrouping != .none, secondaryGrouping != grouping else {
+            return grouping.title
+        }
+        return "\(grouping.title) nach \(secondaryGrouping.title)"
     }
 
     private var exportFilename: String {

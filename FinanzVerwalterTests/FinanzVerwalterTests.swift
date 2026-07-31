@@ -4444,6 +4444,7 @@ final class FinanzVerwalterTests: XCTestCase {
             includeTransfers: true,
             expandSplits: false,
             grouping: .account,
+            secondaryGrouping: .category,
             sort: .dateAscending
         )
         let id = UUID()
@@ -4451,14 +4452,14 @@ final class FinanzVerwalterTests: XCTestCase {
             SavedReportTemplate(
                 id: id,
                 name: "Immobiliensteuer",
-                definitionVersion: 1,
+                definitionVersion: 2,
                 query: query
             )
         )
         let restored = try XCTUnwrap(context.store.reportTemplates().first)
         XCTAssertEqual(restored.id, id)
         XCTAssertEqual(restored.name, "Immobiliensteuer")
-        XCTAssertEqual(restored.definitionVersion, 1)
+        XCTAssertEqual(restored.definitionVersion, 2)
         XCTAssertEqual(restored.query, query)
 
         query.text = "aktualisiert"
@@ -4466,7 +4467,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SavedReportTemplate(
                 id: id,
                 name: "Immobiliensteuer aktualisiert",
-                definitionVersion: 1,
+                definitionVersion: 2,
                 query: query
             )
         )
@@ -4475,6 +4476,68 @@ final class FinanzVerwalterTests: XCTestCase {
         try context.store.deleteReportTemplate(id: id)
         XCTAssertTrue(try context.store.reportTemplates().isEmpty)
         XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {
+        let giro = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let card = FinanceAccount(
+            id: UUID(), name: "Karte", institution: "", type: .creditCard,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        let housing = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Wohnen", kind: .expense,
+            color: "blue", isActive: true
+        )
+        let food = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Lebensmittel", kind: .expense,
+            color: "green", isActive: true
+        )
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func transaction(
+            accountID: UUID, categoryID: UUID, amount: Int64, day: Int
+        ) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: accountID,
+                bookingDate: now.addingTimeInterval(Double(day * 86_400)),
+                valueDate: nil, payee: "Test", purpose: "Auswertung",
+                categoryID: categoryID, amountMinor: amount, currency: "EUR",
+                status: .booked, memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: []
+            )
+        }
+        let snapshot = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(
+                grouping: .category, secondaryGrouping: .account,
+                sort: .labelAscending
+            ),
+            transactions: [
+                transaction(accountID: giro.id, categoryID: housing.id, amount: -100, day: 0),
+                transaction(accountID: giro.id, categoryID: food.id, amount: -200, day: 1),
+                transaction(accountID: card.id, categoryID: housing.id, amount: -300, day: 2)
+            ],
+            accounts: [giro, card], categories: [housing, food], tags: []
+        )
+        XCTAssertEqual(
+            Set(snapshot.groups.map(\.label)),
+            ["Wohnen › Giro", "Lebensmittel › Giro", "Wohnen › Karte"]
+        )
+        XCTAssertEqual(snapshot.groups.reduce(0) { $0 + $1.bookingCount }, 3)
+
+        let currentData = try JSONEncoder().encode(TransactionReportQuery())
+        var legacyObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: currentData) as? [String: Any]
+        )
+        legacyObject.removeValue(forKey: "secondaryGrouping")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let decoded = try JSONDecoder().decode(
+            TransactionReportQuery.self, from: legacyData
+        )
+        XCTAssertNil(decoded.secondaryGrouping)
     }
 
     func testReportCSVExportIsDeterministicEscapedAndUsesGermanMinorUnits() throws {
