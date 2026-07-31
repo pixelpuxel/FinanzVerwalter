@@ -204,6 +204,85 @@ struct FinanceTransaction: Identifiable, Hashable, Sendable {
     }
 }
 
+struct TransactionTemplateSplit: Codable, Equatable, Sendable {
+    var categoryID: UUID?
+    var amountMinor: Int64
+    var memo: String
+    var sortOrder: Int
+    var tagIDs: [UUID]
+}
+
+struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    var name: String
+    var accountID: UUID
+    var payee: String
+    var purpose: String
+    var categoryID: UUID?
+    var amountMinor: Int64
+    var currency: String
+    var status: TransactionStatus
+    var memo: String
+    var payeeID: UUID?
+    var tagIDs: [UUID]
+    var splits: [TransactionTemplateSplit]
+
+    init(id: UUID = UUID(), name: String, transaction: FinanceTransaction) {
+        self.id = id
+        self.name = name
+        accountID = transaction.accountID
+        payee = transaction.payee
+        purpose = transaction.purpose
+        categoryID = transaction.categoryID
+        amountMinor = transaction.amountMinor
+        currency = transaction.currency
+        status = transaction.status == .reconciled ? .booked : transaction.status
+        memo = transaction.memo
+        payeeID = transaction.payeeID
+        tagIDs = transaction.tagIDs
+        splits = transaction.splits.map {
+            TransactionTemplateSplit(
+                categoryID: $0.categoryID,
+                amountMinor: $0.amountMinor,
+                memo: $0.memo,
+                sortOrder: $0.sortOrder,
+                tagIDs: $0.tagIDs
+            )
+        }
+    }
+
+    func transaction(on date: Date = .now) -> FinanceTransaction {
+        FinanceTransaction(
+            id: UUID(),
+            accountID: accountID,
+            bookingDate: date,
+            valueDate: date,
+            payee: payee,
+            purpose: purpose,
+            categoryID: categoryID,
+            amountMinor: amountMinor,
+            currency: currency,
+            status: status,
+            memo: memo,
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: splits.map {
+                FinanceSplit(
+                    id: UUID(),
+                    categoryID: $0.categoryID,
+                    amountMinor: $0.amountMinor,
+                    memo: $0.memo,
+                    sortOrder: $0.sortOrder,
+                    tagIDs: $0.tagIDs
+                )
+            },
+            payeeID: payeeID,
+            tagIDs: tagIDs
+        )
+    }
+}
+
 struct ReconciliationSnapshot: Equatable, Sendable {
     let accountID: UUID
     let statementDate: Date

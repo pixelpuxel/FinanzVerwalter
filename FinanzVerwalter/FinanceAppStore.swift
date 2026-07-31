@@ -11,6 +11,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var balances: [UUID: Int64] = [:]
     @Published private(set) var reportRows: [CategoryReportRow] = []
     @Published private(set) var reportTemplates: [SavedReportTemplate] = []
+    @Published private(set) var transactionTemplates: [TransactionTemplate] = []
     @Published private(set) var categorizationRules: [CategorizationRule] = []
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var budgets: [FinanceBudget] = []
@@ -146,6 +147,34 @@ final class FinanceAppStore: ObservableObject {
             try repository.deleteReportTemplate(id: template.id)
             reportTemplates = try repository.reportTemplates()
             statusText = "Berichtsvorlage gelöscht"
+        } catch {
+            present(error)
+        }
+    }
+
+    func saveTransactionTemplate(name: String, from transaction: FinanceTransaction) -> Bool {
+        guard let repository else { return false }
+        do {
+            let template = TransactionTemplate(
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                transaction: transaction
+            )
+            try repository.saveTransactionTemplate(template)
+            transactionTemplates = try repository.transactionTemplates()
+            statusText = "Buchungsvorlage „\(template.name)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func deleteTransactionTemplate(_ template: TransactionTemplate) {
+        guard let repository else { return }
+        do {
+            try repository.deleteTransactionTemplate(id: template.id)
+            transactionTemplates = try repository.transactionTemplates()
+            statusText = "Buchungsvorlage gelöscht"
         } catch {
             present(error)
         }
@@ -424,13 +453,22 @@ final class FinanceAppStore: ObservableObject {
     }
 
     func deleteTransaction(_ value: FinanceTransaction) {
-        guard let repository else { return }
+        _ = deleteTransactions([value])
+    }
+
+    @discardableResult
+    func deleteTransactions(_ values: [FinanceTransaction]) -> Bool {
+        guard let repository else { return false }
         do {
-            try repository.deleteTransaction(id: value.id)
+            try repository.deleteTransactions(ids: Set(values.map(\.id)))
             try load()
-            statusText = "Buchung gelöscht"
+            statusText = values.count == 1
+                ? "Buchung gelöscht"
+                : "\(values.count) Buchungen gelöscht"
+            return true
         } catch {
             present(error)
+            return false
         }
     }
 
@@ -1271,6 +1309,7 @@ final class FinanceAppStore: ObservableObject {
         transactions = try repository.transactions()
         reportRows = try repository.categoryReport()
         reportTemplates = try repository.reportTemplates()
+        transactionTemplates = try repository.transactionTemplates()
         categorizationRules = try repository.categorizationRules()
         scheduledTransactions = try repository.scheduledTransactions()
         budgets = try repository.budgets()

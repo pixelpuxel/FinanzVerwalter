@@ -33,11 +33,17 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 struct FinanzVerwalterApp: App {
     @StateObject private var store = FinanceAppStore()
     @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.light.rawValue
+    @AppStorage(AppShortcutConfiguration.storageKey) private var shortcutData = ""
+
+    private var shortcuts: AppShortcutConfiguration {
+        AppShortcutCodec.decode(shortcutData)
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(store)
+                .background(ContextualShortcutMonitorHost())
                 .preferredColorScheme(
                     AppearanceMode(rawValue: appearanceMode)?.colorScheme ?? .light
                 )
@@ -52,30 +58,55 @@ struct FinanzVerwalterApp: App {
                         object: nil
                     )
                 }
-                .keyboardShortcut("s", modifiers: .command)
+                .keyboardShortcut(
+                    shortcuts.binding(for: .save).key.equivalent,
+                    modifiers: shortcuts.binding(for: .save).eventModifiers
+                )
             }
             CommandGroup(replacing: .newItem) {
                 Button("Neue Buchung") {
                     NotificationCenter.default.post(name: .newTransaction, object: nil)
                 }
-                .keyboardShortcut("n", modifiers: .command)
+                .keyboardShortcut(
+                    shortcuts.binding(for: .newTransaction).key.equivalent,
+                    modifiers: shortcuts.binding(for: .newTransaction).eventModifiers
+                )
             }
             CommandMenu("Finanzen") {
                 Button("Suchen") {
                     NotificationCenter.default.post(name: .focusSearch, object: nil)
                 }
-                .keyboardShortcut("f", modifiers: .command)
+                .keyboardShortcut(
+                    shortcuts.binding(for: .search).key.equivalent,
+                    modifiers: shortcuts.binding(for: .search).eventModifiers
+                )
                 Button("Konto abgleichen") {
                     NotificationCenter.default.post(name: .reconcileAccount, object: nil)
                 }
-                .keyboardShortcut("r", modifiers: .command)
+                .keyboardShortcut(
+                    shortcuts.binding(for: .reconcile).key.equivalent,
+                    modifiers: shortcuts.binding(for: .reconcile).eventModifiers
+                )
                 Button("Buchung aufteilen") {
                     NotificationCenter.default.post(
                         name: .openSplitEditor,
                         object: nil
                     )
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .keyboardShortcut(
+                    shortcuts.binding(for: .split).key.equivalent,
+                    modifiers: shortcuts.binding(for: .split).eventModifiers
+                )
+                Button("Als Vorlage merken") {
+                    NotificationCenter.default.post(
+                        name: .rememberTransactionTemplate,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut(
+                    shortcuts.binding(for: .rememberTemplate).key.equivalent,
+                    modifiers: shortcuts.binding(for: .rememberTemplate).eventModifiers
+                )
                 Button("Auswahl als Filter übernehmen") {
                     NotificationCenter.default.post(
                         name: .filterRegisterSelection,
@@ -83,9 +114,22 @@ struct FinanzVerwalterApp: App {
                     )
                 }
                 .keyboardShortcut(
-                    KeyEquivalent(Character("\u{F706}")),
-                    modifiers: []
+                    shortcuts.binding(for: .filterSelection).key.equivalent,
+                    modifiers: shortcuts.binding(for: .filterSelection).eventModifiers
                 )
+                Divider()
+                Button("Auswahl löschen") {
+                    NotificationCenter.default.post(
+                        name: .deleteRegisterSelection,
+                        object: nil
+                    )
+                }
+                Button("Übernehmen") {
+                    NotificationCenter.default.post(name: .acceptCurrentEditor, object: nil)
+                }
+                Button("Abbrechen") {
+                    NotificationCenter.default.post(name: .cancelCurrentEditor, object: nil)
+                }
             }
         }
     }
@@ -99,5 +143,17 @@ extension Notification.Name {
     static let openSplitEditor = Notification.Name("FinanzVerwalter.openSplitEditor")
     static let filterRegisterSelection = Notification.Name(
         "FinanzVerwalter.filterRegisterSelection"
+    )
+    static let rememberTransactionTemplate = Notification.Name(
+        "FinanzVerwalter.rememberTransactionTemplate"
+    )
+    static let deleteRegisterSelection = Notification.Name(
+        "FinanzVerwalter.deleteRegisterSelection"
+    )
+    static let acceptCurrentEditor = Notification.Name(
+        "FinanzVerwalter.acceptCurrentEditor"
+    )
+    static let cancelCurrentEditor = Notification.Name(
+        "FinanzVerwalter.cancelCurrentEditor"
     )
 }

@@ -1631,7 +1631,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To16PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To17PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -1735,7 +1735,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 16)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 17)
         sqlite3_finalize(statement)
     }
 
@@ -2339,6 +2339,156 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertFalse(text.contains("Verwendungszweck"))
         XCTAssertFalse(text.contains("Kategorie\n"))
         XCTAssertTrue(text.contains("Seite 1 von \(document.pageCount)"))
+    }
+
+    func testShortcutConfigurationRoundTripsAllActionsAndRejectsConflicts() throws {
+        let defaults = AppShortcutConfiguration.defaults
+        XCTAssertEqual(defaults.assignments.count, AppShortcutAction.allCases.count)
+        XCTAssertTrue(defaults.conflicts.isEmpty)
+        XCTAssertEqual(defaults.binding(for: .filterSelection).displayText, "F3")
+        XCTAssertEqual(defaults.binding(for: .deleteSelection).key, .delete)
+
+        var customized = defaults
+        customized.set(
+            AppShortcutBinding(key: .g, modifiers: [.control, .shift]),
+            for: .search
+        )
+        let encoded = AppShortcutCodec.encode(customized)
+        XCTAssertFalse(encoded.isEmpty)
+        let decoded = AppShortcutCodec.decode(encoded)
+        XCTAssertEqual(
+            decoded.binding(for: .search),
+            AppShortcutBinding(key: .g, modifiers: [.control, .shift])
+        )
+        XCTAssertEqual(AppShortcutCodec.decode("{kaputt"), .defaults)
+
+        var conflicting = customized
+        conflicting.set(customized.binding(for: .search), for: .reconcile)
+        XCTAssertFalse(conflicting.conflicts.isEmpty)
+        XCTAssertTrue(AppShortcutCodec.encode(conflicting).isEmpty)
+        let conflictingData = try JSONEncoder().encode(conflicting)
+        let conflictingRaw = try XCTUnwrap(
+            String(data: conflictingData, encoding: .utf8)
+        )
+        XCTAssertEqual(AppShortcutCodec.decode(conflictingRaw), .defaults)
+
+        var unsafe = defaults
+        unsafe.set(
+            AppShortcutBinding(key: .x, modifiers: []),
+            for: .search
+        )
+        XCTAssertEqual(unsafe.barePrintableActions, [.search])
+        XCTAssertFalse(unsafe.isValid)
+        XCTAssertTrue(AppShortcutCodec.encode(unsafe).isEmpty)
+    }
+
+    func testTransactionTemplatePersistsSplitsAndCreatesFreshDraft() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(),
+            name: "Vorlagenkonto",
+            institution: "",
+            type: .checking,
+            currency: "EUR",
+            openingBalanceMinor: 0,
+            isHidden: false,
+            isClosed: false,
+            sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let source = FinanceTransaction(
+            id: UUID(),
+            accountID: account.id,
+            bookingDate: Date(timeIntervalSince1970: 100),
+            valueDate: Date(timeIntervalSince1970: 100),
+            payee: "Vermieter",
+            purpose: "Monatsmiete",
+            categoryID: nil,
+            amountMinor: -100_000,
+            currency: "EUR",
+            status: .reconciled,
+            memo: "Vorlage ohne Altbeleg",
+            reference: "ALT-4711",
+            transferID: nil,
+            importFingerprint: "privater-import",
+            splits: [
+                FinanceSplit(
+                    id: UUID(),
+                    categoryID: nil,
+                    amountMinor: -80_000,
+                    memo: "Miete",
+                    sortOrder: 0
+                ),
+                FinanceSplit(
+                    id: UUID(),
+                    categoryID: nil,
+                    amountMinor: -20_000,
+                    memo: "Nebenkosten",
+                    sortOrder: 1
+                )
+            ]
+        )
+        let template = TransactionTemplate(
+            name: "  Monatsmiete  ",
+            transaction: source
+        )
+        try context.store.saveTransactionTemplate(template)
+        let restored = try XCTUnwrap(context.store.transactionTemplates().first)
+        XCTAssertEqual(restored.id, template.id)
+        XCTAssertEqual(restored.name, "Monatsmiete")
+        XCTAssertEqual(restored.status, .booked)
+        XCTAssertEqual(restored.splits.map(\.amountMinor), [-80_000, -20_000])
+
+        let date = Date(timeIntervalSince1970: 500)
+        let draft = restored.transaction(on: date)
+        XCTAssertNotEqual(draft.id, source.id)
+        XCTAssertEqual(draft.bookingDate, date)
+        XCTAssertEqual(draft.valueDate, date)
+        XCTAssertEqual(draft.reference, "")
+        XCTAssertNil(draft.importFingerprint)
+        XCTAssertEqual(draft.amountMinor, source.amountMinor)
+        try draft.validate()
+
+        try context.store.deleteTransactionTemplate(id: restored.id)
+        XCTAssertTrue(try context.store.transactionTemplates().isEmpty)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testConfirmedBulkDeleteIsAtomicAndProtectsReconciledTransactions() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(),
+            name: "Löschschutz",
+            institution: "",
+            type: .checking,
+            currency: "EUR",
+            openingBalanceMinor: 0,
+            isHidden: false,
+            isClosed: false,
+            sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let booked = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now, valueDate: nil,
+            payee: "Frei", purpose: "", categoryID: nil, amountMinor: -100,
+            currency: "EUR", status: .booked, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        let protected = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now, valueDate: nil,
+            payee: "Abgeglichen", purpose: "", categoryID: nil, amountMinor: -200,
+            currency: "EUR", status: .reconciled, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(booked)
+        try context.store.saveTransaction(protected)
+        XCTAssertThrowsError(
+            try context.store.deleteTransactions(ids: [booked.id, protected.id])
+        ) { error in
+            XCTAssertEqual(error as? FinanceError, .protectedTransaction)
+        }
+        XCTAssertEqual(Set(try context.store.transactions().map(\.id)), [booked.id, protected.id])
+        XCTAssertTrue(try context.store.integrityCheck())
     }
 }
 

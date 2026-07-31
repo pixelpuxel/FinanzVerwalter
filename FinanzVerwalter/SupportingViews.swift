@@ -2178,6 +2178,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            ShortcutSettingsSection()
             Section("Finanzdatei") {
                 LabeledContent("Name", value: store.fileInfo?.name ?? "—")
                 LabeledContent("Basiswährung", value: store.fileInfo?.baseCurrency ?? "—")
@@ -4531,7 +4532,7 @@ private struct AllocationEditor: View {
                     )
                 }
                 LabeledContent("Summe") {
-                    Text("\(Decimal(sum) / 100) %")
+                    Text(verbatim: "\(Decimal(sum) / 100) %")
                         .foregroundStyle(sum == 10_000 ? .green : .red)
                 }
                 Text("Die Zuordnung kann nur mit exakt 100 % gespeichert werden.")

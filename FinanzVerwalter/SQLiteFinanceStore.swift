@@ -949,6 +949,28 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 16")
             }
         }
+        if version < 17 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE transaction_templates (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX transaction_templates_name ON transaction_templates(finance_file_id,name COLLATE NOCASE,id)"
+                )
+                try execute("PRAGMA user_version = 17")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2877,6 +2899,93 @@ final class SQLiteFinanceStore {
         return values
     }
 
+    func transactionTemplates() throws -> [TransactionTemplate] {
+        var values: [TransactionTemplate] = []
+        let decoder = JSONDecoder()
+        try query(
+            """
+            SELECT id,name,payload_json
+            FROM transaction_templates
+            ORDER BY name COLLATE NOCASE,id
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let data = Self.text(statement, 2).data(using: .utf8)
+            else {
+                throw FinanceError.database("Eine Buchungsvorlage ist beschädigt.")
+            }
+            do {
+                var value = try decoder.decode(TransactionTemplate.self, from: data)
+                value = TransactionTemplate(
+                    id: id,
+                    name: Self.text(statement, 1),
+                    transaction: value.transaction()
+                )
+                values.append(value)
+            } catch {
+                throw FinanceError.database("Die Buchungsvorlage „\(Self.text(statement, 1))“ ist beschädigt.")
+            }
+        }
+        return values
+    }
+
+    func saveTransactionTemplate(_ value: TransactionTemplate) throws {
+        let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Der Name der Buchungsvorlage fehlt.")
+        }
+        try value.transaction().validate()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(value)
+        guard let payload = String(data: encoded, encoding: .utf8) else {
+            throw FinanceError.database("Die Buchungsvorlage konnte nicht codiert werden.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO transaction_templates(
+                    id,finance_file_id,name,payload_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(name), .text(payload), .text(now), .text(now)
+                ]
+            )
+            try audit(
+                entity: "transaction-template",
+                id: value.id,
+                action: "save",
+                details: name
+            )
+        }
+    }
+
+    func deleteTransactionTemplate(id: UUID) throws {
+        try transaction {
+            try run(
+                "DELETE FROM transaction_templates WHERE id=?",
+                [.text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Die Buchungsvorlage wurde nicht gefunden.")
+            }
+            try audit(
+                entity: "transaction-template",
+                id: id,
+                action: "delete",
+                details: ""
+            )
+        }
+    }
+
     func saveAccount(_ account: FinanceAccount) throws {
         let name = account.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
@@ -3118,17 +3227,74 @@ final class SQLiteFinanceStore {
     }
 
     func deleteTransaction(id: UUID) throws {
+        try deleteTransactions(ids: [id])
+    }
+
+    func deleteTransactions(ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        var selected: [(id: UUID, status: TransactionStatus, transferID: UUID?)] = []
+        for id in ids.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try query(
+                "SELECT status,transfer_id FROM transactions WHERE id=?",
+                [.text(id.uuidString)]
+            ) { statement in
+                guard let status = TransactionStatus(rawValue: Self.text(statement, 0)) else {
+                    return
+                }
+                selected.append(
+                    (
+                        id,
+                        status,
+                        Self.optionalText(statement, 1).flatMap(UUID.init(uuidString:))
+                    )
+                )
+            }
+        }
+        guard selected.count == ids.count else {
+            throw FinanceError.database("Mindestens eine ausgewählte Buchung wurde nicht gefunden.")
+        }
+        guard selected.allSatisfy({ $0.status != .reconciled }) else {
+            throw FinanceError.protectedTransaction
+        }
+        for transferID in Set(selected.compactMap(\.transferID)) {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM transactions WHERE transfer_id=? AND status='reconciled'",
+                [.text(transferID.uuidString)]
+            ) == 0 else {
+                throw FinanceError.protectedTransaction
+            }
+        }
         try transaction {
-            var transferID: String?
-            try query("SELECT transfer_id FROM transactions WHERE id=?", [.text(id.uuidString)]) {
-                transferID = Self.optionalText($0, 0)
+            var deletedTransfers = Set<UUID>()
+            for value in selected {
+                if let transferID = value.transferID {
+                    guard deletedTransfers.insert(transferID).inserted else { continue }
+                    try run(
+                        "DELETE FROM transactions WHERE transfer_id=?",
+                        [.text(transferID.uuidString)]
+                    )
+                    try audit(
+                        entity: "transfer",
+                        id: transferID,
+                        action: "delete",
+                        details: "shortcut-confirmed"
+                    )
+                } else {
+                    try run(
+                        "DELETE FROM transactions WHERE id=?",
+                        [.text(value.id.uuidString)]
+                    )
+                    guard sqlite3_changes(database) == 1 else {
+                        throw FinanceError.database("Eine Buchung konnte nicht gelöscht werden.")
+                    }
+                    try audit(
+                        entity: "transaction",
+                        id: value.id,
+                        action: "delete",
+                        details: "shortcut-confirmed"
+                    )
+                }
             }
-            if let transferID {
-                try run("DELETE FROM transactions WHERE transfer_id=?", [.text(transferID)])
-            } else {
-                try run("DELETE FROM transactions WHERE id=?", [.text(id.uuidString)])
-            }
-            try audit(entity: "transaction", id: id, action: "delete", details: transferID ?? "")
         }
     }
 

@@ -611,3 +611,38 @@ Rechtsberatung.
   den gesperrten Mac; deshalb wurde ausdrücklich kein angeblicher
   App-Screenshot versendet. Die echte visuelle Abnahme bleibt bis zum
   manuellen Entsperren offen.
+- Die zehn Kontoblattbefehle sind nun unter Einstellungen vollständig
+  sichtbar und hinsichtlich Taste sowie Command, Shift, Option und Control
+  anpassbar. Versionierter JSON-Codec, Standardrückfall, Deduplizierung,
+  Konfliktanzeige und Schutz vor nackten Buchstaben-/Zifferntasten
+  verhindern unbedienbare Konfigurationen.
+- Löschen, Eingabe und Esc werden kontextabhängig ausgewertet. Entfernen
+  bleibt bei aktiver Texteingabe dem Feldeditor vorbehalten. Außerhalb
+  davon öffnet Löschen eine Bestätigung; die gesamte Auswahl und beide
+  Umbuchungsseiten werden vorab geprüft und atomar gelöscht. Eine
+  abgeglichene Buchung sperrt den gesamten Vorgang.
+- Migration 17 ergänzt dateigebundene Buchungsvorlagen. `Als Vorlage
+  merken` übernimmt Betrag, Konto, Empfänger, Kategorie, Status, Memo,
+  Tags und Splits, normalisiert `Abgeglichen` zu `Gebucht` und entfernt
+  Datum, Beleg-, Transfer- und Importidentität. Jede Anwendung erzeugt neue
+  IDs und einen neuen Entwurf.
+- Drei neue Tests prüfen Shortcut-Roundtrip, Konflikte und sichere
+  Tastenbelegungen, den vollständigen Buchungsvorlagen-Roundtrip samt
+  Splits sowie den atomaren Löschschutz. Die vollständige Suite besteht
+  damit aus 41 regulären Tests und einem erwartungsgemäß übersprungenen
+  opt-in-Real-QIF-Test.
+- Vor der produktiven Migration wurde ausschließlich lokal die validierte
+  Datei `Vor Migration 17 Shortcuts und Buchungsvorlagen.qbackup`
+  angelegt: Schema 16, Integrität `ok`, 97 Konten, 2.170 Buchungen,
+  0 Abgleiche und SHA-256
+  `fce2cee4f6773ca17429823ba53d98b25235db5e53e8fbfc1a53aa812b4001da`.
+- Der finale Release ist unter `~/Applications/FinanzVerwalter.app`
+  installiert, ad hoc signaturgeprüft und gestartet. Die Produktivdatei
+  meldet nach der additiven Migration Schema 17, Integrität `ok`,
+  97 Konten, 2.170 Buchungen und 0 Buchungsvorlagen. Das vorherige
+  App-Bundle liegt ignoriert unter
+  `build/FinanzVerwalter-vor-shortcuts-vorlagen-20260731-1011.app`.
+- Computer Use konnte den installierten Schema-17-Release nicht sichtbar
+  aufnehmen, weil der Mac weiterhin gesperrt ist. Deshalb bleibt die
+  visuelle Shortcut-/Vorlagenabnahme offen und es wird kein angeblicher
+  Screenshot veröffentlicht.

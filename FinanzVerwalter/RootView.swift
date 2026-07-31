@@ -181,6 +181,12 @@ struct RootView: View {
                 showNewTransaction = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .cancelCurrentEditor)) { _ in
+            showNewAccount = false
+            showNewTransaction = false
+            showTransfer = false
+            showReconciliation = false
+        }
     }
 
     private func accountSidebarButton(_ account: FinanceAccount) -> some View {

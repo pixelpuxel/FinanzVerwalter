@@ -541,3 +541,36 @@ Positionen den gespeicherten vorherigen Status wieder her und setze eine
 Ausgleichsbuchung auf `cancelled`, ohne sie zu löschen. Markiere den
 Abgleichskopf als zurückgenommen und schreibe ein Auditereignis. Historische
 Alteinträge ohne Positionsliste bleiben sichtbar, aber nicht rücknehmbar.
+
+# Reproduzierbare Shortcuts und Buchungsvorlagen
+
+Definiere zehn stabile Aktions-IDs für neue Buchung, Speichern, Suche,
+Kontoabgleich, Splitdialog, Vorlage merken, F3-Filter, Löschen, Übernehmen
+und Abbrechen. Speichere eine versionierte Liste aus Aktions-ID, Taste und
+Menge der Modifikatoren. Ergänze bei alten Einstellungen nur fehlende
+Aktions-IDs. Fällt JSON-Decodierung, Versionsprüfung, Eindeutigkeit oder
+Sicherheitsprüfung aus, verwende vollständig die dokumentierten
+Standardwerte.
+
+Buchstaben, Ziffern und Leertaste ohne Modifikator sind unzulässig, weil sie
+Texteingaben abfangen würden. Doppelte Kombinationen sind ebenfalls
+unzulässig. Normale Aktionen können als dynamische macOS-Menübefehle
+registriert werden. Behandle Löschen, Eingabe und Esc kontextabhängig:
+Ein lokaler Key-down-Monitor darf Entfernen bei aktivem `NSTextView` niemals
+abfangen. Erst außerhalb der Texteingabe wird eine typisierte
+Anwendungsaktion ausgelöst.
+
+Migration 17 erzeugt `transaction_templates` mit Finanzdatei-ID, eindeutigem
+Namen, deterministisch codiertem JSON-Payload, Zeitstempeln und Version.
+Der Payload enthält Konto, Empfänger, Zweck, Kategorie, Betrag, Währung,
+normalisierten Status, Memo, Empfängerakte, Tags und sämtliche Splits samt
+Split-Tags. Eine abgeglichene Quellbuchung wird als gebuchte Vorlage
+gespeichert. Beim Anwenden entstehen neue Buchungs- und Split-IDs sowie das
+heutige Datum; Referenz, Transfer-ID und Importfingerprint bleiben leer.
+
+Vor dem Mehrfachlöschen müssen alle ausgewählten IDs existieren und alle
+ausgewählten Buchungen sowie beide Seiten betroffener Umbuchungen
+unangetastet sein. Enthält die Menge eine abgeglichene Buchung, ändere
+nichts. Zeige immer eine Bestätigung mit der Zahl der Buchungen. Lösche
+danach die gesamte validierte Menge in genau einer SQLite-Transaktion und
+schreibe Auditereignisse.

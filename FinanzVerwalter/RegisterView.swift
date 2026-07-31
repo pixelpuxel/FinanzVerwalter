@@ -7,6 +7,11 @@ struct RegisterView: View {
     @State private var showEditor = false
     @State private var showBulkEditor = false
     @State private var editingTransaction: FinanceTransaction?
+    @State private var editorTemplate: TransactionTemplate?
+    @State private var showTemplateNameEditor = false
+    @State private var templateName = ""
+    @State private var templateSource: FinanceTransaction?
+    @State private var showDeleteConfirmation = false
     @State private var statusFilter: TransactionStatus?
     @State private var categoryFilter: RegisterCategoryFilter = .all
     @State private var periodFilter: RegisterPeriodFilter = .all
@@ -150,6 +155,7 @@ struct RegisterView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 175)
                 registerViewMenu
+                transactionTemplateMenu
                 registerOutputMenu(runningBalances: runningBalances)
                 f3FilterMenu
                 if periodFilter == .custom {
@@ -189,7 +195,12 @@ struct RegisterView: View {
                 if ids.count == 1 {
                     Button("Bearbeiten") {
                         editingTransaction = store.transactions.first { ids.contains($0.id) }
+                        editorTemplate = nil
                         showEditor = editingTransaction != nil
+                    }
+                    Button("Als Vorlage merken …") {
+                        selection = ids
+                        prepareTemplateFromSelection()
                     }
                 }
                 Button("Kategorie für Auswahl ändern …") {
@@ -197,12 +208,12 @@ struct RegisterView: View {
                     showBulkEditor = true
                 }
                 Button("Löschen", role: .destructive) {
-                    ids.compactMap { id in store.transactions.first { $0.id == id } }
-                        .forEach(store.deleteTransaction)
-                    selection.removeAll()
+                    selection = ids
+                    prepareDeletion()
                 }
             } primaryAction: { ids in
                 editingTransaction = store.transactions.first { ids.contains($0.id) }
+                editorTemplate = nil
                 showEditor = editingTransaction != nil
             }
             .overlay {
@@ -239,7 +250,10 @@ struct RegisterView: View {
             .padding(.vertical, 7)
         }
         .sheet(isPresented: $showEditor) {
-            TransactionEditorView(transaction: editingTransaction)
+            TransactionEditorView(
+                transaction: editingTransaction,
+                template: editorTemplate
+            )
         }
         .sheet(isPresented: $showBulkEditor) {
             BulkCategoryEditorView(transactionIDs: selection) {
@@ -273,6 +287,43 @@ struct RegisterView: View {
             .padding(24)
             .frame(width: 480)
         }
+        .sheet(isPresented: $showTemplateNameEditor) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Buchung als Vorlage merken")
+                    .font(.title2.bold())
+                Text(
+                    "Betrag, Konto, Empfänger, Kategorie, Tags und Splits werden "
+                        + "gespeichert. Datum, Belegnummer und Importkennung werden "
+                        + "bei einer neuen Buchung nicht übernommen."
+                )
+                .foregroundStyle(.secondary)
+                TextField("Vorlagenname", text: $templateName)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Abbrechen", role: .cancel) {
+                        showTemplateNameEditor = false
+                    }
+                    Button("Vorlage speichern") {
+                        guard let templateSource else { return }
+                        if store.saveTransactionTemplate(
+                            name: templateName,
+                            from: templateSource
+                        ) {
+                            showTemplateNameEditor = false
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        templateName.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                    )
+                }
+            }
+            .padding(24)
+            .frame(width: 520)
+        }
         .fileExporter(
             isPresented: $showPDFExporter,
             document: registerPDFDocument,
@@ -305,6 +356,90 @@ struct RegisterView: View {
         ) { _ in
             applyF3SelectionFilter()
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .rememberTransactionTemplate)
+        ) { _ in
+            prepareTemplateFromSelection()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .deleteRegisterSelection)
+        ) { _ in
+            prepareDeletion()
+        }
+        .confirmationDialog(
+            "Ausgewählte Buchungen wirklich löschen?",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                selection.count == 1
+                    ? "Buchung löschen"
+                    : "\(selection.count) Buchungen löschen",
+                role: .destructive
+            ) {
+                let values = selection.compactMap { id in
+                    store.transactions.first { $0.id == id }
+                }
+                if store.deleteTransactions(values) {
+                    selection.removeAll()
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(
+                "Umbuchungen werden immer auf beiden Konten gelöscht. "
+                    + "Abgeglichene Buchungen bleiben geschützt."
+            )
+        }
+    }
+
+    private var transactionTemplateMenu: some View {
+        Menu {
+            if store.transactionTemplates.isEmpty {
+                Text("Noch keine Vorlagen")
+            } else {
+                ForEach(store.transactionTemplates) { template in
+                    Button(template.name) {
+                        editingTransaction = nil
+                        editorTemplate = template
+                        showEditor = true
+                    }
+                }
+                Divider()
+                Menu("Vorlage löschen") {
+                    ForEach(store.transactionTemplates) { template in
+                        Button(template.name, role: .destructive) {
+                            store.deleteTransactionTemplate(template)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Vorlagen", systemImage: "doc.on.doc")
+        }
+        .help("Buchung aus einer gespeicherten Vorlage beginnen")
+    }
+
+    private func prepareTemplateFromSelection() {
+        guard selection.count == 1,
+              let id = selection.first,
+              let value = store.transactions.first(where: { $0.id == id })
+        else {
+            store.statusText = "Für eine Vorlage bitte genau eine Buchung markieren"
+            return
+        }
+        templateSource = value
+        let suggested = value.payee.isEmpty ? value.purpose : value.payee
+        templateName = suggested.isEmpty ? "Neue Buchungsvorlage" : suggested
+        showTemplateNameEditor = true
+    }
+
+    private func prepareDeletion() {
+        guard !selection.isEmpty else {
+            store.statusText = "Zum Löschen bitte mindestens eine Buchung markieren"
+            return
+        }
+        showDeleteConfirmation = true
     }
 
     private var accountTabs: some View {
@@ -1131,6 +1266,7 @@ struct TransactionEditorView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
     let transaction: FinanceTransaction?
+    let template: TransactionTemplate?
     let startWithSplits: Bool
 
     @State private var accountID: UUID?
@@ -1149,9 +1285,11 @@ struct TransactionEditorView: View {
 
     init(
         transaction: FinanceTransaction? = nil,
+        template: TransactionTemplate? = nil,
         startWithSplits: Bool = false
     ) {
         self.transaction = transaction
+        self.template = template
         self.startWithSplits = startWithSplits
     }
 
@@ -1159,6 +1297,11 @@ struct TransactionEditorView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(transaction == nil ? "Neue Buchung" : "Buchung bearbeiten")
                 .font(.title2.bold())
+            if let template {
+                Label("Vorlage: \(template.name)", systemImage: "doc.on.doc")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Form {
                 Picker("Konto", selection: $accountID) {
                     Text("Bitte wählen").tag(UUID?.none)
@@ -1272,11 +1415,9 @@ struct TransactionEditorView: View {
             HStack {
                 Spacer()
                 Button("Abbrechen", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Button("Speichern") {
                     save()
                 }
-                .keyboardShortcut(.defaultAction)
                 .disabled(accountID == nil || amount.isEmpty)
             }
         }
@@ -1285,20 +1426,21 @@ struct TransactionEditorView: View {
         .onAppear {
             guard !initialized else { return }
             initialized = true
-            accountID = transaction?.accountID ?? store.selectedAccountID ?? store.accounts.first?.id
+            let source = transaction ?? template?.transaction()
+            accountID = source?.accountID ?? store.selectedAccountID ?? store.accounts.first?.id
             date = transaction?.bookingDate ?? Date()
-            payee = transaction?.payee ?? ""
-            payeeID = transaction?.payeeID
-            purpose = transaction?.purpose ?? ""
-            categoryID = transaction?.categoryID
-            amount = transaction.map {
+            payee = source?.payee ?? ""
+            payeeID = source?.payeeID
+            purpose = source?.purpose ?? ""
+            categoryID = source?.categoryID
+            amount = source.map {
                 NSDecimalNumber(decimal: Decimal($0.amountMinor) / Decimal(100)).stringValue
             } ?? ""
-            status = transaction?.status ?? .booked
-            memo = transaction?.memo ?? ""
-            selectedTagIDs = Set(transaction?.tagIDs ?? [])
-            useSplits = startWithSplits || !(transaction?.splits.isEmpty ?? true)
-            splitDrafts = transaction?.splits.map {
+            status = source?.status ?? .booked
+            memo = source?.memo ?? ""
+            selectedTagIDs = Set(source?.tagIDs ?? [])
+            useSplits = startWithSplits || !(source?.splits.isEmpty ?? true)
+            splitDrafts = source?.splits.map {
                 SplitDraft(
                     id: $0.id,
                     categoryID: $0.categoryID,
@@ -1319,6 +1461,13 @@ struct TransactionEditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .saveCurrentEditor)) { _ in
             guard accountID != nil, !amount.isEmpty else { return }
             save()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .acceptCurrentEditor)) { _ in
+            guard accountID != nil, !amount.isEmpty else { return }
+            save()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cancelCurrentEditor)) { _ in
+            dismiss()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSplitEditor)) { _ in
             useSplits = true

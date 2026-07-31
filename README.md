@@ -54,6 +54,20 @@ anschließend atomar und idempotent gespeichert. Depot-, Klassen- und
 Merkpostenbereiche werden derzeit sichtbar ausgelassen, statt sie in ein
 unpassendes Kontoblatt zu schreiben.
 
+## Tastatur und Buchungsvorlagen
+
+Unter `Einstellungen › Tastaturkurzbefehle` sind neue Buchung, Speichern,
+Suche, Kontoabgleich, Splitdialog, Buchungsvorlage, F3-Filter, Löschen,
+Übernehmen und Abbrechen vollständig sichtbar. Taste sowie Command-, Shift-,
+Option- und Control-Modifikator sind anpassbar. Doppelte Belegungen und
+ungeschützte Buchstaben-/Zifferntasten werden vor dem Anwenden abgelehnt.
+
+Eine im Kontoblatt markierte Buchung kann mit dem zugeordneten Befehl als
+Vorlage gespeichert und aus dem Menü `Vorlagen` als neuer Entwurf geöffnet
+werden. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen auch
+Splits und Tags, aber niemals altes Datum, Belegnummer, Transfer- oder
+Importidentität.
+
 Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
 QIF-, OFX- und QFX-Dateien ausdrücklich aus.
 
