@@ -4101,6 +4101,638 @@ private struct BudgetLineEditor: View {
     }
 }
 
+struct BankingView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var selectedConnectionID: UUID?
+    @State private var selectedExternalAccountIDs = Set<String>()
+    @State private var operations: Set<BankingOperation> = [
+        .accounts, .balances, .transactions, .pendingTransactions,
+        .standingOrders, .scheduledPayments
+    ]
+    @State private var preview: BankingDownloadPreview?
+    @State private var fetchTask: Task<Void, Never>?
+    @AppStorage("bankingMatchDateWindowDaysV1")
+    private var dateWindowDays = ImportMatcher.defaultDateWindowDays
+
+    private var selectedConnection: BankingConnection? {
+        store.bankingConnections.first { $0.id == selectedConnectionID }
+    }
+
+    private var selectedMappings: [BankingAccountMapping] {
+        guard let selectedConnectionID else { return [] }
+        return store.bankingMappings.filter {
+            $0.connectionID == selectedConnectionID
+        }
+    }
+
+    var body: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Banking-Abruf")
+                        .font(.title2.bold())
+                    Spacer()
+                    Button("Simulator", systemImage: "plus") {
+                        if let connection = store
+                            .createSimulatorBankingConnection() {
+                            selectedConnectionID = connection.id
+                            synchronizeSelection()
+                        }
+                    }
+                    .help(
+                        "Lokale Testverbindung ohne Zugangsdaten anlegen"
+                    )
+                }
+                .padding(12)
+                Divider()
+                List(selection: $selectedConnectionID) {
+                    ForEach(store.bankingConnections) { connection in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(connection.name)
+                            Text(
+                                "\(connection.providerKind.title) · "
+                                    + connection.status.title
+                            )
+                            .font(.caption)
+                            .foregroundStyle(
+                                connection.status == .failed
+                                    ? .red : .secondary
+                            )
+                        }
+                        .tag(connection.id)
+                    }
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(
+                        "LIVE-BANKING DEAKTIVIERT",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.caption.bold())
+                    Text(
+                        "FinTS, PSD2 und Web-Connector sind als getrennte "
+                            + "Adaptertypen definiert, aber nicht freigeschaltet."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(12)
+            }
+            .frame(minWidth: 260, idealWidth: 300)
+
+            if let connection = selectedConnection {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        connectionHeader(connection)
+                        mappingsSection(connection)
+                        operationsSection
+                        remoteOrdersSection(connection)
+                        historySection(connection)
+                    }
+                    .padding(20)
+                }
+            } else {
+                ContentUnavailableView(
+                    "Keine Banking-Verbindung",
+                    systemImage: "building.columns",
+                    description: Text(
+                        "Richte den lokalen Simulator ein. Dabei werden "
+                            + "keine Zugangsdaten benötigt oder gespeichert."
+                    )
+                )
+            }
+        }
+        .onAppear {
+            if selectedConnectionID == nil {
+                selectedConnectionID = store.bankingConnections.first?.id
+            }
+            synchronizeSelection()
+        }
+        .onChange(of: selectedConnectionID) {
+            synchronizeSelection()
+        }
+        .sheet(item: $preview) { value in
+            BankingDownloadPreviewSheet(preview: value)
+                .environmentObject(store)
+        }
+        .onDisappear {
+            fetchTask?.cancel()
+        }
+    }
+
+    @ViewBuilder
+    private func connectionHeader(
+        _ connection: BankingConnection
+    ) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(connection.name).font(.largeTitle.bold())
+                Text(connection.institutionName)
+                    .foregroundStyle(.secondary)
+                Text(connection.adapterIdentifier)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            Label(
+                connection.status.title,
+                systemImage: connection.status == .failed
+                    ? "exclamationmark.triangle" : "checkmark.shield"
+            )
+            .foregroundStyle(
+                connection.status == .failed ? .red : .green
+            )
+        }
+        if !connection.lastUserMessage.isEmpty {
+            Text(connection.lastUserMessage)
+                .font(.callout)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private func mappingsSection(
+        _ connection: BankingConnection
+    ) -> some View {
+        GroupBox("Kontenliste und lokale Zuordnung") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(selectedMappings) { mapping in
+                    HStack {
+                        Toggle(
+                            "",
+                            isOn: mappingEnabledBinding(mapping)
+                        )
+                        .labelsHidden()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(mapping.remoteName)
+                            Text(
+                                mapping.remoteIBAN.isEmpty
+                                    ? mapping.externalAccountID
+                                    : mapping.remoteIBAN
+                            )
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(minWidth: 220, alignment: .leading)
+                        Text(mapping.currency)
+                            .font(.caption.monospaced())
+                        Image(systemName: "arrow.right")
+                            .foregroundStyle(.secondary)
+                        Picker(
+                            "Lokales Konto",
+                            selection: localAccountBinding(mapping)
+                        ) {
+                            Text("Nicht zugeordnet").tag(UUID?.none)
+                            ForEach(store.accounts.filter {
+                                !$0.isClosed
+                                    && $0.currency == mapping.currency
+                            }) { account in
+                                Text(account.name).tag(UUID?.some(account.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 280)
+                    }
+                }
+                if selectedMappings.isEmpty {
+                    Text("Diese Verbindung enthält noch keine Bankkonten.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private var operationsSection: some View {
+        GroupBox("Senden/Empfangen – nur lesen") {
+            VStack(alignment: .leading, spacing: 12) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.adaptive(minimum: 190), alignment: .leading)
+                    ],
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    ForEach(BankingOperation.allCases) { operation in
+                        Toggle(
+                            operation.title,
+                            isOn: operationBinding(operation)
+                        )
+                        .disabled(
+                            operation == .holdings || operation == .prices
+                        )
+                    }
+                }
+                Stepper(
+                    "Matching-Datumsfenster: \(dateWindowDays) "
+                        + "Tag\(dateWindowDays == 1 ? "" : "e")",
+                    value: $dateWindowDays,
+                    in: 0...14
+                )
+                HStack {
+                    if store.isBusy {
+                        ProgressView()
+                        Text(store.bankingProgressText)
+                        Button("Abruf abbrechen") {
+                            fetchTask?.cancel()
+                        }
+                    } else {
+                        Button(
+                            "Abrufvorschau starten",
+                            systemImage: "arrow.clockwise"
+                        ) {
+                            startFetch()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            selectedExternalAccountIDs.isEmpty
+                                || operations.isEmpty
+                        )
+                    }
+                    Spacer()
+                    Label(
+                        "Keine TAN · keine Übermittlung",
+                        systemImage: "eye"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    @ViewBuilder
+    private func remoteOrdersSection(
+        _ connection: BankingConnection
+    ) -> some View {
+        let orders = store.bankingRemoteOrders.filter { order in
+            selectedMappings.contains {
+                $0.externalAccountID == order.externalAccountID
+            }
+        }
+        GroupBox("Zuletzt abgerufene Daueraufträge und Terminzahlungen") {
+            if orders.isEmpty {
+                Text("Noch kein Bestand übernommen.")
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(orders) { order in
+                        HStack {
+                            Image(
+                                systemName: order.isScheduledPayment
+                                    ? "calendar.badge.clock"
+                                    : "repeat"
+                            )
+                            VStack(alignment: .leading) {
+                                Text(order.recipientName)
+                                Text(order.purpose)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(
+                                Money(
+                                    minorUnits: order.amountMinor,
+                                    currency: order.currency
+                                ).formatted
+                            )
+                            .monospacedDigit()
+                            Text(
+                                order.nextExecutionDate,
+                                format: .dateTime.day().month().year()
+                            )
+                        }
+                    }
+                }
+                .padding(8)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func historySection(
+        _ connection: BankingConnection
+    ) -> some View {
+        let runs = store.bankingSyncRuns.filter {
+            $0.connectionID == connection.id
+        }.prefix(10)
+        GroupBox("Abrufprotokoll") {
+            if runs.isEmpty {
+                Text("Noch kein Abruf protokolliert.")
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(runs)) { run in
+                        HStack {
+                            Text(
+                                run.startedAt,
+                                format: .dateTime.day().month().year()
+                                    .hour().minute()
+                            )
+                            Text(run.status.title)
+                                .foregroundStyle(
+                                    run.status == .failed ? .red : .green
+                                )
+                            Text(run.userMessage)
+                            Spacer()
+                            Text(
+                                "\(run.importedCount)/\(run.matchedCount)/"
+                                    + "\(run.skippedCount)"
+                            )
+                            .font(.caption.monospaced())
+                            .help("Neu / abgeglichen / übersprungen")
+                        }
+                    }
+                }
+                .padding(8)
+            }
+        }
+    }
+
+    private func synchronizeSelection() {
+        selectedExternalAccountIDs = Set(
+            selectedMappings.filter(\.isEnabled).map(\.externalAccountID)
+        )
+    }
+
+    private func mappingEnabledBinding(
+        _ mapping: BankingAccountMapping
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                store.bankingMappings.first { $0.id == mapping.id }?
+                    .isEnabled ?? false
+            },
+            set: { enabled in
+                var updated = mapping
+                updated.isEnabled = enabled
+                if store.saveBankingMapping(updated) {
+                    if enabled {
+                        selectedExternalAccountIDs.insert(
+                            mapping.externalAccountID
+                        )
+                    } else {
+                        selectedExternalAccountIDs.remove(
+                            mapping.externalAccountID
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    private func localAccountBinding(
+        _ mapping: BankingAccountMapping
+    ) -> Binding<UUID?> {
+        Binding(
+            get: {
+                store.bankingMappings.first { $0.id == mapping.id }?
+                    .localAccountID
+            },
+            set: { localAccountID in
+                var updated = mapping
+                updated.localAccountID = localAccountID
+                _ = store.saveBankingMapping(updated)
+            }
+        )
+    }
+
+    private func operationBinding(
+        _ operation: BankingOperation
+    ) -> Binding<Bool> {
+        Binding(
+            get: { operations.contains(operation) },
+            set: { enabled in
+                if enabled {
+                    operations.insert(operation)
+                } else {
+                    operations.remove(operation)
+                }
+            }
+        )
+    }
+
+    private func startFetch() {
+        guard let selectedConnectionID else { return }
+        fetchTask?.cancel()
+        fetchTask = Task {
+            let result = await store.previewSimulatorBankingDownload(
+                connectionID: selectedConnectionID,
+                externalAccountIDs: selectedExternalAccountIDs,
+                operations: operations,
+                dateWindowDays: dateWindowDays
+            )
+            guard !Task.isCancelled else { return }
+            preview = result
+        }
+    }
+}
+
+private struct BankingDownloadPreviewSheet: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let preview: BankingDownloadPreview
+    @State private var resolutions: [UUID: ImportResolution] = [:]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Banking-Abrufvorschau")
+                .font(.title2.bold())
+            HStack(spacing: 18) {
+                Label(
+                    "\(preview.package.accounts.count) Konten",
+                    systemImage: "building.columns"
+                )
+                Label(
+                    "\(preview.package.balances.count) Salden",
+                    systemImage: "equal.circle"
+                )
+                Label(
+                    "\(preview.importPreview.rows.count) Umsätze",
+                    systemImage: "list.bullet.rectangle"
+                )
+                Label(
+                    "\(preview.package.standingOrders.count) Aufträge",
+                    systemImage: "repeat"
+                )
+            }
+            Text(
+                "Noch wurde nichts gespeichert. Alle Entscheidungen, Salden "
+                    + "und Bestände werden nur gemeinsam oder gar nicht übernommen."
+            )
+            .foregroundStyle(.secondary)
+            ForEach(preview.ruleWarnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+            if !preview.balancesByLocalAccountID.isEmpty {
+                HStack(spacing: 18) {
+                    ForEach(
+                        preview.balancesByLocalAccountID.keys.sorted {
+                            store.accountName($0)
+                                < store.accountName($1)
+                        },
+                        id: \.self
+                    ) { accountID in
+                        if let balance = preview
+                            .balancesByLocalAccountID[accountID] {
+                            VStack(alignment: .leading) {
+                                Text(store.accountName(accountID))
+                                    .font(.caption)
+                                Text(
+                                    Money(
+                                        minorUnits: balance.bookedMinor,
+                                        currency: balance.currency
+                                    ).formatted
+                                )
+                                .font(.headline.monospacedDigit())
+                            }
+                        }
+                    }
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+            }
+            Table(preview.importPreview.rows) {
+                TableColumn("Datum") {
+                    Text(
+                        $0.bookingDate,
+                        format: .dateTime.day().month().year()
+                    )
+                }
+                TableColumn("Konto") {
+                    Text(store.accountName($0.accountID))
+                }
+                TableColumn("Empfänger", value: \.payee)
+                TableColumn("Zweck", value: \.purpose)
+                TableColumn("Betrag") {
+                    Text(
+                        Money(
+                            minorUnits: $0.amountMinor,
+                            currency: $0.currency
+                        ).formatted
+                    )
+                    .monospacedDigit()
+                }
+                TableColumn("Status") {
+                    Text($0.status.title)
+                }
+                TableColumn("Regeln") { transaction in
+                    Text(
+                        preview.appliedRuleNamesByTransactionID[
+                            transaction.id
+                        ]?.joined(separator: ", ") ?? "—"
+                    )
+                    .lineLimit(1)
+                    .help(
+                        preview.appliedRuleNamesByTransactionID[
+                            transaction.id
+                        ]?.joined(separator: "\n") ?? "Keine Regel angewandt"
+                    )
+                }
+                TableColumn("Entscheidung") { transaction in
+                    decisionPicker(transaction)
+                }
+                .width(min: 190, ideal: 280)
+            }
+            .frame(minHeight: 280)
+            DisclosureGroup("Technische Abrufdiagnose") {
+                ForEach(preview.package.diagnostics) { diagnostic in
+                    HStack {
+                        Image(
+                            systemName: diagnostic.isSuccess
+                                ? "checkmark.circle" : "xmark.octagon"
+                        )
+                        Text(diagnostic.operation.title)
+                        Text(diagnostic.userMessage)
+                        Spacer()
+                        Text(diagnostic.technicalCode)
+                            .font(.caption.monospaced())
+                    }
+                }
+                Text(
+                    "Rohpayload-Hash: "
+                        + preview.package.rawPayloadHash
+                )
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+            }
+            HStack {
+                Button("Abbrechen") { dismiss() }
+                Spacer()
+                Button("Paket atomar übernehmen") {
+                    if store.commitBankingDownload(
+                        preview,
+                        resolutions: resolutions
+                    ) {
+                        dismiss()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 1050, minHeight: 620)
+        .onAppear {
+            resolutions = Dictionary(
+                uniqueKeysWithValues: preview.importPreview.rows.map {
+                    (
+                        $0.id,
+                        preview.importPreview.matches[$0.id]?
+                            .suggestedResolution ?? .importNew
+                    )
+                }
+            )
+        }
+    }
+
+    private func decisionPicker(
+        _ transaction: FinanceTransaction
+    ) -> some View {
+        let assessment = preview.importPreview.matches[transaction.id]
+        return Picker(
+            "Entscheidung",
+            selection: Binding(
+                get: {
+                    resolutions[transaction.id]
+                        ?? assessment?.suggestedResolution
+                        ?? .importNew
+                },
+                set: { resolutions[transaction.id] = $0 }
+            )
+        ) {
+            Text("Neu importieren").tag(ImportResolution.importNew)
+            Text("Überspringen").tag(ImportResolution.skip)
+            ForEach(
+                assessment?.candidates.filter(\.isFinanciallyCompatible)
+                    ?? []
+            ) { candidate in
+                Text(candidateText(candidate))
+                .tag(ImportResolution.match(candidate.transactionID))
+            }
+        }
+        .labelsHidden()
+        .help(
+            assessment?.bestCandidate?.reasons.joined(separator: "\n")
+                ?? "Kein vorhandener Kandidat"
+        )
+    }
+
+    private func candidateText(
+        _ candidate: ImportMatchCandidate
+    ) -> String {
+        let payee = store.transactions.first {
+            $0.id == candidate.transactionID
+        }?.payee ?? candidate.tier.title
+        return "Abgleichen: \(payee) · \(candidate.score)"
+    }
+}
+
 struct PaymentsView: View {
     private enum PaymentSection: String, CaseIterable, Identifiable {
         case payments = "Überweisungen"

@@ -1190,6 +1190,89 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 20")
             }
         }
+        if version < 21 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE banking_connections (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        provider_kind TEXT NOT NULL,
+                        adapter_identifier TEXT NOT NULL,
+                        institution_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        consent_valid_until TEXT,
+                        last_sync_at TEXT,
+                        last_user_message TEXT NOT NULL DEFAULT '',
+                        is_enabled INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE banking_account_mappings (
+                        id TEXT PRIMARY KEY,
+                        connection_id TEXT NOT NULL REFERENCES banking_connections(id) ON DELETE CASCADE,
+                        external_account_id TEXT NOT NULL,
+                        remote_name TEXT NOT NULL,
+                        remote_iban TEXT NOT NULL,
+                        currency TEXT NOT NULL,
+                        local_account_id TEXT REFERENCES accounts(id),
+                        is_enabled INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(connection_id,external_account_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE banking_sync_runs (
+                        id TEXT PRIMARY KEY,
+                        connection_id TEXT NOT NULL REFERENCES banking_connections(id) ON DELETE CASCADE,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        status TEXT NOT NULL,
+                        requested_operations TEXT NOT NULL,
+                        imported_count INTEGER NOT NULL DEFAULT 0,
+                        matched_count INTEGER NOT NULL DEFAULT 0,
+                        skipped_count INTEGER NOT NULL DEFAULT 0,
+                        user_message TEXT NOT NULL DEFAULT '',
+                        technical_code TEXT NOT NULL DEFAULT '',
+                        raw_payload_hash TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX banking_sync_runs_latest
+                    ON banking_sync_runs(connection_id,started_at DESC,id)
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE banking_remote_orders (
+                        connection_id TEXT NOT NULL REFERENCES banking_connections(id) ON DELETE CASCADE,
+                        external_order_id TEXT NOT NULL,
+                        external_account_id TEXT NOT NULL,
+                        recipient_name TEXT NOT NULL,
+                        recipient_iban TEXT NOT NULL,
+                        amount_minor INTEGER NOT NULL,
+                        currency TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        next_execution_date TEXT NOT NULL,
+                        frequency TEXT NOT NULL,
+                        is_scheduled_payment INTEGER NOT NULL,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY(connection_id,external_order_id)
+                    )
+                    """
+                )
+                try execute("PRAGMA user_version = 21")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -1405,6 +1488,278 @@ final class SQLiteFinanceStore {
                     categoryID: categoryID,
                     expression: definition?.expression,
                     actions: definition?.actions ?? []
+                )
+            )
+        }
+        return values
+    }
+
+    func bankingConnections() throws -> [BankingConnection] {
+        var values: [BankingConnection] = []
+        try query(
+            """
+            SELECT id,name,provider_kind,adapter_identifier,
+                   institution_name,status,consent_valid_until,last_sync_at,
+                   last_user_message,is_enabled
+            FROM banking_connections ORDER BY name,id
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let providerKind = BankingProviderKind(
+                    rawValue: Self.text(statement, 2)
+                ),
+                let status = BankingConnectionStatus(
+                    rawValue: Self.text(statement, 5)
+                )
+            else { return }
+            values.append(
+                BankingConnection(
+                    id: id,
+                    name: Self.text(statement, 1),
+                    providerKind: providerKind,
+                    adapterIdentifier: Self.text(statement, 3),
+                    institutionName: Self.text(statement, 4),
+                    status: status,
+                    consentValidUntil: Self.optionalText(statement, 6)
+                        .flatMap(Self.timestampDate),
+                    lastSyncAt: Self.optionalText(statement, 7)
+                        .flatMap(Self.timestampDate),
+                    lastUserMessage: Self.text(statement, 8),
+                    isEnabled: sqlite3_column_int(statement, 9) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveBankingConnection(_ value: BankingConnection) throws {
+        guard value.providerKind == .simulator else {
+            throw FinanceError.database(
+                "Live-Banking ist in diesem Entwicklungsstand deaktiviert."
+            )
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO banking_connections(
+                    id,finance_file_id,name,provider_kind,adapter_identifier,
+                    institution_name,status,consent_valid_until,last_sync_at,
+                    last_user_message,is_enabled,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,provider_kind=excluded.provider_kind,
+                    adapter_identifier=excluded.adapter_identifier,
+                    institution_name=excluded.institution_name,
+                    status=excluded.status,
+                    consent_valid_until=excluded.consent_valid_until,
+                    last_sync_at=excluded.last_sync_at,
+                    last_user_message=excluded.last_user_message,
+                    is_enabled=excluded.is_enabled,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString),
+                    .text(info.id.uuidString),
+                    .text(value.name),
+                    .text(value.providerKind.rawValue),
+                    .text(value.adapterIdentifier),
+                    .text(value.institutionName),
+                    .text(value.status.rawValue),
+                    value.consentValidUntil.map {
+                        .text(Self.timestamp($0))
+                    } ?? .null,
+                    value.lastSyncAt.map {
+                        .text(Self.timestamp($0))
+                    } ?? .null,
+                    .text(value.lastUserMessage),
+                    .integer(value.isEnabled ? 1 : 0),
+                    .text(now),
+                    .text(now)
+                ]
+            )
+            try audit(
+                entity: "banking_connection",
+                id: value.id,
+                action: "save",
+                details: "\(value.providerKind.rawValue):\(value.adapterIdentifier)"
+            )
+        }
+    }
+
+    func bankingAccountMappings(
+        connectionID: UUID? = nil
+    ) throws -> [BankingAccountMapping] {
+        var values: [BankingAccountMapping] = []
+        let sql = """
+            SELECT id,connection_id,external_account_id,remote_name,
+                   remote_iban,currency,local_account_id,is_enabled
+            FROM banking_account_mappings
+            \(connectionID == nil ? "" : "WHERE connection_id=?")
+            ORDER BY remote_name,external_account_id
+            """
+        try query(
+            sql,
+            connectionID.map { [.text($0.uuidString)] } ?? []
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let connectionID = UUID(
+                    uuidString: Self.text(statement, 1)
+                )
+            else { return }
+            values.append(
+                BankingAccountMapping(
+                    id: id,
+                    connectionID: connectionID,
+                    externalAccountID: Self.text(statement, 2),
+                    remoteName: Self.text(statement, 3),
+                    remoteIBAN: Self.text(statement, 4),
+                    currency: Self.text(statement, 5),
+                    localAccountID: Self.optionalText(statement, 6)
+                        .flatMap(UUID.init(uuidString:)),
+                    isEnabled: sqlite3_column_int(statement, 7) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveBankingAccountMapping(
+        _ value: BankingAccountMapping
+    ) throws {
+        if let localAccountID = value.localAccountID {
+            guard let account = try accounts().first(where: {
+                $0.id == localAccountID
+            }), account.currency == value.currency else {
+                throw FinanceError.database(
+                    "Das lokale Konto fehlt oder verwendet eine andere Währung."
+                )
+            }
+        }
+        try transaction {
+            try run(
+                """
+                INSERT INTO banking_account_mappings(
+                    id,connection_id,external_account_id,remote_name,
+                    remote_iban,currency,local_account_id,is_enabled
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(connection_id,external_account_id) DO UPDATE SET
+                    remote_name=excluded.remote_name,
+                    remote_iban=excluded.remote_iban,
+                    currency=excluded.currency,
+                    local_account_id=excluded.local_account_id,
+                    is_enabled=excluded.is_enabled
+                """,
+                [
+                    .text(value.id.uuidString),
+                    .text(value.connectionID.uuidString),
+                    .text(value.externalAccountID),
+                    .text(value.remoteName),
+                    .text(value.remoteIBAN),
+                    .text(value.currency),
+                    value.localAccountID.map {
+                        .text($0.uuidString)
+                    } ?? .null,
+                    .integer(value.isEnabled ? 1 : 0)
+                ]
+            )
+            try audit(
+                entity: "banking_mapping",
+                id: value.id,
+                action: "save",
+                details: value.externalAccountID
+            )
+        }
+    }
+
+    func bankingSyncRuns(
+        connectionID: UUID? = nil,
+        limit: Int = 50
+    ) throws -> [BankingSyncRun] {
+        var values: [BankingSyncRun] = []
+        let sql = """
+            SELECT id,connection_id,started_at,completed_at,status,
+                   requested_operations,imported_count,matched_count,
+                   skipped_count,user_message,technical_code,
+                   raw_payload_hash
+            FROM banking_sync_runs
+            \(connectionID == nil ? "" : "WHERE connection_id=?")
+            ORDER BY started_at DESC,id DESC LIMIT ?
+            """
+        var bindings: [SQLiteValue] = []
+        if let connectionID {
+            bindings.append(.text(connectionID.uuidString))
+        }
+        bindings.append(.integer(Int64(max(1, limit))))
+        try query(sql, bindings) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let connectionID = UUID(
+                    uuidString: Self.text(statement, 1)
+                ),
+                let startedAt = Self.timestampDate(Self.text(statement, 2)),
+                let status = BankingConnectionStatus(
+                    rawValue: Self.text(statement, 4)
+                )
+            else { return }
+            values.append(
+                BankingSyncRun(
+                    id: id,
+                    connectionID: connectionID,
+                    startedAt: startedAt,
+                    completedAt: Self.optionalText(statement, 3)
+                        .flatMap(Self.timestampDate),
+                    status: status,
+                    requestedOperations: Self.bankingOperations(
+                        Self.text(statement, 5)
+                    ),
+                    importedCount: Int(sqlite3_column_int64(statement, 6)),
+                    matchedCount: Int(sqlite3_column_int64(statement, 7)),
+                    skippedCount: Int(sqlite3_column_int64(statement, 8)),
+                    userMessage: Self.text(statement, 9),
+                    technicalCode: Self.text(statement, 10),
+                    rawPayloadHash: Self.text(statement, 11)
+                )
+            )
+        }
+        return values
+    }
+
+    func bankingRemoteOrders(
+        connectionID: UUID
+    ) throws -> [BankingRemoteStandingOrder] {
+        var values: [BankingRemoteStandingOrder] = []
+        try query(
+            """
+            SELECT external_order_id,external_account_id,recipient_name,
+                   recipient_iban,amount_minor,currency,purpose,
+                   next_execution_date,frequency,is_scheduled_payment
+            FROM banking_remote_orders WHERE connection_id=?
+            ORDER BY next_execution_date,external_order_id
+            """,
+            [.text(connectionID.uuidString)]
+        ) { statement in
+            guard let date = Self.date(Self.text(statement, 7)) else {
+                return
+            }
+            values.append(
+                BankingRemoteStandingOrder(
+                    id: Self.text(statement, 0),
+                    externalAccountID: Self.text(statement, 1),
+                    recipientName: Self.text(statement, 2),
+                    recipientIBAN: Self.text(statement, 3),
+                    amountMinor: sqlite3_column_int64(statement, 4),
+                    currency: Self.text(statement, 5),
+                    purpose: Self.text(statement, 6),
+                    nextExecutionDate: date,
+                    frequency: Self.text(statement, 8),
+                    isScheduledPayment: sqlite3_column_int(
+                        statement,
+                        9
+                    ) != 0
                 )
             )
         }
@@ -4503,6 +4858,265 @@ final class SQLiteFinanceStore {
         )
     }
 
+    func commitBankingDownload(
+        _ download: BankingDownloadPreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) throws -> ImportCommitResult {
+        guard download.connection.providerKind == .simulator,
+              download.package.adapterIdentifier
+                == download.connection.adapterIdentifier,
+              download.package.diagnostics.allSatisfy(\.isSuccess)
+        else {
+            throw FinanceError.database(
+                "Das Abrufpaket stammt nicht vom erwarteten Adapter oder enthält fehlgeschlagene Vorgänge."
+            )
+        }
+        let mappings = try bankingAccountMappings(
+            connectionID: download.connection.id
+        ).filter {
+            $0.isEnabled
+                && download.selectedExternalAccountIDs.contains(
+                    $0.externalAccountID
+                )
+        }
+        let mappedLocalIDs = Set(mappings.compactMap(\.localAccountID))
+        guard mappings.count == download.selectedExternalAccountIDs.count,
+              mappedLocalIDs.count == mappings.count,
+              Set(download.importPreview.rows.map(\.accountID))
+                .isSubset(of: mappedLocalIDs)
+        else {
+            throw FinanceError.database(
+                "Jedes ausgewählte Bankkonto muss genau einem lokalen Konto zugeordnet sein."
+            )
+        }
+        let localByID = Dictionary(
+            uniqueKeysWithValues: try accounts().map { ($0.id, $0) }
+        )
+        for mapping in mappings {
+            guard let localID = mapping.localAccountID,
+                  localByID[localID]?.currency == mapping.currency
+            else {
+                throw FinanceError.database(
+                    "Eine Kontozuordnung verwendet eine abweichende Währung."
+                )
+            }
+        }
+        let plan = try validatedImportPlan(
+            download.importPreview,
+            resolutions: resolutions
+        )
+        let packageExists = try scalarInt(
+            "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
+            [.text(download.importPreview.fingerprint)]
+        ) > 0
+        if packageExists,
+           plan.contains(where: { $0.resolution == .importNew }) {
+            throw FinanceError.duplicateImport
+        }
+
+        let runID = UUID()
+        let nowDate = Date()
+        let now = Self.timestamp(nowDate)
+        var importedCount = 0
+        var matchedCount = 0
+        var skippedCount = 0
+        try transaction {
+            for item in plan {
+                switch item.resolution {
+                case .importNew:
+                    try item.row.validate()
+                    try writeTransaction(item.row, now: now)
+                    importedCount += 1
+                case .skip:
+                    skippedCount += 1
+                case .match(let existingID):
+                    try mergeImportedTransaction(
+                        item.row,
+                        into: existingID,
+                        existing: item.existing,
+                        now: now
+                    )
+                    matchedCount += 1
+                }
+            }
+            if !packageExists {
+                try run(
+                    """
+                    INSERT INTO import_packages(
+                        fingerprint,imported_at,row_count
+                    ) VALUES(?,?,?)
+                    """,
+                    [
+                        .text(download.importPreview.fingerprint),
+                        .text(now),
+                        .integer(Int64(download.importPreview.rows.count))
+                    ]
+                )
+            }
+            for (accountID, balance) in download.balancesByLocalAccountID {
+                try run(
+                    """
+                    UPDATE accounts SET last_sync_at=?,
+                        last_bank_balance_minor=?,sync_status='ready',
+                        updated_at=?,version=version+1
+                    WHERE id=? AND currency=?
+                    """,
+                    [
+                        .text(now),
+                        .integer(balance.bookedMinor),
+                        .text(now),
+                        .text(accountID.uuidString),
+                        .text(balance.currency)
+                    ]
+                )
+                guard sqlite3_changes(database) == 1 else {
+                    throw FinanceError.database(
+                        "Ein Banksaldo konnte nicht dem lokalen Konto zugeordnet werden."
+                    )
+                }
+            }
+            try run(
+                "DELETE FROM banking_remote_orders WHERE connection_id=?",
+                [.text(download.connection.id.uuidString)]
+            )
+            for order in download.package.standingOrders where
+                download.selectedExternalAccountIDs.contains(
+                    order.externalAccountID
+                ) {
+                try run(
+                    """
+                    INSERT INTO banking_remote_orders(
+                        connection_id,external_order_id,
+                        external_account_id,recipient_name,recipient_iban,
+                        amount_minor,currency,purpose,next_execution_date,
+                        frequency,is_scheduled_payment,fetched_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(download.connection.id.uuidString),
+                        .text(order.id),
+                        .text(order.externalAccountID),
+                        .text(order.recipientName),
+                        .text(order.recipientIBAN),
+                        .integer(order.amountMinor),
+                        .text(order.currency),
+                        .text(order.purpose),
+                        .text(Self.day(order.nextExecutionDate)),
+                        .text(order.frequency),
+                        .integer(order.isScheduledPayment ? 1 : 0),
+                        .text(now)
+                    ]
+                )
+            }
+            let operations = Self.bankingOperationsText(
+                download.requestedOperations
+            )
+            try run(
+                """
+                INSERT INTO banking_sync_runs(
+                    id,connection_id,started_at,completed_at,status,
+                    requested_operations,imported_count,matched_count,
+                    skipped_count,user_message,technical_code,
+                    raw_payload_hash
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(runID.uuidString),
+                    .text(download.connection.id.uuidString),
+                    .text(Self.timestamp(download.package.fetchedAt)),
+                    .text(now),
+                    .text(BankingConnectionStatus.ready.rawValue),
+                    .text(operations),
+                    .integer(Int64(importedCount)),
+                    .integer(Int64(matchedCount)),
+                    .integer(Int64(skippedCount)),
+                    .text("Abrufpaket atomar übernommen"),
+                    .text("BANKING-OK"),
+                    .text(download.package.rawPayloadHash)
+                ]
+            )
+            try run(
+                """
+                UPDATE banking_connections SET status='ready',
+                    last_sync_at=?,last_user_message=?,updated_at=?,
+                    version=version+1 WHERE id=?
+                """,
+                [
+                    .text(now),
+                    .text("Abrufpaket atomar übernommen"),
+                    .text(now),
+                    .text(download.connection.id.uuidString)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Die Banking-Verbindung wurde zwischenzeitlich entfernt."
+                )
+            }
+            try audit(
+                entity: "banking_sync",
+                id: runID,
+                action: "commit",
+                details: "connection=\(download.connection.id.uuidString);new=\(importedCount);matched=\(matchedCount);skipped=\(skippedCount);hash=\(download.package.rawPayloadHash)"
+            )
+        }
+        return ImportCommitResult(
+            importedCount: importedCount,
+            matchedCount: matchedCount,
+            skippedCount: skippedCount
+        )
+    }
+
+    func recordBankingFailure(
+        connectionID: UUID,
+        operations: Set<BankingOperation>,
+        userMessage: String,
+        technicalCode: String
+    ) throws {
+        let id = UUID()
+        let now = Self.timestamp(Date())
+        let safeUserMessage = String(userMessage.prefix(500))
+        let safeTechnicalCode = String(technicalCode.prefix(100))
+        try transaction {
+            try run(
+                """
+                INSERT INTO banking_sync_runs(
+                    id,connection_id,started_at,completed_at,status,
+                    requested_operations,user_message,technical_code
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(id.uuidString),
+                    .text(connectionID.uuidString),
+                    .text(now),
+                    .text(now),
+                    .text(BankingConnectionStatus.failed.rawValue),
+                    .text(Self.bankingOperationsText(operations)),
+                    .text(safeUserMessage),
+                    .text(safeTechnicalCode)
+                ]
+            )
+            try run(
+                """
+                UPDATE banking_connections SET status='failed',
+                    last_user_message=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [
+                    .text(safeUserMessage),
+                    .text(now),
+                    .text(connectionID.uuidString)
+                ]
+            )
+            try audit(
+                entity: "banking_sync",
+                id: id,
+                action: "failure",
+                details: safeTechnicalCode
+            )
+        }
+    }
+
     private struct ValidatedImportItem {
         let row: FinanceTransaction
         let resolution: ImportResolution
@@ -4942,6 +5556,22 @@ final class SQLiteFinanceStore {
     private static func timestamp(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
     private static func timestampDate(_ text: String) -> Date? {
         ISO8601DateFormatter().date(from: text)
+    }
+
+    private static func bankingOperationsText(
+        _ operations: Set<BankingOperation>
+    ) -> String {
+        operations.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    private static func bankingOperations(
+        _ text: String
+    ) -> Set<BankingOperation> {
+        Set(
+            text.split(separator: ",").compactMap {
+                BankingOperation(rawValue: String($0))
+            }
+        )
     }
 
     private static func scaledProduct(_ quantityMicro: Int64, _ priceMinor: Int64) -> Int64 {

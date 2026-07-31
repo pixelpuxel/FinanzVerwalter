@@ -6,6 +6,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
     case categories
     case register
     case combinedRegister
+    case banking
     case payments
     case calendar
     case budget
@@ -27,6 +28,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
         case .categories: "Kategorien"
         case .register: "Kontoblatt"
         case .combinedRegister: "Sammelkontoblätter"
+        case .banking: "Banking-Abruf"
         case .payments: "Zahlungsverkehr"
         case .calendar: "Kalender & Prognose"
         case .budget: "Budget"
@@ -48,6 +50,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
         case .categories: "folder"
         case .register: "list.bullet.rectangle"
         case .combinedRegister: "rectangle.stack"
+        case .banking: "arrow.triangle.2.circlepath"
         case .payments: "arrow.left.arrow.right"
         case .calendar: "calendar"
         case .budget: "chart.pie"
@@ -65,7 +68,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
 
     static let financeSections: [WorkspaceSection] = [
         .cockpit, .accounts, .register, .combinedRegister, .categories,
-        .payments, .calendar, .budget, .reports
+        .banking, .payments, .calendar, .budget, .reports
     ]
 
     static let organizationSections: [WorkspaceSection] = [
@@ -286,6 +289,7 @@ struct RootView: View {
         case .categories: CategoriesView()
         case .register: RegisterView()
         case .combinedRegister: CombinedRegisterView()
+        case .banking: BankingView()
         case .payments: PaymentsView()
         case .calendar: CalendarForecastView()
         case .budget: BudgetView()

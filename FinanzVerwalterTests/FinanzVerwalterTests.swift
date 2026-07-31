@@ -2295,7 +2295,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To20PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To21PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -2407,7 +2407,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 20)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 21)
         sqlite3_finalize(statement)
     }
 
@@ -3187,6 +3187,203 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(appStore.transactionTemplates.isEmpty)
         XCTAssertNotNil(appStore.errorMessage)
         XCTAssertTrue(try context.store.transactionTemplates().isEmpty)
+    }
+
+    func testReadOnlyBankingSimulatorIsDeterministicAndCancellable() async throws {
+        let anchor = Date(timeIntervalSince1970: 1_767_225_600)
+        let remote = BankingRemoteAccount(
+            id: "sim:giro",
+            name: "Giro",
+            iban: "DE89370400440532013000",
+            bic: "COBADEFFXXX",
+            currency: "EUR",
+            accountType: AccountType.checking.rawValue,
+            ownerName: "Testperson"
+        )
+        let adapter = SimulatorBankingAdapter(
+            accounts: [remote],
+            anchorDate: anchor
+        )
+        XCTAssertFalse(adapter.supportedOperations.contains(.holdings))
+        let request = BankingFetchRequest(
+            externalAccountIDs: [remote.id],
+            operations: [
+                .accounts, .balances, .transactions,
+                .pendingTransactions, .standingOrders,
+                .scheduledPayments
+            ],
+            dateFrom: nil
+        )
+        let first = try await adapter.fetch(request)
+        let second = try await adapter.fetch(request)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.transactions.count, 3)
+        XCTAssertEqual(first.balances.count, 1)
+        XCTAssertEqual(first.standingOrders.count, 2)
+        XCTAssertEqual(first.rawPayloadHash.count, 64)
+        XCTAssertTrue(first.diagnostics.allSatisfy(\.isSuccess))
+
+        let task = Task { try await adapter.fetch(request) }
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Ein abgebrochener Abruf darf kein Paket liefern.")
+        } catch is CancellationError {
+            // Erwartetes Verhalten: kein partielles Paket.
+        }
+    }
+
+    func testBankingDownloadCommitsAtomicallyAndIsIdempotent() async throws {
+        let context = try TestDatabase()
+        var account = FinanceAccount(
+            id: UUID(), name: "Online-Giro", institution: "Testbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        account.iban = "DE89370400440532013000"
+        account.bic = "COBADEFFXXX"
+        try context.store.saveAccount(account)
+        let connection = BankingConnection(
+            id: UUID(), name: "Simulator", providerKind: .simulator,
+            adapterIdentifier:
+                "de.pixelpuxel.finanzverwalter.banking-simulator.v1",
+            institutionName: "Testbank", status: .ready,
+            consentValidUntil: nil, lastSyncAt: nil,
+            lastUserMessage: "Keine Zugangsdaten", isEnabled: true
+        )
+        try context.store.saveBankingConnection(connection)
+        XCTAssertThrowsError(
+            try context.store.saveBankingConnection(
+                BankingConnection(
+                    id: UUID(), name: "Live", providerKind: .finTS,
+                    adapterIdentifier: "live.disabled",
+                    institutionName: "Bank", status: .inactive,
+                    consentValidUntil: nil, lastSyncAt: nil,
+                    lastUserMessage: "", isEnabled: false
+                )
+            )
+        )
+        let mapping = BankingAccountMapping(
+            id: UUID(), connectionID: connection.id,
+            externalAccountID: "sim:giro", remoteName: "Online-Giro",
+            remoteIBAN: account.iban, currency: "EUR",
+            localAccountID: account.id, isEnabled: true
+        )
+        try context.store.saveBankingAccountMapping(mapping)
+        let remote = BankingRemoteAccount(
+            id: mapping.externalAccountID, name: mapping.remoteName,
+            iban: mapping.remoteIBAN, bic: account.bic, currency: "EUR",
+            accountType: account.type.rawValue, ownerName: "Testperson"
+        )
+        let operations: Set<BankingOperation> = [
+            .balances, .transactions, .pendingTransactions,
+            .standingOrders, .scheduledPayments
+        ]
+        let adapter = SimulatorBankingAdapter(
+            accounts: [remote],
+            anchorDate: Date(timeIntervalSince1970: 1_767_225_600)
+        )
+        let package = try await adapter.fetch(
+            BankingFetchRequest(
+                externalAccountIDs: [remote.id],
+                operations: operations,
+                dateFrom: nil
+            )
+        )
+        let preview = try BankingImportNormalizer.preview(
+            connection: connection,
+            package: package,
+            mappings: [mapping],
+            existingTransactions: [],
+            rules: [],
+            selectedExternalAccountIDs: [remote.id],
+            requestedOperations: operations,
+            dateWindowDays: 4
+        )
+        let result = try context.store.commitBankingDownload(preview)
+        XCTAssertEqual(
+            result,
+            ImportCommitResult(
+                importedCount: 3,
+                matchedCount: 0,
+                skippedCount: 0
+            )
+        )
+        let imported = try context.store.transactions(accountID: account.id)
+        XCTAssertEqual(imported.count, 3)
+        XCTAssertTrue(imported.allSatisfy { $0.origin == .bankDownload })
+        XCTAssertTrue(imported.allSatisfy { !$0.externalTransactionID.isEmpty })
+        XCTAssertEqual(
+            try XCTUnwrap(
+                context.store.accounts().first { $0.id == account.id }
+            ).lastBankBalanceMinor,
+            package.balances.first?.bookedMinor
+        )
+        XCTAssertEqual(
+            try context.store.bankingRemoteOrders(connectionID: connection.id),
+            package.standingOrders
+        )
+        XCTAssertEqual(
+            try context.store.bankingSyncRuns(connectionID: connection.id).count,
+            1
+        )
+
+        let repeated = try BankingImportNormalizer.preview(
+            connection: connection,
+            package: package,
+            mappings: [mapping],
+            existingTransactions: imported,
+            rules: [],
+            selectedExternalAccountIDs: [remote.id],
+            requestedOperations: operations,
+            dateWindowDays: 4
+        )
+        let repeatResult = try context.store.commitBankingDownload(repeated)
+        XCTAssertEqual(repeatResult.importedCount, 0)
+        XCTAssertEqual(repeatResult.skippedCount, 3)
+        XCTAssertEqual(try context.store.transactions().count, 3)
+        XCTAssertEqual(
+            try context.store.bankingSyncRuns(connectionID: connection.id).count,
+            2
+        )
+
+        let failedPackage = BankingFetchPackage(
+            adapterIdentifier: package.adapterIdentifier,
+            providerIdentifier: package.providerIdentifier,
+            fetchedAt: package.fetchedAt,
+            rawPayloadHash: String(repeating: "f", count: 64),
+            accounts: package.accounts,
+            balances: package.balances,
+            transactions: package.transactions,
+            standingOrders: package.standingOrders,
+            diagnostics: [
+                BankingDiagnostic(
+                    id: UUID(), accountID: remote.id,
+                    operation: .transactions, isSuccess: false,
+                    userMessage: "Abruf fehlgeschlagen",
+                    technicalCode: "SIM-FAIL"
+                )
+            ]
+        )
+        let failedPreview = try BankingImportNormalizer.preview(
+            connection: connection,
+            package: failedPackage,
+            mappings: [mapping],
+            existingTransactions: imported,
+            rules: [],
+            selectedExternalAccountIDs: [remote.id],
+            requestedOperations: operations,
+            dateWindowDays: 4
+        )
+        XCTAssertThrowsError(
+            try context.store.commitBankingDownload(failedPreview)
+        )
+        XCTAssertEqual(try context.store.transactions().count, 3)
+        XCTAssertEqual(
+            try context.store.bankingSyncRuns(connectionID: connection.id).count,
+            2
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
     }
 
     func testConfirmedBulkDeleteIsAtomicAndProtectsReconciledTransactions() throws {

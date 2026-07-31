@@ -105,6 +105,26 @@ Aus dem Kontextmenü einer einfach kategorisierten Kontoblattbuchung lässt
 sich eine kontospezifische Regel erzeugen. Sie wird gespeichert, aber nie
 unbemerkt auf Bestandsdaten angewandt.
 
+## Schreibgeschützter Banking-Abruf
+
+`Banking` besitzt einen adapterunabhängigen, ausschließlich lesenden
+Abrufvertrag. Der derzeit aktivierbare lokale Simulator benötigt weder
+Bankzugang noch TAN und liefert reproduzierbar Konten, Salden, gebuchte und
+vorgemerkte Umsätze, Daueraufträge sowie Terminüberweisungen. FinTS/HBCI,
+PSD2/Open Banking und Web-Connectoren sind als getrennte Providerarten
+modelliert, aber ausdrücklich deaktiviert; die App behauptet keine
+produktive Bankanbindung.
+
+Lokale und externe Konten werden sichtbar eins zu eins zugeordnet. Nach dem
+Abruf zeigt eine Vorschau jede Buchung samt Importentscheidung, angewandten
+Regeln, Banksalden, Beständen und technischer Diagnose. Der bereits für
+Dateiimporte verwendete gestufte Abgleich verhindert doppelte externe IDs
+und erhält lokale Kategorien, Notizen, Splits und Tags. Erst nach Bestätigung
+werden alle neuen oder abgeglichenen Buchungen, Salden, Bestände und das
+Abrufprotokoll gemeinsam in einer SQLite-Transaktion gespeichert. Abbruch
+oder ein einziger fehlgeschlagener Vorgang verändern keine Fachdaten; rohe
+Bankantworten werden nicht gespeichert, nur ihr SHA-256-Hash.
+
 Reale Finanzexporte gehören nicht in das Repository; `.gitignore` schließt
 QIF-, OFX- und QFX-Dateien ausdrücklich aus.
 

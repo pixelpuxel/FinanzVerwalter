@@ -15,6 +15,11 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var transactionTemplates: [TransactionTemplate] = []
     @Published private(set) var categorizationRules: [CategorizationRule] = []
     @Published private(set) var latestRuleUndo: RuleUndoSummary?
+    @Published private(set) var bankingConnections: [BankingConnection] = []
+    @Published private(set) var bankingMappings: [BankingAccountMapping] = []
+    @Published private(set) var bankingSyncRuns: [BankingSyncRun] = []
+    @Published private(set) var bankingRemoteOrders: [BankingRemoteStandingOrder] = []
+    @Published private(set) var bankingProgressText = ""
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
@@ -925,6 +930,213 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func createSimulatorBankingConnection() -> BankingConnection? {
+        guard let repository else { return nil }
+        if let existing = bankingConnections.first(where: {
+            $0.providerKind == .simulator
+        }) {
+            statusText = "Vorhandener Banking-Simulator ausgewählt"
+            return existing
+        }
+        let eligible = accounts.filter {
+            !$0.isClosed
+                && [.checking, .savings, .creditCard]
+                    .contains($0.type)
+        }.prefix(5)
+        guard !eligible.isEmpty else {
+            present(
+                FinanceError.database(
+                    "Für den Simulator wird mindestens ein offenes Bank- oder Kreditkartenkonto benötigt."
+                )
+            )
+            return nil
+        }
+        let connection = BankingConnection(
+            id: UUID(),
+            name: "Lokaler Banking-Simulator",
+            providerKind: .simulator,
+            adapterIdentifier:
+                "de.pixelpuxel.finanzverwalter.banking-simulator.v1",
+            institutionName: "FinanzVerwalter Testbank",
+            status: .ready,
+            consentValidUntil: nil,
+            lastSyncAt: nil,
+            lastUserMessage:
+                "Keine echte Bankverbindung und keine Zugangsdaten",
+            isEnabled: true
+        )
+        do {
+            try repository.saveBankingConnection(connection)
+            for account in eligible {
+                try repository.saveBankingAccountMapping(
+                    BankingAccountMapping(
+                        id: UUID(),
+                        connectionID: connection.id,
+                        externalAccountID:
+                            "sim:" + account.id.uuidString.lowercased(),
+                        remoteName: account.name,
+                        remoteIBAN: account.iban,
+                        currency: account.currency,
+                        localAccountID: account.id,
+                        isEnabled: true
+                    )
+                )
+            }
+            try load()
+            statusText = "Simulator eingerichtet · keine echte Bankverbindung"
+            return bankingConnections.first { $0.id == connection.id }
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func saveBankingMapping(
+        _ mapping: BankingAccountMapping
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveBankingAccountMapping(mapping)
+            try load()
+            statusText = "Bankkonto-Zuordnung gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func previewSimulatorBankingDownload(
+        connectionID: UUID,
+        externalAccountIDs: Set<String>,
+        operations: Set<BankingOperation>,
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) async -> BankingDownloadPreview? {
+        guard
+            let connection = bankingConnections.first(where: {
+                $0.id == connectionID
+            }),
+            connection.providerKind == .simulator,
+            connection.isEnabled,
+            !externalAccountIDs.isEmpty,
+            !operations.isEmpty
+        else {
+            present(
+                FinanceError.database(
+                    "Verbindung, Konten und Abrufvorgänge müssen ausgewählt sein."
+                )
+            )
+            return nil
+        }
+        let mappings = bankingMappings.filter {
+            $0.connectionID == connectionID
+                && $0.isEnabled
+                && externalAccountIDs.contains($0.externalAccountID)
+        }
+        guard mappings.count == externalAccountIDs.count,
+              mappings.allSatisfy({ $0.localAccountID != nil })
+        else {
+            present(
+                FinanceError.database(
+                    "Alle ausgewählten Bankkonten benötigen eine lokale Zuordnung."
+                )
+            )
+            return nil
+        }
+        let localByID = Dictionary(
+            uniqueKeysWithValues: accounts.map { ($0.id, $0) }
+        )
+        let remoteAccounts: [BankingRemoteAccount] = mappings.compactMap {
+            (mapping: BankingAccountMapping) -> BankingRemoteAccount? in
+            guard let localID = mapping.localAccountID,
+                  let local = localByID[localID]
+            else { return nil }
+            return BankingRemoteAccount(
+                id: mapping.externalAccountID,
+                name: mapping.remoteName,
+                iban: mapping.remoteIBAN,
+                bic: local.bic,
+                currency: mapping.currency,
+                accountType: local.type.rawValue,
+                ownerName: local.ownerName
+            )
+        }
+        let adapter = SimulatorBankingAdapter(
+            accounts: remoteAccounts,
+            anchorDate: Calendar(identifier: .gregorian)
+                .startOfDay(for: Date())
+        )
+        isBusy = true
+        bankingProgressText = "Dialog initialisiert · Abruf läuft"
+        statusText = bankingProgressText
+        defer {
+            isBusy = false
+            bankingProgressText = ""
+        }
+        do {
+            let package = try await adapter.fetch(
+                BankingFetchRequest(
+                    externalAccountIDs: externalAccountIDs,
+                    operations: operations,
+                    dateFrom: Calendar.current.date(
+                        byAdding: .month,
+                        value: -3,
+                        to: Date()
+                    )
+                )
+            )
+            try Task.checkCancellation()
+            let preview = try BankingImportNormalizer.preview(
+                connection: connection,
+                package: package,
+                mappings: mappings,
+                existingTransactions: transactions,
+                rules: categorizationRules,
+                selectedExternalAccountIDs: externalAccountIDs,
+                requestedOperations: operations,
+                dateWindowDays: dateWindowDays
+            )
+            statusText = "Abruf erfolgreich · Vorschau bereit"
+            return preview
+        } catch is CancellationError {
+            statusText = "Banking-Abruf ohne Datenänderung abgebrochen"
+            return nil
+        } catch {
+            do {
+                try repository?.recordBankingFailure(
+                    connectionID: connectionID,
+                    operations: operations,
+                    userMessage: "Der simulierte Abruf ist fehlgeschlagen.",
+                    technicalCode: String(describing: error)
+                )
+                try load()
+            } catch {
+                present(error)
+            }
+            present(error)
+            return nil
+        }
+    }
+
+    func commitBankingDownload(
+        _ preview: BankingDownloadPreview,
+        resolutions: [UUID: ImportResolution]
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            let result = try repository.commitBankingDownload(
+                preview,
+                resolutions: resolutions
+            )
+            try load()
+            statusText = "Banking-Abruf: " + result.statusText
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func forecastOccurrences(days: Int = 90) -> [FinanceTransaction] {
         let end = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
         let existingReferences = Set(transactions.map(\.reference).filter { !$0.isEmpty })
@@ -1497,6 +1709,12 @@ final class FinanceAppStore: ObservableObject {
         transactionTemplates = try repository.transactionTemplates()
         categorizationRules = try repository.categorizationRules()
         latestRuleUndo = try repository.latestRuleUndo()
+        bankingConnections = try repository.bankingConnections()
+        bankingMappings = try repository.bankingAccountMappings()
+        bankingSyncRuns = try repository.bankingSyncRuns()
+        bankingRemoteOrders = try bankingConnections.flatMap {
+            try repository.bankingRemoteOrders(connectionID: $0.id)
+        }
         scheduledTransactions = try repository.scheduledTransactions()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()

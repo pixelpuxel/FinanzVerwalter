@@ -794,3 +794,46 @@ Rechtsberatung.
 - Telegram-Nachricht 942 wurde im Projektthread 894 veröffentlicht. Sie
   enthält den geprüften Regel-, Undo-, Release- und Teststatus und weist
   ausdrücklich auf den fehlenden Screenshot wegen der macOS-Sperre hin.
+- Migration 21 ergänzt einen protokollunabhängigen, ausschließlich lesenden
+  Banking-Adaptervertrag sowie dateigebundene Verbindungen,
+  Kontenzuordnungen, Abrufläufe und schreibgeschützte Dauerauftrags-/
+  Terminüberweisungsbestände. Adapter besitzen keinen Datenbankzugriff und
+  rohe Antworten werden nicht gespeichert; protokolliert wird nur ihr
+  SHA-256-Hash.
+- Der aktivierbare lokale Simulator benötigt keine Bankzugänge und liefert
+  deterministisch Konten, Salden, gebuchte und vorgemerkte Umsätze,
+  Daueraufträge sowie Terminüberweisungen. FinTS/HBCI, PSD2/Open Banking und
+  Web-Connectoren bleiben modelliert, aber in Oberfläche und Persistenz
+  ausdrücklich deaktiviert. Depotbestand und Kurse werden vom Simulator
+  nicht fälschlich als unterstützt gemeldet.
+- Der Banking-Arbeitsbereich zeigt Verbindungen, die eindeutige Zuordnung
+  externer zu lokalen Konten gleicher Währung, Vorgangsauswahl, Fortschritt,
+  Abbruch, Bestände und Abrufhistorie. Die Vorschau zeigt jede Buchung,
+  Status, konkrete Importentscheidung, angewandte Regeln, Regelkonflikte,
+  Banksalden und Diagnose. Erst die Bestätigung schreibt Buchungen, Salden,
+  Bestände und Abruflauf gemeinsam oder gar nicht.
+- Neu abgerufene Umsätze durchlaufen vor dem Commit die konfliktgeschützte
+  Regel-Pipeline und danach dasselbe gestufte Matching wie Dateiimporte.
+  Stabile Provider-/Transaktions-IDs verhindern Dubletten; eine Wiederholung
+  desselben Pakets erzeugt nur Skip-Entscheidungen und keine zweite Buchung.
+- Zwei neue Tests prüfen deterministische Simulatorpakete, den Abbruch ohne
+  Teilpaket, ehrliche Fähigkeiten, gesperrte Live-Provider, Zuordnung,
+  Metadaten, Saldoübernahme, Bestände, Abrufhistorie, wiederholte Pakete,
+  atomaren Fehlerabbruch und SQLite-Integrität. Die vollständige Abnahme
+  führte 49 Tests aus: 48 bestanden, der opt-in-Test mit der privaten
+  Real-QIF-Datei wurde erwartungsgemäß übersprungen, 0 Fehler. Debug-
+  Test-Build und optimierter Release-Build bestehen.
+- Vor Migration 21 wurde ausschließlich lokal die validierte Sicherung
+  `Vor Migration 21 Banking-Abruf.qbackup` angelegt: Schema 20, Integrität
+  `ok`, 97 Konten, 2.170 Buchungen, 0 Regeln, 0 Regelanwendungen, SHA-256
+  `0c82c0f048127c39a4f8a3dda11b5ee4a85bb7796f9e4591f7b07b38fc2b848e`.
+- Der optimierte Release ist unter `~/Applications/FinanzVerwalter.app`
+  installiert, ad hoc signaturgeprüft und gestartet. Die Produktivdatei
+  meldet Schema 21, Integrität `ok`, unverändert 97 Konten und 2.170
+  Buchungen sowie erwartungsgemäß 0 Verbindungen, Zuordnungen, Abrufläufe
+  und Bestände. Der Schema-20-Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-banking-20260731-1148.app`.
+- Computer Use meldet den Mac weiterhin als gesperrt und konnte ihn nicht
+  automatisch entsperren. Die sichtbare Banking-/Saldo-Abnahme und ein
+  echter Screenshot bleiben deshalb offen; es wurde kein Ersatzbild als
+  angeblicher App-Screenshot erzeugt.

@@ -9,20 +9,20 @@ fertigen Funktionsbereich.
 
 | Priorität | Anforderung | Status | Nachweis / nächste Lücke |
 |---|---|---|---|
-| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–20, Integritätstest, append-only Auditereignisse |
-| P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; Bankabrufdaten bleiben Adapteraufgabe |
+| P0 | Lokale Finanzdatei, SQLite-WAL, Migrationen, Audit | Erfüllt | Migrationen 1–21, Integritätstest, append-only Auditereignisse |
+| P0 | Konten und Kontogruppen | Erfüllt für lokalen Kern | Vollständige Stammdaten und neun fachliche Standardgruppen; Migration 12 ordnet ungruppierte Bestandskonten und der QIF-Paketimport neue Konten typgerecht zu; externe und lokale Konten werden beim Simulatorabruf sichtbar eins zu eins zugeordnet |
 | P0 | Kontoblatt mit laufendem Saldo, Suche und Status | Teilweise | Register, kontenweiser laufender Saldo einschließlich Bestands- und Ansichtenmigration, Ein-/Zweizeilenmodus, Konto-/Status-/Kategorie-/Zeitraumfilter, Mehrfachauswahl, währungsgetrennte Summen, atomare Massenkategorisierung, vollständige Kategoriepfade, elf dynamische Standardspalten, benannte Ansichten, persistente Mehrkonto-Tabs, F3-Auswahlfilter, direkter PDF-/Systemdruck und zehn sichtbar anpassbare, konfliktgeprüfte Shortcuts vorhanden; Minireport, geteiltes Kontoblatt und vollständige AX-/UI-Abnahme fehlen |
 | P0 | Kategorien und Unterkategorien | Erfüllt für lokalen Kern | Beliebig tiefe Hierarchie, Zyklen-/Artprüfung, vollständige Pfade, Beschreibung, Budgetierbarkeit, Standard-MwSt.-Schlüssel sowie deutsche und optionale US-Steuerzuordnung |
 | P0 | Klassen/Mehrfach-Tags | Teilweise | Hierarchische Tags auf Buchungen und Splits vorhanden; eigenständige Klassenfilter und Massenbearbeitung fehlen |
 | P0 | Empfänger/SmartFill | Teilweise | Stammdaten, Aliase, Bankdaten und Vorschläge vorhanden; Mandate und Gläubiger-ID fehlen |
 | P0 | Buchungen, Splits und Transfers | Teilweise | Centgenaue Buchungen, Splitinvariante, atomare Transfers, frei definierbare MwSt.-Schlüssel einschließlich 0 %, automatische/manuelle Brutto-Netto-Steuer-Berechnung mit Rundung je Splitzeile sowie bestätigtes, atomares Mehrfachlöschen mit Schutz abgeglichener Buchungen vorhanden; Fremdwährung, Anhänge, Duplizieren/Verschieben und Undo fehlen |
-| P0 | Regeln | Erfüllt für lokalen Kern | Versionierte rekursive AND/OR-Ausdrücke, 16 fachliche Felder, acht Operatoren einschließlich Regex/Bereich/Leerprüfung, Kategorie-/Empfänger-/Notiz-/Tag-/Text-/Splitaktionen, Priorität, Konfliktanzeige, buchungsweise Vorher/Nachher-Auswahl, atomarer Commit, vollständiges konfliktgeschütztes Undo und Regel aus Buchung; automatische Mehrregel-Pipeline beim künftigen Bankabruf und SmartFill-Nutzungsgewichtung bleiben Adapter-/Komfortaufgaben |
+| P0 | Regeln | Erfüllt für lokalen Kern | Versionierte rekursive AND/OR-Ausdrücke, 16 fachliche Felder, acht Operatoren einschließlich Regex/Bereich/Leerprüfung, Kategorie-/Empfänger-/Notiz-/Tag-/Text-/Splitaktionen, Priorität, Konfliktanzeige, buchungsweise Vorher/Nachher-Auswahl, atomarer Commit, vollständiges konfliktgeschütztes Undo und Regel aus Buchung; konfliktfreie Regeln laufen sichtbar in der Bankabrufvorschau, Konflikte verhindern die automatische Anwendung; SmartFill-Nutzungsgewichtung fehlt |
 | P0 | Import und Migration | Teilweise | CSV/TSV, Einzelkonto-QIF und Mehrkonten-QIF mit Vorschau/Paket-Idempotenz, gestuftem Buchungs-Matching, konfigurierbarem Datumsfenster, expliziter Entscheidung, erhaltener lokaler Anreicherung und eindeutiger externer Bank-ID sowie pain.001.001.09-Export; Profilassistent, OFX/QFX, MT940, camt und ISO-20022-Import fehlen |
 | P0 | Kontoabgleich | Erfüllt für lokalen Kern | Anfangs-/Endsaldo, Auszugsdatum, explizite Buchungsauswahl, markierte Summe, Differenz, doppelt bestätigte Ausgleichsbuchung, Buchungsschutz, unveränderliche Positionshistorie und Rücknahme des jüngsten aktiven Abgleichs mit Audit vorhanden |
 | P0 | Sammelkontoblatt | Teilweise | Kontenübergreifende Liste, Zukunft und Summe; benannte Kombinationen, Mehrfachbearbeitung, zwei Ansichten und Export fehlen |
 | P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, währungsgetrennte Gruppen, Drill-down, versionierte Vorlagen, CSV-Golden-Test und mehrseitiges A4-PDF in Hoch-/Querformat mit semantischem Test und Renderprüfung vorhanden; das Kontoblatt besitzt direkten Systemdruck, die Berichtswerkstatt noch nicht; zweite Dimension, weitere Standardberichte sowie XLSX/HTML fehlen |
 | P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
-| P1 | Banking-Adaptervertrag und Read-only-Abruf | Offen | Derzeit nur lokaler Zahlungs-/SCA-Simulator; FinTS/PSD2-Verträge, Kontakte, Konto- und Umsatzabruf fehlen |
+| P1 | Banking-Adaptervertrag und Read-only-Abruf | Erfüllt für Simulator-Kern | Getrennter Read-only-Adaptervertrag, deterministischer Simulator für Konten, Salden, gebuchte/vorgemerkte Umsätze, Daueraufträge und Terminüberweisungen, explizite Kontenzuordnung, Regel-/Matching-Vorschau, Abbruchschutz, Rohhash, Diagnose, Abrufhistorie und atomarer Commit; echte FinTS-/PSD2-Verbindungen, SCA-Dialoge, Depots und Kurse fehlen und bleiben sichtbar deaktiviert |
 | P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, IBAN, unveränderliche Bestätigung, SCA, Idempotenz, versionierter pain.001.001.09-Export sowie lokale Daueraufträge mit Pause/Ende, Wochenendregel, genau-einmaliger Entwurfserzeugung und Historie; Feiertagskalender, Lastschrift, Sammler, EPC-QR sowie pain.001-Import, pain.008 und pain.002 fehlen |
 | P1 | Kalender und Prognose | Teilweise | Regelmäßige Vorgänge, Monatsende und 30/90/180/365-Tage-Prognose; Wochenansicht, Ausnahmen, Feiertage, Drag-and-drop und Szenarien fehlen |
 | P1 | Budgets | Teilweise | Mehrere Budgets, Geschäftsjahr, Monatsplan, Ist/Abweichung, Roll-over-Schalter; Jahreswerte, Reserve, Kopie und Berichte fehlen |
@@ -42,9 +42,8 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Read-only-Banking-Adaptervertrag und Simulatorabruf auf Basis des
-   gestuften Import-Matchings.
-2. Kontoblatt-Minireport, geteilte Ansicht und vollständige Tastatur-/AX-Abnahme.
-3. OFX/QFX-, MT940- und camt-Import über denselben sicheren Commitpfad.
-4. SmartFill-Nutzungsgewichtung und automatische, simulierte
-   Mehrregel-Pipeline für neu abgerufene Umsätze.
+1. Kontoblatt-Minireport, geteilte Ansicht und vollständige Tastatur-/AX-Abnahme.
+2. OFX/QFX-, MT940- und camt-Import über denselben sicheren Commitpfad.
+3. SmartFill-Nutzungsgewichtung und erweiterte Klassen-Massenbearbeitung.
+4. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,
+   SCA-, Datenschutz- und Sicherheitsarchitektur.

@@ -691,3 +691,42 @@ unterschiedliche Aktionen erhält, zeige Buchung, Zielfeld und Regelnamen.
 Eine aus dem Kontoblatt erzeugte Regel verwendet Konto plus Empfänger
 beziehungsweise Zweck als Bedingungen und die vorhandene Kategorie als
 Aktion; sie wird nur gespeichert und nicht automatisch angewandt.
+
+# Reproduzierbarer Read-only-Banking-Abruf
+
+Migration 21 ergänzt dateigebundene Tabellen für Verbindungen,
+Kontenzuordnungen, Abrufläufe und schreibgeschützt geladene Dauerauftrags-
+beziehungsweise Terminüberweisungsbestände. Definiere einen
+`ReadOnlyBankingAdapter`, der weder Repository noch SQLite kennt und ein
+normalisiertes Paket aus Adapter-/Providerkennung, Abrufzeit, Rohdatenhash,
+Konten, Salden, Umsätzen, Beständen und Diagnose je Konto/Vorgang liefert.
+
+Implementiere zuerst ausschließlich einen lokalen, deterministischen
+Simulator ohne Zugangsdaten. Er unterstützt Kontenliste, Salden, gebuchte
+Umsätze, Vormerkposten, Dauerauftragsbestand und Terminüberweisungen.
+Depotbestände und Kurse dürfen nicht als unterstützt erscheinen. Modellierte
+FinTS-, PSD2-/Open-Banking- und Web-Provider bleiben in Oberfläche und
+Persistenz deaktiviert, bis Providerzulassung, Lizenz, SCA, Consent,
+Geheimnisspeicher, Datenschutz und Logging-Redaktion separat umgesetzt sind.
+
+Ordne jedes ausgewählte externe Konto genau einem lokalen Konto gleicher
+Währung zu. Die Normalisierung erzeugt aus Verbindung plus externer ID eine
+stabile Buchungs-UUID, setzt Herkunft `bankDownload`, Provider und externe
+Transaktions-ID und übernimmt IBAN, BIC, End-to-End-ID, Mandatsreferenz,
+Gläubiger-ID, Buchungstext sowie optionalen Banksaldo. Wende alle passenden
+Regeln in Prioritäts-/UUID-Reihenfolge an. Bei einem Zielfeldkonflikt wende
+für diese Buchung keine Regel automatisch an und zeige den Hinweis. Zeige
+ansonsten alle angewandten Regeln in der Abrufvorschau.
+
+Führe danach das gleiche gestufte Import-Matching wie beim Dateiimport aus.
+Die Vorschau zeigt Konten, Salden, Umsätze, Status, Regeln, konkrete
+Importentscheidung, Bestände, Nutzermeldung, technischen Code und
+SHA-256-Rohhash. Ein Abbruch darf keine Datenbankänderung auslösen.
+
+Beim bestätigten Commit werden Adapterkennung, erfolgreiche Diagnosen,
+eindeutige Zuordnungen, Währungen und Importentscheidungen erneut geprüft.
+Schreibe neue/abgeglichene Buchungen, lokale Banksalden und Syncstatus,
+Bestände, einen vollständigen Abruflauf und Auditdaten gemeinsam in genau
+einer SQLite-Transaktion. Wiederholt sich derselbe Pakethash, sind nur
+Skip-Entscheidungen zulässig. Speichere niemals Rohantworten, PIN, TAN,
+Freigabecodes oder andere Bankgeheimnisse.
