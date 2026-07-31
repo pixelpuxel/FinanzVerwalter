@@ -121,16 +121,13 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 13, Konto-/Kategorie-/Buchungspersistenz, Splits, atomare
-Transfers, QIF/CSV, Kontoabgleich, Sammelkontoblatt, Bericht, Backup,
-validierte Wiederherstellung, Kategorisierungsregeln und ein erster
-Serientermin-/Prognose-Slice sowie monatliche Kategorie-Budgets sind
-implementiert. Zusätzlich ist ein rein lokaler Banking-Simulator mit
-Zahlungsaufträgen und SCA-Zustandsautomat vorhanden. Die Testsuite umfasst
-aktuell dreißig erfolgreiche
-XCTest-Fälle. Debug- und Release-Build wurden
-erfolgreich ausgeführt; der Release-Stand ist lokal installiert und sichtbar
-geprüft. Details und Screenshots stehen in `Gedächtnis.md`.
+Migrationen 1 bis 21 sowie die in diesem Dokument beschriebenen lokalen
+Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
+implementiert. Die Suite umfasst aktuell 57 ausgeführte XCTest-Fälle: 56
+bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
+Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
+installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
+Details und frühere Screenshots stehen in `Gedächtnis.md`.
 
 Migration 11 ergänzt `account_groups` und erweitert `accounts` um Kurzname,
 Beschreibung, Gruppe, IBAN, BIC, maskierte Kontonummer, Inhaber,
@@ -813,3 +810,36 @@ Query die gleichen 365-Tage-Occurrences; normale Berichte ändern ihr
 Verhalten nicht. Alte JSON-Berichtsvorlagen ohne die optionalen Felder müssen
 weiter decodieren. Teste exakte UUID-Selektion, diakritischen Empfänger,
 Zukunftseinbeziehung und alten Nil-Roundtrip.
+
+# Reproduzierbarer OFX-/QFX-Kontoauszugsimport
+
+Implementiere OFX/QFX ohne zusätzliche Abhängigkeit für zwei verbreitete
+Dialekte: wohlgeformtes OFX-2-XML und OFX-1/QFX-SGML mit nicht geschlossenen
+Blatt-Tags. Akzeptiere ausschließlich Dokumente mit `<OFX>` und
+`STMTRS`/`CCSTMTRS`; begrenze Eingaben auf 50 MB und 200.000 Buchungen.
+Erfasse je Konto `BANKID`, `ACCTID`, `ACCTTYPE`, Kreditkartenkennzeichen und
+`CURDEF`. Erzeuge einen stabilen externen Kontoschlüssel aus diesen Feldern.
+
+Erfasse aus jedem `STMTTRN` mindestens `TRNTYPE`, `DTPOSTED`, optional
+`DTUSER`, `TRNAMT`, `FITID`, `NAME`, `MEMO`, `CHECKNUM` und `REFNUM`.
+Datumswerte verwenden die ersten acht Ziffern als gregorianischen UTC-Tag;
+Beträge werden dezimal und bankers-rounded in Minor Units umgerechnet.
+Begrenze Freitextlängen. Fehlerhafte Datensätze bleiben mit Konto und
+Datensatznummer sichtbar in der Vorschau, statt teilinterpretiert zu werden.
+
+Zeige bei mehreren externen Bank- oder Kreditkartenkonten pro Konto einen
+Pflicht-Picker für ein vorhandenes lokales Konto. Filtere Auswahlkonten nach
+identischer Währung und schlage nur eine eindeutige Übereinstimmung über
+IBAN/Maskierung vor; bei genau einem externen Konto darf die vorherige
+Zielkontoauswahl vorgeschlagen werden. Ohne vollständige Zuordnung ist die
+Vorschau gesperrt.
+
+Normalisiere anschließend jede Buchung als `FinanceTransaction` mit Herkunft
+`fileImport`, Provider `OFX` beziehungsweise `QFX`, externer ID `FITID`,
+Referenz und Buchungstext. Verwende den SHA-256-Hash der gesamten Quelldatei
+als Paketfingerabdruck und deterministische Buchungs-UUIDs. Leite die
+normalisierten Zeilen unverändert durch das bestehende gestufte Matching und
+den atomaren `commitImport`; erfinde keinen zweiten Commitpfad. Teste
+Mehrkonten-XML, SGML-Blatt-Tags, Kreditkarte, Valuta, Cent-Rundung,
+beschädigte Zeilen, fehlende Zuordnung, Währungsabweichung, erneuten
+Paketimport und SQLite-Integrität ausschließlich mit synthetischen Daten.

@@ -1974,6 +1974,8 @@ struct ImportExportView: View {
     @State private var showImporter = false
     @State private var preview: ImportPreview?
     @State private var qifPackagePreview: QIFPackagePreview?
+    @State private var bankStatementPackage: BankStatementPackage?
+    @State private var bankStatementMappings: [String: UUID] = [:]
     @State private var importResolutions: [UUID: ImportResolution] = [:]
     @State private var showBackupExporter = false
     @State private var backupDocument = BackupDocument(data: Data())
@@ -1986,9 +1988,9 @@ struct ImportExportView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Import, Export & Sicherung").font(.largeTitle.bold())
 
-                GroupBox("CSV-/TSV- und QIF-Import") {
+                GroupBox("CSV-/TSV-, QIF- und OFX/QFX-Import") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("CSV/TSV und einzelne QIF-Kontoblätter benötigen ein Zielkonto. Vollständige QIF-Pakete werden automatisch erkannt und kontoweise vorbereitet.")
+                        Text("CSV/TSV und einzelne QIF-Kontoblätter benötigen ein Zielkonto. Vollständige QIF-Pakete sowie OFX/QFX-Kontoauszüge werden kontoweise vorbereitet.")
                             .foregroundStyle(.secondary)
                         HStack {
                             Picker("Zielkonto für Einzeldatei", selection: $selectedAccountID) {
@@ -2011,12 +2013,76 @@ struct ImportExportView: View {
                                 + "Wertstellungsdatum werden nur innerhalb "
                                 + "dieses Fensters als mögliche Treffer gezeigt."
                         )
-                        Text("Bei einem Mehrkonten-QIF ist keine vorherige Kontoauswahl nötig.")
+                        Text("Bei einem Mehrkonten-QIF oder OFX/QFX ist keine vorherige Kontoauswahl nötig.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
+                }
+
+                if let package = bankStatementPackage {
+                    GroupBox("\(package.format.rawValue)-Kontenzuordnung") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label(
+                                "\(package.accounts.count) externe Konten · \(package.records.count) Buchungen erkannt",
+                                systemImage: "building.columns"
+                            )
+                            Text("Ordnen Sie jedes externe Konto einem vorhandenen FinanzVerwalter-Konto zu. Erst danach wird die Treffer- und Duplikatprüfung ausgeführt.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            ForEach(package.accounts) { external in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(external.displayName)
+                                        Text("\(external.accountType.isEmpty ? "Konto" : external.accountType) · \(external.currency)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Picker(
+                                        "Zielkonto",
+                                        selection: Binding(
+                                            get: { bankStatementMappings[external.id] },
+                                            set: { bankStatementMappings[external.id] = $0 }
+                                        )
+                                    ) {
+                                        Text("Nicht zugeordnet").tag(UUID?.none)
+                                        ForEach(store.accounts.filter {
+                                            $0.currency.caseInsensitiveCompare(external.currency) == .orderedSame
+                                        }) { account in
+                                            Text(account.name).tag(UUID?.some(account.id))
+                                        }
+                                    }
+                                    .frame(width: 300)
+                                }
+                            }
+                            ForEach(package.rejectedRows, id: \.self) { warning in
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                            }
+                            HStack {
+                                Button("Verwerfen") {
+                                    bankStatementPackage = nil
+                                    bankStatementMappings = [:]
+                                    preview = nil
+                                }
+                                Button("Vorschau und Abgleich erstellen") {
+                                    preview = store.previewBankStatement(
+                                        package,
+                                        mappings: bankStatementMappings,
+                                        dateWindowDays: importMatchDateWindowDays
+                                    )
+                                    if let preview { prepareResolutions(preview) }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(package.accounts.contains {
+                                    bankStatementMappings[$0.id] == nil
+                                })
+                            }
+                        }
+                        .padding(8)
+                    }
                 }
 
                 if let package = qifPackagePreview {
@@ -2102,6 +2168,20 @@ struct ImportExportView: View {
                     GroupBox("Importvorschau") {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("\(preview.rows.count) gültige · \(preview.rejectedRows.count) fehlerhafte Zeilen")
+                            if !preview.rejectedRows.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ForEach(Array(preview.rejectedRows.prefix(10)), id: \.self) { reason in
+                                        Label(reason, systemImage: "exclamationmark.triangle")
+                                            .foregroundStyle(.orange)
+                                            .textSelection(.enabled)
+                                    }
+                                    if preview.rejectedRows.count > 10 {
+                                        Text("… und \(preview.rejectedRows.count - 10) weitere Ablehnungen")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
                             matchingSummary(preview)
                             Table(preview.rows.prefix(100)) {
                                 TableColumn("Datum") {
@@ -2133,9 +2213,12 @@ struct ImportExportView: View {
                                         resolutions: importResolutions
                                     ) {
                                         self.preview = nil
+                                        bankStatementPackage = nil
+                                        bankStatementMappings = [:]
                                     }
                                 }
                                 .buttonStyle(.borderedProminent)
+                                .disabled(preview.rows.isEmpty)
                             }
                         }
                         .padding(8)
@@ -2168,7 +2251,9 @@ struct ImportExportView: View {
             isPresented: $showImporter,
             allowedContentTypes: [
                 .commaSeparatedText, .tabSeparatedText, .plainText,
-                UTType(filenameExtension: "qif") ?? .data
+                UTType(filenameExtension: "qif") ?? .data,
+                UTType(filenameExtension: "ofx") ?? .data,
+                UTType(filenameExtension: "qfx") ?? .data
             ]
         ) { result in
             guard
@@ -2177,7 +2262,22 @@ struct ImportExportView: View {
             else { return }
             defer { url.stopAccessingSecurityScopedResource() }
             guard let data = try? Data(contentsOf: url) else { return }
-            if url.pathExtension.lowercased() == "qif" {
+            let fileExtension = url.pathExtension.lowercased()
+            if fileExtension == "ofx" || fileExtension == "qfx" {
+                let format: BankStatementFormat = fileExtension == "qfx" ? .qfx : .ofx
+                bankStatementPackage = store.parseBankStatement(
+                    data: data,
+                    format: format
+                )
+                bankStatementMappings = [:]
+                preview = nil
+                qifPackagePreview = nil
+                if let package = bankStatementPackage {
+                    autoMapBankStatement(package)
+                }
+            } else if fileExtension == "qif" {
+                bankStatementPackage = nil
+                bankStatementMappings = [:]
                 if QIFPackageImporter.isPackage(data: data) {
                     qifPackagePreview = store.previewQIFPackage(
                         data: data,
@@ -2194,6 +2294,7 @@ struct ImportExportView: View {
                         dateWindowDays: importMatchDateWindowDays
                     )
                     qifPackagePreview = nil
+                    bankStatementPackage = nil
                     if let preview { prepareResolutions(preview) }
                 } else {
                     store.errorMessage = FinanceError.missingAccount.localizedDescription
@@ -2205,6 +2306,7 @@ struct ImportExportView: View {
                     dateWindowDays: importMatchDateWindowDays
                 )
                 qifPackagePreview = nil
+                bankStatementPackage = nil
                 if let preview { prepareResolutions(preview) }
             } else {
                 store.errorMessage = FinanceError.missingAccount.localizedDescription
@@ -2246,6 +2348,28 @@ struct ImportExportView: View {
             }
         } message: {
             Text("Vor dem Austausch wird automatisch eine geprüfte Sicherung der aktuellen Finanzdatei angelegt.")
+        }
+    }
+
+    private func autoMapBankStatement(_ package: BankStatementPackage) {
+        for external in package.accounts {
+            let number = external.accountNumber
+            let candidates = store.accounts.filter { account in
+                account.currency.caseInsensitiveCompare(external.currency) == .orderedSame
+                    && !number.isEmpty
+                    && (
+                        account.iban.replacingOccurrences(of: " ", with: "").hasSuffix(number)
+                            || account.accountNumberMasked.hasSuffix(String(number.suffix(4)))
+                    )
+            }
+            if candidates.count == 1 {
+                bankStatementMappings[external.id] = candidates[0].id
+            } else if package.accounts.count == 1,
+                      let selectedAccountID,
+                      store.accounts.first(where: { $0.id == selectedAccountID })?.currency
+                        .caseInsensitiveCompare(external.currency) == .orderedSame {
+                bankStatementMappings[external.id] = selectedAccountID
+            }
         }
     }
 

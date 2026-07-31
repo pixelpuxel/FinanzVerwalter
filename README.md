@@ -54,9 +54,23 @@ anschließend atomar und idempotent gespeichert. Depot-, Klassen- und
 Merkpostenbereiche werden derzeit sichtbar ausgelassen, statt sie in ein
 unpassendes Kontoblatt zu schreiben.
 
+## OFX-/QFX-Kontoauszüge
+
+OFX 2.x (XML) und klassische OFX-1.x-/QFX-SGML-Dateien werden lokal und ohne
+zusätzliche Bibliothek gelesen. Mehrere Bank- und Kreditkartenkonten einer
+Datei müssen vor der Vorschau jeweils einem vorhandenen Konto zugeordnet
+werden; eindeutige Kontonummern werden vorgeschlagen. Die Währung muss
+übereinstimmen. FITID, Buchungs- und Wertstellungsdatum, Empfänger, Memo,
+Referenz und Buchungstyp fließen in die normale Importvorschau ein.
+
+Dateien sind auf 50 MB und 200.000 Datensätze begrenzt. Fehlerhafte
+Datensätze werden mit Begründung abgewiesen. Erst die ausdrückliche
+Bestätigung schreibt alle gewählten Buchungen gemeinsam; Paket-Hash,
+Bank-ID-Matching und der bestehende atomare Commit schützen vor Dubletten.
+
 ### Sicherer Abgleich mit vorhandenen Buchungen
 
-CSV-/TSV- und QIF-Vorschauen vergleichen jede importierte Buchung gestuft mit
+CSV-/TSV-, QIF- und OFX/QFX-Vorschauen vergleichen jede importierte Buchung gestuft mit
 vorhandenen Umsätzen desselben Kontos. Exakte Bank-IDs, Betrag/Währung,
 Buchungs- beziehungsweise Wertstellungsdatum, Referenzen, IBAN, Empfänger und
 Verwendungszweck fließen in einen nachvollziehbaren Trefferwert ein. Das

@@ -591,6 +591,37 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func parseBankStatement(
+        data: Data,
+        format: BankStatementFormat
+    ) -> BankStatementPackage? {
+        do {
+            return try BankStatementImporter.parse(data: data, format: format)
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func previewBankStatement(
+        _ package: BankStatementPackage,
+        mappings: [String: UUID],
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) -> ImportPreview? {
+        do {
+            return try package.preview(
+                mappings: mappings,
+                localAccounts: accounts
+            ).matched(
+                against: transactions,
+                dateWindowDays: dateWindowDays
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
     func previewQIFPackage(
         data: Data,
         dateWindowDays: Int = ImportMatcher.defaultDateWindowDays

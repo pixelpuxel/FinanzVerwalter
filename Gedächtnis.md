@@ -955,3 +955,38 @@ Rechtsberatung.
   enthält denselben geprüften Ansichten-, Bericht-, Zukunfts-, Saldo-,
   Release-, GitHub- und Teststatus sowie den Zielzählerstand von 7.107.447
   Tokens.
+
+## 2026-07-31 – OFX/QFX über den sicheren Dateiimport
+
+- FinanzVerwalter liest jetzt OFX-2-XML sowie klassische OFX-1/QFX-SGML-
+  Kontoauszüge ohne neue Abhängigkeit. Bank- und Kreditkartenkonten,
+  Währung, FITID, Buchungs-/Wertstellungsdatum, Betrag, Empfänger, Memo,
+  Referenz und Buchungstext werden normalisiert.
+- Mehrkontendateien erhalten eine explizite Zuordnung jedes externen Kontos
+  zu einem vorhandenen lokalen Konto. Die Auswahl wird nach Währung
+  eingeschränkt; eindeutige IBAN-/Kontonummerntreffer werden vorgeschlagen.
+  Ohne vollständige Zuordnung bleibt die Vorschau gesperrt.
+- Der Parser begrenzt Dateien auf 50 MB, Datensätze auf 200.000 und
+  Freitextfelder. Beschädigte Buchungen und Währungsabweichungen werden
+  einzeln sichtbar zurückgewiesen. Produktivdaten und Rohdateien gelangen
+  weiterhin nicht in Git.
+- OFX/QFX nutzt exakt das bestehende gestufte Matching, den SHA-256-
+  Paketschutz und den atomaren SQLite-Commit. Dadurch bleiben lokale
+  Anreicherungen bei einem bestätigten Match erhalten und derselbe Export
+  kann nicht zweimal übernommen werden.
+- Drei neue Tests decken Mehrkonten-XML einschließlich Kreditkarte und
+  Valuta, SGML ohne schließende Blatt-Tags, Bankers-Rundung, beschädigte
+  Zeilen, fehlende Zuordnung, Währungsabweichung, atomaren Commit,
+  Paket-Idempotenz und SQLite-Integrität ab. Die vollständige Abnahme führte
+  57 Tests aus: 56 bestanden, der private opt-in-Real-QIF-Test wurde
+  erwartungsgemäß übersprungen, 0 Fehler. Debug-Build besteht.
+- Der optimierte Release-Build besteht, ist ad hoc signiert und unter
+  `~/Applications/FinanzVerwalter.app` installiert und gestartet. Der zuvor
+  installierte Bundle-Stand liegt ignoriert unter
+  `build/FinanzVerwalter-vor-ofx-qfx-20260731-1238.app`. Die Produktivdatei
+  blieb bei Schema 21, Integrität `ok`, 97 Konten, 2.170 Buchungen, einer
+  Berichtsvorlage und 0 Banking-Verbindungen. Ihr SHA-256 direkt vor der
+  Installation war
+  `0a8d6dd9695ccbace6155c05b82f9367c9621904bf9a68ef7bbb073f4d1bd77e`.
+- Der exakte Zielzählerstand nach Release-Installation und Diffprüfung lag
+  bei 7.334.872 verbrauchten Tokens.

@@ -114,6 +114,7 @@ enum FinanceError: LocalizedError, Equatable {
     case invalidImportResolution(String)
     case qifPackageRequiresPackageImport
     case invalidQIFPackage
+    case invalidBankStatement(String)
     case invalidBackup
     case protectedTransaction
     case protectedBulkEdit
@@ -143,6 +144,8 @@ enum FinanceError: LocalizedError, Equatable {
         case .qifPackageRequiresPackageImport:
             "Die Datei enthält mehrere Konten oder zusätzliche QIF-Bereiche. Bitte verwende den Mehrkonten-Paketimport."
         case .invalidQIFPackage: "Das QIF-Paket enthält keine importierbaren Konten."
+        case .invalidBankStatement(let message):
+            "Der OFX/QFX-Kontoauszug ist ungültig: \(message)"
         case .invalidBackup: "Die Sicherungsdatei ist ungültig."
         case .protectedTransaction: "Eine abgeglichene Buchung ist gegen unbeabsichtigte Änderungen geschützt."
         case .protectedBulkEdit:

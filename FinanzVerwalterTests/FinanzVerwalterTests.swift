@@ -3721,6 +3721,118 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testOFXXMLParsesMultipleAccountsAndCommitsAtomically() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <OFX>
+          <BANKMSGSRSV1><STMTTRNRS><STMTRS>
+            <CURDEF>EUR</CURDEF>
+            <BANKACCTFROM><BANKID>10020030</BANKID><ACCTID>DE001234</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>
+            <BANKTRANLIST>
+              <STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20250714120000.000[+1:CET]</DTPOSTED><DTUSER>20250715</DTUSER><TRNAMT>-12.34</TRNAMT><FITID>bank-1</FITID><NAME>Bäckerei</NAME><MEMO>Frühstück</MEMO><REFNUM>ref-1</REFNUM></STMTTRN>
+            </BANKTRANLIST>
+          </STMTRS></STMTTRNRS></BANKMSGSRSV1>
+          <CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS>
+            <CURDEF>EUR</CURDEF><CCACCTFROM><ACCTID>99887766</ACCTID></CCACCTFROM>
+            <BANKTRANLIST><STMTTRN><TRNTYPE>CREDIT</TRNTYPE><DTPOSTED>20250716</DTPOSTED><TRNAMT>50.00</TRNAMT><FITID>cc-1</FITID><NAME>Erstattung</NAME></STMTTRN></BANKTRANLIST>
+          </CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1>
+        </OFX>
+        """
+        let package = try BankStatementImporter.parse(data: Data(xml.utf8), format: .ofx)
+        XCTAssertEqual(package.accounts.count, 2)
+        XCTAssertEqual(package.records.count, 2)
+        XCTAssertTrue(package.rejectedRows.isEmpty)
+
+        let context = try TestDatabase()
+        let checking = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "Testbank", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        let card = FinanceAccount(
+            id: UUID(), name: "Kreditkarte", institution: "Testbank", type: .creditCard,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(checking)
+        try context.store.saveAccount(card)
+        let bankSource = try XCTUnwrap(package.accounts.first { !$0.isCreditCard })
+        let cardSource = try XCTUnwrap(package.accounts.first { $0.isCreditCard })
+        let preview = try package.preview(
+            mappings: [bankSource.id: checking.id, cardSource.id: card.id],
+            localAccounts: [checking, card]
+        )
+        XCTAssertEqual(preview.rows.map(\.amountMinor).sorted(), [-1_234, 5_000])
+        XCTAssertEqual(preview.rows.first { $0.externalTransactionID == "bank-1" }?.valueDate.map {
+            Calendar(identifier: .gregorian).component(.day, from: $0)
+        }, 15)
+        XCTAssertEqual(preview.rows.first { $0.externalTransactionID == "bank-1" }?.reference, "ref-1")
+        XCTAssertEqual(try context.store.commitImport(preview).importedCount, 2)
+        XCTAssertThrowsError(try context.store.commitImport(preview)) { error in
+            XCTAssertEqual(error as? FinanceError, .duplicateImport)
+        }
+        XCTAssertEqual(try context.store.transactions().count, 2)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testQFXSGMLAcceptsUnclosedLeafTagsAndRejectsBadRows() throws {
+        let sgml = """
+        OFXHEADER:100
+        DATA:OFXSGML
+        VERSION:102
+
+        <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+        <CURDEF>EUR
+        <BANKACCTFROM><BANKID>50050000<ACCTID>12345678<ACCTTYPE>SAVINGS</BANKACCTFROM>
+        <BANKTRANLIST>
+        <STMTTRN><TRNTYPE>INT<DTPOSTED>20250102000000<TRNAMT>1.255<FITID>sgml-1<NAME>Zins<MEMO>Jahreszins</STMTTRN>
+        <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>kaputt<TRNAMT>-4.00<FITID>sgml-2</STMTTRN>
+        </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>
+        """
+        let package = try BankStatementImporter.parse(data: Data(sgml.utf8), format: .qfx)
+        XCTAssertEqual(package.accounts.count, 1)
+        XCTAssertEqual(package.records.count, 1)
+        XCTAssertEqual(package.records.first?.amountMinor, 126)
+        XCTAssertEqual(package.records.first?.externalID, "sgml-1")
+        XCTAssertEqual(package.rejectedRows.count, 1)
+
+        let local = FinanceAccount(
+            id: UUID(), name: "Tagesgeld", institution: "", type: .savings,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        let preview = try package.preview(
+            mappings: [package.accounts[0].id: local.id],
+            localAccounts: [local]
+        )
+        XCTAssertEqual(preview.rows.first?.externalProvider, "QFX")
+        XCTAssertEqual(preview.rejectedRows.count, 1)
+    }
+
+    func testBankStatementPreviewRequiresMappingsAndMatchingCurrency() throws {
+        let xml = """
+        <OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>USD</CURDEF>
+        <BANKACCTFROM><BANKID>1</BANKID><ACCTID>2</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>
+        <BANKTRANLIST><STMTTRN><DTPOSTED>20250101</DTPOSTED><TRNAMT>10.00</TRNAMT><FITID>x</FITID></STMTTRN></BANKTRANLIST>
+        </STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>
+        """
+        let package = try BankStatementImporter.parse(data: Data(xml.utf8), format: .ofx)
+        let euro = FinanceAccount(
+            id: UUID(), name: "Euro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        let unmapped = try package.preview(mappings: [:], localAccounts: [euro])
+        XCTAssertTrue(unmapped.rows.isEmpty)
+        XCTAssertEqual(unmapped.rejectedRows.count, 1)
+        let mismatch = try package.preview(
+            mappings: [package.accounts[0].id: euro.id],
+            localAccounts: [euro]
+        )
+        XCTAssertTrue(mismatch.rows.isEmpty)
+        XCTAssertTrue(mismatch.rejectedRows[0].contains("Währung USD"))
+    }
+
     func testConfirmedBulkDeleteIsAtomicAndProtectsReconciledTransactions() throws {
         let context = try TestDatabase()
         let account = FinanceAccount(
