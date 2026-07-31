@@ -455,8 +455,36 @@ struct FinancePayee: Identifiable, Hashable, Sendable {
     var phone: String
     var iban: String
     var bic: String
+    var creditorID: String = ""
     var defaultCategoryID: UUID?
+    var defaultTagIDs: [UUID] = []
     var preferredAccountID: UUID?
+    var note: String
+    var isActive: Bool
+}
+
+enum SEPAMandateSequenceType: String, CaseIterable, Codable, Sendable {
+    case oneOff
+    case first
+    case recurring
+    case final
+
+    var title: String {
+        switch self {
+        case .oneOff: "Einmalig (OOFF)"
+        case .first: "Erstmalig (FRST)"
+        case .recurring: "Wiederkehrend (RCUR)"
+        case .final: "Letztmalig (FNAL)"
+        }
+    }
+}
+
+struct FinanceSEPAMandate: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var payeeID: UUID
+    var reference: String
+    var signedOn: Date?
+    var sequenceType: SEPAMandateSequenceType
     var note: String
     var isActive: Bool
 }
@@ -1000,6 +1028,44 @@ enum IBANValidator {
               iban.dropFirst(2).prefix(2).allSatisfy(\.isNumber)
         else { return false }
         let rotated = iban.dropFirst(4) + iban.prefix(4)
+        var remainder = 0
+        for character in rotated {
+            let digits: String
+            if let number = character.wholeNumberValue {
+                digits = String(number)
+            } else if let ascii = character.asciiValue {
+                digits = String(Int(ascii) - 55)
+            } else {
+                return false
+            }
+            for digit in digits {
+                guard let number = digit.wholeNumberValue else { return false }
+                remainder = (remainder * 10 + number) % 97
+            }
+        }
+        return remainder == 1
+    }
+}
+
+enum SEPACreditorIDValidator {
+    static func normalized(_ value: String) -> String {
+        value.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    static func isValid(_ value: String) -> Bool {
+        let identifier = normalized(value)
+        guard (8...35).contains(identifier.count),
+              identifier.prefix(2).allSatisfy(\.isLetter),
+              identifier.dropFirst(2).prefix(2).allSatisfy(\.isNumber),
+              identifier.dropFirst(4).prefix(3).allSatisfy({
+                  $0.isLetter || $0.isNumber
+              })
+        else { return false }
+
+        // Der dreistellige Geschäftsbereichscode ist nach EPC-Regelwerk
+        // nicht Bestandteil der ISO-13616-Prüfsummenberechnung.
+        let checksumSource = identifier.prefix(4) + identifier.dropFirst(7)
+        let rotated = checksumSource.dropFirst(4) + checksumSource.prefix(4)
         var remainder = 0
         for character in rotated {
             let digits: String

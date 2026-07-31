@@ -1927,14 +1927,26 @@ final class FinanzVerwalterTests: XCTestCase {
         )
         try context.store.saveTag(privateTag)
         try context.store.saveTag(childTag)
+        let defaultTagIDs = [privateTag.id, childTag.id].sorted {
+            $0.uuidString < $1.uuidString
+        }
         let payee = FinancePayee(
             id: UUID(), canonicalName: "EDEKA Markt",
             aliases: ["EDEKA", "EDEKA Center"], address: "Musterstraße 1",
             email: "", phone: "", iban: "", bic: "",
-            defaultCategoryID: category.id, preferredAccountID: account.id,
+            creditorID: "DE98ZZZ09999999999",
+            defaultCategoryID: category.id,
+            defaultTagIDs: defaultTagIDs,
+            preferredAccountID: account.id,
             note: "Lebensmittel", isActive: true
         )
         try context.store.savePayee(payee)
+        let mandate = FinanceSEPAMandate(
+            id: UUID(), payeeID: payee.id, reference: "MANDAT-2026-001",
+            signedOn: Date(timeIntervalSince1970: 1_700_000_000),
+            sequenceType: .recurring, note: "Stromvertrag", isActive: true
+        )
+        try context.store.saveSEPAMandate(mandate)
         let value = FinanceTransaction(
             id: UUID(), accountID: account.id, bookingDate: Date(), valueDate: nil,
             payee: payee.canonicalName, purpose: "Einkauf", categoryID: nil,
@@ -1957,6 +1969,28 @@ final class FinanzVerwalterTests: XCTestCase {
 
         XCTAssertEqual(try context.store.tags(), [childTag, privateTag])
         XCTAssertEqual(try context.store.payees(), [payee])
+        let restoredMandate = try XCTUnwrap(context.store.sepaMandates().first)
+        XCTAssertEqual(restoredMandate.id, mandate.id)
+        XCTAssertEqual(restoredMandate.payeeID, payee.id)
+        XCTAssertEqual(restoredMandate.reference, mandate.reference)
+        XCTAssertEqual(restoredMandate.sequenceType, .recurring)
+        XCTAssertEqual(restoredMandate.note, mandate.note)
+        XCTAssertTrue(restoredMandate.isActive)
+        XCTAssertEqual(
+            try XCTUnwrap(restoredMandate.signedOn).timeIntervalSince1970,
+            1_699_920_000,
+            accuracy: 1
+        )
+        XCTAssertTrue(SEPACreditorIDValidator.isValid(payee.creditorID))
+        XCTAssertFalse(SEPACreditorIDValidator.isValid("DE00ZZZ09999999999"))
+        var invalidPayee = payee
+        invalidPayee.creditorID = "DE00ZZZ09999999999"
+        XCTAssertThrowsError(try context.store.savePayee(invalidPayee))
+        let invalidMandate = FinanceSEPAMandate(
+            id: UUID(), payeeID: payee.id, reference: "<nicht erlaubt>",
+            signedOn: nil, sequenceType: .oneOff, note: "", isActive: true
+        )
+        XCTAssertThrowsError(try context.store.saveSEPAMandate(invalidMandate))
         let restored = try XCTUnwrap(context.store.transactions().first)
         XCTAssertEqual(restored.payeeID, payee.id)
         XCTAssertEqual(Set(restored.tagIDs), Set([privateTag.id, childTag.id]))
@@ -2426,6 +2460,8 @@ final class FinanzVerwalterTests: XCTestCase {
             created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1
         );
+        CREATE TABLE payees (id TEXT PRIMARY KEY);
+        CREATE TABLE tags (id TEXT PRIMARY KEY);
         CREATE TABLE transactions (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL DEFAULT '',
@@ -2476,7 +2512,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
-    func testMigration14To21PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To22PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -2496,6 +2532,8 @@ final class FinanzVerwalterTests: XCTestCase {
         CREATE TABLE finance_files (id TEXT PRIMARY KEY);
         CREATE TABLE accounts (id TEXT PRIMARY KEY);
         CREATE TABLE categories (id TEXT PRIMARY KEY);
+        CREATE TABLE payees (id TEXT PRIMARY KEY);
+        CREATE TABLE tags (id TEXT PRIMARY KEY);
         CREATE TABLE transactions (
             id TEXT PRIMARY KEY,
             account_id TEXT NOT NULL DEFAULT '',
@@ -2588,7 +2626,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 21)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 22)
         sqlite3_finalize(statement)
     }
 

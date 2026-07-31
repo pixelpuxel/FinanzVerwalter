@@ -1273,6 +1273,46 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 21")
             }
         }
+        if version < 22 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE payees ADD COLUMN creditor_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    """
+                    CREATE TABLE payee_default_tags (
+                        payee_id TEXT NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+                        tag_id TEXT NOT NULL REFERENCES tags(id),
+                        PRIMARY KEY(payee_id,tag_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE sepa_mandates (
+                        id TEXT PRIMARY KEY,
+                        payee_id TEXT NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+                        reference TEXT NOT NULL,
+                        signed_on TEXT,
+                        sequence_type TEXT NOT NULL,
+                        note TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(payee_id,reference)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX sepa_mandates_payee_active
+                    ON sepa_mandates(payee_id,is_active,reference)
+                    """
+                )
+                try execute("PRAGMA user_version = 22")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2128,7 +2168,7 @@ final class SQLiteFinanceStore {
         try query(
             """
             SELECT id,canonical_name,address,email,phone,iban,bic,
-                   default_category_id,preferred_account_id,note,is_active
+                   creditor_id,default_category_id,preferred_account_id,note,is_active
             FROM payees ORDER BY canonical_name COLLATE NOCASE,id
             """
         ) {
@@ -2138,15 +2178,26 @@ final class SQLiteFinanceStore {
                 "SELECT alias FROM payee_aliases WHERE payee_id=? ORDER BY alias COLLATE NOCASE",
                 [.text(id.uuidString)]
             ) { aliases.append(Self.text($0, 0)) }
+            var defaultTagIDs: [UUID] = []
+            try query(
+                "SELECT tag_id FROM payee_default_tags WHERE payee_id=? ORDER BY tag_id",
+                [.text(id.uuidString)]
+            ) {
+                if let tagID = UUID(uuidString: Self.text($0, 0)) {
+                    defaultTagIDs.append(tagID)
+                }
+            }
             values.append(
                 FinancePayee(
                     id: id, canonicalName: Self.text($0, 1), aliases: aliases,
                     address: Self.text($0, 2), email: Self.text($0, 3),
                     phone: Self.text($0, 4), iban: Self.text($0, 5),
                     bic: Self.text($0, 6),
-                    defaultCategoryID: Self.optionalText($0, 7).flatMap(UUID.init(uuidString:)),
-                    preferredAccountID: Self.optionalText($0, 8).flatMap(UUID.init(uuidString:)),
-                    note: Self.text($0, 9), isActive: sqlite3_column_int($0, 10) != 0
+                    creditorID: Self.text($0, 7),
+                    defaultCategoryID: Self.optionalText($0, 8).flatMap(UUID.init(uuidString:)),
+                    defaultTagIDs: defaultTagIDs,
+                    preferredAccountID: Self.optionalText($0, 9).flatMap(UUID.init(uuidString:)),
+                    note: Self.text($0, 10), isActive: sqlite3_column_int($0, 11) != 0
                 )
             )
         }
@@ -2159,6 +2210,14 @@ final class SQLiteFinanceStore {
         if !value.iban.isEmpty, !IBANValidator.isValid(value.iban) {
             throw FinanceError.invalidIBAN
         }
+        let creditorID = SEPACreditorIDValidator.normalized(value.creditorID)
+        if !creditorID.isEmpty, !SEPACreditorIDValidator.isValid(creditorID) {
+            throw FinanceError.database("Die SEPA-Gläubiger-ID ist ungültig.")
+        }
+        let activeTagIDs = Set(try tags().filter(\.isActive).map(\.id))
+        guard Set(value.defaultTagIDs).isSubset(of: activeTagIDs) else {
+            throw FinanceError.database("Mindestens eine Standardklasse fehlt oder ist inaktiv.")
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -2166,11 +2225,12 @@ final class SQLiteFinanceStore {
                 """
                 INSERT INTO payees(
                     id,finance_file_id,canonical_name,address,email,phone,iban,bic,
-                    default_category_id,preferred_account_id,note,is_active,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    creditor_id,default_category_id,preferred_account_id,note,is_active,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET canonical_name=excluded.canonical_name,
                     address=excluded.address,email=excluded.email,phone=excluded.phone,
-                    iban=excluded.iban,bic=excluded.bic,
+                    iban=excluded.iban,bic=excluded.bic,creditor_id=excluded.creditor_id,
                     default_category_id=excluded.default_category_id,
                     preferred_account_id=excluded.preferred_account_id,note=excluded.note,
                     is_active=excluded.is_active,updated_at=excluded.updated_at,version=version+1
@@ -2179,6 +2239,7 @@ final class SQLiteFinanceStore {
                     .text(value.id.uuidString), .text(info.id.uuidString), .text(name),
                     .text(value.address), .text(value.email), .text(value.phone),
                     .text(IBANValidator.normalized(value.iban)), .text(value.bic.uppercased()),
+                    .text(creditorID),
                     value.defaultCategoryID.map { .text($0.uuidString) } ?? .null,
                     value.preferredAccountID.map { .text($0.uuidString) } ?? .null,
                     .text(value.note), .integer(value.isActive ? 1 : 0),
@@ -2194,7 +2255,110 @@ final class SQLiteFinanceStore {
                     [.text(value.id.uuidString), .text(alias)]
                 )
             }
+            try run(
+                "DELETE FROM payee_default_tags WHERE payee_id=?",
+                [.text(value.id.uuidString)]
+            )
+            for tagID in Set(value.defaultTagIDs).sorted(by: {
+                $0.uuidString < $1.uuidString
+            }) {
+                try run(
+                    "INSERT INTO payee_default_tags(payee_id,tag_id) VALUES(?,?)",
+                    [.text(value.id.uuidString), .text(tagID.uuidString)]
+                )
+            }
             try audit(entity: "payee", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func sepaMandates(payeeID: UUID? = nil) throws -> [FinanceSEPAMandate] {
+        var values: [FinanceSEPAMandate] = []
+        let sql: String
+        let bindings: [SQLiteValue]
+        if let payeeID {
+            sql = """
+                SELECT id,payee_id,reference,signed_on,sequence_type,note,is_active
+                FROM sepa_mandates WHERE payee_id=?
+                ORDER BY is_active DESC,reference COLLATE NOCASE,id
+                """
+            bindings = [.text(payeeID.uuidString)]
+        } else {
+            sql = """
+                SELECT id,payee_id,reference,signed_on,sequence_type,note,is_active
+                FROM sepa_mandates
+                ORDER BY payee_id,is_active DESC,reference COLLATE NOCASE,id
+                """
+            bindings = []
+        }
+        try query(sql, bindings) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let payeeID = UUID(uuidString: Self.text(statement, 1)),
+                  let sequence = SEPAMandateSequenceType(
+                      rawValue: Self.text(statement, 4)
+                  )
+            else { return }
+            values.append(
+                FinanceSEPAMandate(
+                    id: id,
+                    payeeID: payeeID,
+                    reference: Self.text(statement, 2),
+                    signedOn: Self.optionalText(statement, 3).flatMap(Self.date),
+                    sequenceType: sequence,
+                    note: Self.text(statement, 5),
+                    isActive: sqlite3_column_int(statement, 6) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveSEPAMandate(_ value: FinanceSEPAMandate) throws {
+        let reference = value.reference.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard (1...35).contains(reference.count),
+              reference.range(
+                  of: #"^[A-Za-z0-9 /?:().,'+\-]+$"#,
+                  options: .regularExpression
+              ) != nil
+        else {
+            throw FinanceError.database(
+                "Die Mandatsreferenz muss 1 bis 35 zulässige SEPA-Zeichen enthalten."
+            )
+        }
+        guard try payees().contains(where: {
+            $0.id == value.payeeID && $0.isActive
+        }) else {
+            throw FinanceError.database("Die aktive Empfängerakte fehlt.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO sepa_mandates(
+                    id,payee_id,reference,signed_on,sequence_type,note,is_active,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    payee_id=excluded.payee_id,reference=excluded.reference,
+                    signed_on=excluded.signed_on,sequence_type=excluded.sequence_type,
+                    note=excluded.note,is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(value.payeeID.uuidString),
+                    .text(reference),
+                    value.signedOn.map { .text(Self.day($0)) } ?? .null,
+                    .text(value.sequenceType.rawValue), .text(value.note),
+                    .integer(value.isActive ? 1 : 0), .text(now), .text(now)
+                ]
+            )
+            try audit(
+                entity: "sepa-mandate",
+                id: value.id,
+                action: "save",
+                details: reference
+            )
         }
     }
 

@@ -3080,6 +3080,7 @@ private struct PayeeEditor: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var value: FinancePayee
     @State private var aliasesText: String
+    @State private var editedMandate: FinanceSEPAMandate?
 
     init(value: FinancePayee) {
         _value = State(initialValue: value)
@@ -3115,6 +3116,7 @@ private struct PayeeEditor: View {
                 Section("Zahlung & Vorgaben") {
                     TextField("IBAN", text: $value.iban)
                     TextField("BIC", text: $value.bic)
+                    TextField("SEPA-Gläubiger-ID", text: $value.creditorID)
                     Picker("Standardkategorie", selection: $value.defaultCategoryID) {
                         Text("Keine").tag(UUID?.none)
                         ForEach(store.categoriesByPath.filter(\.isActive)) {
@@ -3127,11 +3129,135 @@ private struct PayeeEditor: View {
                             Text($0.name).tag(Optional($0.id))
                         }
                     }
+                    if !store.tags.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Standardklassen/Tags")
+                            ScrollView(.horizontal) {
+                                HStack {
+                                    ForEach(store.tagsByPath.filter {
+                                        $0.isActive
+                                            || value.defaultTagIDs.contains($0.id)
+                                    }) { tag in
+                                        Toggle(
+                                            store.tagPath(tag.id)
+                                                + (tag.isActive ? "" : " (inaktiv)"),
+                                            isOn: Binding(
+                                                get: {
+                                                    value.defaultTagIDs.contains(tag.id)
+                                                },
+                                                set: { selected in
+                                                    if selected {
+                                                        if !value.defaultTagIDs.contains(tag.id) {
+                                                            value.defaultTagIDs.append(tag.id)
+                                                        }
+                                                    } else {
+                                                        value.defaultTagIDs.removeAll {
+                                                            $0 == tag.id
+                                                        }
+                                                    }
+                                                }
+                                            )
+                                        )
+                                        .toggleStyle(.button)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Section("SEPA-Mandate") {
+                    Button("Mandat anlegen", systemImage: "plus") {
+                        editedMandate = FinanceSEPAMandate(
+                            id: UUID(), payeeID: value.id, reference: "",
+                            signedOn: Date(), sequenceType: .recurring,
+                            note: "", isActive: true
+                        )
+                    }
+                    .disabled(!store.payees.contains { $0.id == value.id })
+                    .help(
+                        store.payees.contains { $0.id == value.id }
+                            ? "Neues SEPA-Mandat für diese Empfängerakte"
+                            : "Speichere die neue Empfängerakte zuerst und öffne sie anschließend erneut."
+                    )
+                    ForEach(store.sepaMandates.filter {
+                        $0.payeeID == value.id
+                    }) { mandate in
+                        Button {
+                            editedMandate = mandate
+                        } label: {
+                            LabeledContent(
+                                mandate.reference,
+                                value: mandate.sequenceType.title
+                                    + (mandate.isActive ? " · Aktiv" : " · Inaktiv")
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if store.sepaMandates.allSatisfy({
+                        $0.payeeID != value.id
+                    }) {
+                        Text("Noch kein Mandat vorhanden.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .formStyle(.grouped)
         }
-        .frame(width: 650, height: 620)
+        .frame(width: 680, height: 720)
+        .sheet(item: $editedMandate) {
+            SEPAMandateEditor(value: $0)
+        }
+    }
+}
+
+private struct SEPAMandateEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var value: FinanceSEPAMandate
+    @State private var hasSignedOn: Bool
+    @State private var signedOn: Date
+
+    init(value: FinanceSEPAMandate) {
+        _value = State(initialValue: value)
+        _hasSignedOn = State(initialValue: value.signedOn != nil)
+        _signedOn = State(initialValue: value.signedOn ?? Date())
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("SEPA-Mandat").font(.title2.bold())
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Speichern") {
+                    value.signedOn = hasSignedOn ? signedOn : nil
+                    if store.saveSEPAMandate(value) { dismiss() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(14)
+            Divider()
+            Form {
+                TextField("Mandatsreferenz", text: $value.reference)
+                Toggle("Unterschriftsdatum vorhanden", isOn: $hasSignedOn)
+                if hasSignedOn {
+                    DatePicker(
+                        "Unterschrieben am",
+                        selection: $signedOn,
+                        displayedComponents: .date
+                    )
+                }
+                Picker("Sequenztyp", selection: $value.sequenceType) {
+                    ForEach(SEPAMandateSequenceType.allCases, id: \.self) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                TextField("Notiz", text: $value.note)
+                Toggle("Aktiv", isOn: $value.isActive)
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 560, height: 390)
     }
 }
 

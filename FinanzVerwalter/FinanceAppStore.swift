@@ -94,6 +94,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var standingOrders: [StandingOrder] = []
     @Published private(set) var payees: [FinancePayee] = []
+    @Published private(set) var sepaMandates: [FinanceSEPAMandate] = []
     @Published private(set) var tags: [FinanceTag] = []
     @Published private(set) var securities: [Security] = []
     @Published private(set) var assetClasses: [AssetClass] = []
@@ -496,6 +497,19 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func saveSEPAMandate(_ value: FinanceSEPAMandate) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveSEPAMandate(value)
+            try load()
+            statusText = "Mandat „\(value.reference)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func saveTransaction(
         id: UUID? = nil,
         accountID: UUID,
@@ -509,6 +523,8 @@ final class FinanceAppStore: ObservableObject {
         reference: String = "",
         payeeID: UUID? = nil,
         tagIDs: [UUID] = [],
+        creditorID: String = "",
+        mandateReference: String = "",
         vatCodeID: UUID? = nil,
         vatMode: VATMode = .none,
         netMinor: Int64 = 0,
@@ -516,6 +532,23 @@ final class FinanceAppStore: ObservableObject {
     ) -> Bool {
         guard let repository else { return false }
         do {
+            let normalizedCreditorID = SEPACreditorIDValidator.normalized(
+                creditorID
+            )
+            if !normalizedCreditorID.isEmpty,
+               !SEPACreditorIDValidator.isValid(normalizedCreditorID) {
+                throw FinanceError.database(
+                    "Die SEPA-Gläubiger-ID ist ungültig."
+                )
+            }
+            let normalizedMandate = mandateReference.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if normalizedMandate.count > 35 {
+                throw FinanceError.database(
+                    "Die Mandatsreferenz darf höchstens 35 Zeichen lang sein."
+                )
+            }
             let money = try Money(parsing: amount)
             let existing = id.flatMap { transactionID in
                 transactions.first { $0.id == transactionID }
@@ -535,11 +568,11 @@ final class FinanceAppStore: ObservableObject {
                 externalTransactionID: existing?.externalTransactionID ?? "",
                 counterpartyIBAN: existing?.counterpartyIBAN ?? "",
                 endToEndID: existing?.endToEndID ?? "",
-                mandateReference: existing?.mandateReference ?? "",
+                mandateReference: normalizedMandate,
                 duplicateFingerprint: existing?.duplicateFingerprint ?? "",
                 bankBalanceAfterMinor: existing?.bankBalanceAfterMinor,
                 counterpartyBIC: existing?.counterpartyBIC ?? "",
-                creditorID: existing?.creditorID ?? "",
+                creditorID: normalizedCreditorID,
                 bookingText: existing?.bookingText ?? ""
             )
             try repository.saveTransaction(value)
@@ -1859,6 +1892,7 @@ final class FinanceAppStore: ObservableObject {
         paymentOrders = try repository.paymentOrders()
         standingOrders = try repository.standingOrders()
         payees = try repository.payees()
+        sepaMandates = try repository.sepaMandates()
         tags = try repository.tags()
         securities = try repository.securities()
         assetClasses = try repository.assetClasses()

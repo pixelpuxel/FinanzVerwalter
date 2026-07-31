@@ -34,7 +34,7 @@ struct RegisterView: View {
     private var secondaryAccountIDRaw = ""
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
-    @AppStorage("registerVisibleColumnsIncludesBalanceV2")
+    @AppStorage("registerVisibleColumnsIncludesBalanceV3")
     private var visibleColumnsIncludesBalance = false
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
@@ -1576,6 +1576,9 @@ struct TransactionEditorView: View {
     @State private var date = Date()
     @State private var payee = ""
     @State private var payeeID: UUID?
+    @State private var selectedMandateID: UUID?
+    @State private var creditorID = ""
+    @State private var mandateReference = ""
     @State private var purpose = ""
     @State private var categoryID: UUID?
     @State private var amount = ""
@@ -1642,13 +1645,50 @@ struct TransactionEditorView: View {
                 )
                 .onChange(of: payeeID) {
                     guard let selected = store.payees.first(where: { $0.id == payeeID }) else {
+                        selectedMandateID = nil
                         return
                     }
                     payee = selected.canonicalName
                     categoryID = categoryID ?? selected.defaultCategoryID
                     accountID = accountID ?? selected.preferredAccountID
+                    if selectedTagIDs.isEmpty {
+                        selectedTagIDs = Set(selected.defaultTagIDs)
+                    }
+                    creditorID = selected.creditorID
+                    selectedMandateID = nil
+                    mandateReference = ""
+                    let mandates = activeMandates(for: selected.id)
+                    if mandates.count == 1, let mandate = mandates.first {
+                        selectedMandateID = mandate.id
+                        mandateReference = mandate.reference
+                    }
                 }
                 TextField("Verwendungszweck", text: $purpose)
+                Section("SEPA-Lastschrift") {
+                    TextField("Gläubiger-ID", text: $creditorID)
+                    Picker("Mandat", selection: $selectedMandateID) {
+                        Text("Keine Mandatsakte").tag(UUID?.none)
+                        ForEach(activeMandates(for: payeeID)) { mandate in
+                            Text(mandate.reference).tag(Optional(mandate.id))
+                        }
+                    }
+                    .disabled(payeeID == nil || activeMandates(for: payeeID).isEmpty)
+                    .onChange(of: selectedMandateID) {
+                        guard let selectedMandateID,
+                              let mandate = store.sepaMandates.first(where: {
+                                  $0.id == selectedMandateID
+                              })
+                        else { return }
+                        mandateReference = mandate.reference
+                    }
+                    TextField("Mandatsreferenz", text: $mandateReference)
+                    Text(
+                        "Gläubiger-ID und Mandatsreferenz werden mit der Buchung gespeichert. "
+                            + "Mandate verwaltest du unter Empfänger & Zahler."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
                 Picker("Kategorie", selection: $categoryID) {
                     Text("Nicht kategorisiert").tag(UUID?.none)
                     ForEach(store.categoriesByPath.filter(\.isActive)) {
@@ -1874,6 +1914,14 @@ struct TransactionEditorView: View {
             date = transaction?.bookingDate ?? Date()
             payee = source?.payee ?? ""
             payeeID = source?.payeeID
+            creditorID = source?.creditorID ?? ""
+            mandateReference = source?.mandateReference ?? ""
+            selectedMandateID = source.flatMap { transaction in
+                store.sepaMandates.first {
+                    $0.payeeID == transaction.payeeID
+                        && $0.reference == transaction.mandateReference
+                }?.id
+            }
             purpose = source?.purpose ?? ""
             categoryID = source?.categoryID
             amount = source.map {
@@ -1954,6 +2002,21 @@ struct TransactionEditorView: View {
             store.errorMessage = FinanceError.missingAccount.localizedDescription
             return
         }
+        let normalizedCreditorID = SEPACreditorIDValidator.normalized(
+            creditorID
+        )
+        guard normalizedCreditorID.isEmpty
+                || SEPACreditorIDValidator.isValid(normalizedCreditorID)
+        else {
+            store.errorMessage = "Die SEPA-Gläubiger-ID ist ungültig."
+            return
+        }
+        guard mandateReference.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).count <= 35 else {
+            store.errorMessage = "Die Mandatsreferenz darf höchstens 35 Zeichen lang sein."
+            return
+        }
         if useSplits {
             saveSplit(accountID: accountID)
         } else {
@@ -1965,6 +2028,8 @@ struct TransactionEditorView: View {
                     status: status, memo: memo,
                     reference: transaction?.reference ?? "",
                     payeeID: payeeID, tagIDs: Array(selectedTagIDs),
+                    creditorID: creditorID,
+                    mandateReference: mandateReference,
                     vatCodeID: vatValues?.codeID,
                     vatMode: vatValues?.mode ?? .none,
                     netMinor: vatValues?.breakdown.netMinor ?? 0,
@@ -1991,6 +2056,16 @@ struct TransactionEditorView: View {
         guard !details.isEmpty else { return suggestion.payee.canonicalName }
         return suggestion.payee.canonicalName
             + " — " + details.joined(separator: " · ")
+    }
+
+    private func activeMandates(for payeeID: UUID?) -> [FinanceSEPAMandate] {
+        guard let payeeID else { return [] }
+        return store.sepaMandates
+            .filter { $0.payeeID == payeeID && $0.isActive }
+            .sorted {
+                $0.reference.localizedStandardCompare($1.reference)
+                    == .orderedAscending
+            }
     }
 
     private func resolvedSimpleVAT() throws -> (
@@ -2125,11 +2200,11 @@ struct TransactionEditorView: View {
                 externalTransactionID: transaction?.externalTransactionID ?? "",
                 counterpartyIBAN: transaction?.counterpartyIBAN ?? "",
                 endToEndID: transaction?.endToEndID ?? "",
-                mandateReference: transaction?.mandateReference ?? "",
+                mandateReference: mandateReference,
                 duplicateFingerprint: transaction?.duplicateFingerprint ?? "",
                 bankBalanceAfterMinor: transaction?.bankBalanceAfterMinor,
                 counterpartyBIC: transaction?.counterpartyBIC ?? "",
-                creditorID: transaction?.creditorID ?? "",
+                creditorID: SEPACreditorIDValidator.normalized(creditorID),
                 bookingText: transaction?.bookingText ?? ""
             )
             if store.saveSplitTransaction(value) {
