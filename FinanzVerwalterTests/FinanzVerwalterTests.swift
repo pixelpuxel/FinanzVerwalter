@@ -4735,6 +4735,242 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(text.contains("Seite 1 von"))
     }
 
+    func testPeriodComparisonAlignsGroupsAndCalculatesAmountAndPercent() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        func day(_ year: Int, _ month: Int, _ value: Int, _ hour: Int = 12) -> Date {
+            calendar.date(from: DateComponents(
+                year: year, month: month, day: value, hour: hour
+            ))!
+        }
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let parent = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Haushalt", kind: .expense,
+            color: "#000000", isActive: true
+        )
+        let food = FinanceCategory(
+            id: UUID(), parentID: parent.id, name: "Lebensmittel", kind: .expense,
+            color: "#000000", isActive: true
+        )
+        let travel = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Reisen", kind: .expense,
+            color: "#000000", isActive: true
+        )
+        func transaction(_ date: Date, _ amount: Int64, _ categoryID: UUID) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: account.id, bookingDate: date,
+                valueDate: nil, payee: "", purpose: "", categoryID: categoryID,
+                amountMinor: amount, currency: "EUR", status: .booked,
+                memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: []
+            )
+        }
+        let transactions = [
+            transaction(day(2025, 1, 10), -10_000, food.id),
+            transaction(day(2025, 2, 10), -15_000, food.id),
+            transaction(day(2025, 2, 11), -5_000, travel.id),
+            transaction(day(2025, 3, 10), -25_000, food.id)
+        ]
+        let snapshot = PeriodComparisonEngine.snapshot(
+            query: PeriodComparisonQuery(
+                currentFrom: day(2025, 2, 1, 0),
+                currentThrough: day(2025, 2, 28, 23),
+                referenceFrom: day(2025, 1, 1, 0),
+                referenceThrough: day(2025, 1, 31, 23),
+                grouping: .category, metric: .expense,
+                baseQuery: TransactionReportQuery(dateFrom: nil, dateThrough: nil)
+            ),
+            transactions: transactions,
+            accounts: [account], categories: [travel, food, parent], tags: []
+        )
+        XCTAssertEqual(snapshot.rows.map(\.label), ["Haushalt › Lebensmittel", "Reisen"])
+        let foodRow = try XCTUnwrap(snapshot.rows.first { $0.label.contains("Lebensmittel") })
+        XCTAssertEqual(foodRow.currentMinor, 15_000)
+        XCTAssertEqual(foodRow.referenceMinor, 10_000)
+        XCTAssertEqual(foodRow.differenceMinor, 5_000)
+        XCTAssertEqual(foodRow.percentBasisPoints, 5_000)
+        let travelRow = try XCTUnwrap(snapshot.rows.first { $0.label == "Reisen" })
+        XCTAssertEqual(travelRow.currentMinor, 5_000)
+        XCTAssertEqual(travelRow.referenceMinor, 0)
+        XCTAssertNil(travelRow.percentBasisPoints)
+        XCTAssertEqual(foodRow.currentFactIDs.count, 1)
+        XCTAssertEqual(foodRow.referenceFactIDs.count, 1)
+        let total = try XCTUnwrap(snapshot.totals.first)
+        XCTAssertEqual(total.currentMinor, 20_000)
+        XCTAssertEqual(total.referenceMinor, 10_000)
+        XCTAssertEqual(total.differenceMinor, 10_000)
+        XCTAssertEqual(total.percentBasisPoints, 10_000)
+
+        let average = PeriodComparisonEngine.snapshot(
+            query: PeriodComparisonQuery(
+                currentFrom: day(2025, 3, 1, 0),
+                currentThrough: day(2025, 3, 31, 23),
+                referenceFrom: day(2025, 1, 1, 0),
+                referenceThrough: day(2025, 2, 28, 23),
+                grouping: .category, metric: .expense,
+                referenceMode: .monthlyAverage,
+                baseQuery: TransactionReportQuery(dateFrom: nil, dateThrough: nil)
+            ),
+            transactions: transactions, accounts: [account],
+            categories: [travel, food, parent], tags: [], calendar: calendar
+        )
+        let averageFood = try XCTUnwrap(
+            average.rows.first { $0.label.contains("Lebensmittel") }
+        )
+        XCTAssertEqual(averageFood.currentMinor, 25_000)
+        XCTAssertEqual(averageFood.referenceMinor, 12_500)
+        XCTAssertEqual(averageFood.differenceMinor, 12_500)
+        XCTAssertEqual(averageFood.percentBasisPoints, 10_000)
+    }
+
+    func testBudgetReportUsesBusinessYearSplitsAndEligibleAccounts() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let budget = FinanceBudget(
+            id: UUID(), name: "Haushalt 2025/26", startYear: 2025,
+            startMonth: 7, currency: "EUR", isActive: true
+        )
+        let included = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let excluded = FinanceAccount(
+            id: UUID(), name: "Außer Budget", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1, includeBudget: false
+        )
+        let parent = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Wohnen", kind: .expense,
+            color: "#000000", isActive: true
+        )
+        let energy = FinanceCategory(
+            id: UUID(), parentID: parent.id, name: "Energie", kind: .expense,
+            color: "#000000", isActive: true
+        )
+        let salary = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Gehalt", kind: .income,
+            color: "#000000", isActive: true
+        )
+        let july = calendar.date(from: DateComponents(year: 2025, month: 7, day: 10))!
+        let august = calendar.date(from: DateComponents(year: 2025, month: 8, day: 10))!
+        let expenseSplit = FinanceSplit(
+            id: UUID(), categoryID: energy.id, amountMinor: -12_000,
+            memo: "Strom", sortOrder: 0
+        )
+        func transaction(
+            accountID: UUID, date: Date, amount: Int64,
+            categoryID: UUID?, splits: [FinanceSplit] = []
+        ) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: accountID, bookingDate: date,
+                valueDate: nil, payee: "", purpose: "", categoryID: categoryID,
+                amountMinor: amount, currency: "EUR", status: .booked,
+                memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: splits
+            )
+        }
+        let lines = [
+            BudgetLine(
+                id: UUID(), budgetID: budget.id, categoryID: energy.id,
+                year: 2025, month: 7, plannedMinor: 10_000,
+                rolloverPositive: false, rolloverNegative: false
+            ),
+            BudgetLine(
+                id: UUID(), budgetID: budget.id, categoryID: salary.id,
+                year: 2025, month: 7, plannedMinor: 20_000,
+                rolloverPositive: false, rolloverNegative: false
+            ),
+            BudgetLine(
+                id: UUID(), budgetID: budget.id, categoryID: energy.id,
+                year: 2025, month: 8, plannedMinor: 99_000,
+                rolloverPositive: false, rolloverNegative: false
+            )
+        ]
+        let snapshot = BudgetReportEngine.snapshot(
+            budget: budget,
+            query: BudgetReportQuery(monthKeys: ["2025-07"]),
+            lines: lines,
+            transactions: [
+                transaction(accountID: included.id, date: july, amount: -12_000,
+                            categoryID: nil, splits: [expenseSplit]),
+                transaction(accountID: included.id, date: july, amount: 25_000,
+                            categoryID: salary.id),
+                transaction(accountID: excluded.id, date: july, amount: -50_000,
+                            categoryID: energy.id),
+                transaction(accountID: included.id, date: august, amount: -40_000,
+                            categoryID: energy.id)
+            ],
+            accounts: [included, excluded], categories: [energy, salary, parent],
+            tags: [], calendar: calendar
+        )
+        XCTAssertEqual(snapshot.includedMonths.map {
+            BudgetReportEngine.monthKey($0, calendar: calendar)
+        }, ["2025-07"])
+        XCTAssertEqual(snapshot.rows.map(\.categoryPath), ["Wohnen › Energie", "Gehalt"])
+        let energyRow = try XCTUnwrap(snapshot.rows.first { $0.categoryID == energy.id })
+        XCTAssertEqual(energyRow.plannedMinor, 10_000)
+        XCTAssertEqual(energyRow.actualMinor, 12_000)
+        XCTAssertEqual(energyRow.varianceMinor, 2_000)
+        XCTAssertEqual(energyRow.completionBasisPoints, 12_000)
+        XCTAssertEqual(energyRow.factIDs.count, 1)
+        let salaryRow = try XCTUnwrap(snapshot.rows.first { $0.categoryID == salary.id })
+        XCTAssertEqual(salaryRow.plannedMinor, 20_000)
+        XCTAssertEqual(salaryRow.actualMinor, 25_000)
+        XCTAssertEqual(snapshot.plannedExpenseMinor, 10_000)
+        XCTAssertEqual(snapshot.actualExpenseMinor, 12_000)
+        XCTAssertEqual(snapshot.plannedIncomeMinor, 20_000)
+        XCTAssertEqual(snapshot.actualIncomeMinor, 25_000)
+    }
+
+    func testComparisonCSVAndPDFAreDeterministicAndMultipage() throws {
+        let rows = (0..<80).map { index in
+            PeriodComparisonRow(
+                id: "row-\(index)", label: "Kategorie \(index)", currency: "EUR",
+                currentMinor: 15_000 + Int64(index), referenceMinor: 10_000,
+                differenceMinor: 5_000 + Int64(index), percentBasisPoints: 5_000,
+                currentFactIDs: [], referenceFactIDs: []
+            )
+        }
+        let snapshot = PeriodComparisonSnapshot(
+            currentFrom: Date(timeIntervalSince1970: 1_738_368_000),
+            currentThrough: Date(timeIntervalSince1970: 1_740_787_199),
+            referenceFrom: Date(timeIntervalSince1970: 1_735_689_600),
+            referenceThrough: Date(timeIntervalSince1970: 1_738_367_999),
+            metric: .expense, rows: rows, currentFacts: [], referenceFacts: []
+        )
+        let metadata = ComparisonReportExportMetadata(
+            title: "Zeitvergleich Ausgaben", currentLabel: "Februar 2025",
+            referenceLabel: "Januar 2025", generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let csv = ComparisonReportCSVExporter.periodData(
+            snapshot: snapshot, metadata: metadata
+        )
+        let text = try XCTUnwrap(String(data: csv, encoding: .utf8))
+        XCTAssertTrue(text.contains("Kategorie 0;150,00;100,00;50,00;50,00;EUR"))
+        XCTAssertTrue(text.contains("Gesamt;12031,60;8000,00;4031,60;50,40;EUR"))
+        XCTAssertEqual(
+            csv,
+            ComparisonReportCSVExporter.periodData(snapshot: snapshot, metadata: metadata)
+        )
+        let pdf = try ComparisonReportPDFExporter.periodData(
+            snapshot: snapshot, metadata: metadata, orientation: .landscape
+        )
+        let document = try XCTUnwrap(PDFDocument(data: pdf))
+        XCTAssertGreaterThan(document.pageCount, 1)
+        let pdfText = (0..<document.pageCount).compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+        XCTAssertTrue(pdfText.contains("Zeitvergleich Ausgaben"))
+        XCTAssertTrue(pdfText.contains("Kategorie 0"))
+        XCTAssertTrue(pdfText.contains("Kategorie 79"))
+        XCTAssertTrue(pdfText.contains("Gesamt"))
+        XCTAssertTrue(pdfText.contains("Seite 1 von"))
+    }
+
     func testReportCSVExportIsDeterministicEscapedAndUsesGermanMinorUnits() throws {
         let fact = TransactionReportFact(
             id: "fact-1",

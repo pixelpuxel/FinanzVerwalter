@@ -1018,6 +1018,8 @@ struct ReportsView: View {
     @State private var selectedTemplateID: UUID?
     @State private var showTemplateSave = false
     @State private var showAccountBalanceReport = false
+    @State private var showPeriodComparisonReport = false
+    @State private var showBudgetReport = false
     @State private var templateName = ""
     @State private var csvSeparator: ReportCSVSeparator = .semicolon
     @State private var csvEncoding: ReportCSVEncoding = .utf8
@@ -1133,6 +1135,16 @@ struct ReportsView: View {
                             showAccountBalanceReport = true
                         } label: {
                             Label("Kontosalden und Nettovermögen …", systemImage: "scalemass")
+                        }
+                        Button {
+                            showPeriodComparisonReport = true
+                        } label: {
+                            Label("Zeitvergleich …", systemImage: "arrow.left.arrow.right.square")
+                        }
+                        Button {
+                            showBudgetReport = true
+                        } label: {
+                            Label("Budget Plan/Ist/Abweichung …", systemImage: "chart.bar.xaxis")
                         }
                     } label: {
                         Label("Standardberichte", systemImage: "chart.bar.doc.horizontal")
@@ -1355,6 +1367,14 @@ struct ReportsView: View {
         }
         .sheet(isPresented: $showAccountBalanceReport) {
             AccountBalanceReportView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showPeriodComparisonReport) {
+            PeriodComparisonReportView(baseQuery: query)
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showBudgetReport) {
+            BudgetComparisonReportView()
                 .environmentObject(store)
         }
         .fileExporter(
@@ -1906,6 +1926,516 @@ struct ReportsView: View {
     private func decimalAmount(_ minorUnits: Int64) -> String {
         let magnitude = minorUnits.magnitude
         return "\(magnitude / 100),\(magnitude % 100 < 10 ? "0" : "")\(magnitude % 100)"
+    }
+}
+
+private struct PeriodComparisonReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let baseQuery: TransactionReportQuery
+    @State private var currentFrom: Date
+    @State private var currentThrough: Date
+    @State private var referenceFrom: Date
+    @State private var referenceThrough: Date
+    @State private var grouping: ReportGrouping = .category
+    @State private var metric: PeriodComparisonMetric = .expense
+    @State private var referenceMode: PeriodComparisonReferenceMode = .total
+    @State private var selectedRowID: String?
+    @State private var showCurrentFacts = true
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    init(baseQuery: TransactionReportQuery) {
+        self.baseQuery = baseQuery
+        let calendar = Calendar.current
+        let month = calendar.dateInterval(of: .month, for: .now)
+        let start = baseQuery.dateFrom ?? month?.start ?? .now
+        let end = baseQuery.dateThrough
+            ?? month?.end.addingTimeInterval(-0.001)
+            ?? .now
+        let referenceEnd = start.addingTimeInterval(-0.001)
+        let duration = max(0, end.timeIntervalSince(start))
+        _currentFrom = State(initialValue: start)
+        _currentThrough = State(initialValue: end)
+        _referenceThrough = State(initialValue: referenceEnd)
+        _referenceFrom = State(initialValue: referenceEnd.addingTimeInterval(-duration))
+    }
+
+    private var snapshot: PeriodComparisonSnapshot {
+        store.periodComparisonReport(
+            PeriodComparisonQuery(
+                currentFrom: currentFrom, currentThrough: currentThrough,
+                referenceFrom: referenceFrom, referenceThrough: referenceThrough,
+                grouping: grouping, metric: metric, referenceMode: referenceMode,
+                baseQuery: baseQuery
+            )
+        )
+    }
+
+    private var selectedRow: PeriodComparisonRow? {
+        selectedRowID.flatMap { id in snapshot.rows.first { $0.id == id } }
+    }
+
+    private var drilldownFacts: [TransactionReportFact] {
+        guard let selectedRow else { return [] }
+        let ids = showCurrentFacts
+            ? selectedRow.currentFactIDs : selectedRow.referenceFactIDs
+        let source = showCurrentFacts ? snapshot.currentFacts : snapshot.referenceFacts
+        return source.filter { ids.contains($0.id) }
+    }
+
+    var body: some View {
+        let value = snapshot
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Zeitvergleich").font(.title2.bold())
+                    Text("Betrag und Prozent aus derselben gefilterten Buchungsmomentaufnahme")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    Text("Aktuell").fontWeight(.semibold)
+                    DatePicker("Von", selection: $currentFrom, displayedComponents: .date)
+                    DatePicker("Bis", selection: $currentThrough, displayedComponents: .date)
+                    Divider().frame(height: 20)
+                    Text("Vergleich").fontWeight(.semibold)
+                    DatePicker("Von", selection: $referenceFrom, displayedComponents: .date)
+                    DatePicker("Bis", selection: $referenceThrough, displayedComponents: .date)
+                }
+                HStack(spacing: 10) {
+                    Picker("Kennzahl", selection: $metric) {
+                        ForEach(PeriodComparisonMetric.allCases) { Text($0.title).tag($0) }
+                    }
+                    .frame(width: 170)
+                    Picker("Zeilen", selection: $grouping) {
+                        ForEach(ReportGrouping.allCases) { Text($0.title).tag($0) }
+                    }
+                    .frame(width: 180)
+                    Picker("Vergleichswert", selection: $referenceMode) {
+                        ForEach(PeriodComparisonReferenceMode.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 210)
+                    Spacer()
+                    Button("CSV exportieren …", systemImage: "tablecells") {
+                        csvDocument = ReportCSVDocument(data:
+                            ComparisonReportCSVExporter.periodData(
+                                snapshot: value, metadata: metadata
+                            )
+                        )
+                        showCSVExporter = true
+                    }
+                    outputMenu(value)
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            Divider()
+            VSplitView {
+                VStack(spacing: 0) {
+                    Table(value.rows, selection: $selectedRowID) {
+                        TableColumn(grouping.title) { Text($0.label).lineLimit(1) }
+                            .width(min: 190, ideal: 280)
+                        TableColumn("Aktuell") { row in amount(row.currentMinor, row.currency) }
+                            .width(135)
+                        TableColumn(referenceMode == .monthlyAverage ? "Ø Vergleich" : "Vergleich") {
+                            row in amount(row.referenceMinor, row.currency)
+                        }
+                        .width(135)
+                        TableColumn("Abweichung") {
+                            row in amount(row.differenceMinor, row.currency)
+                        }.width(135)
+                        TableColumn("Abweichung %") { row in
+                            Text(percent(row.percentBasisPoints))
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .monospacedDigit()
+                        }.width(105)
+                        TableColumn("Währung") { Text($0.currency) }.width(70)
+                    }
+                    .overlay {
+                        if value.rows.isEmpty {
+                            ContentUnavailableView(
+                                "Keine Vergleichswerte",
+                                systemImage: "arrow.left.arrow.right.square",
+                                description: Text(
+                                    "Die gewählten Zeiträume und Filter enthalten keine Buchungen."
+                                )
+                            )
+                        }
+                    }
+                    Divider()
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 18) {
+                            Text("Gesamtsummen").fontWeight(.semibold)
+                            ForEach(value.totals) { total in
+                                Text(
+                                    "\(total.currency): aktuell "
+                                        + Money(minorUnits: total.currentMinor,
+                                                currency: total.currency).formatted
+                                        + " · Vergleich "
+                                        + Money(minorUnits: total.referenceMinor,
+                                                currency: total.currency).formatted
+                                        + " · Δ "
+                                        + Money(minorUnits: total.differenceMinor,
+                                                currency: total.currency).formatted
+                                ).monospacedDigit()
+                            }
+                        }.font(.caption).padding(.horizontal, 12).padding(.vertical, 7)
+                    }
+                }
+                VStack(spacing: 0) {
+                    HStack {
+                        Text(selectedRow?.label ?? "Drill-down")
+                            .font(.headline).lineLimit(1)
+                        Spacer()
+                        Picker("Zeitraum", selection: $showCurrentFacts) {
+                            Text("Aktuell").tag(true)
+                            Text("Vergleich").tag(false)
+                        }
+                        .pickerStyle(.segmented).frame(width: 190)
+                        Text("\(drilldownFacts.count) Positionen")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                    Divider()
+                    Table(drilldownFacts) {
+                        TableColumn("Datum") {
+                            Text($0.bookingDate, format: .dateTime.day().month().year())
+                        }.width(95)
+                        TableColumn("Empfänger") { Text($0.payee).lineLimit(1) }
+                        TableColumn("Kategorie") { Text($0.categoryPath).lineLimit(1) }
+                        TableColumn("Betrag") { fact in amount(fact.amountMinor, fact.currency) }
+                            .width(130)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 1_120, minHeight: 720)
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: filename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: filename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .onChange(of: value.rows.map(\.id)) {
+            if selectedRowID.map({ id in value.rows.contains { $0.id == id } }) != true {
+                selectedRowID = value.rows.first?.id
+            }
+        }
+        .onAppear { selectedRowID = value.rows.first?.id }
+    }
+
+    private func outputMenu(_ snapshot: PeriodComparisonSnapshot) -> some View {
+        Menu {
+            Picker("Papierausrichtung", selection: $orientation) {
+                ForEach(ReportPDFOrientation.allCases) { Text($0.title).tag($0) }
+            }
+            Divider()
+            Button("Drucken …", systemImage: "printer.fill") {
+                do {
+                    try RegisterPrintService.printPDF(
+                        try ComparisonReportPDFExporter.periodData(
+                            snapshot: snapshot, metadata: metadata, orientation: orientation
+                        )
+                    )
+                } catch { store.errorMessage = error.localizedDescription }
+            }
+            Button("PDF exportieren …", systemImage: "doc.richtext") {
+                do {
+                    pdfDocument = ReportPDFDocument(data:
+                        try ComparisonReportPDFExporter.periodData(
+                            snapshot: snapshot, metadata: metadata, orientation: orientation
+                        )
+                    )
+                    showPDFExporter = true
+                } catch { store.errorMessage = error.localizedDescription }
+            }
+        } label: {
+            Label("PDF · \(orientation.title)", systemImage: "printer")
+        }
+    }
+
+    private var metadata: ComparisonReportExportMetadata {
+        ComparisonReportExportMetadata(
+            title: "Zeitvergleich \(metric.title)",
+            currentLabel: intervalLabel(currentFrom, currentThrough),
+            referenceLabel: (referenceMode == .monthlyAverage ? "Ø " : "")
+                + intervalLabel(referenceFrom, referenceThrough),
+            generatedAt: .now
+        )
+    }
+
+    private var filename: String { "FinanzVerwalter-Zeitvergleich-\(metric.rawValue)" }
+
+    private func intervalLabel(_ from: Date, _ through: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.dateStyle = .medium
+        return "\(formatter.string(from: min(from, through)))–\(formatter.string(from: max(from, through)))"
+    }
+
+    private func amount(_ minor: Int64, _ currency: String) -> some View {
+        Text(Money(minorUnits: minor, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing).monospacedDigit()
+    }
+
+    private func percent(_ basisPoints: Int64?) -> String {
+        guard let basisPoints else { return "—" }
+        let sign = basisPoints < 0 ? "−" : ""
+        let magnitude = basisPoints.magnitude
+        return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100)) %"
+    }
+}
+
+private struct BudgetComparisonReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedBudgetID: UUID?
+    @State private var selectedMonthKey = ""
+    @State private var includeZeroRows = false
+    @State private var selectedCategoryID: UUID?
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    private var budget: FinanceBudget? {
+        selectedBudgetID.flatMap { id in store.budgets.first { $0.id == id } }
+    }
+
+    private var snapshot: BudgetReportSnapshot? {
+        guard let selectedBudgetID else { return nil }
+        return store.budgetReport(
+            budgetID: selectedBudgetID,
+            query: BudgetReportQuery(
+                monthKeys: selectedMonthKey.isEmpty ? [] : [selectedMonthKey],
+                includeZeroRows: includeZeroRows
+            )
+        )
+    }
+
+    private var selectedRow: BudgetReportRow? {
+        selectedCategoryID.flatMap { id in snapshot?.rows.first { $0.categoryID == id } }
+    }
+
+    private var drilldownFacts: [TransactionReportFact] {
+        guard let selectedRow, let snapshot else { return [] }
+        return snapshot.facts.filter { selectedRow.factIDs.contains($0.id) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Budget Plan/Ist/Abweichung").font(.title2.bold())
+                    Text("Geschäftsjahr, Monatsauswahl und Buchungs-Drill-down")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            HStack(spacing: 10) {
+                Picker("Budget", selection: $selectedBudgetID) {
+                    Text("Budget wählen").tag(UUID?.none)
+                    ForEach(store.budgets) { Text($0.name).tag(UUID?.some($0.id)) }
+                }
+                .frame(width: 260)
+                if let budget {
+                    Picker("Zeitraum", selection: $selectedMonthKey) {
+                        Text("Gesamtes Geschäftsjahr").tag("")
+                        ForEach(budget.months(), id: \.self) { month in
+                            Text(month, format: .dateTime.month(.wide).year())
+                                .tag(BudgetReportEngine.monthKey(month))
+                        }
+                    }
+                    .frame(width: 230)
+                }
+                Toggle("Nullzeilen", isOn: $includeZeroRows).toggleStyle(.checkbox)
+                Spacer()
+                if let snapshot {
+                    Button("CSV exportieren …", systemImage: "tablecells") {
+                        csvDocument = ReportCSVDocument(data:
+                            ComparisonReportCSVExporter.budgetData(
+                                snapshot: snapshot, metadata: metadata(snapshot)
+                            )
+                        )
+                        showCSVExporter = true
+                    }
+                    budgetOutputMenu(snapshot)
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            Divider()
+            if let snapshot {
+                HStack(spacing: 12) {
+                    comparisonMetric("Einnahmen Plan", snapshot.plannedIncomeMinor,
+                                     snapshot.budget.currency)
+                    comparisonMetric("Einnahmen Ist", snapshot.actualIncomeMinor,
+                                     snapshot.budget.currency)
+                    comparisonMetric("Ausgaben Plan", snapshot.plannedExpenseMinor,
+                                     snapshot.budget.currency)
+                    comparisonMetric("Ausgaben Ist", snapshot.actualExpenseMinor,
+                                     snapshot.budget.currency,
+                                     warning: snapshot.actualExpenseMinor > snapshot.plannedExpenseMinor)
+                }
+                .padding(10)
+                Divider()
+                VSplitView {
+                    Table(snapshot.rows, selection: $selectedCategoryID) {
+                        TableColumn("Kategorie") { Text($0.categoryPath).lineLimit(1) }
+                            .width(min: 220, ideal: 320)
+                        TableColumn("Art") {
+                            Text($0.kind == .income ? "Einnahme" : "Ausgabe")
+                        }.width(90)
+                        TableColumn("Plan") { row in amount(row.plannedMinor, row.currency) }
+                            .width(125)
+                        TableColumn("Ist") { row in amount(row.actualMinor, row.currency) }
+                            .width(125)
+                        TableColumn("Abweichung") { row in
+                            amount(row.varianceMinor, row.currency)
+                                .foregroundStyle(row.varianceMinor > 0 && row.kind == .expense
+                                    ? Color.red : Color.primary)
+                        }.width(125)
+                        TableColumn("Zielerreichung") { row in
+                            Text(percent(row.completionBasisPoints))
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .monospacedDigit()
+                        }.width(110)
+                    }
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text(selectedRow?.categoryPath ?? "Drill-down").font(.headline)
+                            Spacer()
+                            Text("\(drilldownFacts.count) Positionen")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.padding(8)
+                        Divider()
+                        Table(drilldownFacts) {
+                            TableColumn("Datum") {
+                                Text($0.bookingDate, format: .dateTime.day().month().year())
+                            }.width(95)
+                            TableColumn("Empfänger") { Text($0.payee).lineLimit(1) }
+                            TableColumn("Zweck") { Text($0.purpose).lineLimit(1) }
+                            TableColumn("Betrag") { fact in amount(fact.amountMinor, fact.currency) }
+                                .width(130)
+                        }
+                    }
+                }
+            } else {
+                ContentUnavailableView(
+                    store.budgets.isEmpty ? "Noch kein Budget" : "Budget wählen",
+                    systemImage: "chart.bar.xaxis",
+                    description: Text("Budgetwerte werden unverändert aus der lokalen Finanzdatei gelesen.")
+                )
+            }
+        }
+        .frame(minWidth: 1_100, minHeight: 720)
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: filename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: filename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .onAppear { selectedBudgetID = selectedBudgetID ?? store.budgets.first?.id }
+        .onChange(of: selectedBudgetID) {
+            selectedMonthKey = ""
+            selectedCategoryID = snapshot?.rows.first?.categoryID
+        }
+        .onChange(of: snapshot?.rows.map(\.id) ?? []) {
+            if selectedCategoryID.map({ id in snapshot?.rows.contains { $0.id == id } }) != true {
+                selectedCategoryID = snapshot?.rows.first?.categoryID
+            }
+        }
+    }
+
+    private func budgetOutputMenu(_ snapshot: BudgetReportSnapshot) -> some View {
+        Menu {
+            Picker("Papierausrichtung", selection: $orientation) {
+                ForEach(ReportPDFOrientation.allCases) { Text($0.title).tag($0) }
+            }
+            Divider()
+            Button("Drucken …", systemImage: "printer.fill") {
+                do {
+                    try RegisterPrintService.printPDF(
+                        try ComparisonReportPDFExporter.budgetData(
+                            snapshot: snapshot, metadata: metadata(snapshot),
+                            orientation: orientation
+                        )
+                    )
+                } catch { store.errorMessage = error.localizedDescription }
+            }
+            Button("PDF exportieren …", systemImage: "doc.richtext") {
+                do {
+                    pdfDocument = ReportPDFDocument(data:
+                        try ComparisonReportPDFExporter.budgetData(
+                            snapshot: snapshot, metadata: metadata(snapshot),
+                            orientation: orientation
+                        )
+                    )
+                    showPDFExporter = true
+                } catch { store.errorMessage = error.localizedDescription }
+            }
+        } label: { Label("PDF · \(orientation.title)", systemImage: "printer") }
+    }
+
+    private func metadata(_ snapshot: BudgetReportSnapshot) -> ComparisonReportExportMetadata {
+        ComparisonReportExportMetadata(
+            title: "Budget Plan/Ist/Abweichung – \(snapshot.budget.name)",
+            currentLabel: selectedMonthKey.isEmpty ? "Gesamtes Geschäftsjahr" : periodLabel(snapshot),
+            referenceLabel: "Plan gegenüber Ist", generatedAt: .now
+        )
+    }
+
+    private func periodLabel(_ snapshot: BudgetReportSnapshot) -> String {
+        guard let month = snapshot.includedMonths.first else { return "Kein Zeitraum" }
+        return month.formatted(.dateTime.month(.wide).year())
+    }
+
+    private var filename: String { "FinanzVerwalter-Budget-Plan-Ist" }
+
+    private func comparisonMetric(
+        _ title: String, _ minor: Int64, _ currency: String, warning: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(Money(minorUnits: minor, currency: currency).formatted)
+                .font(.headline).monospacedDigit()
+                .foregroundStyle(warning ? .red : .primary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func amount(_ minor: Int64, _ currency: String) -> some View {
+        Text(Money(minorUnits: minor, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing).monospacedDigit()
+    }
+
+    private func percent(_ basisPoints: Int64?) -> String {
+        guard let basisPoints else { return "—" }
+        let magnitude = basisPoints.magnitude
+        let sign = basisPoints < 0 ? "−" : ""
+        return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100)) %"
     }
 }
 

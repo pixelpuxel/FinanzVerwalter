@@ -226,6 +226,44 @@ final class FinanceAppStore: ObservableObject {
         )
     }
 
+    func periodComparisonReport(
+        _ query: PeriodComparisonQuery
+    ) -> PeriodComparisonSnapshot {
+        PeriodComparisonEngine.snapshot(
+            query: query, transactions: transactions, accounts: accounts,
+            categories: categories, tags: tags
+        )
+    }
+
+    func budgetReport(
+        budgetID: UUID,
+        query: BudgetReportQuery,
+        calendar: Calendar = .current
+    ) -> BudgetReportSnapshot? {
+        guard let repository,
+              let budget = budgets.first(where: { $0.id == budgetID })
+        else { return nil }
+        do {
+            let lines = try budget.months(calendar: calendar).flatMap { month -> [BudgetLine] in
+                let components = calendar.dateComponents([.year, .month], from: month)
+                guard let year = components.year, let monthValue = components.month else {
+                    return []
+                }
+                return try repository.budgetLines(
+                    budgetID: budgetID, year: year, month: monthValue
+                )
+            }
+            return BudgetReportEngine.snapshot(
+                budget: budget, query: query, lines: lines,
+                transactions: transactions, accounts: accounts,
+                categories: categories, tags: tags, calendar: calendar
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
     func saveReportTemplate(_ template: SavedReportTemplate) -> Bool {
         guard let repository else { return false }
         do {
