@@ -123,7 +123,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 Migrationen 1 bis 21 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 62 ausgeführte XCTest-Fälle: 61
+implementiert. Die Suite umfasst aktuell 63 ausgeführte XCTest-Fälle: 62
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -209,12 +209,16 @@ Konvertierung. Geld wird deterministisch aus Minor-Units als deutsches
 Dezimalformat ohne Binär-Float geschrieben; Felder mit Trennzeichen,
 Anführungszeichen oder Zeilenumbrüchen folgen RFC-4180-Escaping.
 
-Die Massenkategorisierung erhält eine Menge Buchungs-UUIDs und eine optionale
-Zielkategorie. Prüfe vor jeder Mutation, dass alle UUIDs existieren, die
-Kategorie aktiv ist und keine ausgewählte Buchung abgeglichen, umgebucht oder
-gesplittet ist. Führe anschließend alle Kategorieänderungen samt Audit in
-genau einer SQLite-Transaktion aus. Die Oberfläche zeigt zuvor Anzahl und
-Summen getrennt nach Währung und verlangt eine zweite Bestätigung.
+Die gemeinsame Massenorganisation erhält eine Menge Buchungs-UUIDs, einen
+expliziten Schalter samt optionaler Zielkategorie sowie optional eine
+vollständig ersetzende Menge aktiver Klassen/Tags. Prüfe vor jeder Mutation,
+dass alle UUIDs und gewählten Ziele existieren. Abgeglichene Buchungen und
+Umbuchungen sind immer geschützt; Splitbuchungen sind nur dann geschützt,
+wenn ihre einfache Kategorie ersetzt werden soll. Eine reine Änderung der
+Tags auf Buchungsebene lässt getrennte Split-Tags unverändert. Führe alle
+Änderungen samt genau einer Versionsfortschreibung pro Buchung und Audit in
+einer SQLite-Transaktion aus. Die Oberfläche zeigt zuvor Anzahl und Summen
+getrennt nach Währung und verlangt eine zweite Bestätigung.
 
 Ein vollständiger QIF-Export kann viele Konten, Kategorien, Klassen,
 Vorlagen und Wertpapierabschnitte enthalten. Solche Pakete dürfen niemals
@@ -351,7 +355,15 @@ Für Empfänger und Klassen/Tags gilt reproduzierbar:
 - Aliase werden getrimmt, dedupliziert und getrennt vom kanonischen Namen
   gespeichert.
 - Tags besitzen optionale Hierarchie, Farbe, Beschreibung und Aktivstatus.
+- Verhindere Selbstbezüge, fehlende Oberklassen und direkte oder indirekte
+  Kreise vor jedem Speichern. Zeige auswählbare und zugeordnete Tags anhand
+  des vollständigen Pfads `Oberklasse › Unterklasse`, sortiert nach Pfad.
 - Hauptbuchungen und Splitzeilen besitzen unabhängige n:m-Tag-Zuordnungen.
+- Einzel-, zweites und Sammelkontoblatt filtern unabhängig nach genau einer
+  Klasse; dabei zählen Zuordnungen der Hauptbuchung und ihrer Splits. Der
+  Filter ist Teil benannter Einzel- und Sammelansichten, alte JSON-Ansichten
+  ohne `tagID` bleiben decodierbar. Filterleiste, Druck-/PDF-Beschreibung und
+  Tabellenspalte verwenden den vollständigen Hierarchiepfad.
 - SmartFill filtert Name und Aliase, priorisiert Präfixe und danach die
   bisherige Verwendung; eine Auswahl übernimmt Name und Vorgaben erst im
   Editor und schreibt niemals unbemerkt.

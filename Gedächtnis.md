@@ -1085,3 +1085,39 @@ Rechtsberatung.
   (`/quicken`) veröffentlicht. Er enthält denselben AX-, Tastatur-, Test-,
   Release-, Datenbank- und GitHub-Status sowie den exakten Zielzählerstand
   von 7.757.304 Tokens; wegen des gesperrten Macs ohne Screenshot.
+
+## 2026-07-31 – Hierarchische Klassenfilter und atomare Organisation
+
+- Haupt-, zweites und Sammelkontoblatt besitzen nun einen unabhängigen
+  Filter für Klassen/Tags. Dabei werden Zuordnungen der Hauptbuchung und der
+  Splitzeilen berücksichtigt. Einzel- und Sammelansichten speichern die
+  gewählte Klasse rückwärtskompatibel; alte JSON-Ansichten ohne `tagID`
+  bleiben lesbar.
+- Klassen/Tags erscheinen in Kontenblättern, Editoren, Verwaltung,
+  Regelaktionen und Berichtsfiltern mit dem vollständigen Pfad wie
+  `Immobilie › Objekt A`. Die breite Hauptfilterleiste ist horizontal
+  scrollbar und zerlegt dadurch das Kontenblatt bei kleineren Fenstern nicht.
+- Die Mehrfachbearbeitung kann Kategorie und/oder die vollständige Menge der
+  Tags auf Buchungsebene ersetzen. Der Store validiert vorab alle UUIDs,
+  aktiven Ziele und Schutzregeln und schreibt die gesamte Auswahl atomar mit
+  einer Versionsfortschreibung und Audit je Buchung. Abgeglichene Buchungen
+  und Umbuchungen bleiben geschützt. Eine reine Tag-Änderung ist bei
+  Splitbuchungen zulässig und verändert deren eigene Split-Tags nicht.
+- Das Speichern einer Klassenhierarchie weist fehlende Eltern, Selbstbezüge
+  sowie direkte und indirekte Kreise vor jeder Datenänderung ab.
+- Der neue Domänentest prüft erfolgreiche Tag-Ersetzung, unveränderte
+  Kategorien und Split-Tags sowie vollständigen Rollback bei einer
+  abgeglichenen Buchung. Bestehende Tag- und Sammelkontoblatt-Tests prüfen
+  zusätzlich Hierarchieschutz, exakten Tagfilter und alten JSON-Roundtrip.
+  Die frische Gesamtabnahme führte 63 Tests aus: 62 bestanden, der private
+  opt-in-Real-QIF-Test wurde erwartungsgemäß übersprungen, 0 Fehler.
+- Debug- und optimierter Release-Build bestehen. Der Release ist ad hoc
+  signiert, unter `~/Applications/FinanzVerwalter.app` installiert und als
+  Prozess gestartet. Der Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-klassen-20260731-1315.app`.
+- Die Produktivdatei blieb nach Installation bytegenau bei SHA-256
+  `0a8d6dd9695ccbace6155c05b82f9367c9621904bf9a68ef7bbb073f4d1bd77e`,
+  Schema 21, Integrität `ok`, 97 Konten, 2.170 Buchungen, einer
+  Berichtsvorlage und 0 Banking-Verbindungen.
+- Der exakte Zielzählerstand dieses geprüften Meilensteins beträgt
+  7.984.886 Tokens.

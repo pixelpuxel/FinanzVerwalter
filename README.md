@@ -120,6 +120,14 @@ Kategoriepfad und Saldo. Konto-Tabs bieten Auswahl und Schließen als getrennte
 Aktionen. Eingabe und Escape bleiben außerhalb geöffneter Dialoge der
 Tabellen- beziehungsweise Systembedienung vorbehalten.
 
+Kategorie- und Klassenfilter arbeiten unabhängig voneinander. Klassen/Tags
+werden überall mit ihrem vollständigen Hierarchiepfad angezeigt und gehören
+auch zu benannten Einzel- und Sammelkontoblatt-Ansichten. Die gemeinsame
+Mehrfachbearbeitung kann Kategorie und/oder die vollständige Tag-Menge einer
+Auswahl in einem atomaren Schritt ersetzen. Abgeglichene Buchungen und
+Umbuchungen bleiben geschützt; eine reine Tag-Änderung ist auch bei einer
+Splitbuchung möglich, ohne deren getrennte Split-Tags anzutasten.
+
 ## Regeln
 
 Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-
