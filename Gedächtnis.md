@@ -1501,3 +1501,12 @@ Rechtsberatung.
   und nicht automatisch entsperrt werden kann. Eine sichtbare UI-/VoiceOver-
   Abnahme und ein echter neuer Screenshot bleiben deshalb offen und werden
   nicht vorgetäuscht.
+- Implementierung und Tests sind als Commit `a19c53f`, die reproduzierbare
+  Dokumentation als `4e6ae2b` auf `agent/qif-mehrkontenimport` festgeschrieben
+  und nach GitHub gepusht. Draft-PR 1 enthält den Schema-26-, Saldo-, Test- und
+  Produktionsstand.
+- Telegram-Nachricht 970 wurde im Projektthread 894 (`/quicken`)
+  veröffentlicht. Sie nennt Saldo-Migration, sicheren pain.002-Import,
+  75-Test-Stand, private QIF-Prüfung, Produktivmigration, GitHub-Commits und
+  Zielzählerstand von 10.372.101 Tokens. Wegen der gesperrten Sitzung wurde
+  ausdrücklich kein Screenshot angehängt oder vorgetäuscht.
