@@ -720,6 +720,9 @@ struct ReportsView: View {
     @State private var csvEncoding: ReportCSVEncoding = .utf8
     @State private var csvDocument = ReportCSVDocument(data: Data())
     @State private var showCSVExporter = false
+    @State private var pdfOrientation: ReportPDFOrientation = .landscape
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showPDFExporter = false
 
     private var query: TransactionReportQuery {
         let range = period.range(customStart: customStart, customEnd: customEnd)
@@ -810,6 +813,19 @@ struct ReportsView: View {
                     .frame(width: 130)
                     Button("CSV exportieren …", systemImage: "tablecells") {
                         prepareCSVExport(snapshot)
+                    }
+                    Menu {
+                        Picker("Papierausrichtung", selection: $pdfOrientation) {
+                            ForEach(ReportPDFOrientation.allCases) {
+                                Text($0.title).tag($0)
+                            }
+                        }
+                        Divider()
+                        Button("PDF exportieren …", systemImage: "doc.richtext") {
+                            preparePDFExport(snapshot)
+                        }
+                    } label: {
+                        Label("PDF · \(pdfOrientation.title)", systemImage: "printer")
                     }
                 }
 
@@ -966,6 +982,19 @@ struct ReportsView: View {
             switch result {
             case .success:
                 store.statusText = "Bericht als CSV exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
+            isPresented: $showPDFExporter,
+            document: pdfDocument,
+            contentType: .pdf,
+            defaultFilename: exportFilename
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Druckfertigen Bericht als PDF exportiert"
             case .failure(let error):
                 store.errorMessage = error.localizedDescription
             }
@@ -1389,6 +1418,33 @@ struct ReportsView: View {
         }
     }
 
+    private func preparePDFExport(_ snapshot: TransactionReportSnapshot) {
+        do {
+            pdfDocument = ReportPDFDocument(
+                data: try TransactionReportPDFExporter.data(
+                    snapshot: snapshot,
+                    metadata: reportExportMetadata,
+                    options: ReportPDFOptions(orientation: pdfOrientation)
+                )
+            )
+            showPDFExporter = true
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private var reportExportMetadata: ReportExportMetadata {
+        ReportExportMetadata(
+            title: selectedTemplateID.flatMap { id in
+                store.reportTemplates.first { $0.id == id }?.name
+            } ?? "\(grouping.title)-Bericht",
+            dateLabel: reportDateLabel,
+            filterSummary: reportFilterSummary,
+            baseCurrency: store.fileInfo?.baseCurrency ?? "EUR",
+            generatedAt: .now
+        )
+    }
+
     private var reportDateLabel: String {
         guard period == .custom else { return period.title }
         return "\(customStart.formatted(date: .numeric, time: .omitted))"
@@ -1528,6 +1584,23 @@ private enum ReportPeriodPreset: String, CaseIterable, Identifiable {
 
 private struct ReportCSVDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct ReportPDFDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.pdf] }
     let data: Data
 
     init(data: Data) {

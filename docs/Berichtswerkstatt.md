@@ -27,9 +27,19 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - CSV entsteht direkt aus dem Snapshot mit Metadatenblock, Semikolon, Komma
   oder Tabulator, UTF-8 oder ISO-8859-1 und deutschem Zahlenformat. Der
   Exporter besitzt einen bytegenauen Golden-Test.
+- PDF entsteht ebenfalls direkt aus dem unveränderten Snapshot. A4-Hoch- und
+  Querformat enthalten Metadaten, gruppierte Übersicht, Buchungs- und
+  Splitpositionen, wiederholte Tabellenköpfe, alternierende Zeilen und
+  Seitenzahlen.
+- Ein semantischer PDFKit-Test öffnet das Ergebnis erneut und prüft ein
+  mehrseitiges Dokument. Zusätzlich wurden Seite 1, eine Buchungsseite und
+  die letzte Seite eines fünfseitigen Referenzberichts mit Poppler gerendert
+  und visuell geprüft.
 
 Noch offen sind zweite Spaltendimensionen, Zwischensummen, Vergleichsspalten,
-weitere Diagramme sowie Druck, PDF, XLSX und HTML.
+weitere Diagramme sowie XLSX, HTML, Zwischenablage und ein direkter
+Systemdruckdialog. Das druckoptimierte PDF lässt sich bereits über Vorschau
+oder einen beliebigen PDF-Betrachter drucken.
 
 ## Verifizierte Referenzfunktionen
 
@@ -133,7 +143,7 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 
 ## Umsetzungsreihenfolge
 
-1. druckbares Snapshot-Layout und PDF
-2. zweite Dimension, Zwischensummen und Zeitvergleiche
-3. weitere Standardberichte und Diagrammtypen
+1. zweite Dimension, Zwischensummen und Zeitvergleiche
+2. weitere Standardberichte und Diagrammtypen
+3. direkter Systemdruckdialog und Zwischenablage
 4. XLSX/HTML sowie Golden-Tests

@@ -85,7 +85,9 @@ Drill-down bis zu ihren Buchungen und Splitzeilen. Währungen werden niemals
 unbemerkt addiert. Filter, Gruppierung und Sortierung lassen sich als
 versionierte Vorlage speichern. CSV-Ausgaben unterstützen Semikolon, Komma
 oder Tabulator sowie UTF-8 oder ISO-8859-1 und verwenden ein deterministisches
-deutsches Zahlenformat.
+deutsches Zahlenformat. Druckfertige PDF-Berichte entstehen wahlweise als
+A4-Hoch- oder Querformat mit Titel, Zeitraum, Filterbeschreibung,
+Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen.
 
 ## Dokumentation
 

@@ -362,6 +362,28 @@ Für Kredite und Vermögenswerte gilt reproduzierbar:
 
 ## Qualitätsschleife
 
+### Reproduzierbarer PDF-Bericht
+
+Erzeuge PDF niemals aus der gerade sichtbaren Tabelle, sondern aus demselben
+unveränderlichen `TransactionReportSnapshot`, den Bildschirm und CSV
+verwenden. `TransactionReportPDFExporter` rendert mit Core Graphics und
+Core Text auf A4. Die Papiergröße ist 595,28 × 841,89 Punkt; im Querformat
+werden Breite und Höhe vertauscht. Jede Seite besitzt feste Ränder, Titel,
+Zeitraum, Abschnitt, wiederholten Tabellenkopf, Fußzeile und Seitenzahl.
+Die erste Übersichtsseite enthält zusätzlich Basiswährung, Erstellungszeit
+und die vollständig reproduzierbare Filterzusammenfassung. Gruppensummen und
+Buchungsbeträge werden direkt aus `Int64`-Minor-Units deutsch formatiert;
+Währungen bleiben getrennt.
+
+Der Golden-Test erzeugt mindestens 80 Fakten und mehrere Gruppen, damit
+Seitenumbrüche sicher ausgelöst werden. Er öffnet die Bytes mit PDFKit erneut
+und prüft `%PDF`, Seitenzahl, Titel, Gruppen- und Buchungsabschnitt,
+Kategoriepfad, Betrag und erste/letzte Seitenzahl. Für die visuelle Abnahme
+das Ergebnis zusätzlich mit `pdfinfo` prüfen und mit `pdftoppm` mindestens
+auf erster, mittlerer und letzter Seite als PNG rendern. Temporäre PDFs oder
+gerenderte Seiten mit privaten Daten gehören ausschließlich in ignorierte
+Build-Artefakte und niemals in Git.
+
 Nach jedem vertikalen Schritt:
 
 1. passende Unit- und Integrationstests ausführen; auf der aktuell

@@ -1,5 +1,6 @@
 import XCTest
 import SQLite3
+import PDFKit
 @testable import FinanzVerwalter
 
 final class FinanzVerwalterTests: XCTestCase {
@@ -1551,6 +1552,86 @@ final class FinanzVerwalterTests: XCTestCase {
                 + "\"Zeile 1\nZeile 2\";Haushalt › Lebensmittel;Gebucht;-1234,56;EUR;Ja"
         ].joined(separator: "\r\n") + "\r\n"
         XCTAssertEqual(text, expected)
+    }
+
+    func testReportPDFExportCreatesReadableMultipagePrintLayout() throws {
+        let accountID = UUID()
+        let facts = (0..<80).map { index in
+            TransactionReportFact(
+                id: "fact-\(index)",
+                transactionID: UUID(),
+                splitID: index.isMultiple(of: 3) ? UUID() : nil,
+                bookingDate: Date(timeIntervalSince1970: TimeInterval(index * 86_400)),
+                accountID: accountID,
+                accountName: "Girokonto Privat",
+                payee: "Empfänger \(index)",
+                payeeID: nil,
+                purpose: "Verwendungszweck und Belegnummer \(index)",
+                detail: "",
+                categoryID: nil,
+                categoryPath: "Immobilien › Wohnung A › Grundsteuer",
+                tagIDs: [],
+                tagPaths: [],
+                status: .booked,
+                amountMinor: index.isMultiple(of: 4) ? 123_456 : -9_876,
+                currency: "EUR",
+                isTransfer: false
+            )
+        }
+        let groups = (0..<8).map { index in
+            let ids = Set(facts[index * 10..<(index + 1) * 10].map(\.id))
+            return TransactionReportGroup(
+                id: "group-\(index)",
+                label: "Immobilien › Wohnung \(index) › Grundsteuer",
+                currency: "EUR",
+                incomeMinor: 123_456,
+                expenseMinor: 98_760,
+                netMinor: 24_696,
+                factIDs: ids
+            )
+        }
+        let snapshot = TransactionReportSnapshot(
+            facts: facts,
+            groups: groups,
+            totals: [
+                TransactionReportCurrencyTotal(
+                    currency: "EUR",
+                    incomeMinor: 2_469_120,
+                    expenseMinor: 592_560,
+                    netMinor: 1_876_560
+                )
+            ]
+        )
+        let data = try TransactionReportPDFExporter.data(
+            snapshot: snapshot,
+            metadata: ReportExportMetadata(
+                title: "Immobiliensteuer 2025",
+                dateLabel: "01.01.2025 – 31.12.2025",
+                filterSummary: "alle Konten · Grundsteuer · ohne Umbuchungen",
+                baseCurrency: "EUR",
+                generatedAt: Date(timeIntervalSince1970: 0)
+            ),
+            options: ReportPDFOptions(orientation: .landscape)
+        )
+        if let outputPath = ProcessInfo.processInfo.environment[
+            "FINANZVERWALTER_PDF_QA_OUTPUT"
+        ] {
+            try data.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        }
+
+        XCTAssertTrue(data.starts(with: Data("%PDF".utf8)))
+        let document = try XCTUnwrap(PDFDocument(data: data))
+        XCTAssertGreaterThan(document.pageCount, 2)
+        let text = (0..<document.pageCount)
+            .compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+        XCTAssertTrue(text.contains("Immobiliensteuer 2025"))
+        XCTAssertTrue(text.contains("Gruppierte Übersicht"))
+        XCTAssertTrue(text.contains("Buchungen und Splitpositionen"))
+        XCTAssertTrue(text.contains("Immobilien › Wohnung 0 › Grundsteuer"))
+        XCTAssertTrue(text.contains("1.234,56 EUR"))
+        XCTAssertTrue(text.contains("Seite 1"))
+        XCTAssertTrue(text.contains("Seite \(document.pageCount)"))
     }
 }
 

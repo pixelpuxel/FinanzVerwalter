@@ -1,0 +1,605 @@
+import CoreGraphics
+import CoreText
+import Foundation
+
+enum ReportPDFOrientation: String, CaseIterable, Identifiable, Sendable {
+    case portrait
+    case landscape
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .portrait: "Hochformat"
+        case .landscape: "Querformat"
+        }
+    }
+}
+
+struct ReportPDFOptions: Equatable, Sendable {
+    var orientation: ReportPDFOrientation = .landscape
+}
+
+enum TransactionReportPDFExporter {
+    static func data(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata,
+        options: ReportPDFOptions
+    ) throws -> Data {
+        let portrait = CGSize(width: 595.28, height: 841.89)
+        let size = options.orientation == .portrait
+            ? portrait
+            : CGSize(width: portrait.height, height: portrait.width)
+        let mutableData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: mutableData as CFMutableData) else {
+            throw FinanceError.database("Der PDF-Datenstrom konnte nicht angelegt werden.")
+        }
+        var mediaBox = CGRect(origin: .zero, size: size)
+        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw FinanceError.database("Der PDF-Kontext konnte nicht angelegt werden.")
+        }
+        var renderer = ReportPDFRenderer(
+            context: context,
+            pageSize: size,
+            snapshot: snapshot,
+            metadata: metadata
+        )
+        renderer.render()
+        context.closePDF()
+        return mutableData as Data
+    }
+}
+
+private struct ReportPDFRenderer {
+    private enum TableKind {
+        case groups
+        case facts
+    }
+
+    let context: CGContext
+    let pageSize: CGSize
+    let snapshot: TransactionReportSnapshot
+    let metadata: ReportExportMetadata
+
+    private let margin: CGFloat = 36
+    private let footerHeight: CGFloat = 28
+    private let green = CGColor(
+        red: 0.08,
+        green: 0.38,
+        blue: 0.20,
+        alpha: 1
+    )
+    private let lightGreen = CGColor(
+        red: 0.92,
+        green: 0.97,
+        blue: 0.94,
+        alpha: 1
+    )
+    private let stripe = CGColor(
+        red: 0.96,
+        green: 0.96,
+        blue: 0.96,
+        alpha: 1
+    )
+    private let dark = CGColor(gray: 0.12, alpha: 1)
+    private let secondary = CGColor(gray: 0.38, alpha: 1)
+
+    private var pageNumber = 0
+    private var y: CGFloat = 0
+    private var activeTable: TableKind = .facts
+
+    init(
+        context: CGContext,
+        pageSize: CGSize,
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata
+    ) {
+        self.context = context
+        self.pageSize = pageSize
+        self.snapshot = snapshot
+        self.metadata = metadata
+    }
+
+    mutating func render() {
+        if !snapshot.groups.isEmpty {
+            beginPage(section: "Gruppierte Übersicht", table: .groups, detailedHeader: true)
+            for (index, group) in snapshot.groups.enumerated() {
+                ensureSpace(30, section: "Gruppierte Übersicht", table: .groups)
+                drawGroup(group, striped: index.isMultiple(of: 2))
+            }
+            endPage()
+        }
+
+        beginPage(
+            section: "Buchungen und Splitpositionen",
+            table: .facts,
+            detailedHeader: snapshot.groups.isEmpty
+        )
+        for (index, fact) in snapshot.facts.enumerated() {
+            ensureSpace(22, section: "Buchungen und Splitpositionen", table: .facts)
+            drawFact(fact, striped: index.isMultiple(of: 2))
+        }
+        endPage()
+    }
+
+    private mutating func beginPage(
+        section: String,
+        table: TableKind,
+        detailedHeader: Bool = false
+    ) {
+        pageNumber += 1
+        activeTable = table
+        context.beginPDFPage(nil)
+        context.textMatrix = .identity
+
+        drawLine(
+            metadata.title,
+            x: margin,
+            top: 28,
+            width: pageSize.width - 2 * margin - 180,
+            fontSize: 18,
+            bold: true,
+            color: green
+        )
+        drawRightLine(
+            metadata.dateLabel,
+            right: pageSize.width - margin,
+            top: 31,
+            width: 175,
+            fontSize: 9,
+            color: secondary
+        )
+
+        if detailedHeader {
+            drawLine(
+                "Basiswährung: \(metadata.baseCurrency)   Erstellt: \(isoDateTime(metadata.generatedAt))",
+                x: margin,
+                top: 55,
+                width: pageSize.width - 2 * margin,
+                fontSize: 8.5,
+                color: secondary
+            )
+            drawWrapped(
+                "Filter: \(metadata.filterSummary)",
+                x: margin,
+                top: 70,
+                width: pageSize.width - 2 * margin,
+                height: 28,
+                fontSize: 8.5,
+                color: secondary
+            )
+            y = 105
+        } else {
+            y = 64
+        }
+
+        drawHorizontalLine(top: y - 5, color: green, width: 1)
+        drawLine(
+            section,
+            x: margin,
+            top: y + 5,
+            width: pageSize.width - 2 * margin,
+            fontSize: 12,
+            bold: true,
+            color: dark
+        )
+        y += 27
+        drawTableHeader(table)
+    }
+
+    private mutating func endPage() {
+        drawHorizontalLine(
+            top: pageSize.height - footerHeight - 4,
+            color: CGColor(gray: 0.78, alpha: 1),
+            width: 0.5
+        )
+        drawLine(
+            "FinanzVerwalter - \(metadata.title)",
+            x: margin,
+            top: pageSize.height - footerHeight + 4,
+            width: pageSize.width - 2 * margin - 80,
+            fontSize: 7.5,
+            color: secondary
+        )
+        drawRightLine(
+            "Seite \(pageNumber)",
+            right: pageSize.width - margin,
+            top: pageSize.height - footerHeight + 4,
+            width: 70,
+            fontSize: 7.5,
+            color: secondary
+        )
+        context.endPDFPage()
+    }
+
+    private mutating func ensureSpace(
+        _ height: CGFloat,
+        section: String,
+        table: TableKind
+    ) {
+        if y + height > pageSize.height - footerHeight - 8 {
+            endPage()
+            beginPage(section: section, table: table)
+        }
+    }
+
+    private mutating func drawTableHeader(_ table: TableKind) {
+        fillRect(
+            CGRect(
+                x: margin,
+                y: y,
+                width: pageSize.width - 2 * margin,
+                height: 22
+            ),
+            color: green
+        )
+        switch table {
+        case .groups:
+            let columns = groupColumns
+            drawHeaderCell("Gruppe", column: columns[0])
+            drawHeaderCell("Anzahl", column: columns[1], rightAligned: true)
+            drawHeaderCell("Einnahmen", column: columns[2], rightAligned: true)
+            drawHeaderCell("Ausgaben", column: columns[3], rightAligned: true)
+            drawHeaderCell("Saldo", column: columns[4], rightAligned: true)
+            drawHeaderCell("Währung", column: columns[5])
+        case .facts:
+            let columns = factColumns
+            for (index, title) in [
+                "Datum", "Konto", "Empfänger", "Verwendungszweck",
+                "Kategorie", "Status", "Betrag"
+            ].enumerated() {
+                drawHeaderCell(
+                    title,
+                    column: columns[index],
+                    rightAligned: index == columns.count - 1
+                )
+            }
+        }
+        y += 22
+    }
+
+    private mutating func drawGroup(
+        _ group: TransactionReportGroup,
+        striped: Bool
+    ) {
+        if striped {
+            fillRect(
+                CGRect(
+                    x: margin,
+                    y: y,
+                    width: pageSize.width - 2 * margin,
+                    height: 30
+                ),
+                color: lightGreen
+            )
+        }
+        let columns = groupColumns
+        drawCell(group.label, column: columns[0], height: 30, fontSize: 8.5)
+        drawCell(
+            "\(group.bookingCount)",
+            column: columns[1],
+            height: 30,
+            fontSize: 8.5,
+            rightAligned: true
+        )
+        drawCell(
+            germanAmount(group.incomeMinor),
+            column: columns[2],
+            height: 30,
+            fontSize: 8.5,
+            rightAligned: true
+        )
+        drawCell(
+            germanAmount(group.expenseMinor),
+            column: columns[3],
+            height: 30,
+            fontSize: 8.5,
+            rightAligned: true
+        )
+        drawCell(
+            germanAmount(group.netMinor),
+            column: columns[4],
+            height: 30,
+            fontSize: 8.5,
+            rightAligned: true
+        )
+        drawCell(group.currency, column: columns[5], height: 30, fontSize: 8.5)
+        y += 30
+    }
+
+    private mutating func drawFact(
+        _ fact: TransactionReportFact,
+        striped: Bool
+    ) {
+        if striped {
+            fillRect(
+                CGRect(
+                    x: margin,
+                    y: y,
+                    width: pageSize.width - 2 * margin,
+                    height: 22
+                ),
+                color: stripe
+            )
+        }
+        let columns = factColumns
+        drawCell(isoDate(fact.bookingDate), column: columns[0], height: 22, fontSize: 7.8)
+        drawCell(fact.accountName, column: columns[1], height: 22, fontSize: 7.8)
+        drawCell(
+            fact.payee.isEmpty ? "-" : fact.payee,
+            column: columns[2],
+            height: 22,
+            fontSize: 7.8
+        )
+        drawCell(fact.purpose, column: columns[3], height: 22, fontSize: 7.8)
+        drawCell(fact.categoryPath, column: columns[4], height: 22, fontSize: 7.8)
+        drawCell(
+            fact.splitID == nil ? fact.status.title : "\(fact.status.title) / Split",
+            column: columns[5],
+            height: 22,
+            fontSize: 7.8
+        )
+        drawCell(
+            "\(germanAmount(fact.amountMinor)) \(fact.currency)",
+            column: columns[6],
+            height: 22,
+            fontSize: 7.8,
+            rightAligned: true
+        )
+        y += 22
+    }
+
+    private var groupColumns: [CGRect] {
+        let content = pageSize.width - 2 * margin
+        let currency: CGFloat = 48
+        let count: CGFloat = 52
+        let money: CGFloat = 88
+        let label = content - currency - count - 3 * money
+        return horizontalColumns(
+            widths: [label, count, money, money, money, currency]
+        )
+    }
+
+    private var factColumns: [CGRect] {
+        let content = pageSize.width - 2 * margin
+        let date: CGFloat = 58
+        let account: CGFloat = pageSize.width > 700 ? 92 : 62
+        let payee: CGFloat = pageSize.width > 700 ? 105 : 72
+        let category: CGFloat = pageSize.width > 700 ? 145 : 92
+        let status: CGFloat = pageSize.width > 700 ? 76 : 60
+        let amount: CGFloat = pageSize.width > 700 ? 92 : 76
+        let purpose = max(
+            72,
+            content - date - account - payee - category - status - amount
+        )
+        return horizontalColumns(
+            widths: [date, account, payee, purpose, category, status, amount]
+        )
+    }
+
+    private func horizontalColumns(widths: [CGFloat]) -> [CGRect] {
+        var x = margin
+        return widths.map { width in
+            defer { x += width }
+            return CGRect(x: x, y: 0, width: width, height: 0)
+        }
+    }
+
+    private func drawHeaderCell(
+        _ text: String,
+        column: CGRect,
+        rightAligned: Bool = false
+    ) {
+        if rightAligned {
+            drawRightLine(
+                text,
+                right: column.maxX - 5,
+                top: y + 6,
+                width: column.width - 10,
+                fontSize: 8,
+                bold: true,
+                color: CGColor(gray: 1, alpha: 1)
+            )
+        } else {
+            drawLine(
+                text,
+                x: column.minX + 5,
+                top: y + 6,
+                width: column.width - 10,
+                fontSize: 8,
+                bold: true,
+                color: CGColor(gray: 1, alpha: 1)
+            )
+        }
+    }
+
+    private func drawCell(
+        _ text: String,
+        column: CGRect,
+        height: CGFloat,
+        fontSize: CGFloat,
+        rightAligned: Bool = false
+    ) {
+        if rightAligned {
+            drawRightLine(
+                text,
+                right: column.maxX - 5,
+                top: y + (height - fontSize) / 2 - 1,
+                width: column.width - 10,
+                fontSize: fontSize,
+                color: dark
+            )
+        } else {
+            drawLine(
+                text,
+                x: column.minX + 5,
+                top: y + (height - fontSize) / 2 - 1,
+                width: column.width - 10,
+                fontSize: fontSize,
+                color: dark
+            )
+        }
+    }
+
+    private func drawLine(
+        _ text: String,
+        x: CGFloat,
+        top: CGFloat,
+        width: CGFloat,
+        fontSize: CGFloat,
+        bold: Bool = false,
+        color: CGColor
+    ) {
+        let attributed = attributedString(
+            text,
+            fontSize: fontSize,
+            bold: bold,
+            color: color
+        )
+        let original = CTLineCreateWithAttributedString(attributed)
+        let ellipsis = CTLineCreateWithAttributedString(
+            attributedString("…", fontSize: fontSize, bold: bold, color: color)
+        )
+        let line = CTLineCreateTruncatedLine(original, max(1, width), .end, ellipsis)
+            ?? original
+        context.textPosition = CGPoint(x: x, y: pageSize.height - top - fontSize)
+        CTLineDraw(line, context)
+    }
+
+    private func drawRightLine(
+        _ text: String,
+        right: CGFloat,
+        top: CGFloat,
+        width: CGFloat,
+        fontSize: CGFloat,
+        bold: Bool = false,
+        color: CGColor
+    ) {
+        let attributed = attributedString(
+            text,
+            fontSize: fontSize,
+            bold: bold,
+            color: color
+        )
+        let original = CTLineCreateWithAttributedString(attributed)
+        let ellipsis = CTLineCreateWithAttributedString(
+            attributedString("…", fontSize: fontSize, bold: bold, color: color)
+        )
+        let line = CTLineCreateTruncatedLine(original, max(1, width), .end, ellipsis)
+            ?? original
+        let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        context.textPosition = CGPoint(
+            x: max(right - width, right - lineWidth),
+            y: pageSize.height - top - fontSize
+        )
+        CTLineDraw(line, context)
+    }
+
+    private func drawWrapped(
+        _ text: String,
+        x: CGFloat,
+        top: CGFloat,
+        width: CGFloat,
+        height: CGFloat,
+        fontSize: CGFloat,
+        color: CGColor
+    ) {
+        let attributed = attributedString(
+            text,
+            fontSize: fontSize,
+            bold: false,
+            color: color
+        )
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        let path = CGPath(
+            rect: CGRect(
+                x: x,
+                y: pageSize.height - top - height,
+                width: width,
+                height: height
+            ),
+            transform: nil
+        )
+        let frame = CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: 0),
+            path,
+            nil
+        )
+        CTFrameDraw(frame, context)
+    }
+
+    private func attributedString(
+        _ text: String,
+        fontSize: CGFloat,
+        bold: Bool,
+        color: CGColor
+    ) -> CFAttributedString {
+        let font = CTFontCreateWithName(
+            (bold ? "Helvetica-Bold" : "Helvetica") as CFString,
+            fontSize,
+            nil
+        )
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): color
+            ]
+        ) as CFAttributedString
+    }
+
+    private func fillRect(_ topRect: CGRect, color: CGColor) {
+        context.setFillColor(color)
+        context.fill(
+            CGRect(
+                x: topRect.minX,
+                y: pageSize.height - topRect.minY - topRect.height,
+                width: topRect.width,
+                height: topRect.height
+            )
+        )
+    }
+
+    private func drawHorizontalLine(top: CGFloat, color: CGColor, width: CGFloat) {
+        context.setStrokeColor(color)
+        context.setLineWidth(width)
+        let pageY = pageSize.height - top
+        context.move(to: CGPoint(x: margin, y: pageY))
+        context.addLine(to: CGPoint(x: pageSize.width - margin, y: pageY))
+        context.strokePath()
+    }
+
+    private func germanAmount(_ minorUnits: Int64) -> String {
+        let magnitude = minorUnits.magnitude
+        let units = String(magnitude / 100)
+        let grouped = stride(from: units.count, to: 0, by: -3)
+            .reversed()
+            .reduce(into: "") { result, index in
+                let end = units.index(units.startIndex, offsetBy: index)
+                let startOffset = max(0, index - 3)
+                let start = units.index(units.startIndex, offsetBy: startOffset)
+                if !result.isEmpty { result += "." }
+                result += String(units[start..<end])
+            }
+        let cents = magnitude % 100
+        return "\(minorUnits < 0 ? "-" : "")\(grouped),\(cents < 10 ? "0" : "")\(cents)"
+    }
+
+    private func isoDate(_ date: Date) -> String {
+        Self.dateFormatter.string(from: date)
+    }
+
+    private func isoDateTime(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter
+    }()
+}

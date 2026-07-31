@@ -396,3 +396,21 @@ Rechtsberatung.
   geschlossen.
 - Der Vorlagen-/CSV-Stand wurde mit `build/berichtsvorlage-csv.png` im
   Telegram-Projektthread 894 als Nachricht 933 veröffentlicht.
+- Der PDF-Exporter erzeugt denselben unveränderlichen Berichtssnapshot als
+  A4-Hoch- oder Querformat. Titel, Zeitraum, Filter, Erstellungszeit,
+  Basiswährung, gruppierte Übersicht, Buchungs-/Splitzeilen, wiederholte
+  Tabellenköpfe und Seitenzahlen sind Bestandteil des Dokuments.
+- Ein synthetischer Referenzbericht mit acht Gruppen und 80 Fakten ergab fünf
+  Seiten. PDFKit öffnete ihn erneut und prüfte semantische Inhalte; Poppler
+  meldete A4-Querformat und renderte erste, mittlere und letzte Seite. Die
+  Sichtprüfung zeigte keine abgeschnittenen Tabellen oder überlaufenden
+  Seiten.
+- Die vollständige lokale Abnahme besteht nun aus 31 XCTest-Fällen. Auch mit
+  der ausschließlich extern gelesenen 2025-QIF-Datei bestehen 31/31:
+  97 Konten, 2.170 normale Buchungen, keine abgelehnte Buchung.
+- Der Release-Build mit PDF-Ausgabe wurde unter
+  `~/Applications/FinanzVerwalter.app` installiert und ad hoc signiert. Die
+  direkte UI-Sichtprüfung dieses installierten Builds steht noch aus, weil
+  der Mac beim Installationsabschluss gesperrt war.
+- Die gerenderte erste PDF-Seite und der grüne 31/31-Teststand wurden im
+  Telegram-Projektthread 894 als Nachricht 934 veröffentlicht.
