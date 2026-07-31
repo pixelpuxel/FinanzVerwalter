@@ -6,4 +6,9 @@ xcuserdata/
 *.qdata-shm
 *.qdata-wal
 *.qbackup
-
+*.qif
+*.QIF
+*.ofx
+*.OFX
+*.qfx
+*.QFX
