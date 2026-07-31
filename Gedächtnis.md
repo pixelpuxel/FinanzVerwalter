@@ -647,3 +647,7 @@ Rechtsberatung.
   aufnehmen, weil der Mac weiterhin gesperrt ist. Deshalb bleibt die
   visuelle Shortcut-/Vorlagenabnahme offen und es wird kein angeblicher
   Screenshot veröffentlicht.
+- Die Funktionscommits `55c0c82` und `8f01061` wurden auf
+  `agent/qif-mehrkontenimport` gepusht; Draft-PR 1 zeigt auf den zweiten
+  Commit und dokumentiert 42 reguläre Tests. Telegram-Nachricht 939 im
+  Projektthread 894 wurde auf denselben geprüften Stand aktualisiert.
