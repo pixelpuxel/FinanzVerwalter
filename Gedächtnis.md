@@ -1823,3 +1823,46 @@ Rechtsberatung.
   Funktions-, Test-, Release-, Datenbank- und GitHub-Stand sowie dem exakten
   Zielzählerstand von 11.617.552 Tokens veröffentlicht. Wegen der bestätigten
   Bildschirmsperre wurde kein Screenshot angehängt oder vorgetäuscht.
+
+## 2026-07-31 – Salden im Kontenblatt und historischer Stichtagsbericht
+
+- Die laufende Spalte `Saldo` steht unmittelbar rechts von `Betrag` im
+  Hauptkontenblatt, im zweiten Kontenblatt und in den Sammelkontenblättern.
+  Vorhandene sichtbare Spaltensätze und gespeicherte Kontoblattansichten
+  werden einmalig ergänzt; danach bleibt die Spalte über das Spaltenmenü frei
+  konfigurierbar. Der Saldo beginnt beim Eröffnungsbestand, wird je Konto und
+  Währung geführt und ignoriert stornierte Buchungen.
+- Der neue Standardbericht `Kontosalden und Nettovermögen` verwendet eine
+  eigene unveränderliche Stichtagsberechnung. Er berücksichtigt nur Konten,
+  deren Eröffnungsdatum erreicht ist, und nur nicht stornierte Bewegungen in
+  Kontowährung zwischen Eröffnung und lokalem Tagesende. Konto-, Gruppen- und
+  Währungsfilter sowie Optionen für ausgeblendete, geschlossene und vom
+  Nettovermögen ausgeschlossene Konten sind vorhanden.
+- Die Bildschirmtabelle zeigt Gruppe, Konto, Kontotyp, Eröffnung, Bewegungen,
+  Saldo und Währung. Aktiva, Passiva und Nettovermögen werden je ISO-Währung
+  getrennt summiert; ohne Wechselkurs findet ausdrücklich keine Addition
+  verschiedener Währungen statt.
+- Deterministisches Semikolon-CSV, mehrseitiges A4-PDF in Hoch- oder
+  Querformat sowie direkter macOS-Systemdruck verwenden denselben Snapshot.
+  Ein PDFKit-Test prüft Titel, erste und letzte Kontozeile, Nettosumme,
+  Seitenzahl und Mehrseitigkeit.
+- Die finale vollständige Suite unter
+  `/tmp/FinanzVerwalter-FullTests-BalanceReport-Final.xcresult` führte 87 Tests
+  aus: 86 bestanden, der private opt-in-QIF-Test wurde ohne Pfad planmäßig
+  übersprungen, 0 Fehler. Der echte private 2025-QIF-Test bestand danach
+  separat; seine nur temporäre Kopie wurde mit `unlink` entfernt und ihr
+  Fehlen geprüft.
+- Der optimierte arm64-Release unter `build/DerivedData-BalanceReports`
+  bestand, wurde ad hoc signiert, streng geprüft und kontrolliert installiert.
+  Das vorherige Bundle liegt reversibel unter
+  `build/FinanzVerwalter-vor-stichtagsbericht-20260731-174220.app`. Der neue
+  ausführbare Code hat SHA-256
+  `5499524da68b78adcfdd7d550ff27e412706342c3895743ffc3584b07bb98578`.
+  Die App läuft als Prozess 65477; die Produktivdatei blieb bytegleich bei
+  SHA-256 `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
+  und meldet Schema 29, Integrität `ok`, 97 Konten und 2.170 Buchungen.
+- Die Systemzustandsprüfung meldet weiterhin ausdrücklich
+  `CGSSessionScreenIsLocked = Yes`. Daher war keine ehrliche sichtbare
+  UI-Abnahme und kein neuer Screenshot möglich; beides wurde nicht
+  vorgetäuscht. Implementierung und Tests sind in Commit `e31934a`
+  festgeschrieben.

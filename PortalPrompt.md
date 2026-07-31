@@ -369,9 +369,21 @@ Für die Berichtswerkstatt gilt zusätzlich:
   Filter an, zeigt Titel und Kurzbeschreibung und lässt danach jede Einstellung
   weiter bearbeiten. CSV, PDF und direkter Druck verwenden den aktiven
   Standardberichtstitel. Ein Standardbericht kann als normale versionierte
-  Vorlage gespeichert werden. Kontosalden/Nettovermögen, Budgetabweichung und
-  Zeitvergleich dürfen erst als Standardbericht gelten, wenn ihre eigene
-  Stichtags- beziehungsweise Vergleichslogik implementiert und getestet ist.
+  Vorlage gespeichert werden. Budgetabweichung und Zeitvergleich dürfen erst
+  als Standardbericht gelten, wenn ihre eigene Vergleichslogik implementiert
+  und getestet ist.
+- Implementiere `Kontosalden und Nettovermögen` als eigenständigen
+  Stichtagsbericht. Normalisiere den gewählten Tag auf sein lokales Tagesende,
+  berücksichtige den Eröffnungssaldo erst ab dem Eröffnungsdatum und addiere
+  nur nicht stornierte, kontowährungsgleiche Buchungen vom Eröffnungsdatum bis
+  zum Stichtag. Filtere Konten, Kontengruppen, Währungen sowie optional
+  ausgeblendete, geschlossene und vom Nettovermögen ausgeschlossene Konten.
+  Zeige je Konto Eröffnung, Bewegungen und Saldo. Summiere positive Salden als
+  Aktiva, den Betrag negativer Salden als Passiva und den vorzeichenrichtigen
+  Rest als Nettovermögen; verschiedene Währungen dürfen nie addiert werden.
+  Erzeuge Bildschirmtabelle, deterministisches Semikolon-CSV, mehrseitiges
+  A4-PDF in beiden Ausrichtungen und direkten Systemdruck aus genau demselben
+  unveränderlichen Snapshot.
 - Erlaube neben der Primärgruppierung optional eine davon abweichende zweite
   Dimension aus Kategorie, Empfänger, Konto und Klasse/Tag. `Keine
   Gruppierung` bleibt nur als ausgeschaltete Sekundärdimension beziehungsweise

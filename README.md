@@ -370,6 +370,15 @@ Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen. Dieselbe aktuelle
 Momentaufnahme kann entweder als PDF gespeichert oder direkt über den
 macOS-Systemdruckdialog ausgegeben werden.
 
+Der Standardbericht `Kontosalden und Nettovermögen` besitzt eine eigene
+Stichtagsberechnung: Eröffnungssaldo und alle nicht stornierten Buchungen bis
+zum Tagesende ergeben für jedes Konto den historischen Saldo. Konto,
+Kontengruppe, Währung sowie ausgeblendete, geschlossene oder vom
+Nettovermögen ausgeschlossene Konten sind filterbar. Eröffnung, Bewegungen
+und Saldo stehen nebeneinander; Aktiva, Passiva und Nettovermögen werden je
+Währung getrennt summiert. Die gleiche Momentaufnahme speist Bildschirm,
+deterministisches CSV, mehrseitiges A4-PDF und direkten Systemdruck.
+
 ## Zahlungsverkehr
 
 Der Zahlungsverkehr ist ausdrücklich ein lokaler Simulator ohne echte

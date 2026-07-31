@@ -43,10 +43,15 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   und visuell geprüft.
 - PDF-Export und direkter macOS-Systemdruck verwenden denselben erzeugten
   Datenstrom und dieselbe unveränderliche Momentaufnahme.
+- `Kontosalden und Nettovermögen` berechnet je Konto einen historischen
+  Tagesabschluss aus Eröffnungssaldo und nicht stornierten Bewegungen seit dem
+  Eröffnungsdatum. Konten, Gruppen, Währungen sowie versteckte, geschlossene
+  und ausgeschlossene Konten sind filterbar. Aktiva, Passiva und Netto werden
+  strikt je Währung ausgewiesen; Tabelle, CSV, mehrseitiges PDF und direkter
+  Druck verwenden denselben Stichtagssnapshot.
 
-Noch offen sind echte Stichtagsberichte für Kontosalden/Nettovermögen,
-Zwischensummen, Zeit- und Budgetvergleiche, weitere Diagramme sowie XLSX, HTML
-und Zwischenablage.
+Noch offen sind Zwischensummen, Zeit- und Budgetvergleiche, weitere Diagramme
+sowie XLSX, HTML und Zwischenablage.
 
 ## Verifizierte Referenzfunktionen
 
@@ -116,7 +121,7 @@ P0:
 - Einnahmen/Ausgaben nach Empfänger *(buchungsbasiertes Preset umgesetzt)*
 - Buchungsbericht *(buchungsbasiertes Preset umgesetzt)*
 - Cashflow *(Konto/Kategorie-Preset umgesetzt)*
-- Kontosalden und Nettovermögen *(Stichtagslogik offen)*
+- Kontosalden und Nettovermögen *(Stichtagslogik, CSV, PDF und Druck umgesetzt)*
 - Kategorie-, Klassen- und Tagbericht *(Kategorie/Klasse-Preset umgesetzt)*
 - Zeitvergleich und Budgetabweichung
 
