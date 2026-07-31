@@ -1261,3 +1261,49 @@ Rechtsberatung.
   894 (`/quicken`) veröffentlicht; sie enthält den verifizierten Stand und
   den Zielzählerstand von 8.883.736 Tokens, wegen der nachweislich gesperrten
   Sitzung bewusst ohne Screenshot.
+
+## 2026-07-31 – Mehrere Empfänger-Bankverbindungen
+
+- SQLite-Migration 23 ergänzt `payee_bank_accounts` mit Bezeichnung,
+  Kontoinhaber, normalisierter und nach Mod 97 geprüfter IBAN, optionaler BIC,
+  Bankname, Aktivstatus, Version und Audit. Ein partieller eindeutiger Index
+  erzwingt höchstens eine Standardverbindung je Empfänger. Wird der Standard
+  deaktiviert, wird eine andere aktive Verbindung deterministisch gewählt.
+- Historische Bankdaten aus `payees.iban` und `payees.bic` werden bei der
+  Migration als aktives `Standardkonto` übernommen. Der Empfängereditor zeigt
+  beliebig viele Verbindungen und bearbeitet sie in einem eigenen Dialog.
+- Der Zahlungseditor kann eine Empfängerakte und eine ihrer aktiven
+  Bankverbindungen auswählen. Er übernimmt Kontoinhaber, IBAN und BIC sichtbar
+  in den Entwurf. Der Store akzeptiert die optionale Verknüpfung nur, wenn
+  Empfänger und Verbindung existieren, zusammengehören, aktiv sind und exakt
+  dem normalisierten Bankdaten-Schnappschuss entsprechen. Historische und
+  manuelle Zahlungsaufträge bleiben kompatibel; spätere Stammdatenänderungen
+  verändern einen vorhandenen Auftrag nicht rückwirkend.
+- Zwei neue Integrationstests prüfen Standardwechsel und -fallback,
+  Normalisierung, inaktive/fremde/manipulierte Verbindungen, unveränderliche
+  Zahlungsdaten, Schema-22-Übernahme und SQLite-Integrität. Die vollständige
+  Suite führte 67 Tests aus: 66 bestanden, der private opt-in-Real-QIF-Test
+  wurde erwartungsgemäß übersprungen, 0 Fehler. Debug- und optimierter
+  Release-Build bestehen.
+- Vor der Produktivmigration wurde
+  `Vor Migration 23 Bankverbindungen.qbackup` erstellt und geprüft: Schema 22,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, 0 Empfänger und 0
+  Zahlungsaufträge; SHA-256
+  `4ddba0914490eaad97eaf44303748d9fd97ee519c0f7d92bdc3ed1091ea33e93`.
+- Der optimierte arm64-Release ist ad hoc signiert, unter
+  `~/Applications/FinanzVerwalter.app` installiert und gestartet. Der
+  Vorgänger liegt ignoriert unter
+  `build/FinanzVerwalter-vor-bankverbindungen-20260731-1414.app`; der Stand
+  vor der abschließenden Kontoinhaber-/Zuordnungshärtung zusätzlich unter
+  `build/FinanzVerwalter-vor-bankverbindungen-haertung-20260731-1418.app`.
+- Nach kontrolliertem WAL-Checkpoint meldet die Produktivdatei Schema 23,
+  Integrität `ok`, 97 Konten, 2.170 Buchungen, eine Berichtsvorlage, 0
+  Empfänger-Bankverbindungen, 0 Zahlungsaufträge und SHA-256
+  `4d52e500499ac4508fc4e76a80591894f2337f98421fc84a8088e0c10194dbe1`.
+- Die lokale Computersteuerung meldet weiterhin ausdrücklich, dass der Mac
+  gesperrt ist und nicht automatisch entsperrt werden kann. Eine sichtbare
+  UI-Abnahme und ein neuer Screenshot wurden deshalb nicht vorgetäuscht.
+- Der exakte Zielzählerstand vor den Git-Commits beträgt 9.190.687 Tokens.
+- Die geprüfte Implementierung einschließlich Migration 23, Empfänger- und
+  Zahlungsoberfläche sowie der neuen Migrations-/Sicherheitstests ist als
+  Commit `13153dc` festgeschrieben.

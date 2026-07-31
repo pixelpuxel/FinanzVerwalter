@@ -121,9 +121,9 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 22 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 23 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die Suite umfasst aktuell 65 ausgeführte XCTest-Fälle: 64
+implementiert. Die Suite umfasst aktuell 67 ausgeführte XCTest-Fälle: 66
 bestanden, ein ausschließlich per privatem Dateipfad aktivierbarer
 Real-QIF-Test wird erwartungsgemäß übersprungen. Die Release-App ist lokal
 installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
@@ -360,6 +360,20 @@ Für Empfänger und Klassen/Tags gilt reproduzierbar:
   eindeutig, 1 bis 35 zulässige SEPA-Zeichen lang und wird zusammen mit
   optionalem Unterschriftsdatum, Sequenztyp OOFF/FRST/RCUR/FNAL, Notiz und
   Aktivstatus atomar versioniert gespeichert.
+- Migration 23 erzeugt `payee_bank_accounts`. Jede Empfängerakte kann mehrere
+  eindeutig benannte Bankverbindungen mit Kontoinhaber, normalisierter und
+  geprüfter IBAN, optionaler BIC, Bankname, Aktivstatus und Version führen.
+  Ein partieller eindeutiger Index erlaubt höchstens eine aktive
+  Standardverbindung je Empfänger. Beim Deaktivieren des Standards wird eine
+  andere aktive Verbindung deterministisch hochgestuft. Vorhandene
+  `payees.iban`-/`payees.bic`-Werte werden als `Standardkonto` übernommen.
+- Ergänze `payment_orders` um optionale `payee_id` und
+  `payee_bank_account_id`. Bei einer Aktenauswahl muss die Bankverbindung
+  existieren, aktiv sein, zum Empfänger gehören und exakt den normalisierten
+  IBAN-/BIC-Schnappschuss des Auftrags liefern. Speichere weiterhin Name,
+  IBAN und BIC direkt im Auftrag, damit eine spätere Stammdatenänderung einen
+  bestätigten Zahlungsentwurf niemals rückwirkend verändert. Manuelle
+  Aufträge und historische Zeilen ohne Verknüpfung bleiben gültig.
 - Tags besitzen optionale Hierarchie, Farbe, Beschreibung und Aktivstatus.
 - Verhindere Selbstbezüge, fehlende Oberklassen und direkte oder indirekte
   Kreise vor jedem Speichern. Zeige auswählbare und zugeordnete Tags anhand

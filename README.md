@@ -145,6 +145,15 @@ Mandatsreferenz dauerhaft in die Buchung. Eine einzelne aktive Mandatsakte wird
 bei bewusster Empfängerauswahl automatisch vorgeschlagen; mehrere Mandate
 bleiben eine ausdrückliche Auswahl.
 
+Jede Empfängerakte kann außerdem beliebig viele benannte Bankverbindungen mit
+Kontoinhaber, geprüfter IBAN, optionaler BIC, Bankname und Aktivstatus führen.
+Genau eine aktive Verbindung kann als Standard markiert sein. Im
+Zahlungsverkehr übernimmt eine bewusste Auswahl die Bankdaten in den Entwurf
+und verknüpft die verwendete Akte und Bankverbindung. Vor dem Speichern wird
+die Übereinstimmung nochmals geprüft; der Auftrag bewahrt anschließend seinen
+unveränderlichen Bankdaten-Schnappschuss, auch wenn die Empfängerakte später
+bearbeitet wird. Eine vollständig manuelle Eingabe bleibt möglich.
+
 ## Regeln
 
 Regeln besitzen eine sichtbare Priorität und versionierte AND/OR-
