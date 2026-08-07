@@ -685,6 +685,16 @@ Hauptfenster wird in den Vordergrund geholt. Jedes Außenfenster besitzt zudem
 einen UUID-basierten AppKit-Autosave-Namen; macOS speichert und restauriert
 damit Position und Größe dieser konkreten Fensteridentität.
 
+Auch die sieben Fachauswertungen `Kontosalden und Nettovermögen`,
+`Umsatzsteuer`, `Kredite, Zins und Tilgung`, `Zeitraumvergleich`,
+`Budgetvergleich`, `Verträge und Inventar` sowie `Freistellungsaufträge`
+besitzen `Neues Fenster`. Dabei wird nicht nur ein berechnetes Ergebnis,
+sondern der vollständige aktuelle Filterzustand codiert und an ein eigenes,
+an die aktive Finanzdatei gebundenes macOS-Fenster übergeben. Zwei gleiche
+Abfragen können deshalb bewusst nebeneinander geöffnet und anschließend
+unabhängig weitergefiltert, exportiert oder gedruckt werden. Beschädigte
+Payloads und ein Wechsel der Finanzdatei führen zu klaren Sperrzuständen.
+
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile
 gerechnet; Brutto, Netto und Steuer stammen dadurch exakt aus der bereits

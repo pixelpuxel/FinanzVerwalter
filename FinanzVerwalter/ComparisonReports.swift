@@ -2,7 +2,7 @@ import CoreGraphics
 import CoreText
 import Foundation
 
-struct VATReportQuery: Equatable, Sendable {
+struct VATReportQuery: Codable, Equatable, Sendable {
     var dateFrom: Date
     var dateThrough: Date
     var accountIDs = Set<UUID>()
@@ -231,7 +231,7 @@ enum VATReportEngine {
     }
 }
 
-struct LoanReportQuery: Equatable, Sendable {
+struct LoanReportQuery: Codable, Equatable, Sendable {
     var dateFrom: Date? = nil
     var dateThrough: Date? = nil
     var loanIDs = Set<UUID>()
@@ -424,7 +424,7 @@ enum LoanReportEngine {
     }
 }
 
-enum PeriodComparisonMetric: String, CaseIterable, Identifiable, Sendable {
+enum PeriodComparisonMetric: String, CaseIterable, Codable, Identifiable, Sendable {
     case income
     case expense
     case net
@@ -440,7 +440,7 @@ enum PeriodComparisonMetric: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum PeriodComparisonReferenceMode: String, CaseIterable, Identifiable, Sendable {
+enum PeriodComparisonReferenceMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case total
     case monthlyAverage
 
@@ -454,7 +454,7 @@ enum PeriodComparisonReferenceMode: String, CaseIterable, Identifiable, Sendable
     }
 }
 
-struct PeriodComparisonQuery: Equatable, Sendable {
+struct PeriodComparisonQuery: Codable, Equatable, Sendable {
     var currentFrom: Date
     var currentThrough: Date
     var referenceFrom: Date
@@ -836,7 +836,7 @@ enum BudgetPlanningEngine {
     }
 }
 
-struct BudgetReportQuery: Equatable, Sendable {
+struct BudgetReportQuery: Codable, Equatable, Sendable {
     var monthKeys: Set<String> = []
     var includeZeroRows = false
 }
@@ -995,7 +995,7 @@ struct LoanReportExportMetadata: Equatable, Sendable {
     let generatedAt: Date
 }
 
-enum AssetRegisterReportHorizon: Int, CaseIterable, Identifiable, Sendable {
+enum AssetRegisterReportHorizon: Int, CaseIterable, Codable, Identifiable, Sendable {
     case all = 0
     case next30Days = 30
     case next90Days = 90
@@ -1013,7 +1013,7 @@ enum AssetRegisterReportHorizon: Int, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct AssetRegisterReportQuery: Equatable, Sendable {
+struct AssetRegisterReportQuery: Codable, Equatable, Sendable {
     var referenceDate: Date
     var horizon: AssetRegisterReportHorizon = .all
     var includeInactive = false

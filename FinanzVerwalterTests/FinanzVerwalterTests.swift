@@ -6684,6 +6684,138 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testSpecializedReportWindowRequestsRoundTripEveryQueryType() throws {
+        let fileURL = URL(fileURLWithPath: "/tmp/FinanzVerwalter/Fach.qdata")
+        let accountID = UUID()
+        let groupID = UUID()
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let through = Date(timeIntervalSince1970: 1_710_000_000)
+
+        func assertRoundTrip<Payload: Codable & Equatable>(
+            _ kind: SpecializedReportKind,
+            payload: Payload,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) throws {
+            let request = try SpecializedReportWindowRequest(
+                kind: kind,
+                financeFileURL: fileURL,
+                payload: payload
+            )
+            XCTAssertTrue(request.belongs(to: fileURL), file: file, line: line)
+            XCTAssertFalse(
+                request.belongs(
+                    to: URL(fileURLWithPath: "/tmp/FinanzVerwalter/Fremd.qdata")
+                ),
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                try request.decodedPayload(as: Payload.self),
+                payload,
+                file: file,
+                line: line
+            )
+            XCTAssertTrue(
+                request.frameAutosaveName.contains(".\(kind.rawValue)."),
+                file: file,
+                line: line
+            )
+            let restored = try JSONDecoder().decode(
+                SpecializedReportWindowRequest.self,
+                from: JSONEncoder().encode(request)
+            )
+            XCTAssertEqual(restored, request, file: file, line: line)
+        }
+
+        try assertRoundTrip(
+            .accountBalances,
+            payload: AccountBalanceReportQuery(
+                asOf: through,
+                accountIDs: [accountID],
+                accountGroupIDs: [groupID],
+                currencies: ["EUR"],
+                includeHiddenAccounts: true,
+                includeClosedAccounts: true,
+                includeAccountsExcludedFromNetWorth: true
+            )
+        )
+        try assertRoundTrip(
+            .valueAddedTax,
+            payload: VATReportQuery(
+                dateFrom: from,
+                dateThrough: through,
+                accountIDs: [accountID],
+                accountGroupIDs: [groupID],
+                currencies: ["EUR"],
+                statuses: [.booked, .reconciled],
+                includeHiddenAccounts: true,
+                includeAccountsExcludedFromReports: true,
+                includeTransfers: true
+            )
+        )
+        try assertRoundTrip(
+            .loans,
+            payload: LoanReportQuery(
+                dateFrom: from,
+                dateThrough: through,
+                loanIDs: [UUID()],
+                currencies: ["EUR"],
+                includeInactiveLoans: true
+            )
+        )
+        try assertRoundTrip(
+            .periodComparison,
+            payload: PeriodComparisonQuery(
+                currentFrom: from,
+                currentThrough: through,
+                referenceFrom: from.addingTimeInterval(-1_000_000),
+                referenceThrough: from.addingTimeInterval(-1),
+                grouping: .account,
+                metric: .net,
+                referenceMode: .monthlyAverage,
+                baseQuery: TransactionReportQuery(
+                    dateFrom: nil,
+                    dateThrough: nil,
+                    accountIDs: [accountID],
+                    grouping: .category,
+                    sort: .dateAscending
+                )
+            )
+        )
+        try assertRoundTrip(
+            .budgetComparison,
+            payload: BudgetReportWindowPayload(
+                budgetID: UUID(),
+                query: BudgetReportQuery(
+                    monthKeys: ["2026-01"],
+                    includeZeroRows: true
+                )
+            )
+        )
+        try assertRoundTrip(
+            .assetRegister,
+            payload: AssetRegisterReportQuery(
+                referenceDate: through,
+                horizon: .next90Days,
+                includeInactive: true,
+                contractTypes: [.insurance],
+                inventoryCategories: [.electronics],
+                text: "Köln"
+            )
+        )
+        try assertRoundTrip(
+            .taxAllowances,
+            payload: TaxAllowanceReportQuery(
+                taxYear: 2026,
+                personIDs: [UUID()],
+                institutionText: "Sparkasse",
+                includeInactive: true
+            )
+        )
+        XCTAssertEqual(SpecializedReportKind.allCases.count, 7)
+    }
+
     func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {
         let giro = FinanceAccount(
             id: UUID(), name: "Giro", institution: "", type: .checking,

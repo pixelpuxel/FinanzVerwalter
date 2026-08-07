@@ -2101,3 +2101,25 @@ Host. Gib jedem externen Fenster einen stabilen, aus seiner UUID abgeleiteten
 AppKit-Frame-Autosave-Namen, damit macOS Position und Größe dieser konkreten
 Fensteridentität speichert und wiederherstellt. Teste Titelnormalisierung,
 verlustfreie Query-Übergabe und die deterministische Autosave-ID.
+
+# Eigenständige Fenster für alle Fachauswertungen
+
+Erweitere die Fensterarchitektur auf `Kontosalden und Nettovermögen`,
+`Umsatzsteuer`, `Kredite, Zins und Tilgung`, `Zeitraumvergleich`,
+`Budgetvergleich`, `Verträge und Inventar` sowie `Freistellungsaufträge`.
+Jeder Dialog erhält `Neues Fenster` und übergibt seinen vollständigen
+aktuellen Queryzustand, nicht bloß den berechneten Snapshot.
+
+Modelliere eine codierbare, hashbare `SpecializedReportWindowRequest` mit
+frischer UUID, Fachberichtstyp, kanonischem Finanzdateipfad und typisiert
+codiertem Payload. Verwende für den Budgetbericht einen Payload aus Budget-ID
+und Query. Rekonstruiere im typisierten SwiftUI-`WindowGroup` exakt die
+passende Berichtsansicht und initialisiere alle editierbaren Filter aus dem
+Payload. Gleiche Abfragen müssen getrennte Fensteridentitäten erhalten.
+
+Sperre die Darstellung bei geschlossener oder abweichender Finanzdatei und
+zeige bei beschädigtem oder typfremdem Payload einen eigenen Fehlerzustand.
+Vergib einen stabilen Frame-Autosave-Namen aus Berichtstyp und UUID. Teste
+alle sieben Payloadtypen auf Codable-Rundlauf, Pfadbindung,
+Fensteridentität und deterministische Autosave-ID; führe danach den gesamten
+Testbestand aus.

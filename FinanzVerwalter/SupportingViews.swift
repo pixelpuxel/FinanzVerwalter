@@ -1615,6 +1615,121 @@ struct ExternalReportWindow: View {
     }
 }
 
+struct SpecializedReportWindow: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let request: SpecializedReportWindowRequest?
+
+    var body: some View {
+        Group {
+            if let request {
+                if !request.belongs(to: store.currentFinanceFileURL) {
+                    ContentUnavailableView(
+                        "Andere Finanzdatei geöffnet",
+                        systemImage: "doc.badge.exclamationmark",
+                        description: Text(
+                            "Dieses Auswertungsfenster gehört zu „\(request.financeFilePath)“. "
+                                + "Öffne diese Finanzdatei erneut oder schließe das Fenster."
+                        )
+                    )
+                } else {
+                    specializedContent(for: request)
+                }
+            } else {
+                ContentUnavailableView(
+                    "Keine Fachauswertung gewählt",
+                    systemImage: "chart.bar.doc.horizontal"
+                )
+            }
+        }
+        .frame(minWidth: 1040, minHeight: 680)
+        .navigationTitle(request?.kind.title ?? "Fachauswertung")
+        .accessibilityIdentifier("externalSpecializedReportWindow")
+    }
+
+    @ViewBuilder
+    private func specializedContent(
+        for request: SpecializedReportWindowRequest
+    ) -> some View {
+        switch request.kind {
+        case .accountBalances:
+            if let query = try? request.decodedPayload(
+                as: AccountBalanceReportQuery.self
+            ) {
+                AccountBalanceReportView(initialQuery: query)
+            } else { invalidQuery }
+        case .valueAddedTax:
+            if let query = try? request.decodedPayload(as: VATReportQuery.self) {
+                VATReportView(initialQuery: query)
+            } else { invalidQuery }
+        case .loans:
+            if let query = try? request.decodedPayload(as: LoanReportQuery.self) {
+                LoanReportView(initialQuery: query)
+            } else { invalidQuery }
+        case .periodComparison:
+            if let query = try? request.decodedPayload(
+                as: PeriodComparisonQuery.self
+            ) {
+                PeriodComparisonReportView(initialQuery: query)
+            } else { invalidQuery }
+        case .budgetComparison:
+            if let payload = try? request.decodedPayload(
+                as: BudgetReportWindowPayload.self
+            ) {
+                BudgetComparisonReportView(
+                    initialBudgetID: payload.budgetID,
+                    initialQuery: payload.query
+                )
+            } else { invalidQuery }
+        case .assetRegister:
+            if let query = try? request.decodedPayload(
+                as: AssetRegisterReportQuery.self
+            ) {
+                AssetRegisterReportView(initialQuery: query)
+            } else { invalidQuery }
+        case .taxAllowances:
+            if let query = try? request.decodedPayload(
+                as: TaxAllowanceReportQuery.self
+            ) {
+                TaxAllowancesView(showCloseButton: true, initialQuery: query)
+            } else { invalidQuery }
+        }
+    }
+
+    private var invalidQuery: some View {
+        ContentUnavailableView(
+            "Auswertung nicht lesbar",
+            systemImage: "exclamationmark.triangle",
+            description: Text(
+                "Die gespeicherte Abfrage dieses Fensters ist beschädigt oder inkompatibel."
+            )
+        )
+    }
+}
+
+@MainActor
+private func openSpecializedReportWindow<Payload: Encodable>(
+    kind: SpecializedReportKind,
+    payload: Payload,
+    store: FinanceAppStore,
+    openWindow: OpenWindowAction
+) {
+    guard let financeFileURL = store.currentFinanceFileURL else {
+        store.errorMessage = "Bitte öffne zuerst eine Finanzdatei."
+        return
+    }
+    do {
+        openWindow(
+            value: try SpecializedReportWindowRequest(
+                kind: kind,
+                financeFileURL: financeFileURL,
+                payload: payload
+            )
+        )
+    } catch {
+        store.errorMessage = error.localizedDescription
+    }
+}
+
 struct ReportsView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.openWindow) private var openWindow
@@ -2997,6 +3112,7 @@ struct ReportsView: View {
 private struct PeriodComparisonReportView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     let baseQuery: TransactionReportQuery
     @State private var currentFrom: Date
     @State private var currentThrough: Date
@@ -3027,6 +3143,17 @@ private struct PeriodComparisonReportView: View {
         _currentThrough = State(initialValue: end)
         _referenceThrough = State(initialValue: referenceEnd)
         _referenceFrom = State(initialValue: referenceEnd.addingTimeInterval(-duration))
+    }
+
+    init(initialQuery: PeriodComparisonQuery) {
+        self.baseQuery = initialQuery.baseQuery
+        _currentFrom = State(initialValue: initialQuery.currentFrom)
+        _currentThrough = State(initialValue: initialQuery.currentThrough)
+        _referenceFrom = State(initialValue: initialQuery.referenceFrom)
+        _referenceThrough = State(initialValue: initialQuery.referenceThrough)
+        _grouping = State(initialValue: initialQuery.grouping)
+        _metric = State(initialValue: initialQuery.metric)
+        _referenceMode = State(initialValue: initialQuery.referenceMode)
     }
 
     private var snapshot: PeriodComparisonSnapshot {
@@ -3062,6 +3189,24 @@ private struct PeriodComparisonReportView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .periodComparison,
+                        payload: PeriodComparisonQuery(
+                            currentFrom: currentFrom,
+                            currentThrough: currentThrough,
+                            referenceFrom: referenceFrom,
+                            referenceThrough: referenceThrough,
+                            grouping: grouping,
+                            metric: metric,
+                            referenceMode: referenceMode,
+                            baseQuery: baseQuery
+                        ),
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openPeriodComparisonReportWindow")
                 Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
             }
             .padding(16)
@@ -3268,6 +3413,7 @@ private struct PeriodComparisonReportView: View {
 private struct BudgetComparisonReportView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedBudgetID: UUID?
     @State private var selectedMonthKey = ""
     @State private var includeZeroRows = false
@@ -3278,18 +3424,33 @@ private struct BudgetComparisonReportView: View {
     @State private var showCSVExporter = false
     @State private var showPDFExporter = false
 
+    init(
+        initialBudgetID: UUID? = nil,
+        initialQuery: BudgetReportQuery = BudgetReportQuery()
+    ) {
+        _selectedBudgetID = State(initialValue: initialBudgetID)
+        _selectedMonthKey = State(
+            initialValue: initialQuery.monthKeys.sorted().first ?? ""
+        )
+        _includeZeroRows = State(initialValue: initialQuery.includeZeroRows)
+    }
+
     private var budget: FinanceBudget? {
         selectedBudgetID.flatMap { id in store.budgets.first { $0.id == id } }
+    }
+
+    private var query: BudgetReportQuery {
+        BudgetReportQuery(
+            monthKeys: selectedMonthKey.isEmpty ? [] : [selectedMonthKey],
+            includeZeroRows: includeZeroRows
+        )
     }
 
     private var snapshot: BudgetReportSnapshot? {
         guard let selectedBudgetID else { return nil }
         return store.budgetReport(
             budgetID: selectedBudgetID,
-            query: BudgetReportQuery(
-                monthKeys: selectedMonthKey.isEmpty ? [] : [selectedMonthKey],
-                includeZeroRows: includeZeroRows
-            )
+            query: query
         )
     }
 
@@ -3311,6 +3472,18 @@ private struct BudgetComparisonReportView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .budgetComparison,
+                        payload: BudgetReportWindowPayload(
+                            budgetID: selectedBudgetID,
+                            query: query
+                        ),
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openBudgetReportWindow")
                 Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
             }
             .padding(16)
@@ -3516,6 +3689,7 @@ private struct BudgetComparisonReportView: View {
 private struct LoanReportView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var limitPeriod = false
     @State private var dateFrom: Date
     @State private var dateThrough: Date
@@ -3529,12 +3703,37 @@ private struct LoanReportView: View {
     @State private var showCSVExporter = false
     @State private var showPDFExporter = false
 
-    init(now: Date = .now, calendar: Calendar = .current) {
-        let interval = calendar.dateInterval(of: .year, for: now)
-        _dateFrom = State(initialValue: interval?.start ?? now)
-        _dateThrough = State(
-            initialValue: interval?.end.addingTimeInterval(-0.001) ?? now
-        )
+    init(
+        initialQuery: LoanReportQuery? = nil,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) {
+        if let initialQuery {
+            let interval = calendar.dateInterval(of: .year, for: now)
+            _limitPeriod = State(
+                initialValue: initialQuery.dateFrom != nil
+                    || initialQuery.dateThrough != nil
+            )
+            _dateFrom = State(
+                initialValue: initialQuery.dateFrom ?? interval?.start ?? now
+            )
+            _dateThrough = State(
+                initialValue: initialQuery.dateThrough
+                    ?? interval?.end.addingTimeInterval(-0.001)
+                    ?? now
+            )
+            _loanIDs = State(initialValue: initialQuery.loanIDs)
+            _currencies = State(initialValue: initialQuery.currencies)
+            _includeInactive = State(
+                initialValue: initialQuery.includeInactiveLoans
+            )
+        } else {
+            let interval = calendar.dateInterval(of: .year, for: now)
+            _dateFrom = State(initialValue: interval?.start ?? now)
+            _dateThrough = State(
+                initialValue: interval?.end.addingTimeInterval(-0.001) ?? now
+            )
+        }
     }
 
     private var query: LoanReportQuery {
@@ -3567,6 +3766,15 @@ private struct LoanReportView: View {
                 Spacer()
                 Text("\(snapshot.summaries.count) Darlehen · \(snapshot.rows.count) Raten")
                     .font(.headline)
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .loans,
+                        payload: query,
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openLoanReportWindow")
                 Button("Schließen") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
@@ -3925,6 +4133,7 @@ private struct LoanReportView: View {
 private struct VATReportView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var dateFrom: Date
     @State private var dateThrough: Date
     @State private var accountIDs = Set<UUID>()
@@ -3943,12 +4152,36 @@ private struct VATReportView: View {
     @State private var showCSVExporter = false
     @State private var showPDFExporter = false
 
-    init(now: Date = .now, calendar: Calendar = .current) {
-        let interval = calendar.dateInterval(of: .year, for: now)
-        _dateFrom = State(initialValue: interval?.start ?? now)
-        _dateThrough = State(
-            initialValue: interval?.end.addingTimeInterval(-0.001) ?? now
-        )
+    init(
+        initialQuery: VATReportQuery? = nil,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) {
+        if let initialQuery {
+            _dateFrom = State(initialValue: initialQuery.dateFrom)
+            _dateThrough = State(initialValue: initialQuery.dateThrough)
+            _accountIDs = State(initialValue: initialQuery.accountIDs)
+            _accountGroupIDs = State(
+                initialValue: initialQuery.accountGroupIDs
+            )
+            _currencies = State(initialValue: initialQuery.currencies)
+            _statuses = State(initialValue: initialQuery.statuses)
+            _includeHidden = State(
+                initialValue: initialQuery.includeHiddenAccounts
+            )
+            _includeExcluded = State(
+                initialValue: initialQuery.includeAccountsExcludedFromReports
+            )
+            _includeTransfers = State(
+                initialValue: initialQuery.includeTransfers
+            )
+        } else {
+            let interval = calendar.dateInterval(of: .year, for: now)
+            _dateFrom = State(initialValue: interval?.start ?? now)
+            _dateThrough = State(
+                initialValue: interval?.end.addingTimeInterval(-0.001) ?? now
+            )
+        }
     }
 
     private var query: VATReportQuery {
@@ -3982,6 +4215,15 @@ private struct VATReportView: View {
                 Spacer()
                 Text("\(snapshot.facts.count) MwSt.-Positionen")
                     .font(.headline)
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .valueAddedTax,
+                        payload: query,
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openVATReportWindow")
                 Button("Schließen") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
@@ -4281,6 +4523,7 @@ private struct VATReportView: View {
 private struct AssetRegisterReportView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var referenceDate = Date()
     @State private var horizon: AssetRegisterReportHorizon = .all
     @State private var includeInactive = false
@@ -4294,6 +4537,19 @@ private struct AssetRegisterReportView: View {
     @State private var pdfDocument = ReportPDFDocument(data: Data())
     @State private var showCSVExporter = false
     @State private var showPDFExporter = false
+
+    init(initialQuery: AssetRegisterReportQuery? = nil) {
+        if let initialQuery {
+            _referenceDate = State(initialValue: initialQuery.referenceDate)
+            _horizon = State(initialValue: initialQuery.horizon)
+            _includeInactive = State(initialValue: initialQuery.includeInactive)
+            _contractTypes = State(initialValue: initialQuery.contractTypes)
+            _inventoryCategories = State(
+                initialValue: initialQuery.inventoryCategories
+            )
+            _searchText = State(initialValue: initialQuery.text)
+        }
+    }
 
     private var query: AssetRegisterReportQuery {
         AssetRegisterReportQuery(
@@ -4333,6 +4589,15 @@ private struct AssetRegisterReportView: View {
                     title: "Versicherungswert",
                     value: Money(minorUnits: value.insuranceValueMinor).formatted
                 )
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .assetRegister,
+                        payload: query,
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openAssetRegisterReportWindow")
                 Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
             }
             .padding(16)
@@ -4633,6 +4898,7 @@ private struct AssetRegisterReportView: View {
 private struct AccountBalanceReportView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var asOf = Date.now
     @State private var accountIDs = Set<UUID>()
     @State private var groupIDs = Set<UUID>()
@@ -4645,6 +4911,24 @@ private struct AccountBalanceReportView: View {
     @State private var pdfDocument = ReportPDFDocument(data: Data())
     @State private var showCSVExporter = false
     @State private var showPDFExporter = false
+
+    init(initialQuery: AccountBalanceReportQuery? = nil) {
+        if let initialQuery {
+            _asOf = State(initialValue: initialQuery.asOf)
+            _accountIDs = State(initialValue: initialQuery.accountIDs)
+            _groupIDs = State(initialValue: initialQuery.accountGroupIDs)
+            _currencies = State(initialValue: initialQuery.currencies)
+            _includeHidden = State(
+                initialValue: initialQuery.includeHiddenAccounts
+            )
+            _includeClosed = State(
+                initialValue: initialQuery.includeClosedAccounts
+            )
+            _includeExcluded = State(
+                initialValue: initialQuery.includeAccountsExcludedFromNetWorth
+            )
+        }
+    }
 
     private var query: AccountBalanceReportQuery {
         AccountBalanceReportQuery(
@@ -4669,6 +4953,15 @@ private struct AccountBalanceReportView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .accountBalances,
+                        payload: query,
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openAccountBalanceReportWindow")
                 Button("Schließen") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
@@ -15139,6 +15432,7 @@ private func taxAllowanceInputString(_ minor: Int64) -> String {
 struct TaxAllowancesView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     let showCloseButton: Bool
     @State private var taxYear = Calendar.current.component(.year, from: .now)
     @State private var selectedPersonIDs = Set<UUID>()
@@ -15156,8 +15450,17 @@ struct TaxAllowancesView: View {
     @State private var showPDFExporter = false
     @State private var orientation: ReportPDFOrientation = .landscape
 
-    init(showCloseButton: Bool = false) {
+    init(
+        showCloseButton: Bool = false,
+        initialQuery: TaxAllowanceReportQuery? = nil
+    ) {
         self.showCloseButton = showCloseButton
+        if let initialQuery {
+            _taxYear = State(initialValue: initialQuery.taxYear)
+            _selectedPersonIDs = State(initialValue: initialQuery.personIDs)
+            _institutionText = State(initialValue: initialQuery.institutionText)
+            _includeInactive = State(initialValue: initialQuery.includeInactive)
+        }
     }
 
     private var query: TaxAllowanceReportQuery {
@@ -15191,6 +15494,15 @@ struct TaxAllowancesView: View {
                 allowanceValue("Verteilt", snapshot.allocatedMinor)
                 allowanceValue("Genutzt", snapshot.usedMinor)
                 allowanceValue("In Aufträgen frei", snapshot.unusedOrderMinor)
+                Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                    openSpecializedReportWindow(
+                        kind: .taxAllowances,
+                        payload: query,
+                        store: store,
+                        openWindow: openWindow
+                    )
+                }
+                .accessibilityIdentifier("openTaxAllowanceReportWindow")
                 if showCloseButton {
                     Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
                 }

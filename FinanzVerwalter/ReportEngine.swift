@@ -290,6 +290,66 @@ struct TransactionReportLaunchRequest: Equatable, Sendable {
     }
 }
 
+enum SpecializedReportKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case accountBalances
+    case valueAddedTax
+    case loans
+    case periodComparison
+    case budgetComparison
+    case assetRegister
+    case taxAllowances
+
+    var title: String {
+        switch self {
+        case .accountBalances: "Kontosalden und Nettovermögen"
+        case .valueAddedTax: "Umsatzsteuerbericht"
+        case .loans: "Kredit-, Zins- und Tilgungsbericht"
+        case .periodComparison: "Zeitvergleich"
+        case .budgetComparison: "Budget Plan/Ist/Abweichung"
+        case .assetRegister: "Vertrags- und Inventarübersicht"
+        case .taxAllowances: "Freistellungsaufträge"
+        }
+    }
+}
+
+struct BudgetReportWindowPayload: Codable, Equatable, Sendable {
+    let budgetID: UUID?
+    let query: BudgetReportQuery
+}
+
+struct SpecializedReportWindowRequest: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    let kind: SpecializedReportKind
+    let financeFilePath: String
+    private let payloadData: Data
+
+    init<Payload: Encodable>(
+        id: UUID = UUID(),
+        kind: SpecializedReportKind,
+        financeFileURL: URL,
+        payload: Payload
+    ) throws {
+        self.id = id
+        self.kind = kind
+        self.financeFilePath = financeFileURL.standardizedFileURL.path
+        self.payloadData = try JSONEncoder().encode(payload)
+    }
+
+    func decodedPayload<Payload: Decodable>(
+        as type: Payload.Type
+    ) throws -> Payload {
+        try JSONDecoder().decode(type, from: payloadData)
+    }
+
+    func belongs(to financeFileURL: URL?) -> Bool {
+        financeFileURL?.standardizedFileURL.path == financeFilePath
+    }
+
+    var frameAutosaveName: String {
+        "FinanzVerwalter.Fachauswertung.\(kind.rawValue).\(id.uuidString.lowercased())"
+    }
+}
+
 struct SavedReportTemplate: Identifiable, Equatable, Sendable {
     let id: UUID
     var name: String

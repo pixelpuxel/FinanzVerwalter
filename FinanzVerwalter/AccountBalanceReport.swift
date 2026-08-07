@@ -2,7 +2,7 @@ import CoreGraphics
 import CoreText
 import Foundation
 
-struct AccountBalanceReportQuery: Equatable, Sendable {
+struct AccountBalanceReportQuery: Codable, Equatable, Sendable {
     var asOf: Date
     var accountIDs: Set<UUID> = []
     var accountGroupIDs: Set<UUID> = []

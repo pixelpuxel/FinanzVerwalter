@@ -194,6 +194,25 @@ struct FinanzVerwalterApp: App {
                 )
         }
         .defaultSize(width: 1380, height: 860)
+
+        WindowGroup(
+            "Fachauswertung",
+            for: SpecializedReportWindowRequest.self
+        ) { request in
+            SpecializedReportWindow(request: request.wrappedValue)
+                .environmentObject(store)
+                .background(ContextualShortcutMonitorHost())
+                .background(
+                    WindowFrameAutosaveHost(
+                        name: request.wrappedValue?.frameAutosaveName
+                            ?? "FinanzVerwalter.Fachauswertung.Leer"
+                    )
+                )
+                .preferredColorScheme(
+                    AppearanceMode(rawValue: appearanceMode)?.colorScheme ?? .light
+                )
+        }
+        .defaultSize(width: 1380, height: 860)
     }
 
     private var financeFileType: UTType {

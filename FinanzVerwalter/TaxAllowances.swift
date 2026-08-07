@@ -76,7 +76,7 @@ struct TaxAllowanceUsage: Identifiable, Hashable, Sendable {
     var usedMinor: Int64
 }
 
-struct TaxAllowanceReportQuery: Equatable, Sendable {
+struct TaxAllowanceReportQuery: Codable, Equatable, Sendable {
     var taxYear: Int
     var personIDs = Set<UUID>()
     var institutionText = ""
