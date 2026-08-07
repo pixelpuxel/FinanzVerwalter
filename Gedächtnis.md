@@ -2569,3 +2569,11 @@ Rechtsberatung.
   erfundenen rückwirkenden Steuerwerte. Die macOS-Sitzung ist weiterhin
   nachweislich gesperrt; deshalb wurde kein fingierter Screenshot erzeugt. Der
   exakte Zielzählerstand vor dieser Dokumentation beträgt 15.893.749 Tokens.
+- Implementierung und Tests wurden als Commit `c9d797c`, die reproduzierbare
+  Dokumentation als Commit `cc8479e` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 enthält den
+  119-Test-Nachweis, den finalen Release-Hash und die offenen Masterpunkte.
+- Telegram-Nachricht 1021 dokumentiert denselben Stand im gefundenen
+  `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
+  deshalb fehlenden Screenshot. Der exakte Zielzählerstand vor dem Versand
+  beträgt 15.906.820 Tokens.
