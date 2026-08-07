@@ -2281,6 +2281,78 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func updatePaymentOrderDraft(
+        _ original: PaymentOrder,
+        accountID: UUID,
+        type: PaymentType,
+        recipientName: String,
+        iban: String,
+        bic: String,
+        amount: String,
+        executionDate: Date,
+        purpose: String,
+        endToEndID: String,
+        payeeID: UUID? = nil,
+        payeeBankAccountID: UUID? = nil,
+        purposeCode: String = ""
+    ) -> Bool {
+        guard let repository,
+              original.status == .draft,
+              let account = accounts.first(where: {
+                  $0.id == accountID && !$0.isClosed
+              }) else { return false }
+        do {
+            let money = try Money(parsing: amount, currency: account.currency)
+            let normalizedIBAN = IBANValidator.normalized(iban)
+            let normalizedPurposeCode = purposeCode
+                .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let normalizedRecipient = recipientName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let normalizedPurpose = purpose.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let normalizedEndToEndID = endToEndID.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let day = executionDate.formatted(
+                .iso8601.year().month().day().dateSeparator(.dash)
+            )
+            let canonical = [
+                accountID.uuidString, type.rawValue, normalizedIBAN,
+                String(abs(money.minorUnits)), day, normalizedPurpose,
+                normalizedEndToEndID, normalizedPurposeCode
+            ].joined(separator: "|")
+            let idempotencyKey = SHA256.hash(data: Data(canonical.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            try repository.updatePaymentOrderDraft(
+                PaymentOrder(
+                    id: original.id, accountID: accountID, type: type,
+                    recipientName: normalizedRecipient,
+                    iban: normalizedIBAN,
+                    bic: bic.trimmingCharacters(in: .whitespacesAndNewlines),
+                    amountMinor: abs(money.minorUnits),
+                    currency: account.currency,
+                    executionDate: executionDate,
+                    purpose: normalizedPurpose,
+                    endToEndID: normalizedEndToEndID,
+                    status: .draft, idempotencyKey: idempotencyKey,
+                    bankReference: original.bankReference,
+                    createdAt: original.createdAt, updatedAt: Date(),
+                    payeeID: payeeID,
+                    payeeBankAccountID: payeeBankAccountID,
+                    purposeCode: normalizedPurposeCode
+                )
+            )
+            try load()
+            statusText = "Zahlungsentwurf aktualisiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func transitionPayment(_ order: PaymentOrder, to target: PaymentStatus) -> Bool {
         guard let repository else { return false }
         do {

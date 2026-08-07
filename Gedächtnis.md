@@ -3559,3 +3559,52 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 21.366.330 Tokens; Zählerstand nach
   überprüfter Zustellung: 21.369.313 Tokens.
+
+## 07.08.2026 – Überweisungsentwürfe korrigieren und abbrechen
+
+- Ein freier Überweisungsentwurf besitzt nun die Aktionen
+  `Entwurf bearbeiten …` und `Entwurf abbrechen …`. Der Editor übernimmt alle
+  bisherigen Felder, korrigiert Konto, Zahlungsart, Empfängerakte,
+  Bankverbindung, Betrag, Termin, Zweck, Zweckcode und End-to-End-ID und
+  speichert erst nach erneuter vollständiger Prüfung.
+- `updatePaymentOrderDraft` akzeptiert ausschließlich den Zustand `draft` und
+  keinen Sammlerbestandteil. Es prüft innerhalb der SQLite-Mutation ein
+  vorhandenes offenes EUR-Auftraggeberkonto, IBAN, optionale BIC,
+  SEPA-Feldlängen sowie die exakte aktive Empfänger-/Bankverknüpfung. Der aus
+  den kanonischen Feldern neu berechnete SHA-256-Idempotenzschlüssel darf mit
+  keinem anderen Auftrag kollidieren. UUID, Erstellungszeit und Status bleiben
+  erhalten; Version und `update_draft`-Audit steigen atomar.
+- Abbrechen verlangt eine eigene Bestätigung, löscht keinen Datensatz und
+  erzeugt keine Buchung. Der bereits vorhandene terminale Zustand `cancelled`
+  ist jetzt aus freien Entwürfen und während `awaiting_user` erreichbar.
+  Initialisierte, übermittelte, terminale und gebündelte Aufträge bleiben
+  unveränderlich.
+- Der gezielte Lauf unter
+  `build/TestResults/PaymentDraftEdit-validation-targeted-20260807-2250.xcresult`
+  bestand mit drei Zahlungs-/Stammdatentests. Die finale vollständige
+  Release-Regression unter
+  `build/TestResults/PaymentDraftEdit-release-full-20260807-2300.xcresult`
+  umfasst 156 Tests: 155 bestanden, 1 privater opt-in-Real-QIF-Test ohne
+  temporären Pfad erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0
+  erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-PaymentDraftEdit-Product` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `bb456b23900245f91f9668fd3d7b990520f8283d4d9f8f76efbbbad279bb78ed`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Schreibtisch-Link zeigt weiterhin auf `/Applications/FinanzVerwalter.app`.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2204-payment-draft-edit/`. Die vor dem
+  Austausch per SQLite konsistent erzeugte Produktionssicherung liegt unter
+  `build/ProductionBackups/20260807-2204-payment-draft-edit/Meine Finanzen.qdata`.
+  Nach dem Austausch läuft Prozess 46931 direkt aus `/Applications`.
+  Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien; beide enthalten
+  0 Zahlungsaufträge. Die private echte QIF-Datei wurde weder kopiert noch in
+  Git aufgenommen.
+- Die Computersteuerung konnte den neuen Editor und die Abbruchbestätigung
+  nicht sichtbar bedienen oder fotografieren, weil die macOS-Sitzung weiterhin
+  gesperrt ist. Die Sperre wurde nicht umgangen. Exakter kumulativer
+  Zielzählerstand nach Umsetzung, Test, Release, Installation,
+  Produktivprüfung und diesem Prüfversuch: 21.552.061 Tokens.

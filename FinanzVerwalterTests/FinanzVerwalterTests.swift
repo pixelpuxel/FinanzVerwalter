@@ -3173,6 +3173,97 @@ final class FinanzVerwalterTests: XCTestCase {
         }
     }
 
+    func testPaymentDraftCanBeAuditedEditedCancelledAndNeverChangedAfterInitiation() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 100_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let original = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+            recipientName: "Stadtwerke", iban: "DE89370400440532013000",
+            bic: "", amountMinor: 9_850, currency: "EUR",
+            executionDate: createdAt, purpose: "Abschlag",
+            endToEndID: "ALT", status: .draft,
+            idempotencyKey: "draft-before-edit", bankReference: "",
+            createdAt: createdAt, updatedAt: createdAt
+        )
+        var invalidSEPA = original
+        invalidSEPA.currency = "USD"
+        XCTAssertThrowsError(try invalidSEPA.validate())
+        invalidSEPA = original
+        invalidSEPA.bic = "FALSCH"
+        XCTAssertThrowsError(try invalidSEPA.validate())
+        invalidSEPA = original
+        invalidSEPA.endToEndID = String(repeating: "X", count: 36)
+        XCTAssertThrowsError(try invalidSEPA.validate())
+        try context.store.createPaymentOrder(original)
+
+        var edited = original
+        edited.recipientName = "Stadtwerke Köln"
+        edited.amountMinor = 10_250
+        edited.purpose = "Abschlag August"
+        edited.endToEndID = "NEU"
+        edited.idempotencyKey = "draft-after-edit"
+        edited.updatedAt = createdAt.addingTimeInterval(60)
+        try context.store.updatePaymentOrderDraft(edited)
+
+        let persisted = try XCTUnwrap(
+            context.store.paymentOrders().first { $0.id == original.id }
+        )
+        XCTAssertEqual(persisted.recipientName, "Stadtwerke Köln")
+        XCTAssertEqual(persisted.amountMinor, 10_250)
+        XCTAssertEqual(persisted.purpose, "Abschlag August")
+        XCTAssertEqual(persisted.endToEndID, "NEU")
+        XCTAssertEqual(persisted.idempotencyKey, "draft-after-edit")
+        XCTAssertEqual(persisted.createdAt, createdAt)
+        XCTAssertEqual(persisted.status, .draft)
+        XCTAssertEqual(
+            try sqliteScalar(
+                context.store.fileURL,
+                "SELECT COUNT(*) FROM audit_events "
+                    + "WHERE entity_type='payment_order' "
+                    + "AND entity_id='\(original.id.uuidString)' "
+                    + "AND action='update_draft'"
+            ),
+            1
+        )
+
+        var duplicate = original
+        duplicate = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+            recipientName: "Andere Zahlung", iban: "DE89370400440532013000",
+            bic: "", amountMinor: 1_000, currency: "EUR",
+            executionDate: createdAt, purpose: "Andere Zahlung",
+            endToEndID: "ANDERE", status: .draft,
+            idempotencyKey: "duplicate-after-edit", bankReference: "",
+            createdAt: createdAt, updatedAt: createdAt
+        )
+        try context.store.createPaymentOrder(duplicate)
+        edited.idempotencyKey = duplicate.idempotencyKey
+        XCTAssertThrowsError(try context.store.updatePaymentOrderDraft(edited)) {
+            XCTAssertEqual($0 as? FinanceError, .duplicatePaymentOrder)
+        }
+
+        try context.store.transitionPaymentOrder(id: original.id, to: .initiated)
+        edited.idempotencyKey = "another-edit"
+        XCTAssertThrowsError(try context.store.updatePaymentOrderDraft(edited)) {
+            XCTAssertEqual($0 as? FinanceError, .invalidPaymentTransition)
+        }
+
+        try context.store.transitionPaymentOrder(id: duplicate.id, to: .cancelled)
+        let cancelled = try XCTUnwrap(
+            context.store.paymentOrders().first { $0.id == duplicate.id }
+        )
+        XCTAssertEqual(cancelled.status, .cancelled)
+        XCTAssertThrowsError(try context.store.updatePaymentOrderDraft(cancelled)) {
+            XCTAssertEqual($0 as? FinanceError, .invalidPaymentTransition)
+        }
+    }
+
     func testPayeeBankAccountsKeepOneDefaultAndLinkImmutablePaymentSnapshot() throws {
         let context = try TestDatabase()
         let source = FinanceAccount(

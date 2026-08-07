@@ -178,13 +178,13 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 155 XCTest-Fälle: 154 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 156 XCTest-Fälle: 155 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
 unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
 Die installierte ausführbare Datei besitzt SHA-256
-`0ffb85dcd96f8c47bca3f2fd1cbf0fbcb5889f1ec6b3fc84ec6a3c3f7f5ec6af`.
+`bb456b23900245f91f9668fd3d7b990520f8283d4d9f8f76efbbbad279bb78ed`.
 Details und der ehrliche Nachweis der wegen der gesperrten macOS-Sitzung noch
 ausstehenden sichtbaren Abnahme stehen in `Gedächtnis.md`.
 
@@ -504,6 +504,19 @@ Für den Banking-Simulator gilt reproduzierbar:
 - Der UI-Stand ist deutlich als Simulator ohne echte Bankverbindung
   gekennzeichnet und fordert vor der Initialisierung eine zweite
   Bestätigung anhand einer unveränderlichen Zusammenfassung.
+- Erlaube die vollständige Korrektur eines einzelnen Auftrags ausschließlich
+  im Zustand `draft` und solange er keinem Sammler angehört. Prüfe dabei das
+  offene EUR-Auftraggeberkonto, die Währungsidentität, Empfänger- und
+  Bankverknüpfung, IBAN, optionale BIC, SEPA-Feldlängen und Betrag erneut.
+  Berechne die SHA-256-Idempotenzkennung aus den geänderten kanonischen
+  Auftragsfeldern neu und weise eine Kollision mit jedem anderen Auftrag ab.
+  Bewahre UUID, Erstellungszeit und Status, erhöhe die Version und schreibe
+  die Änderung atomar mit einem Auditereignis. Ab `initiated` sowie für
+  Sammlermitglieder bleibt der Schnappschuss unveränderlich.
+- Biete für freie Entwürfe und den Zustand `awaiting_user` einen ausdrücklich
+  bestätigten Übergang nach `cancelled`. Abbrechen löscht weder Auftrag noch
+  Auditverlauf und erzeugt keine Buchung; ein abgebrochener Auftrag kann
+  weder bearbeitet noch erneut übermittelt werden.
 - Exportiere einen ausgewählten Überweisungsauftrag lokal als
   `pain.001.001.09`. Kapsle die zeitabhängigen Regeln in
   `Pain001RulePackage.epc2025` mit Kennung `EPC-SCT-2025-V1.0`,

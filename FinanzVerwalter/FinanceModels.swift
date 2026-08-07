@@ -1804,12 +1804,41 @@ struct PaymentOrder: Identifiable, Hashable, Sendable {
     var purposeCode: String = ""
 
     func validate() throws {
-        guard !recipientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        let normalizedRecipient = recipientName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let normalizedPurpose = purpose.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let normalizedEndToEndID = endToEndID.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalizedRecipient.isEmpty,
+              normalizedRecipient.count <= 70,
+              !normalizedPurpose.isEmpty,
+              normalizedPurpose.count <= 140,
+              !normalizedEndToEndID.isEmpty,
+              normalizedEndToEndID.count <= 35,
               amountMinor > 0 else {
-            throw FinanceError.database("Empfänger, Verwendungszweck und positiver Betrag sind erforderlich.")
+            throw FinanceError.database(
+                "Empfänger (maximal 70 Zeichen), Verwendungszweck (maximal 140 Zeichen), End-to-End-ID (maximal 35 Zeichen) und positiver Betrag sind erforderlich."
+            )
+        }
+        guard currency.uppercased() == "EUR" else {
+            throw FinanceError.database("SEPA-Überweisungen erfordern EUR.")
         }
         guard IBANValidator.isValid(iban) else { throw FinanceError.invalidIBAN }
+        let normalizedBIC = bic.trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        if !normalizedBIC.isEmpty,
+           normalizedBIC.range(
+               of: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$",
+               options: .regularExpression
+           ) == nil {
+            throw FinanceError.database(
+                "Die BIC muss 8 oder 11 gültige Zeichen enthalten."
+            )
+        }
         guard purposeCode.isEmpty || purposeCode.range(
             of: "^[A-Z0-9]{1,4}$", options: .regularExpression
         ) != nil else {

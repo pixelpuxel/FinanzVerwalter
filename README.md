@@ -732,6 +732,14 @@ IBAN, zeigen vor der simulierten Übermittlung eine unveränderliche
 Zusammenfassung und speichern keine TAN oder Freigabecodes. Angenommene
 Aufträge werden idempotent als vorgemerkte Buchung materialisiert.
 
+Solange ein Einzelauftrag noch ein freier Entwurf ist, lässt er sich über
+`Entwurf bearbeiten …` vollständig korrigieren. Die Änderung prüft das offene
+EUR-Auftraggeberkonto, IBAN, optionale BIC, EPC-Feldlängen, Empfängerakte und
+Bankverbindung erneut, berechnet den Idempotenzschlüssel neu und schreibt ein
+Auditereignis. Mitglieder eines Sammlers sowie initialisierte oder terminale
+Aufträge bleiben unveränderlich. `Entwurf abbrechen …` verlangt eine eigene
+Bestätigung, löscht nichts und erhält den Auftrag mit Status und Auditverlauf.
+
 Ein einzelner Auftrag kann als `pain.001.001.09`-XML exportiert werden. Der
 Writer verwendet das datierte Regelpaket `EPC-SCT-2025-V1.0`, schreibt
 Kontrollsummen, `SLEV`, Ausführungsdatum und bei Echtzeitüberweisungen
@@ -757,7 +765,7 @@ verhindern Doppelentwürfe; spätere Vorlagenänderungen verändern bereits
 erzeugte Aufträge nicht.
 
 Überweisungs- und Lastschriftentwürfe warnen sichtbar vor einem gewählten
-TARGET-Schließtag, bleiben aber bewusst editierbare lokale Entwürfe.
+TARGET-Schließtag; freie Überweisungsentwürfe bleiben bewusst editierbar.
 Echtzeitüberweisungen werden getrennt als 24/7-Verfahren gekennzeichnet. Die
 Kalenderregeln folgen dem aktuellen Merkblatt der Deutschen Bundesbank und
 dem TARGET-Betriebskalender der EZB; eine spätere Regeländerung erhält eine

@@ -6191,6 +6191,13 @@ final class SQLiteFinanceStore {
 
     func createPaymentOrder(_ value: PaymentOrder) throws {
         try value.validate()
+        guard let account = try accounts().first(where: { $0.id == value.accountID }),
+              !account.isClosed,
+              account.currency == value.currency else {
+            throw FinanceError.database(
+                "Das Auftraggeberkonto fehlt, ist geschlossen oder verwendet eine andere Währung."
+            )
+        }
         if value.payeeID == nil, value.payeeBankAccountID != nil {
             throw FinanceError.database(
                 "Eine Bankverbindung benötigt eine verknüpfte Empfängerakte."
@@ -6262,6 +6269,107 @@ final class SQLiteFinanceStore {
                 ]
             )
             try audit(entity: "payment_order", id: value.id, action: "create", details: value.type.rawValue)
+        }
+    }
+
+    func updatePaymentOrderDraft(_ value: PaymentOrder) throws {
+        try value.validate()
+        guard value.status == .draft else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        guard let current = try paymentOrders().first(where: { $0.id == value.id }),
+              current.status == .draft else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_batch_items WHERE payment_order_id=?",
+            [.text(value.id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Ein Auftrag im Sammler kann nicht einzeln bearbeitet werden."
+            )
+        }
+        guard let account = try accounts().first(where: { $0.id == value.accountID }),
+              !account.isClosed,
+              account.currency == value.currency else {
+            throw FinanceError.database(
+                "Das Auftraggeberkonto fehlt, ist geschlossen oder verwendet eine andere Währung."
+            )
+        }
+        if value.payeeID == nil, value.payeeBankAccountID != nil {
+            throw FinanceError.database(
+                "Eine Bankverbindung benötigt eine verknüpfte Empfängerakte."
+            )
+        }
+        if let payeeID = value.payeeID {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM payees WHERE id=? AND is_active=1",
+                [.text(payeeID.uuidString)]
+            ) == 1 else {
+                throw FinanceError.database(
+                    "Die verknüpfte Empfängerakte fehlt oder ist inaktiv."
+                )
+            }
+        }
+        if let bankAccountID = value.payeeBankAccountID {
+            guard let payeeID = value.payeeID,
+                  let bankAccount = try payeeBankAccounts(payeeID: payeeID)
+                    .first(where: { $0.id == bankAccountID }),
+                  bankAccount.isActive,
+                  bankAccount.accountHolder
+                    == value.recipientName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                  IBANValidator.normalized(bankAccount.iban)
+                    == IBANValidator.normalized(value.iban),
+                  bankAccount.bic.uppercased() == value.bic.uppercased()
+            else {
+                throw FinanceError.database(
+                    "Die Zahlungsdaten stimmen nicht mehr mit der gewählten Bankverbindung überein."
+                )
+            }
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_orders WHERE idempotency_key=? AND id<>?",
+            [.text(value.idempotencyKey), .text(value.id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.duplicatePaymentOrder
+        }
+        let now = Self.timestamp(value.updatedAt)
+        try transaction {
+            try run(
+                """
+                UPDATE payment_orders SET
+                    account_id=?,type=?,recipient_name=?,iban=?,bic=?,amount_minor=?,
+                    currency=?,execution_date=?,purpose=?,end_to_end_id=?,
+                    idempotency_key=?,updated_at=?,payee_id=?,payee_bank_account_id=?,
+                    purpose_code=?,version=version+1
+                WHERE id=? AND status=?
+                """,
+                [
+                    .text(value.accountID.uuidString), .text(value.type.rawValue),
+                    .text(value.recipientName),
+                    .text(IBANValidator.normalized(value.iban)),
+                    .text(value.bic.uppercased()), .integer(value.amountMinor),
+                    .text(value.currency), .text(Self.day(value.executionDate)),
+                    .text(value.purpose), .text(value.endToEndID),
+                    .text(value.idempotencyKey), .text(now),
+                    value.payeeID.map { .text($0.uuidString) } ?? .null,
+                    value.payeeBankAccountID.map {
+                        .text($0.uuidString)
+                    } ?? .null,
+                    .text(value.purposeCode), .text(value.id.uuidString),
+                    .text(PaymentStatus.draft.rawValue)
+                ]
+            )
+            try audit(
+                entity: "payment_order", id: value.id,
+                action: "update_draft",
+                details: "\(current.type.rawValue)->\(value.type.rawValue);"
+                    + "amount=\(current.amountMinor)->\(value.amountMinor);"
+                    + "date=\(Self.day(current.executionDate))->"
+                    + Self.day(value.executionDate)
+            )
         }
     }
 

@@ -9688,6 +9688,7 @@ struct PaymentsView: View {
     @State private var showInstructionImporter = false
     @State private var statusPreview: Pain002Preview?
     @State private var instructionPreview: PainInstructionPreview?
+    @State private var editedPaymentOrder: PaymentOrder?
     @State private var editedStandingOrder: StandingOrder?
 
     private var selectedOrder: PaymentOrder? {
@@ -9828,6 +9829,9 @@ struct PaymentsView: View {
         .sheet(isPresented: $showNewPayment) {
             PaymentDraftEditor()
         }
+        .sheet(item: $editedPaymentOrder) {
+            PaymentDraftEditor(order: $0)
+        }
         .sheet(isPresented: $showNewDirectDebit) {
             DirectDebitDraftEditor()
         }
@@ -9919,7 +9923,10 @@ struct PaymentsView: View {
             .frame(minWidth: 390, idealWidth: 470)
 
             if let selectedOrder {
-                PaymentOrderDetail(order: selectedOrder)
+                PaymentOrderDetail(
+                    order: selectedOrder,
+                    edit: { editedPaymentOrder = selectedOrder }
+                )
                     .id(selectedOrder)
                     .frame(minWidth: 520)
             } else {
@@ -11417,7 +11424,9 @@ private struct StandingOrderEditor: View {
 private struct PaymentOrderDetail: View {
     @EnvironmentObject private var store: FinanceAppStore
     let order: PaymentOrder
+    let edit: () -> Void
     @State private var confirmInitiation = false
+    @State private var confirmCancellation = false
     @State private var authorizationCode = ""
     @State private var showPain001Exporter = false
     @State private var pain001Document = Pain001Document(data: Data())
@@ -11510,6 +11519,16 @@ private struct PaymentOrderDetail: View {
         } message: {
             Text("\(order.recipientName) erhält \(Money(minorUnits: order.amountMinor).formatted). Dies ist ausschließlich eine lokale Simulation.")
         }
+        .alert("Zahlungsauftrag abbrechen?", isPresented: $confirmCancellation) {
+            Button("Nicht abbrechen", role: .cancel) {}
+            Button("Auftrag abbrechen", role: .destructive) {
+                _ = store.transitionPayment(order, to: .cancelled)
+            }
+        } message: {
+            Text(
+                "Der Entwurf bleibt mit seinem Auditverlauf erhalten, kann aber nicht mehr übermittelt oder bearbeitet werden."
+            )
+        }
         .fileExporter(
             isPresented: $showPain001Exporter,
             document: pain001Document,
@@ -11551,8 +11570,18 @@ private struct PaymentOrderDetail: View {
         } else {
             switch order.status {
         case .draft:
-            Button("Übermittlung vorbereiten …") { confirmInitiation = true }
+            HStack {
+                Button("Entwurf bearbeiten …", systemImage: "pencil") {
+                    edit()
+                }
+                Button("Übermittlung vorbereiten …") {
+                    confirmInitiation = true
+                }
                 .buttonStyle(.borderedProminent)
+                Button("Entwurf abbrechen …", role: .destructive) {
+                    confirmCancellation = true
+                }
+            }
         case .initiated:
             Button("Bank-Challenge simulieren") {
                 _ = store.transitionPayment(order, to: .challengeReceived)
@@ -11576,6 +11605,9 @@ private struct PaymentOrderDetail: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                Button("Auftrag abbrechen …", role: .destructive) {
+                    confirmCancellation = true
+                }
             }
         case .submitted:
             VStack(alignment: .leading, spacing: 8) {
@@ -12060,41 +12092,52 @@ private struct DirectDebitOrderDetail: View {
 private struct PaymentDraftEditor: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: FinanceAppStore
+    private let order: PaymentOrder?
     @State private var accountID: UUID?
-    @State private var type: PaymentType = .sepaCreditTransfer
+    @State private var type: PaymentType
     @State private var payeeID: UUID?
     @State private var payeeBankAccountID: UUID?
-    @State private var recipientName = ""
-    @State private var iban = ""
-    @State private var bic = ""
-    @State private var amount = ""
-    @State private var executionDate = Date()
-    @State private var purpose = ""
-    @State private var endToEndID = "NOTPROVIDED"
-    @State private var purposeCode = ""
+    @State private var recipientName: String
+    @State private var iban: String
+    @State private var bic: String
+    @State private var amount: String
+    @State private var executionDate: Date
+    @State private var purpose: String
+    @State private var endToEndID: String
+    @State private var purposeCode: String
     @State private var showEPCQRImporter = false
     @State private var epcInformation = ""
+
+    init(order: PaymentOrder? = nil) {
+        self.order = order
+        _accountID = State(initialValue: order?.accountID)
+        _type = State(initialValue: order?.type ?? .sepaCreditTransfer)
+        _payeeID = State(initialValue: order?.payeeID)
+        _payeeBankAccountID = State(initialValue: order?.payeeBankAccountID)
+        _recipientName = State(initialValue: order?.recipientName ?? "")
+        _iban = State(initialValue: order?.iban ?? "")
+        _bic = State(initialValue: order?.bic ?? "")
+        _amount = State(initialValue: order.map {
+            Money(minorUnits: $0.amountMinor, currency: $0.currency).editingString
+        } ?? "")
+        _executionDate = State(initialValue: order?.executionDate ?? Date())
+        _purpose = State(initialValue: order?.purpose ?? "")
+        _endToEndID = State(initialValue: order?.endToEndID ?? "NOTPROVIDED")
+        _purposeCode = State(initialValue: order?.purposeCode ?? "")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Zahlungsentwurf").font(.title2.bold())
+                Text(order == nil ? "Zahlungsentwurf" : "Zahlungsentwurf bearbeiten")
+                    .font(.title2.bold())
                 Spacer()
                 Button("EPC-QR einlesen …", systemImage: "qrcode.viewfinder") {
                     showEPCQRImporter = true
                 }
                 Button("Abbrechen") { dismiss() }
-                Button("Entwurf anlegen") {
-                    guard let accountID else { return }
-                    if store.createPaymentOrder(
-                        accountID: accountID, type: type, recipientName: recipientName,
-                        iban: iban, bic: bic, amount: amount,
-                        executionDate: executionDate, purpose: purpose,
-                        endToEndID: endToEndID,
-                        payeeID: payeeID,
-                        payeeBankAccountID: payeeBankAccountID,
-                        purposeCode: purposeCode
-                    ) { dismiss() }
+                Button(order == nil ? "Entwurf anlegen" : "Änderungen speichern") {
+                    save()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(accountID == nil || recipientName.isEmpty || purpose.isEmpty || amount.isEmpty)
@@ -12105,7 +12148,9 @@ private struct PaymentDraftEditor: View {
                 Section("Auftrag") {
                     Picker("Auftraggeberkonto", selection: $accountID) {
                         Text("Konto wählen").tag(UUID?.none)
-                        ForEach(store.accounts.filter { !$0.isClosed }) {
+                        ForEach(store.accounts.filter {
+                            !$0.isClosed && $0.currency == "EUR"
+                        }) {
                             Text($0.name).tag(Optional($0.id))
                         }
                     }
@@ -12166,7 +12211,11 @@ private struct PaymentDraftEditor: View {
             .formStyle(.grouped)
         }
         .frame(width: 700, height: 760)
-        .onAppear { accountID = accountID ?? store.accounts.first?.id }
+        .onAppear {
+            accountID = accountID ?? store.accounts.first(where: {
+                !$0.isClosed && $0.currency == "EUR"
+            })?.id
+        }
         .fileImporter(
             isPresented: $showEPCQRImporter,
             allowedContentTypes: [.image], allowsMultipleSelection: false
@@ -12259,6 +12308,33 @@ private struct PaymentDraftEditor: View {
             payeeID = nil
             payeeBankAccountID = nil
         }
+    }
+
+    private func save() {
+        guard let accountID else { return }
+        let success: Bool
+        if let order {
+            success = store.updatePaymentOrderDraft(
+                order, accountID: accountID, type: type,
+                recipientName: recipientName, iban: iban, bic: bic,
+                amount: amount, executionDate: executionDate,
+                purpose: purpose, endToEndID: endToEndID,
+                payeeID: payeeID,
+                payeeBankAccountID: payeeBankAccountID,
+                purposeCode: purposeCode
+            )
+        } else {
+            success = store.createPaymentOrder(
+                accountID: accountID, type: type,
+                recipientName: recipientName, iban: iban, bic: bic,
+                amount: amount, executionDate: executionDate,
+                purpose: purpose, endToEndID: endToEndID,
+                payeeID: payeeID,
+                payeeBankAccountID: payeeBankAccountID,
+                purposeCode: purposeCode
+            )
+        }
+        if success { dismiss() }
     }
 }
 
