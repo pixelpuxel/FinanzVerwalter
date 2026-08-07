@@ -3608,3 +3608,14 @@ Rechtsberatung.
   gesperrt ist. Die Sperre wurde nicht umgangen. Exakter kumulativer
   Zielzählerstand nach Umsetzung, Test, Release, Installation,
   Produktivprüfung und diesem Prüfversuch: 21.552.061 Tokens.
+- Nach den abschließenden direkten Grenzwertprüfungen für EUR, BIC und
+  End-to-End-ID bestand auch der fokussierte Lauf unter
+  `build/TestResults/PaymentDraftEdit-final-targeted-20260807-2310.xcresult`
+  mit 1 Test, 1 bestanden, 0 übersprungen und 0 Fehlern.
+- Implementierung, Test und Dokumentation wurden als Commit `93611cd` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub Draft-PR #1 zeigt
+  denselben Head, enthält den aktualisierten Zahlungs-, Release- und
+  Installationsnachweis und wurde danach als mergebar bestätigt.
+- Telegram-Nachricht 1097 meldet denselben Stand im `/quicken`-Thread 894.
+  Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
+  Exakter Zielzählerstand der Nachricht: 21.617.845 Tokens.
