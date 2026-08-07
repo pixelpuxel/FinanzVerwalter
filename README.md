@@ -466,6 +466,16 @@ MwSt.-Schlüssel. Ein Drill-down führt zu den vollständigen Buchungs- und
 Splitpositionen; CSV, mehrseitiges PDF und Systemdruck verwenden denselben
 Snapshot.
 
+Der eigenständige `Kredit-, Zins- und Tilgungsbericht` wertet die hinterlegten
+Tilgungspläne als Planwerte aus. Zeitraum, Darlehen, Währungen und inaktive
+Darlehen sind filterbar. Die Übersicht trennt Anfangssaldo, Zahlungen,
+Tilgung, Zinsen, Gebühren, Sondertilgungen und Restschuld; ein Drill-down zeigt
+den vollständigen Ratenplan und den geplanten Restschuldverlauf. Summen werden
+streng je Währung geführt. Deterministisches Semikolon-CSV, mehrseitiges PDF
+und Systemdruck verwenden denselben Snapshot. Der Bericht kennzeichnet
+sichtbar, dass ein Abgleich mit tatsächlich gebuchten Kreditraten noch nicht
+implementiert ist.
+
 Jeder buchungsbasierte Bericht kann zusätzlich als Balken-, Linien-, Flächen-
 oder Tortendiagramm für Einnahmen oder Ausgaben dargestellt werden. Die Diagramme
 verwenden ausschließlich die bereits gefilterten Detailgruppen desselben

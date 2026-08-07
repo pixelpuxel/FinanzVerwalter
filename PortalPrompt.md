@@ -770,6 +770,22 @@ Für Kredite und Vermögenswerte gilt reproduzierbar:
   Wertverlauf; der Nettoanteil ist aktueller Wert minus Restschuld.
 - Die Oberfläche schaltet zwischen Kredit- und Vermögenssicht um und zeigt
   aggregierte Vermögenswerte, Restschulden sowie den Nettoanteil.
+- Ergänze einen eigenständigen `LoanReportEngine`. Eine Query filtert optional
+  Zeitraum, Darlehens-UUIDs, Währungen und inaktive Darlehen. Der unveränderliche
+  Snapshot enthält je Darlehen Originalbetrag, Perioden-Anfangssaldo,
+  Zahlungen, Tilgung, Zinsen, Gebühren, Sondertilgungen, Perioden-Endsaldo,
+  geplantes Ablösedatum und die referenzierten Planzeilen-IDs. Jede Zeilen-ID
+  ist deterministisch aus Darlehens-UUID und Ratennummer aufgebaut.
+- Das UI öffnet `Kredit-, Zins- und Tilgungsbericht …` im Menü
+  `Standardberichte`, zeigt eine breite Darlehensübersicht und für die Auswahl
+  den vollständigen Ratenplan sowie eine Restschuldlinie. Verschiedene
+  Währungen bleiben in Ansicht und Summen strikt getrennt.
+- CSV, mehrseitiges A4-PDF und direkter Systemdruck werden aus demselben
+  Snapshot erzeugt. Oberfläche und alle Exporte müssen sichtbar
+  `Planwerte – kein Ist-Zahlungsabgleich` ausweisen, solange echte Buchungen
+  noch nicht mit Planraten verknüpft werden. Tests sichern Periodenfilter,
+  Sondertilgung, stabile IDs, Währungstrennung, deterministisches CSV und ein
+  semantisch lesbares mehrseitiges PDF.
 - Noch offen sind die automatische Splitbuchung realer Raten, der
   Ist-Abgleich, Szenarien und der optionale Debt-Reduction-Planner.
 

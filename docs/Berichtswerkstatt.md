@@ -95,6 +95,14 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   Zeitraum, Konten/-gruppen, Status, Währung und Kontooptionen sind filterbar;
   Buchungs-Drill-down, deterministisches CSV, mehrseitiges PDF und Systemdruck
   verwenden denselben Snapshot.
+- Der eigenständige Kredit-, Zins- und Tilgungsbericht erzeugt aus den
+  versionierten Zinssätzen, Gebühren und Sondertilgungen einen unveränderlichen
+  Plan-Snapshot. Zeitraum, Darlehen, Währungen und inaktive Darlehen sind
+  filterbar. Übersicht, vollständiger Raten-Drill-down und Restschuldlinie
+  verwenden stabile Planzeilen-IDs. CSV, mehrseitiges PDF und Systemdruck
+  entstehen aus demselben Snapshot und addieren verschiedene Währungen nie.
+  Oberfläche und Exporte kennzeichnen ausdrücklich, dass noch kein
+  Ist-Zahlungsabgleich stattfindet.
 
 Noch offen sind weitere fachliche Standardberichte.
 
@@ -176,10 +184,12 @@ P0:
   Linien-/Flächenzeitreihe und bestehende Exportpipeline umgesetzt)*
 - Umsatzsteuerbericht *(zeilenweise Brutto-/Netto-/Steuerlogik,
   Gutschriften, Drill-down, CSV, PDF und Druck umgesetzt)*
+- Kredit- und Tilgungsbericht *(Planwerte, Zins-/Gebühren-/Sondertilgungsanteile,
+  Restschuldverlauf, Drill-down, CSV, PDF und Druck umgesetzt; Ist-Abgleich
+  noch offen)*
 
 P1:
 
-- Kredit- und Tilgungsbericht
 - Depot-, Performance- und Steuerbericht
 - Vertrags-, Inventar- und Vermietungsbericht
 
