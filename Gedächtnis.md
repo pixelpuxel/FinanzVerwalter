@@ -2094,3 +2094,11 @@ Rechtsberatung.
   und ein neuer App-Screenshot waren wegen der bestätigten macOS-Sperre nicht
   möglich und wurden nicht vorgetäuscht. Der dokumentierte Tokenstand vor der
   Veröffentlichung beträgt exakt 13.311.533 Tokens.
+- Implementierung, Tests, ADR und Dokumentation wurden als Commit `226d14c`
+  auf `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 wurde auf den
+  vollständigen Schema-30-, Fremdwährungs-, Release- und Echtdatenstand
+  aktualisiert.
+- Telegram-Nachricht 995 wurde im Projektthread 894 (`/quicken`) mit dem
+  geprüften Zwischenstand und exakt 13.334.173 Tokens veröffentlicht. Die
+  Nachricht nennt transparent, dass wegen der macOS-Sperre kein neuer
+  Screenshot angehängt werden konnte.
