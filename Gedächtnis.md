@@ -1977,3 +1977,10 @@ Rechtsberatung.
   Schema 29 meldet Integrität `ok`, 97 Konten, 2.170 Buchungen und 782
   Kategorien. Der Fensterfuß zeigt 559 Buchungen für die aktuelle UI-Sicht;
   dies ist nicht die Gesamtzahl der Datenbank.
+- Implementierung, Tests und Dokumentation wurden als Commit `dc81525` auf
+  `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 trägt nun den vollständigen
+  Budget-, Test-, Release- und Datenbankstand und meldet `CLEAN`.
+- Telegram-Nachricht 993 wurde mit dem echten Release-Screenshot im
+  Projektthread 894 (`/quicken`) veröffentlicht. Sie enthält den exakten
+  Messwert von 12.795.846 Tokens; Bot-Antwort, Chat- und Thread-ID wurden
+  geprüft.
