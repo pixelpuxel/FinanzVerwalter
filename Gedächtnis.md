@@ -2527,3 +2527,45 @@ Rechtsberatung.
   `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
   deshalb fehlenden Screenshot. Der exakte Zielzählerstand vor dem Versand
   beträgt 15.689.959 Tokens.
+
+## 07.08.2026 – Zeilenweiser Umsatzsteuerbericht
+
+- `VATReportEngine` erzeugt eine unveränderliche Momentaufnahme ausschließlich
+  aus Buchungs- und Splitzeilen mit tatsächlich gespeichertem MwSt.-Schlüssel.
+  Gemischte Belege werden nie über eine pauschale Belegsumme ausgewertet. Der
+  Bericht trennt Brutto, Netto, Umsatzsteuer, Brutto-/Nettoeinkauf, Vorsteuer
+  und Zahllast je Schlüssel und Währung und bewahrt die vollständigen Fakten-
+  IDs für den Drill-down.
+- Die Zuordnung der Steuerseite folgt vorrangig der Kategorieart und nicht nur
+  dem Vorzeichen. Dadurch mindern negative Erlöse die Umsatzsteuer und positive
+  Aufwandsrückerstattungen die Vorsteuer. Ohne Kategoriezuordnung greift ein
+  dokumentierter Vorzeichen-Fallback. Frei wählbar sind Zeitraum, Konten und
+  Kontengruppen, Status, Währungen, Umbuchungen sowie ausgeblendete oder von
+  Berichten ausgeschlossene Konten.
+- Der neue Eintrag `Umsatzsteuerbericht …` im Menü `Standardberichte` öffnet
+  eine breite Schlüsselübersicht und einen geteilten Buchungs-/Split-
+  Drill-down mit vollständigem Kategoriepfad. Deterministisches Semikolon-CSV
+  enthält Metadaten, Schlüsselübersicht, Währungssummen und Detailpositionen.
+  Mehrseitiges PDF und Systemdruck entstehen aus demselben Snapshot.
+- Zwei gezielte Tests prüfen gemischte 7/19-%-Splits, Erlöse,
+  Lieferantengutschriften, Kategoriepfade, EUR/USD-Trennung, exakte Summen und
+  Faktenmengen sowie identische CSV-/PDF-Snapshotnutzung. Der vollständige
+  Result-Bundle `/tmp/FinanzVerwalter-VATReport-20260807-1357.xcresult`
+  enthält 119 Tests: 118 bestanden, der private opt-in-QIF-Test ohne Pfad
+  planmäßig übersprungen, 0 Fehler und 0 erwartete Fehler. Debug-Build,
+  `git diff --check` und der optimierte Release-Build sind ebenfalls grün.
+- Der streng signaturgeprüfte arm64-Release liegt unter
+  `build/DerivedData-VATReport-Release`. Sein ausführbarer Code hat SHA-256
+  `993d6c9a3e87ec3642457cab9dfbdd6ffcd10683c3fc20da95308ac747cb0652`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiter auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-umsatzsteuerbericht-20260807-1402.app` und
+  `build/FinanzVerwalter-user-vor-umsatzsteuerbericht-20260807-1402.app`.
+- Der echte Start läuft als Prozess 68958 direkt aus `/Applications`.
+  Datenintegrität `ok`, Schema 32, 97 Konten, 2.170 Buchungen, 782 Kategorien,
+  eine Berichtsvorlage, 0 MwSt.-Buchungen und 0 MwSt.-Splits blieben vor und
+  nach Installation identisch. Der reale QIF-Bestand erhält damit keine
+  erfundenen rückwirkenden Steuerwerte. Die macOS-Sitzung ist weiterhin
+  nachweislich gesperrt; deshalb wurde kein fingierter Screenshot erzeugt. Der
+  exakte Zielzählerstand vor dieser Dokumentation beträgt 15.893.749 Tokens.

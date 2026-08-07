@@ -994,6 +994,27 @@ und Steuer vor dem Speichern. Die zweizeilige Kontenblattansicht nennt
 Schlüssel, Netto und Steuer. Buchungsvorlagen müssen alle MwSt.-Felder
 verlustfrei übernehmen.
 
+Ergänze einen eigenständigen `VATReportEngine`. Seine Query filtert einen
+freien Zeitraum, Konten und Kontengruppen, Status, Währungen, Umbuchungen sowie
+ausgeblendete oder von Berichten ausgeschlossene Konten. Erzeuge Fakten immer
+je tatsächlich gespeicherter MwSt.-Buchungs- oder Splitzeile; ein gemischter
+Beleg darf nie über seine Belegsumme pauschalisiert werden. Gruppiere nach der
+UUID des MwSt.-Schlüssels und Währung. Weise Zeilen anhand der Kategorieart der
+Umsatzsteuer- oder Vorsteuerseite zu, nicht allein anhand des Vorzeichens:
+Negative Einnahmen mindern die Umsatzsteuer, positive Ausgaben mindern die
+Vorsteuer. Ohne Kategorieart ist nur ein dokumentierter Vorzeichen-Fallback
+zulässig. Summiere Brutto, Netto, Umsatzsteuer, Brutto-/Nettoeinkauf,
+Vorsteuer und Zahllast; verschiedene Währungen dürfen nie addiert werden.
+
+Das UI öffnet den `Umsatzsteuerbericht` im Menü `Standardberichte`, bietet die
+vollständigen Queryfilter, eine breite Schlüsselübersicht und einen
+Buchungs-/Split-Drill-down mit vollständigem Kategoriepfad. Deterministisches
+Semikolon-CSV enthält Übersicht, Währungssummen und Details. Mehrseitiges PDF
+und Systemdruck verwenden denselben unveränderlichen Snapshot. Teste gemischte
+7/19-%-Splits, Erlöse, Lieferantengutschriften, Kategoriepfade,
+Währungstrennung, exakte Fakten-IDs, reproduzierbares CSV und semantisch
+lesbares PDF.
+
 # Reproduzierbares Import- und Bankumsatz-Matching
 
 Migration 19 ergänzt jede Buchung um Herkunft (`manual`, `fileImport`,

@@ -36,7 +36,9 @@ reproduzierbar und ohne binäre Gleitkommazahlen gespeichert werden.
 ## Folgen
 
 Die Persistenz ist für steuerliche Zuordnungen und gemischte Splitbelege
-geeignet, ersetzt aber keine Steuerberatung. Berichte verwenden bis zur
-Erweiterung um explizite Netto-/Steuerspalten weiterhin den Bruttobetrag.
-Bestehende Buchungen migrieren neutral mit Modus `none` sowie Netto und Steuer
-gleich null.
+geeignet, ersetzt aber keine Steuerberatung. Der eigenständige
+Umsatzsteuerbericht verwendet explizit Brutto, Netto und Steuer je gespeicherter
+Buchungs- oder Splitzeile; allgemeine Einnahmen-/Ausgabenberichte verwenden
+weiterhin den Bruttobetrag. Bestehende Buchungen migrieren neutral mit Modus
+`none` sowie Netto und Steuer gleich null und erscheinen deshalb nicht
+rückwirkend als künstliche Steuerpositionen.

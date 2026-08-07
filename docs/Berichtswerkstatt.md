@@ -88,6 +88,13 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Beide Vergleichsberichte besitzen deterministisches Semikolon-CSV,
   mehrseitiges A4-PDF in Hoch-/Querformat und direkten Systemdruck aus
   derselben Momentaufnahme.
+- Der eigenständige Umsatzsteuerbericht wertet gespeicherte MwSt.-Werte immer
+  je Buchungs- oder Splitzeile aus. Er trennt Brutto, Netto, Umsatzsteuer,
+  Einkauf, Vorsteuer und Zahllast je Schlüssel und Währung. Kategoriearten
+  behandeln Erlös- und Lieferantengutschriften auf der richtigen Steuerseite.
+  Zeitraum, Konten/-gruppen, Status, Währung und Kontooptionen sind filterbar;
+  Buchungs-Drill-down, deterministisches CSV, mehrseitiges PDF und Systemdruck
+  verwenden denselben Snapshot.
 
 Noch offen sind weitere fachliche Standardberichte.
 
@@ -167,10 +174,11 @@ P0:
   bestehende Exportpipeline umgesetzt)*
 - Monatlicher Cashflow *(chronologische Monatsgruppierung, vollständige
   Linien-/Flächenzeitreihe und bestehende Exportpipeline umgesetzt)*
+- Umsatzsteuerbericht *(zeilenweise Brutto-/Netto-/Steuerlogik,
+  Gutschriften, Drill-down, CSV, PDF und Druck umgesetzt)*
 
 P1:
 
-- Umsatzsteuerbericht
 - Kredit- und Tilgungsbericht
 - Depot-, Performance- und Steuerbericht
 - Vertrags-, Inventar- und Vermietungsbericht

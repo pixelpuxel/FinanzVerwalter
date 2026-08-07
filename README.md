@@ -454,6 +454,18 @@ Open-XML-Arbeitsblatt mit numerischen, währungsabhängig formatierten Beträgen
 `Kopieren` legt denselben Bericht gleichzeitig als tabulatorgetrennte Tabelle
 und als maskiertes HTML in die macOS-Zwischenablage.
 
+Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
+gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile
+gerechnet; Brutto, Netto und Steuer stammen dadurch exakt aus der bereits
+gerundeten Buchungszeile. Kategoriearten trennen Umsatzsteuer und Vorsteuer,
+sodass Erlösgutschriften beziehungsweise Aufwandsrückerstattungen die richtige
+Seite mindern. Der Bericht filtert Zeitraum, Konten/-gruppen, Status, Währung
+und Kontooptionen, trennt Summen strikt je Währung und zeigt Bruttoumsatz,
+Nettoumsatz, Umsatzsteuer, Brutto-/Nettoeinkauf, Vorsteuer und Zahllast je
+MwSt.-Schlüssel. Ein Drill-down führt zu den vollständigen Buchungs- und
+Splitpositionen; CSV, mehrseitiges PDF und Systemdruck verwenden denselben
+Snapshot.
+
 Jeder buchungsbasierte Bericht kann zusätzlich als Balken-, Linien-, Flächen-
 oder Tortendiagramm für Einnahmen oder Ausgaben dargestellt werden. Die Diagramme
 verwenden ausschließlich die bereits gefilterten Detailgruppen desselben
