@@ -102,6 +102,69 @@ enum RegisterClipboard {
     }
 }
 
+struct RegisterQuickEntryDraft: Equatable, Sendable {
+    var accountID: UUID?
+    var bookingDate: Date
+    var payee: String
+    var purpose: String
+    var categoryID: UUID?
+    var amountText: String
+    var status: TransactionStatus = .booked
+
+    func resolved(accounts: [FinanceAccount]) throws -> RegisterQuickEntryResolved {
+        guard let accountID,
+              let account = accounts.first(where: { $0.id == accountID })
+        else { throw FinanceError.missingAccount }
+        guard !account.isClosed else {
+            throw FinanceError.database(
+                "Auf einem geschlossenen Konto kann keine Buchung erfasst werden."
+            )
+        }
+        guard !amountText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FinanceError.database("Bitte gib einen Betrag ein.")
+        }
+        return RegisterQuickEntryResolved(
+            accountID: account.id,
+            bookingDate: Calendar.current.startOfDay(for: bookingDate),
+            payee: payee.trimmingCharacters(in: .whitespacesAndNewlines),
+            purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),
+            categoryID: categoryID,
+            money: try Money(evaluating: amountText, currency: account.currency),
+            status: status
+        )
+    }
+}
+
+struct RegisterQuickEntryResolved: Equatable, Sendable {
+    let accountID: UUID
+    let bookingDate: Date
+    let payee: String
+    let purpose: String
+    let categoryID: UUID?
+    let money: Money
+    let status: TransactionStatus
+
+    func transaction(id: UUID = UUID()) -> FinanceTransaction {
+        FinanceTransaction(
+            id: id,
+            accountID: accountID,
+            bookingDate: bookingDate,
+            valueDate: bookingDate,
+            payee: payee,
+            purpose: purpose,
+            categoryID: categoryID,
+            amountMinor: money.minorUnits,
+            currency: money.currency,
+            status: status,
+            memo: "",
+            reference: "",
+            transferID: nil,
+            importFingerprint: nil,
+            splits: []
+        )
+    }
+}
+
 enum RegisterCategorySelection: Codable, Equatable, Sendable {
     case all
     case uncategorized

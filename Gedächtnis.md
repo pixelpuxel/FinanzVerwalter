@@ -3240,3 +3240,46 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein neuer Screenshot
   behauptet. Exakter kumulativer Zielzählerstand der Nachricht:
   20.018.555 Tokens.
+
+## Tastaturfreundliche Inline-Schnellbuchung am 7. August 2026
+
+- Das Kontoblatt besitzt nun eine einblendbare `Schnellbuchung` direkt über
+  der Tabelle. Die kompakte, horizontal scrollbare Zeile enthält Datum,
+  ausschließlich offene Konten, Empfänger, Verwendungszweck, vollständigen
+  Kategoriepfad, Status, Betrag und sichtbare Kontowährung.
+- Der Betrag nutzt denselben begrenzten Decimal-Ausdrucksparser wie der
+  vollständige Buchungsdialog. Eingabe im Betragsfeld speichert, Esc leert
+  ohne Mutation und Tab bleibt normale Feldnavigation. Nach Erfolg bleiben
+  Datum und Konto für Serienerfassung erhalten; die Inhaltsfelder werden
+  geleert und der Fokus kehrt zum Empfänger zurück.
+- `RegisterQuickEntryDraft` normalisiert Texte, prüft Konto und Betrag und
+  erzeugt eine einfache manuelle Buchung mit Wertstellung gleich
+  Buchungsdatum, ohne Transfer-/Importidentität und ohne Splits. Gespeichert
+  wird über denselben atomaren Storepfad mit Audit und persistentem
+  konfliktgeschütztem Undo. Komplexe Splits, Umbuchungen, MwSt.,
+  Fremdwährung, Tags und Anhänge bleiben im vollständigen Dialog. ADR 0033
+  dokumentiert diese Grenze.
+- Die gezielte Abnahme prüft Parser, Persistenz, Status, Kategorie,
+  geschlossene Konten, Parserfehler, Undo und das Durchlassen von
+  Eingabe-/Texttasten. Der vollständige Lauf unter
+  `build/TestResults/QuickEntry-full-20260807-2018.xcresult` umfasst 150
+  Tests: 149 bestanden, 1 privater opt-in-Real-QIF-Test erwartungsgemäß
+  übersprungen, 0 fehlgeschlagen.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-QuickEntry-Release` wurde gebaut, lokal ad-hoc signiert
+  und streng geprüft. Die ausführbare Datei hat SHA-256
+  `388df8e9349e8bb1477871faa899f149c93359e21eab2977bbf4013476c44f98`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link zeigt weiterhin auf die Systeminstallation.
+- Beide Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2002-quick-entry/`; die validierte
+  Produktivkopie unter
+  `build/ProductionBackups/20260807-2002-quick-entry/`. Nach dem Start besitzt
+  die Produktivdatei weiterhin Schema 38 und Integrität `ok`; 97 Konten,
+  2.170 Buchungen und 782 Kategorien blieben unverändert.
+- Prozess 30594 läuft direkt aus `/Applications`. Die Computersteuerung kann
+  die Schnellbuchungszeile wegen der weiterhin gesperrten macOS-Sitzung nicht
+  sichtbar prüfen oder fotografieren; die Sperre wurde nicht umgangen.
+  Exakter kumulativer Zielzählerstand nach Test, Release, Installation und
+  Produktivprüfung: 20.106.054 Tokens.

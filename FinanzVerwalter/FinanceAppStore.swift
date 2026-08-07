@@ -892,6 +892,19 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func saveQuickEntry(_ value: RegisterQuickEntryResolved) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveTransaction(value.transaction())
+            try load()
+            statusText = "Schnellbuchung gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func bulkAssignCategory(transactionIDs: Set<UUID>, categoryID: UUID?) -> Bool {
         guard let repository else { return false }
         do {

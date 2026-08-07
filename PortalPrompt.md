@@ -106,6 +106,20 @@ gebildet werden. Zeige sie einzeilig, kürze bei Platzmangel in der Mitte und
 lege den vollständigen Pfad als Tooltip ab. Bei Splits sind alle
 unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
+Implementiere für normale Buchungen eine einblendbare Inline-Zeile direkt am
+Kontoblatt. Sie enthält Datum, ausschließlich offene Konten, Empfänger,
+Verwendungszweck, vollständigen Kategoriepfad, Status und Betrag. Nutze für
+den Betrag `Money(evaluating:)` und normalisiere Texte erst beim Speichern.
+Eingabe im Betragsfeld speichert, Esc leert ohne Mutation, Tab bleibt normale
+Feldnavigation. Nach Erfolg bleiben Datum und Konto erhalten; Empfänger,
+Zweck, Kategorie und Betrag werden geleert und der Fokus kehrt zum Empfänger
+zurück. Die resultierende einfache Buchung besitzt Wertstellung gleich
+Buchungsdatum, manuelle Herkunft, keine Transfer-/Importidentität und keine
+Splits. Speichere sie über denselben atomaren Storepfad samt Audit und
+persistenter Undo-Momentaufnahme. Geschlossene oder fehlende Konten sowie
+ungültige Beträge dürfen keine Teilmutation erzeugen. Komplexe Buchungen
+bleiben im vollständigen Dialog.
+
 Für die direkte Ausgabe von Einzel- und Sammelkontoblättern gilt
 reproduzierbar: Erzeuge genau einen unveränderlichen `RegisterPrintSnapshot`
 aus der aktuellen Sichtmenge, der gewählten Spaltenreihenfolge, den
@@ -137,7 +151,7 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 149 XCTest-Fälle: 148 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 150 XCTest-Fälle: 149 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist

@@ -29,6 +29,14 @@ struct RegisterView: View {
     @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
     @State private var showCSVExporter = false
     @State private var registerCSVDocument = RegisterCSVDocument(data: Data())
+    @State private var quickEntryAccountID: UUID?
+    @State private var quickEntryDate = Date()
+    @State private var quickEntryPayee = ""
+    @State private var quickEntryPurpose = ""
+    @State private var quickEntryCategoryID: UUID?
+    @State private var quickEntryAmount = ""
+    @State private var quickEntryStatus: TransactionStatus = .booked
+    @FocusState private var quickEntryPayeeFocused: Bool
     @AppStorage("registerMiniReportVisibleV1")
     private var showMiniReport = true
     @AppStorage("registerMiniReportDimensionV1")
@@ -46,6 +54,8 @@ struct RegisterView: View {
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
     @AppStorage("registerF3FieldV1")
     private var f3FieldRaw = RegisterF3Field.payee.rawValue
+    @AppStorage("registerQuickEntryVisibleV1")
+    private var showQuickEntry = true
 
     private var rowMode: RegisterRowMode {
         get { RegisterRowMode(rawValue: rowModeRaw) ?? .single }
@@ -216,6 +226,22 @@ struct RegisterView: View {
                 registerOutputMenu(runningBalances: runningBalances)
                 f3FilterMenu
                 Button {
+                    showQuickEntry.toggle()
+                    if showQuickEntry { quickEntryPayeeFocused = true }
+                } label: {
+                    Label(
+                        "Schnellbuchung",
+                        systemImage: showQuickEntry
+                            ? "rectangle.and.pencil.and.ellipsis"
+                            : "rectangle.and.pencil.and.ellipsis"
+                    )
+                }
+                .help(
+                    showQuickEntry
+                        ? "Inline-Buchungszeile ausblenden"
+                        : "Normale Buchung direkt im Kontoblatt erfassen"
+                )
+                Button {
                     if !showMiniReport { showSplitRegister = false }
                     showMiniReport.toggle()
                 } label: {
@@ -273,6 +299,11 @@ struct RegisterView: View {
             .padding(.vertical, 8)
 
             Divider()
+
+            if showQuickEntry {
+                quickEntryRow
+                Divider()
+            }
 
             HStack(spacing: 0) {
                 Table(visibleTransactions, selection: $selection) {
@@ -546,15 +577,18 @@ struct RegisterView: View {
         }
         .onChange(of: store.selectedAccountID) {
             addSelectedAccountTabIfNeeded()
+            synchronizeQuickEntryAccount(preferSelected: true)
             if showSplitRegister { ensureSecondaryAccount() }
         }
         .onChange(of: store.accounts.map(\.id)) {
             synchronizeAccountTabs()
+            synchronizeQuickEntryAccount(preferSelected: false)
         }
         .onAppear {
             migrateBalanceColumnIfNeeded()
             synchronizeAccountTabs()
             addSelectedAccountTabIfNeeded()
+            synchronizeQuickEntryAccount(preferSelected: false)
             if showSplitRegister { ensureSecondaryAccount() }
         }
         .onReceive(
@@ -642,6 +676,147 @@ struct RegisterView: View {
             Label("Vorlagen", systemImage: "doc.on.doc")
         }
         .help("Buchung aus einer gespeicherten Vorlage beginnen")
+    }
+
+    private var quickEntryRow: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                Label("Neue Buchung", systemImage: "plus.rectangle.on.rectangle")
+                    .font(.callout.weight(.semibold))
+                    .fixedSize()
+                DatePicker(
+                    "Datum",
+                    selection: $quickEntryDate,
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .frame(width: 118)
+                .accessibilityLabel("Schnellbuchung Datum")
+                Picker("Konto", selection: $quickEntryAccountID) {
+                    Text("Konto wählen").tag(UUID?.none)
+                    ForEach(store.accounts.filter { !$0.isClosed }) { account in
+                        Text(account.name).tag(UUID?.some(account.id))
+                    }
+                }
+                .frame(width: 180)
+                .accessibilityIdentifier("register.quickEntry.account")
+                TextField("Empfänger", text: $quickEntryPayee)
+                    .frame(width: 180)
+                    .focused($quickEntryPayeeFocused)
+                    .accessibilityIdentifier("register.quickEntry.payee")
+                TextField("Verwendungszweck", text: $quickEntryPurpose)
+                    .frame(width: 220)
+                    .accessibilityIdentifier("register.quickEntry.purpose")
+                Picker("Kategorie", selection: $quickEntryCategoryID) {
+                    Text("Nicht kategorisiert").tag(UUID?.none)
+                    ForEach(store.categoriesByPath.filter(\.isActive)) { category in
+                        Text(store.categoryPath(category.id))
+                            .tag(UUID?.some(category.id))
+                    }
+                }
+                .frame(width: 225)
+                .accessibilityIdentifier("register.quickEntry.category")
+                Picker("Status", selection: $quickEntryStatus) {
+                    ForEach(
+                        TransactionStatus.allCases.filter { $0 != .reconciled },
+                        id: \.self
+                    ) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .frame(width: 125)
+                TextField(
+                    "Betrag",
+                    text: $quickEntryAmount,
+                    prompt: Text("-123,45")
+                )
+                .frame(width: 125)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .onSubmit { saveQuickEntry() }
+                .help("Grundrechenarten +, −, ×, ÷ und Klammern sind erlaubt.")
+                .accessibilityIdentifier("register.quickEntry.amount")
+                Text(quickEntryCurrency)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Button("Speichern", systemImage: "checkmark") {
+                    saveQuickEntry()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    quickEntryAccountID == nil
+                        || quickEntryAmount.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                )
+                .accessibilityIdentifier("register.quickEntry.save")
+                Button("Leeren", systemImage: "xmark") {
+                    resetQuickEntry()
+                }
+                .accessibilityIdentifier("register.quickEntry.clear")
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+        .scrollIndicators(.hidden)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Schnellbuchung im Kontoblatt")
+        .onExitCommand {
+            resetQuickEntry()
+            quickEntryPayeeFocused = false
+        }
+    }
+
+    private var quickEntryCurrency: String {
+        quickEntryAccountID.flatMap { id in
+            store.accounts.first { $0.id == id }?.currency
+        } ?? "—"
+    }
+
+    private func saveQuickEntry() {
+        do {
+            let resolved = try RegisterQuickEntryDraft(
+                accountID: quickEntryAccountID,
+                bookingDate: quickEntryDate,
+                payee: quickEntryPayee,
+                purpose: quickEntryPurpose,
+                categoryID: quickEntryCategoryID,
+                amountText: quickEntryAmount,
+                status: quickEntryStatus
+            ).resolved(accounts: store.accounts)
+            if store.saveQuickEntry(resolved) {
+                resetQuickEntry()
+                quickEntryPayeeFocused = true
+            }
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func resetQuickEntry() {
+        quickEntryPayee = ""
+        quickEntryPurpose = ""
+        quickEntryCategoryID = nil
+        quickEntryAmount = ""
+        quickEntryStatus = .booked
+    }
+
+    private func synchronizeQuickEntryAccount(preferSelected: Bool) {
+        let openIDs = Set(store.accounts.filter { !$0.isClosed }.map(\.id))
+        if preferSelected,
+           let selectedAccountID = store.selectedAccountID,
+           openIDs.contains(selectedAccountID) {
+            quickEntryAccountID = selectedAccountID
+            return
+        }
+        if let quickEntryAccountID, openIDs.contains(quickEntryAccountID) {
+            return
+        }
+        quickEntryAccountID = store.selectedAccountID.flatMap { selected in
+            openIDs.contains(selected) ? selected : nil
+        } ?? store.accounts.first { !$0.isClosed }?.id
     }
 
     private var selectedTransaction: FinanceTransaction? {

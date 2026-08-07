@@ -328,6 +328,19 @@ atomar; enthält die Auswahl abgeglichene Buchungen, Umbuchungen oder
 Splitbuchungen, wird sie vollständig abgewiesen. Kategoriepfade erscheinen
 einzeilig mit mittiger Kürzung und vollständig im Tooltip.
 
+Die einblendbare `Schnellbuchung` erfasst normale Buchungen direkt oberhalb
+der Tabelle: Datum, offenes Konto, Empfänger, Verwendungszweck, vollständiger
+Kategoriepfad, Status und Betrag bleiben in einer kompakten, horizontal
+scrollbaren Buchungszeile. Das Betragsfeld verwendet denselben exakten
+Decimal-Rechner wie der vollständige Dialog. Eingabe im Betragsfeld speichert,
+Esc leert den Entwurf und Tab wechselt zwischen den Feldern. Nach erfolgreichem
+Speichern bleiben Datum und Konto für die nächste Eingabe stehen; alle
+fachlichen Inhaltsfelder werden geleert und der Fokus kehrt zum Empfänger
+zurück. Die Buchung läuft durch denselben validierten, auditierten und
+konfliktgeschützt rückgängig machbaren Store-Pfad. Split, Umbuchung,
+Fremdwährung, MwSt., Klassen und Anhänge bleiben bewusst im vollständigen
+Buchungsdialog.
+
 Das Kontextmenü einer Buchung bietet Bearbeiten, Duplizieren, Kopieren und
 Verschieben. Duplizieren öffnet einen frischen Buchungsentwurf mit neuen
 Transaktions- und Split-IDs, heutigem Datum und ohne Import-, Referenz- oder

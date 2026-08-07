@@ -7912,6 +7912,79 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testRegisterQuickEntryEvaluatesPersistsAndRejectsClosedAccount() throws {
+        let database = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "Testbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Haushalt",
+            kind: .expense, color: "#123456", isActive: true
+        )
+        try database.store.saveAccount(account)
+        try database.store.saveCategory(category)
+        let bookingDate = Date(timeIntervalSince1970: 1_754_044_800)
+        let resolved = try RegisterQuickEntryDraft(
+            accountID: account.id,
+            bookingDate: bookingDate,
+            payee: "  Stadtwerke  ",
+            purpose: "  Abschlag August  ",
+            categoryID: category.id,
+            amountText: "=-(100 + 23,45)",
+            status: .cleared
+        ).resolved(accounts: [account])
+        XCTAssertEqual(resolved.accountID, account.id)
+        XCTAssertEqual(resolved.payee, "Stadtwerke")
+        XCTAssertEqual(resolved.purpose, "Abschlag August")
+        XCTAssertEqual(resolved.categoryID, category.id)
+        XCTAssertEqual(resolved.money.minorUnits, -12_345)
+        XCTAssertEqual(resolved.money.currency, "EUR")
+        XCTAssertEqual(resolved.status, .cleared)
+        XCTAssertTrue(Calendar.current.isDate(resolved.bookingDate, inSameDayAs: bookingDate))
+
+        let transactionID = UUID()
+        try database.store.saveTransaction(resolved.transaction(id: transactionID))
+        let stored = try XCTUnwrap(
+            database.store.transactions(accountID: account.id).first {
+                $0.id == transactionID
+            }
+        )
+        XCTAssertEqual(stored.payee, "Stadtwerke")
+        XCTAssertEqual(stored.purpose, "Abschlag August")
+        XCTAssertEqual(stored.categoryID, category.id)
+        XCTAssertEqual(stored.amountMinor, -12_345)
+        XCTAssertEqual(stored.status, .cleared)
+        XCTAssertEqual(stored.valueDate, stored.bookingDate)
+        XCTAssertTrue(stored.splits.isEmpty)
+        XCTAssertNil(stored.transferID)
+        XCTAssertNil(stored.importFingerprint)
+
+        var closed = account
+        closed.isClosed = true
+        XCTAssertThrowsError(
+            try RegisterQuickEntryDraft(
+                accountID: closed.id,
+                bookingDate: bookingDate,
+                payee: "",
+                purpose: "",
+                categoryID: nil,
+                amountText: "1,00"
+            ).resolved(accounts: [closed])
+        )
+        XCTAssertThrowsError(
+            try RegisterQuickEntryDraft(
+                accountID: account.id,
+                bookingDate: bookingDate,
+                payee: "",
+                purpose: "",
+                categoryID: nil,
+                amountText: "1 +"
+            ).resolved(accounts: [account])
+        )
+    }
+
     func testShortcutConfigurationRoundTripsAllActionsAndRejectsConflicts() throws {
         let defaults = AppShortcutConfiguration.defaults
         XCTAssertEqual(defaults.assignments.count, AppShortcutAction.allCases.count)
