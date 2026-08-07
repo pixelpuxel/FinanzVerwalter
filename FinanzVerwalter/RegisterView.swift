@@ -27,6 +27,8 @@ struct RegisterView: View {
     @State private var savedViewName = ""
     @State private var showPDFExporter = false
     @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var registerCSVDocument = RegisterCSVDocument(data: Data())
     @AppStorage("registerMiniReportVisibleV1")
     private var showMiniReport = true
     @AppStorage("registerMiniReportDimensionV1")
@@ -512,6 +514,19 @@ struct RegisterView: View {
             }
             .padding(24)
             .frame(width: 520)
+        }
+        .fileExporter(
+            isPresented: $showCSVExporter,
+            document: registerCSVDocument,
+            contentType: .commaSeparatedText,
+            defaultFilename: registerPDFFilename
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Kontoblatt als CSV exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
         }
         .fileExporter(
             isPresented: $showPDFExporter,
@@ -1032,10 +1047,39 @@ struct RegisterView: View {
                     store.errorMessage = error.localizedDescription
                 }
             }
+            Menu("Als CSV exportieren …", systemImage: "tablecells") {
+                ForEach(RegisterCSVFormat.allCases) { format in
+                    Button(format.title) {
+                        exportCSV(
+                            snapshot: registerPrintSnapshot(
+                                runningBalances: runningBalances
+                            ),
+                            format: format
+                        )
+                    }
+                }
+            }
         } label: {
             Label("Ausgabe", systemImage: "printer")
         }
         .help("Druckt oder exportiert die aktuell sichtbaren Buchungen und Spalten")
+    }
+
+    private func exportCSV(
+        snapshot: RegisterPrintSnapshot,
+        format: RegisterCSVFormat
+    ) {
+        do {
+            registerCSVDocument = RegisterCSVDocument(
+                data: try RegisterCSVExporter.data(
+                    snapshot: snapshot,
+                    format: format
+                )
+            )
+            showCSVExporter = true
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
     }
 
     private var registerPDFFilename: String {
@@ -1310,6 +1354,24 @@ struct RegisterView: View {
 
 private struct RegisterPDFDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.pdf] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct RegisterCSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
 
     var data: Data
 
@@ -3579,6 +3641,8 @@ struct CombinedRegisterView: View {
     @State private var includeForecast = true
     @State private var showPDFExporter = false
     @State private var registerPDFDocument = RegisterPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var registerCSVDocument = RegisterCSVDocument(data: Data())
     @State private var showSaveView = false
     @State private var savedViewName = ""
     @State private var selectedSavedViewID: UUID?
@@ -3879,6 +3943,19 @@ struct CombinedRegisterView: View {
             .frame(width: 500)
         }
         .fileExporter(
+            isPresented: $showCSVExporter,
+            document: registerCSVDocument,
+            contentType: .commaSeparatedText,
+            defaultFilename: "Sammelkontoblatt"
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Sammelkontoblatt als CSV exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
             isPresented: $showPDFExporter,
             document: registerPDFDocument,
             contentType: .pdf,
@@ -4088,6 +4165,23 @@ struct CombinedRegisterView: View {
                     showPDFExporter = true
                 } catch {
                     store.errorMessage = error.localizedDescription
+                }
+            }
+            Menu("Als CSV exportieren …", systemImage: "tablecells") {
+                ForEach(RegisterCSVFormat.allCases) { format in
+                    Button(format.title) {
+                        do {
+                            registerCSVDocument = RegisterCSVDocument(
+                                data: try RegisterCSVExporter.data(
+                                    snapshot: combinedPrintSnapshot,
+                                    format: format
+                                )
+                            )
+                            showCSVExporter = true
+                        } catch {
+                            store.errorMessage = error.localizedDescription
+                        }
+                    }
                 }
             }
         } label: {

@@ -7848,6 +7848,70 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(text.contains("Seite 1 von \(document.pageCount)"))
     }
 
+    func testRegisterCSVContainsExactlyVisibleColumnsAndEscapesDeterministically() throws {
+        let snapshot = RegisterPrintSnapshot(
+            title: "Kontoblatt – Girokonto",
+            filterSummary: "Kategorie: Immobilie › Haus; Berlin",
+            generatedAt: Date(timeIntervalSince1970: 0),
+            columns: [.date, .payee, .category, .amount, .balance],
+            rows: [[
+                "01.07.2025",
+                "Müller, \"Markt\"",
+                "Immobilie › Haus\nGrundsteuer",
+                "-12,34 EUR",
+                "1.234,56 EUR"
+            ]]
+        )
+        let first = try RegisterCSVExporter.data(snapshot: snapshot)
+        let second = try RegisterCSVExporter.data(snapshot: snapshot)
+        XCTAssertEqual(first, second)
+        let text = try XCTUnwrap(String(data: first, encoding: .utf8))
+        XCTAssertEqual(
+            text,
+            "Bericht;Kontoblatt – Girokonto\r\n"
+                + "Filter;\"Kategorie: Immobilie › Haus; Berlin\"\r\n"
+                + "Erstellt;01.01.1970 00:00\r\n\r\n"
+                + "Datum;Empfänger;Kategorie;Betrag;Saldo\r\n"
+                + "01.07.2025;\"Müller, \"\"Markt\"\"\";"
+                + "\"Immobilie › Haus\nGrundsteuer\";-12,34 EUR;1.234,56 EUR\r\n"
+        )
+        XCTAssertFalse(text.contains("Verwendungszweck"))
+        XCTAssertFalse(text.contains("Belegnummer"))
+    }
+
+    func testRegisterCSVSupportsSelectableDelimiterAndEncodingWithoutLoss() throws {
+        var snapshot = RegisterPrintSnapshot(
+            title: "Sammelkontoblatt",
+            filterSummary: "Empfänger enthält Müller",
+            generatedAt: Date(timeIntervalSince1970: 0),
+            columns: [.payee, .amount],
+            rows: [["Müller, Markt", "-12,34 EUR"]]
+        )
+        let commaData = try RegisterCSVExporter.data(
+            snapshot: snapshot,
+            format: .commaUTF8
+        )
+        let commaText = try XCTUnwrap(String(data: commaData, encoding: .utf8))
+        XCTAssertTrue(commaText.contains("Empfänger,Betrag\r\n"))
+        XCTAssertTrue(commaText.contains("\"Müller, Markt\",\"-12,34 EUR\"\r\n"))
+
+        let windowsData = try RegisterCSVExporter.data(
+            snapshot: snapshot,
+            format: .semicolonWindows1252
+        )
+        XCTAssertEqual(
+            String(data: windowsData, encoding: .windowsCP1252)?.contains("Müller"),
+            true
+        )
+        snapshot.rows = [["Nicht darstellbar 🧾", "1,00 EUR"]]
+        XCTAssertThrowsError(
+            try RegisterCSVExporter.data(
+                snapshot: snapshot,
+                format: .semicolonWindows1252
+            )
+        )
+    }
+
     func testShortcutConfigurationRoundTripsAllActionsAndRejectsConflicts() throws {
         let defaults = AppShortcutConfiguration.defaults
         XCTAssertEqual(defaults.assignments.count, AppShortcutAction.allCases.count)

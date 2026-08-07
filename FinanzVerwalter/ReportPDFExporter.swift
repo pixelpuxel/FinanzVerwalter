@@ -26,6 +26,96 @@ struct RegisterPrintSnapshot: Equatable, Sendable {
     var rows: [[String]]
 }
 
+enum RegisterCSVFormat: String, CaseIterable, Identifiable, Sendable {
+    case semicolonUTF8
+    case commaUTF8
+    case semicolonWindows1252
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .semicolonUTF8: "Semikolon · UTF-8"
+        case .commaUTF8: "Komma · UTF-8"
+        case .semicolonWindows1252: "Semikolon · Windows-1252"
+        }
+    }
+
+    fileprivate var separator: Character {
+        switch self {
+        case .semicolonUTF8, .semicolonWindows1252: ";"
+        case .commaUTF8: ","
+        }
+    }
+
+    fileprivate var encoding: String.Encoding {
+        switch self {
+        case .semicolonUTF8, .commaUTF8: .utf8
+        case .semicolonWindows1252: .windowsCP1252
+        }
+    }
+}
+
+enum RegisterCSVExporter {
+    static func data(
+        snapshot: RegisterPrintSnapshot,
+        format: RegisterCSVFormat = .semicolonUTF8
+    ) throws -> Data {
+        guard !snapshot.columns.isEmpty else {
+            throw FinanceError.database("Für die Ausgabe ist keine Spalte sichtbar.")
+        }
+        let separator = format.separator
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy HH:mm"
+        var lines = [
+            line(["Bericht", snapshot.title], separator: separator),
+            line(["Filter", snapshot.filterSummary], separator: separator),
+            line(["Erstellt", formatter.string(from: snapshot.generatedAt)], separator: separator),
+            "",
+            line(snapshot.columns.map(\.title), separator: separator)
+        ]
+        lines.append(contentsOf: snapshot.rows.map { row in
+            line(
+                snapshot.columns.indices.map { index in
+                    index < row.count ? row[index] : ""
+                },
+                separator: separator
+            )
+        })
+        let text = lines.joined(separator: "\r\n") + "\r\n"
+        guard let data = text.data(
+            using: format.encoding,
+            allowLossyConversion: false
+        ) else {
+            throw FinanceError.database(
+                "Das Kontoblatt enthält Zeichen, die im gewählten CSV-Encoding nicht darstellbar sind."
+            )
+        }
+        return data
+    }
+
+    private static func line(
+        _ values: [String], separator: Character
+    ) -> String {
+        values.map { escape($0, separator: separator) }
+            .joined(separator: String(separator))
+    }
+
+    private static func escape(
+        _ value: String, separator: Character
+    ) -> String {
+        guard value.contains(separator)
+                || value.contains("\"")
+                || value.contains("\n")
+                || value.contains("\r")
+        else { return value }
+        return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+}
+
 enum RegisterPDFExporter {
     static func data(
         snapshot: RegisterPrintSnapshot,

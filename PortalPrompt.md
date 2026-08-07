@@ -106,6 +106,18 @@ gebildet werden. Zeige sie einzeilig, kürze bei Platzmangel in der Mitte und
 lege den vollständigen Pfad als Tooltip ab. Bei Splits sind alle
 unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
+Für die direkte Ausgabe von Einzel- und Sammelkontoblättern gilt
+reproduzierbar: Erzeuge genau einen unveränderlichen `RegisterPrintSnapshot`
+aus der aktuellen Sichtmenge, der gewählten Spaltenreihenfolge, den
+kontenweisen laufenden Salden und den vollständigen Kategorie-/Klassenpfaden.
+PDF, Systemdruck und CSV dürfen keine eigene Buchungsabfrage ausführen. CSV
+enthält Titel, Filter, UTC-stabile deutsche Erstellzeit und exakt die
+sichtbaren Spalten. Biete Semikolon/UTF-8, Komma/UTF-8 und
+Semikolon/Windows-1252 an, verwende CRLF und RFC-4180-artige Maskierung und
+brich ohne verlustbehaftete Zeichenersetzung ab. Auch berechnete
+Zukunftszeilen des Sammelkontoblatts werden ausschließlich dann exportiert,
+wenn sie in der Sichtmenge enthalten sind.
+
 ## Umsetzungsreihenfolge
 
 1. Projekt muss kompilieren und ein leeres lokales Finanzfile öffnen.
@@ -125,7 +137,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 147 XCTest-Fälle: 146 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 149 XCTest-Fälle: 148 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist

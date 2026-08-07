@@ -362,10 +362,15 @@ Zeitraum, Zeilenmodus und Spaltenauswahl und können später wieder geladen
 oder gelöscht werden. Beim ersten Start nach dem Saldo-Update wird die Spalte
 einmalig auch in vorhandene Spalteneinstellungen und benannte Ansichten
 aufgenommen; anschließend bleibt sie wie jede andere Spalte frei schaltbar.
-Das Menü `Ausgabe` druckt
-das gefilterte Kontoblatt direkt über den macOS-Druckdialog oder exportiert
-es als mehrseitiges PDF. Dabei werden exakt die sichtbaren Spalten mit
-wiederholten Tabellenköpfen, Filterbeschreibung und Seitenzahlen ausgegeben.
+Das Menü `Ausgabe` druckt das gefilterte Kontoblatt direkt über den
+macOS-Druckdialog oder exportiert es als mehrseitiges PDF beziehungsweise CSV.
+Dabei werden exakt die sichtbaren Spalten und Zeilen aus derselben
+unveränderlichen Momentaufnahme verwendet. CSV enthält Titel, Filter und
+Erstellzeit und ist als Semikolon/UTF-8, Komma/UTF-8 oder
+Semikolon/Windows-1252 wählbar. Trennzeichen, Anführungszeichen und
+Zeilenumbrüche werden verlustfrei maskiert; ein im gewählten Encoding nicht
+darstellbares Zeichen bricht den Export statt stiller Ersetzung ab. PDF
+wiederholt Tabellenköpfe, Filterbeschreibung und Seitenzahlen.
 
 Mehrere Konten bleiben als horizontale Kontoblatt-Tabs geöffnet. Jeder Tab
 zeigt Name und aktuellen Saldo, kann direkt gewechselt oder geschlossen
@@ -406,8 +411,9 @@ Umbuchungen und Stornos zählen nicht in diese Summe. Mehrere persistente
 Buchungen lassen sich gemeinsam kategorisieren; nur errechnete
 Zukunftsvorgänge bleiben gegen eine solche Änderung geschützt. Kontenauswahl,
 Filter, Zukunftsschalter, Zeilenmodus und Spalten können als benannte Ansicht
-gespeichert werden. Systemdruck und mehrseitiger PDF-Export verwenden exakt
-die sichtbaren Zeilen und Spalten einschließlich Zukunftsvorgängen.
+gespeichert werden. Systemdruck, mehrseitiger PDF- und wählbarer CSV-Export
+verwenden exakt die sichtbaren Zeilen und Spalten einschließlich
+Zukunftsvorgängen.
 
 `Zweite Ansicht` teilt den Arbeitsbereich in zwei gleichzeitig sichtbare
 Sammelkontoblätter. Ansicht B besitzt eine eigene persistente Kontenkombination,

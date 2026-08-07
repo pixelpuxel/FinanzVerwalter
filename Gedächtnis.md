@@ -3194,3 +3194,41 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein neuer Screenshot
   behauptet. Exakter kumulativer Zielzählerstand der Nachricht:
   19.875.064 Tokens.
+
+## Sichtmengengleicher Kontoblatt-CSV-Export am 7. August 2026
+
+- Einzel- und Sammelkontoblatt exportieren im Menü `Ausgabe` nun exakt ihre
+  sichtbaren Zeilen und Spalten als CSV. PDF, Systemdruck und CSV erhalten
+  denselben unveränderlichen `RegisterPrintSnapshot`; vollständige Kategorie-
+  und Klassenpfade, kontenweiser Saldo, Filter und sichtbare regelmäßige
+  Zukunft werden nicht abweichend neu berechnet.
+- Zur Wahl stehen Semikolon/UTF-8, Komma/UTF-8 und
+  Semikolon/Windows-1252. CSV verwendet CRLF, verdoppelte Anführungszeichen
+  und verlustfreie Maskierung von Trennzeichen und Zeilenumbrüchen. Ein im
+  gewählten Encoding nicht darstellbares Zeichen bricht sichtbar ab, statt
+  durch ein Ersatzzeichen Finanztexte zu verfälschen. ADR 0032 dokumentiert
+  Snapshot- und Encoding-Entscheidung.
+- Zwei bytegenaue Golden-File-Tests prüfen Wiederholbarkeit, sichtbare
+  Spalten, vollständige Pfade, beide Trennzeichen, beide Encodings und den
+  verlustfreien Fehlerfall. Der vollständige Lauf unter
+  `build/TestResults/RegisterCSV-full-20260807-2000.xcresult` umfasst 149
+  Tests: 148 bestanden, 1 privater opt-in-Real-QIF-Test erwartungsgemäß
+  übersprungen, 0 fehlgeschlagen.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-RegisterCSV-Release` wurde gebaut, lokal ad-hoc signiert
+  und streng geprüft. Die ausführbare Datei hat SHA-256
+  `63d9dc9879b960d6a9e0eb4597574b5f49051a7a5cc6cdcd2b48ac19add103fe`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link zeigt weiterhin auf die Systeminstallation.
+- Beide Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-1949-register-csv/`; die vor dem Austausch
+  online validierte Produktivkopie unter
+  `build/ProductionBackups/20260807-1949-register-csv/`. Nach dem Start
+  besitzt die Produktivdatei weiterhin Schema 38 und Integrität `ok`; 97
+  Konten, 2.170 Buchungen und 782 Kategorien blieben unverändert.
+- Prozess 27542 läuft direkt aus `/Applications`. Die Computersteuerung kann
+  das neue Ausgabemenü wegen der weiterhin gesperrten macOS-Sitzung nicht
+  sichtbar prüfen oder fotografieren; die Sperre wurde nicht umgangen.
+  Exakter kumulativer Zielzählerstand nach Test, Release, Installation und
+  Produktivprüfung: 20.009.514 Tokens.
