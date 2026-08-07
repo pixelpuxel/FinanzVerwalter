@@ -1218,6 +1218,159 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try context.store.transactions().count, 2)
     }
 
+    func testCSVImportProfileHandlesEncodingMappingDebitCreditAndFullCategoryPath() throws {
+        let account = FinanceAccount(
+            id: UUID(), name: "Geschäft", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let root = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Immobilien",
+            kind: .expense, color: "blue", isActive: true
+        )
+        let apartment = FinanceCategory(
+            id: UUID(), parentID: root.id, name: "Wohnung Köln",
+            kind: .expense, color: "blue", isActive: true
+        )
+        let propertyTax = FinanceCategory(
+            id: UUID(), parentID: apartment.id, name: "Grundsteuer",
+            kind: .expense, color: "orange", isActive: true
+        )
+        let text = "Tag\tValuta\tName\tText\tSoll\tHaben\tKategorie\tBank-ID\n"
+            + "07/31/2026\t08/01/2026\tStadt Köln\t\"Grundsteuer, Objekt\n"
+            + "zweite Zeile\"\t1,234.56\t\tImmobilien:Wohnung Köln:Grundsteuer\tTX-42\n"
+            + "08/02/2026\t\tMieter\tErstattung\t\t2,500.00\t\tTX-43\n"
+        let data = try XCTUnwrap(text.data(using: .windowsCP1252))
+        var profile = CSVImportProfile(
+            name: "Bank TSV", encoding: .windows1252, separator: .tab,
+            hasHeader: true, dateFormat: .us,
+            decimalSeparator: ".", thousandsSeparator: ",",
+            amountMode: .debitCredit
+        )
+        let mappings: [(CSVImportField, Int)] = [
+            (.bookingDate, 0), (.valueDate, 1), (.payee, 2),
+            (.purpose, 3), (.debit, 4), (.credit, 5),
+            (.category, 6), (.externalTransactionID, 7)
+        ]
+        mappings.forEach { profile.setColumn($0.1, for: $0.0) }
+
+        let inspection = try CSVFinanceImporter.inspect(
+            data: data, profile: profile
+        )
+        XCTAssertEqual(inspection.columns.first, "Tag")
+        XCTAssertEqual(inspection.rowCount, 2)
+        XCTAssertTrue(inspection.sampleRows[0][3].contains("zweite Zeile"))
+
+        let preview = try CSVFinanceImporter.preview(
+            data: data, account: account, profile: profile,
+            categories: [root, apartment, propertyTax]
+        )
+        XCTAssertTrue(preview.rejectedRows.isEmpty)
+        XCTAssertEqual(preview.rows.count, 2)
+        XCTAssertEqual(preview.rows.map(\.amountMinor), [-123_456, 250_000])
+        XCTAssertEqual(preview.rows[0].categoryID, propertyTax.id)
+        XCTAssertEqual(preview.rows[0].externalProvider, "CSV")
+        XCTAssertEqual(preview.rows[0].externalTransactionID, "TX-42")
+        XCTAssertEqual(preview.rows[0].purpose, "Grundsteuer, Objekt\nzweite Zeile")
+        XCTAssertNotNil(preview.rows[0].valueDate)
+        XCTAssertNil(preview.rows[1].valueDate)
+    }
+
+    func testCSVImportProfileReportsRowErrorsAndRejectsMalformedStructure() throws {
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        var profile = CSVImportProfile(amountMode: .debitCredit)
+        profile.setColumn(0, for: .bookingDate)
+        profile.setColumn(1, for: .debit)
+        profile.setColumn(2, for: .credit)
+        let data = Data(
+            "Datum;Soll;Haben\n31.07.2026;10,00;20,00\n99.99.2026;1,00;".utf8
+        )
+        let preview = try CSVFinanceImporter.preview(
+            data: data, account: account, profile: profile
+        )
+        XCTAssertTrue(preview.rows.isEmpty)
+        XCTAssertEqual(preview.rejectedRows.count, 2)
+        XCTAssertTrue(preview.rejectedRows[0].contains("gleichzeitig"))
+        XCTAssertTrue(preview.rejectedRows[1].contains("Buchungsdatum"))
+
+        let malformed = Data("Datum;Betrag\n\"31.07.2026;10,00".utf8)
+        XCTAssertThrowsError(
+            try CSVFinanceImporter.inspect(data: malformed, profile: profile)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("nicht geschlossen"))
+        }
+    }
+
+    func testCSVImportProfileDetectionAndVersionedPersistenceAreDeterministic() throws {
+        let data = Data(
+            "Datum;Empfänger;Verwendungszweck;Betrag\n31.07.2026;Bäcker;Brötchen;-4,20".utf8
+        )
+        var profile = try CSVFinanceImporter.suggestedProfile(data: data)
+        XCTAssertEqual(profile.encoding, .utf8)
+        XCTAssertEqual(profile.separator, .semicolon)
+        XCTAssertEqual(profile.dateFormat, .germanLong)
+        XCTAssertEqual(profile.column(for: .bookingDate), 0)
+        XCTAssertEqual(profile.column(for: .payee), 1)
+        XCTAssertEqual(profile.column(for: .purpose), 2)
+        XCTAssertEqual(profile.column(for: .amount), 3)
+
+        profile.name = "Hausbank"
+        let first = CSVImportProfileLibrary.upserting(profile, into: [])
+        XCTAssertEqual(first.first?.revision, 1)
+        profile = try XCTUnwrap(first.first)
+        profile.separator = .tab
+        let second = CSVImportProfileLibrary.upserting(profile, into: first)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertEqual(second.first?.revision, 2)
+        XCTAssertEqual(second.first?.separator, .tab)
+        let encoded = try CSVImportProfileLibrary.encode(second)
+        XCTAssertEqual(try CSVImportProfileLibrary.decode(encoded), second)
+
+        var future = profile
+        future.schema = CSVImportProfile.schemaVersion + 1
+        let futureData = try JSONEncoder().encode([future])
+        XCTAssertThrowsError(try CSVImportProfileLibrary.decode(futureData))
+    }
+
+    func testCSVImportProfileSupportsHeaderlessFilesAndRejectsUnknownCategories() throws {
+        let account = FinanceAccount(
+            id: UUID(), name: "Kasse", institution: "", type: .cash,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        var profile = CSVImportProfile(
+            separator: .semicolon, hasHeader: false,
+            dateFormat: .germanShort, amountMode: .signed
+        )
+        profile.setColumn(0, for: .bookingDate)
+        profile.setColumn(1, for: .payee)
+        profile.setColumn(2, for: .amount)
+        profile.setColumn(3, for: .category)
+        let data = Data(
+            "1.8.26;Bäckerei;-4,20;Lebensmittel\n2.8.26;Kiosk;-3,10;Unbekannt".utf8
+        )
+        let food = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Lebensmittel",
+            kind: .expense, color: "green", isActive: true
+        )
+
+        let inspection = try CSVFinanceImporter.inspect(data: data, profile: profile)
+        XCTAssertEqual(inspection.columns, ["Spalte 1", "Spalte 2", "Spalte 3", "Spalte 4"])
+        XCTAssertEqual(inspection.rowCount, 2)
+        let preview = try CSVFinanceImporter.preview(
+            data: data, account: account, profile: profile, categories: [food]
+        )
+        XCTAssertEqual(preview.rows.count, 1)
+        XCTAssertEqual(preview.rows.first?.amountMinor, -420)
+        XCTAssertEqual(preview.rows.first?.categoryID, food.id)
+        XCTAssertEqual(preview.rejectedRows.count, 1)
+        XCTAssertTrue(preview.rejectedRows[0].contains("Unbekannt"))
+    }
+
     func testImportMatcherUsesTieredEvidenceAndAvoidsAmbiguousAutoMatch() throws {
         let accountID = UUID()
         let calendar = Calendar(identifier: .gregorian)

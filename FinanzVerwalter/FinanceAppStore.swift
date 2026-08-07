@@ -1612,6 +1612,32 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func importCSV(
+        data: Data,
+        accountID: UUID,
+        profile: CSVImportProfile,
+        dateWindowDays: Int = ImportMatcher.defaultDateWindowDays
+    ) -> ImportPreview? {
+        guard let account = accounts.first(where: { $0.id == accountID }) else {
+            present(FinanceError.missingAccount)
+            return nil
+        }
+        do {
+            return try CSVFinanceImporter.preview(
+                data: data,
+                account: account,
+                profile: profile,
+                categories: categories
+            ).matched(
+                against: transactions,
+                dateWindowDays: dateWindowDays
+            )
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
     func importQIF(
         data: Data,
         accountID: UUID,

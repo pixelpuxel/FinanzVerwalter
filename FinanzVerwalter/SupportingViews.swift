@@ -4933,6 +4933,11 @@ struct ImportExportView: View {
     @State private var selectedAccountID: UUID?
     @State private var showImporter = false
     @State private var preview: ImportPreview?
+    @State private var pendingCSVData: Data?
+    @State private var pendingCSVName = ""
+    @State private var pendingCSVProfile = CSVImportProfile()
+    @State private var showCSVProfileAssistant = false
+    @State private var csvProfiles: [CSVImportProfile] = []
     @State private var qifPackagePreview: QIFPackagePreview?
     @State private var bankStatementPackage: BankStatementPackage?
     @State private var bankStatementMappings: [String: UUID] = [:]
@@ -5273,17 +5278,50 @@ struct ImportExportView: View {
                 } else {
                     store.errorMessage = FinanceError.missingAccount.localizedDescription
                 }
-            } else if let selectedAccountID {
-                preview = store.importCSV(
-                    data: data,
-                    accountID: selectedAccountID,
-                    dateWindowDays: importMatchDateWindowDays
-                )
-                qifPackagePreview = nil
-                bankStatementPackage = nil
-                if let preview { prepareResolutions(preview) }
+            } else if selectedAccountID != nil {
+                do {
+                    pendingCSVData = data
+                    pendingCSVName = url.lastPathComponent
+                    pendingCSVProfile = try CSVFinanceImporter.suggestedProfile(
+                        data: data
+                    )
+                    qifPackagePreview = nil
+                    bankStatementPackage = nil
+                    preview = nil
+                    showCSVProfileAssistant = true
+                } catch {
+                    store.errorMessage = error.localizedDescription
+                }
             } else {
                 store.errorMessage = FinanceError.missingAccount.localizedDescription
+            }
+        }
+        .sheet(isPresented: $showCSVProfileAssistant) {
+            if let pendingCSVData, let selectedAccountID,
+               let account = store.accounts.first(where: { $0.id == selectedAccountID }) {
+                CSVImportProfileAssistant(
+                    data: pendingCSVData,
+                    fileName: pendingCSVName,
+                    account: account,
+                    initialProfile: pendingCSVProfile,
+                    profiles: $csvProfiles,
+                    cancel: {
+                        clearPendingCSV()
+                        showCSVProfileAssistant = false
+                    },
+                    importPreview: { profile in
+                        guard let result = store.importCSV(
+                            data: pendingCSVData,
+                            accountID: selectedAccountID,
+                            profile: profile,
+                            dateWindowDays: importMatchDateWindowDays
+                        ) else { return }
+                        preview = result
+                        prepareResolutions(result)
+                        clearPendingCSV()
+                        showCSVProfileAssistant = false
+                    }
+                )
             }
         }
         .fileExporter(
@@ -5334,6 +5372,35 @@ struct ImportExportView: View {
                     }
                 )
             }
+        }
+        .onAppear(perform: loadCSVProfiles)
+        .onChange(of: csvProfiles) { persistCSVProfiles() }
+    }
+
+    private func clearPendingCSV() {
+        pendingCSVData = nil
+        pendingCSVName = ""
+    }
+
+    private func loadCSVProfiles() {
+        guard let data = UserDefaults.standard.data(
+            forKey: "csvImportProfilesV1"
+        ) else { return }
+        do {
+            csvProfiles = try CSVImportProfileLibrary.decode(data)
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func persistCSVProfiles() {
+        do {
+            UserDefaults.standard.set(
+                try CSVImportProfileLibrary.encode(csvProfiles),
+                forKey: "csvImportProfilesV1"
+            )
+        } catch {
+            store.errorMessage = error.localizedDescription
         }
     }
 
@@ -5458,6 +5525,355 @@ struct ImportExportView: View {
             importResolutions[row.id] = hasExactExternalID
                 ? .skip : .importNew
         }
+    }
+}
+
+private struct CSVImportProfileAssistant: View {
+    let data: Data
+    let fileName: String
+    let account: FinanceAccount
+    @Binding var profiles: [CSVImportProfile]
+    let cancel: () -> Void
+    let importPreview: (CSVImportProfile) -> Void
+    private let detectedProfile: CSVImportProfile
+
+    @State private var profile: CSVImportProfile
+    @State private var selectedProfileID: UUID?
+    @State private var inspection: CSVImportInspection?
+    @State private var inspectionError = ""
+
+    init(
+        data: Data,
+        fileName: String,
+        account: FinanceAccount,
+        initialProfile: CSVImportProfile,
+        profiles: Binding<[CSVImportProfile]>,
+        cancel: @escaping () -> Void,
+        importPreview: @escaping (CSVImportProfile) -> Void
+    ) {
+        self.data = data
+        self.fileName = fileName
+        self.account = account
+        self._profiles = profiles
+        self.cancel = cancel
+        self.importPreview = importPreview
+        self.detectedProfile = initialProfile
+        _profile = State(initialValue: initialProfile)
+    }
+
+    private var mappedFields: [CSVImportField] {
+        CSVImportField.allCases.filter { field in
+            switch (profile.amountMode, field) {
+            case (.signed, .debit), (.signed, .credit): false
+            case (.debitCredit, .amount): false
+            default: true
+            }
+        }
+    }
+
+    private var canPreview: Bool {
+        guard validColumn(for: .bookingDate) else {
+            return false
+        }
+        switch profile.amountMode {
+        case .signed:
+            return validColumn(for: .amount)
+        case .debitCredit:
+            return validColumn(for: .debit) || validColumn(for: .credit)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("CSV-/TSV-Profilassistent")
+                        .font(.title2.bold())
+                    Text("\(fileName) → \(account.name) (\(account.currency))")
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Text("\(inspection?.rowCount ?? 0) Datenzeilen")
+                    .font(.headline.monospacedDigit())
+            }
+            .padding(18)
+            Divider()
+
+            HSplitView {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        GroupBox("Gespeichertes Profil") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Picker("Profil laden", selection: $selectedProfileID) {
+                                    Text("Automatisch erkannt").tag(UUID?.none)
+                                    ForEach(profiles) { saved in
+                                        Text("\(saved.name) · Revision \(saved.revision)")
+                                            .tag(UUID?.some(saved.id))
+                                    }
+                                }
+                                .accessibilityIdentifier("csvProfilePicker")
+                                .onChange(of: selectedProfileID) {
+                                    if let selectedProfileID,
+                                       let saved = profiles.first(where: {
+                                           $0.id == selectedProfileID
+                                       }) {
+                                        profile = saved
+                                    } else {
+                                        profile = detectedProfile
+                                    }
+                                }
+                                TextField("Profilname", text: $profile.name)
+                                    .accessibilityIdentifier("csvProfileName")
+                                HStack {
+                                    Button("Profil speichern", systemImage: "square.and.arrow.down") {
+                                        saveProfile()
+                                    }
+                                    .disabled(
+                                        profile.name.trimmingCharacters(
+                                            in: .whitespacesAndNewlines
+                                        ).isEmpty
+                                    )
+                                    Button("Profil löschen", role: .destructive) {
+                                        deleteSelectedProfile()
+                                    }
+                                    .disabled(selectedProfileID == nil)
+                                }
+                                Text(
+                                    "Profile werden versioniert lokal gespeichert und enthalten keine Buchungsdaten."
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .padding(6)
+                        }
+
+                        GroupBox("Dateiformat") {
+                            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                                GridRow {
+                                    Text("Encoding")
+                                    Picker("Encoding", selection: $profile.encoding) {
+                                        ForEach(CSVImportEncoding.allCases, id: \.self) {
+                                            Text($0.title).tag($0)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                }
+                                GridRow {
+                                    Text("Trennzeichen")
+                                    Picker("Trennzeichen", selection: $profile.separator) {
+                                        ForEach(CSVImportSeparator.allCases, id: \.self) {
+                                            Text($0.title).tag($0)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                }
+                                GridRow {
+                                    Text("Kopfzeile")
+                                    Toggle("Erste Zeile enthält Feldnamen", isOn: $profile.hasHeader)
+                                }
+                                GridRow {
+                                    Text("Datumsformat")
+                                    Picker("Datumsformat", selection: $profile.dateFormat) {
+                                        ForEach(CSVImportDateFormat.allCases, id: \.self) {
+                                            Text($0.title).tag($0)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                }
+                                GridRow {
+                                    Text("Betragsaufbau")
+                                    Picker("Betragsaufbau", selection: $profile.amountMode) {
+                                        ForEach(CSVImportAmountMode.allCases, id: \.self) {
+                                            Text($0.title).tag($0)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                }
+                                GridRow {
+                                    Text("Dezimalzeichen")
+                                    Picker("Dezimalzeichen", selection: $profile.decimalSeparator) {
+                                        Text("Komma").tag(",")
+                                        Text("Punkt").tag(".")
+                                    }
+                                    .labelsHidden()
+                                }
+                                GridRow {
+                                    Text("Tausenderzeichen")
+                                    Picker("Tausenderzeichen", selection: $profile.thousandsSeparator) {
+                                        Text("Keines").tag("")
+                                        Text("Punkt").tag(".")
+                                        Text("Komma").tag(",")
+                                    }
+                                    .labelsHidden()
+                                }
+                            }
+                            .padding(6)
+                        }
+
+                        GroupBox("Feldzuordnung") {
+                            VStack(spacing: 8) {
+                                ForEach(mappedFields) { field in
+                                    HStack {
+                                        Text(field.title)
+                                            .frame(width: 180, alignment: .leading)
+                                        if field == .bookingDate || field == .amount {
+                                            Text("Pflicht")
+                                                .font(.caption2)
+                                                .foregroundStyle(.orange)
+                                        } else if field == .debit || field == .credit {
+                                            Text("Mind. eins")
+                                                .font(.caption2)
+                                                .foregroundStyle(.orange)
+                                        }
+                                        Spacer()
+                                        Picker(
+                                            field.title,
+                                            selection: Binding(
+                                                get: { profile.column(for: field) },
+                                                set: { profile.setColumn($0, for: field) }
+                                            )
+                                        ) {
+                                            Text("Nicht übernehmen").tag(Int?.none)
+                                            ForEach(
+                                                Array((inspection?.columns ?? []).enumerated()),
+                                                id: \.offset
+                                            ) { index, name in
+                                                Text("\(index + 1): \(name)")
+                                                    .tag(Int?.some(index))
+                                            }
+                                        }
+                                        .labelsHidden()
+                                        .frame(width: 260)
+                                    }
+                                }
+                            }
+                            .padding(6)
+                        }
+                    }
+                    .padding(16)
+                }
+                .frame(minWidth: 500, idealWidth: 540)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Rohdatenvorschau")
+                        .font(.headline)
+                    if !inspectionError.isEmpty {
+                        ContentUnavailableView(
+                            "Datei kann nicht gelesen werden",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text(inspectionError)
+                        )
+                    } else if let inspection {
+                        ScrollView([.horizontal, .vertical]) {
+                            Grid(
+                                alignment: .leading,
+                                horizontalSpacing: 18,
+                                verticalSpacing: 7
+                            ) {
+                                GridRow {
+                                    ForEach(Array(inspection.columns.enumerated()), id: \.offset) {
+                                        Text("\($0.offset + 1): \($0.element)")
+                                            .font(.caption.bold())
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Divider()
+                                ForEach(Array(inspection.sampleRows.enumerated()), id: \.offset) { row in
+                                    GridRow {
+                                        ForEach(Array(inspection.columns.indices), id: \.self) { column in
+                                            Text(column < row.element.count ? row.element[column] : "")
+                                                .lineLimit(2)
+                                                .frame(maxWidth: 260, alignment: .leading)
+                                        }
+                                    }
+                                }
+                            }
+                            .textSelection(.enabled)
+                            .padding(10)
+                        }
+                        .background(
+                            Color(nsColor: .textBackgroundColor),
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
+                    } else {
+                        ProgressView()
+                    }
+                    Text(
+                        "Nach dem nächsten Schritt erscheinen gültige Buchungen, zeilengenaue Fehler und mögliche Dubletten vor jeder Übernahme."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .frame(minWidth: 430, maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            Divider()
+            HStack {
+                Button("Abbrechen", role: .cancel, action: cancel)
+                Spacer()
+                if !canPreview {
+                    Text("Buchungsdatum und Betrag beziehungsweise Soll/Haben zuordnen")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Button("Importvorschau erstellen") {
+                    importPreview(profile)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canPreview)
+                .accessibilityIdentifier("csvCreateImportPreview")
+            }
+            .padding(16)
+        }
+        .frame(minWidth: 960, minHeight: 700)
+        .onAppear(perform: refreshInspection)
+        .onChange(of: profile) { refreshInspection() }
+        .onChange(of: profile.decimalSeparator) {
+            if profile.thousandsSeparator == profile.decimalSeparator {
+                profile.thousandsSeparator = profile.decimalSeparator == ","
+                    ? "." : ","
+            }
+        }
+        .interactiveDismissDisabled()
+    }
+
+    private func validColumn(for field: CSVImportField) -> Bool {
+        guard let inspection, let column = profile.column(for: field) else {
+            return false
+        }
+        return inspection.columns.indices.contains(column)
+    }
+
+    private func refreshInspection() {
+        do {
+            inspection = try CSVFinanceImporter.inspect(
+                data: data, profile: profile
+            )
+            inspectionError = ""
+        } catch {
+            inspection = nil
+            inspectionError = error.localizedDescription
+        }
+    }
+
+    private func saveProfile() {
+        profile.name = profile.name.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        profiles = CSVImportProfileLibrary.upserting(profile, into: profiles)
+        if let saved = profiles.first(where: { $0.id == profile.id }) {
+            profile = saved
+            selectedProfileID = saved.id
+        }
+    }
+
+    private func deleteSelectedProfile() {
+        guard let selectedProfileID else { return }
+        profiles.removeAll { $0.id == selectedProfileID }
+        self.selectedProfileID = nil
     }
 }
 

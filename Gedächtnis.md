@@ -3949,3 +3949,46 @@ Rechtsberatung.
   894. Wegen der weiterhin nicht sichtbar entsperrten macOS-Sitzung wurde
   transparent kein neuer Screenshot behauptet. Exakter kumulativer
   Zielzählerstand vor dem Versand: 23.293.152 Tokens.
+
+## 08.08.2026 – Versionierter CSV-/TSV-Profilassistent
+
+- Vor der normalen Importvorschau öffnet sich ein eigener Assistent mit
+  automatischer und vollständig überschreibbarer Erkennung für UTF-8,
+  Windows-1252/ISO-Latin-1, Semikolon/Komma/Tab, Kopfzeile, vier Datumsformate,
+  Dezimal-/Tausenderzeichen sowie Betrag oder getrennte Soll-/Haben-Spalten.
+  Die ersten 20 Datenzeilen bleiben als Rohdaten sichtbar.
+- Sämtliche fachlichen Quellspalten lassen sich frei zuordnen. Der neue Parser
+  verarbeitet CRLF, maskierte Trennzeichen, verdoppelte Anführungszeichen und
+  mehrzeilige Felder. Er liest Geld ohne Binärgleitkomma, setzt Soll negativ
+  und Haben positiv und meldet Struktur-, Datums-, Betrags- und
+  Soll/Haben-Fehler mit echter Quellzeilennummer.
+- Neben Empfänger, Zweck, Notiz und Referenz werden Valuta, externe ID,
+  Provider, IBAN/BIC, End-to-End-ID, Mandatsreferenz, Gläubiger-ID,
+  Buchungstext und Banksaldo übernommen. Kategorien werden über vollständige
+  Pfade oder nur bei eindeutigem Blattnamen aufgelöst. Unbekannte und
+  mehrdeutige Kategorien werden niemals still verworfen.
+- Benannte Profile werden ohne Buchungsdaten als schema-versioniertes JSON in
+  `UserDefaults` gespeichert. Erneutes Speichern erhöht die Revision; ein
+  unbekanntes Zukunftsschema wird abgewiesen. Nach der Profilierung bleibt das
+  vorhandene gestufte Matching mit Datumsfenster und atomarem Commit erhalten.
+- Vier gezielte Tests bestanden ohne Fehler. Der vollständige Lauf unter
+  `build/TestResults/CSVProfile-full-20260808-0111.xcresult` umfasst 171 Tests:
+  169 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0 erwartete
+  Fehler.
+- Der native arm64-Release unter `build/DerivedData-CSVProfile-Product` wurde
+  erfolgreich gebaut, ad-hoc signiert und streng geprüft. Die ausführbare
+  Datei hat SHA-256
+  `2161068a384bded5cf588dac9ab2d33cfd50bb3cfeac5a9cc2efe9e2033ea6a2`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0117-csv-profile/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0117-csv-profile/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und `~/Applications/FinanzVerwalter.app`
+  sind bytegleich, der Schreibtisch-Link zeigt auf `/Applications`, und
+  Prozess 68881 läuft daraus. Produktivdatei und Sicherung melden Integrität
+  `ok`, Schema 39 und jeweils unverändert 97 Konten, 2.170 Buchungen und 782
+  Kategorien; die Produktivdatei hat keine Fremdschlüsselverletzung.
+- Finder wurde auf die Systeminstallation gelenkt. Eine sichtbare
+  Oberflächenabnahme und ein neuer Screenshot waren nicht möglich, weil die
+  macOS-Sitzung weiterhin gesperrt ist; die laufende App wurde nicht fälschlich
+  als sichtbar geprüft dokumentiert.

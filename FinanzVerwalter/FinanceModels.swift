@@ -738,6 +738,221 @@ struct CategoryReportRow: Identifiable, Hashable, Sendable {
     let expenseMinor: Int64
 }
 
+enum CSVImportEncoding: String, Codable, CaseIterable, Sendable {
+    case utf8
+    case windows1252
+    case isoLatin1
+
+    var title: String {
+        switch self {
+        case .utf8: "UTF-8"
+        case .windows1252: "Windows-1252"
+        case .isoLatin1: "ISO-8859-1"
+        }
+    }
+}
+
+enum CSVImportSeparator: String, Codable, CaseIterable, Sendable {
+    case semicolon
+    case comma
+    case tab
+
+    var title: String {
+        switch self {
+        case .semicolon: "Semikolon"
+        case .comma: "Komma"
+        case .tab: "Tabulator"
+        }
+    }
+
+    var character: Character {
+        switch self {
+        case .semicolon: ";"
+        case .comma: ","
+        case .tab: "\t"
+        }
+    }
+}
+
+enum CSVImportDateFormat: String, Codable, CaseIterable, Sendable {
+    case germanLong
+    case germanShort
+    case iso
+    case us
+
+    var title: String {
+        switch self {
+        case .germanLong: "TT.MM.JJJJ"
+        case .germanShort: "TT.MM.JJ"
+        case .iso: "JJJJ-MM-TT"
+        case .us: "MM/TT/JJJJ"
+        }
+    }
+
+    var pattern: String {
+        switch self {
+        case .germanLong: "dd.MM.yyyy"
+        case .germanShort: "dd.MM.yy"
+        case .iso: "yyyy-MM-dd"
+        case .us: "MM/dd/yyyy"
+        }
+    }
+}
+
+enum CSVImportAmountMode: String, Codable, CaseIterable, Sendable {
+    case signed
+    case debitCredit
+
+    var title: String {
+        switch self {
+        case .signed: "Betrag mit Vorzeichen"
+        case .debitCredit: "Getrennte Soll-/Haben-Spalten"
+        }
+    }
+}
+
+enum CSVImportField: String, CaseIterable, Identifiable, Sendable {
+    case bookingDate
+    case valueDate
+    case payee
+    case purpose
+    case amount
+    case debit
+    case credit
+    case category
+    case memo
+    case reference
+    case externalTransactionID
+    case provider
+    case counterpartyIBAN
+    case counterpartyBIC
+    case endToEndID
+    case mandateReference
+    case creditorID
+    case bookingText
+    case bankBalanceAfter
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .bookingDate: "Buchungsdatum"
+        case .valueDate: "Wertstellung"
+        case .payee: "Empfänger/Auftraggeber"
+        case .purpose: "Verwendungszweck"
+        case .amount: "Betrag"
+        case .debit: "Soll/Belastung"
+        case .credit: "Haben/Gutschrift"
+        case .category: "Kategoriepfad"
+        case .memo: "Notiz"
+        case .reference: "Referenz"
+        case .externalTransactionID: "Externe Transaktions-ID"
+        case .provider: "Provider/Bank"
+        case .counterpartyIBAN: "Gegenkonto-IBAN"
+        case .counterpartyBIC: "Gegenkonto-BIC"
+        case .endToEndID: "End-to-End-ID"
+        case .mandateReference: "Mandatsreferenz"
+        case .creditorID: "Gläubiger-ID"
+        case .bookingText: "Buchungstext"
+        case .bankBalanceAfter: "Saldo danach"
+        }
+    }
+}
+
+struct CSVImportProfile: Identifiable, Codable, Equatable, Sendable {
+    static let schemaVersion = 1
+
+    var id: UUID
+    var name: String
+    var schema: Int
+    var revision: Int
+    var encoding: CSVImportEncoding
+    var separator: CSVImportSeparator
+    var hasHeader: Bool
+    var dateFormat: CSVImportDateFormat
+    var decimalSeparator: String
+    var thousandsSeparator: String
+    var amountMode: CSVImportAmountMode
+    var mappings: [String: Int]
+
+    init(
+        id: UUID = UUID(),
+        name: String = "Neues CSV-Profil",
+        schema: Int = Self.schemaVersion,
+        revision: Int = 1,
+        encoding: CSVImportEncoding = .utf8,
+        separator: CSVImportSeparator = .semicolon,
+        hasHeader: Bool = true,
+        dateFormat: CSVImportDateFormat = .germanLong,
+        decimalSeparator: String = ",",
+        thousandsSeparator: String = ".",
+        amountMode: CSVImportAmountMode = .signed,
+        mappings: [String: Int] = [:]
+    ) {
+        self.id = id
+        self.name = name
+        self.schema = schema
+        self.revision = revision
+        self.encoding = encoding
+        self.separator = separator
+        self.hasHeader = hasHeader
+        self.dateFormat = dateFormat
+        self.decimalSeparator = decimalSeparator
+        self.thousandsSeparator = thousandsSeparator
+        self.amountMode = amountMode
+        self.mappings = mappings
+    }
+
+    func column(for field: CSVImportField) -> Int? {
+        mappings[field.rawValue]
+    }
+
+    mutating func setColumn(_ column: Int?, for field: CSVImportField) {
+        mappings[field.rawValue] = column
+    }
+}
+
+struct CSVImportInspection: Equatable, Sendable {
+    let columns: [String]
+    let sampleRows: [[String]]
+    let rowCount: Int
+}
+
+enum CSVImportProfileLibrary {
+    static func upserting(
+        _ profile: CSVImportProfile,
+        into profiles: [CSVImportProfile]
+    ) -> [CSVImportProfile] {
+        var saved = profile
+        saved.schema = CSVImportProfile.schemaVersion
+        if let existing = profiles.first(where: { $0.id == profile.id }) {
+            saved.revision = existing.revision + 1
+        } else {
+            saved.revision = max(1, profile.revision)
+        }
+        return (profiles.filter { $0.id != saved.id } + [saved]).sorted {
+            let comparison = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return comparison == .orderedSame
+                ? $0.id.uuidString < $1.id.uuidString
+                : comparison == .orderedAscending
+        }
+    }
+
+    static func encode(_ profiles: [CSVImportProfile]) throws -> Data {
+        try JSONEncoder().encode(profiles)
+    }
+
+    static func decode(_ data: Data) throws -> [CSVImportProfile] {
+        let decoded = try JSONDecoder().decode([CSVImportProfile].self, from: data)
+        guard decoded.allSatisfy({ $0.schema == CSVImportProfile.schemaVersion }) else {
+            throw FinanceError.invalidCSVImport(
+                "Das gespeicherte Profil verwendet eine nicht unterstützte Version."
+            )
+        }
+        return decoded
+    }
+}
+
 struct ImportPreview: Sendable {
     let rows: [FinanceTransaction]
     let rejectedRows: [String]

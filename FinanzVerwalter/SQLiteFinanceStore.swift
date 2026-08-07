@@ -10553,141 +10553,483 @@ private enum SQLiteValue {
 }
 
 enum CSVFinanceImporter {
-    static func preview(data: Data, account: FinanceAccount) throws -> ImportPreview {
-        let text = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .isoLatin1)
-            ?? ""
-        let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        guard let header = lines.first else {
-            return ImportPreview(rows: [], rejectedRows: ["Die Datei ist leer."], fingerprint: fingerprint)
+    static func suggestedProfile(data: Data) throws -> CSVImportProfile {
+        let encoding: CSVImportEncoding
+        if String(data: data, encoding: .utf8) != nil {
+            encoding = .utf8
+        } else if String(data: data, encoding: .windowsCP1252) != nil {
+            encoding = .windows1252
+        } else if String(data: data, encoding: .isoLatin1) != nil {
+            encoding = .isoLatin1
+        } else {
+            throw FinanceError.invalidCSVImport(
+                "Die Textkodierung konnte nicht erkannt werden."
+            )
         }
-        let separator: Character = header.filter { $0 == ";" }.count >= header.filter { $0 == "," }.count ? ";" : ","
-        let headings = fields(header, separator: separator).map { $0.lowercased() }
+        let text = try decodedText(data, encoding: encoding)
+        let firstLine = text.components(separatedBy: .newlines).first ?? ""
+        let separator: CSVImportSeparator
+        let candidates: [(CSVImportSeparator, Int)] = [
+            (.semicolon, firstLine.filter { $0 == ";" }.count),
+            (.comma, firstLine.filter { $0 == "," }.count),
+            (.tab, firstLine.filter { $0 == "\t" }.count)
+        ]
+        separator = candidates.max {
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return CSVImportSeparator.allCases.firstIndex(of: $0.0)!
+                > CSVImportSeparator.allCases.firstIndex(of: $1.0)!
+        }?.0 ?? .semicolon
+        var profile = CSVImportProfile(
+            encoding: encoding,
+            separator: separator
+        )
+        let inspection = try inspect(data: data, profile: profile)
+        profile.mappings = suggestedMappings(for: inspection.columns)
+        if let dateColumn = profile.column(for: .bookingDate),
+           let sample = inspection.sampleRows.first(where: {
+               dateColumn < $0.count && !$0[dateColumn].isEmpty
+           })?[dateColumn] {
+            profile.dateFormat = detectedDateFormat(sample) ?? .germanLong
+        }
+        let amountFields: [CSVImportField] = [.amount, .debit, .credit]
+        if let amountColumn = amountFields.compactMap({ profile.column(for: $0) }).first,
+           let sample = inspection.sampleRows.first(where: {
+               amountColumn < $0.count && !$0[amountColumn].isEmpty
+           })?[amountColumn] {
+            if sample.contains(",") {
+                profile.decimalSeparator = ","
+                profile.thousandsSeparator = "."
+            } else if sample.contains(".") {
+                profile.decimalSeparator = "."
+                profile.thousandsSeparator = ","
+            }
+        }
+        profile.amountMode = profile.column(for: .amount) == nil
+            && (profile.column(for: .debit) != nil || profile.column(for: .credit) != nil)
+            ? .debitCredit : .signed
+        return profile
+    }
+
+    static func inspect(
+        data: Data,
+        profile: CSVImportProfile
+    ) throws -> CSVImportInspection {
+        let rows = try parsedRows(
+            try decodedText(data, encoding: profile.encoding),
+            separator: profile.separator.character
+        )
+        guard let first = rows.first else {
+            throw FinanceError.invalidCSVImport("Die Datei ist leer.")
+        }
+        let width = rows.map(\.count).max() ?? first.count
+        let columns: [String]
+        if profile.hasHeader {
+            columns = (0..<width).map { index in
+                guard index < first.count else { return "Spalte \(index + 1)" }
+                let value = first[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? "Spalte \(index + 1)" : value
+            }
+        } else {
+            columns = (0..<width).map { "Spalte \($0 + 1)" }
+        }
+        let content = profile.hasHeader ? Array(rows.dropFirst()) : rows
+        return CSVImportInspection(
+            columns: columns,
+            sampleRows: Array(content.prefix(20)),
+            rowCount: content.count
+        )
+    }
+
+    static func preview(
+        data: Data,
+        account: FinanceAccount,
+        profile: CSVImportProfile,
+        categories: [FinanceCategory] = []
+    ) throws -> ImportPreview {
+        guard profile.schema == CSVImportProfile.schemaVersion else {
+            throw FinanceError.invalidCSVImport(
+                "Profilversion \(profile.schema) wird nicht unterstützt."
+            )
+        }
+        guard profile.column(for: .bookingDate) != nil else {
+            throw FinanceError.invalidCSVImport(
+                "Das Buchungsdatum ist keiner Quellspalte zugeordnet."
+            )
+        }
+        switch profile.amountMode {
+        case .signed:
+            guard profile.column(for: .amount) != nil else {
+                throw FinanceError.invalidCSVImport(
+                    "Der Betrag ist keiner Quellspalte zugeordnet."
+                )
+            }
+        case .debitCredit:
+            guard profile.column(for: .debit) != nil
+                    || profile.column(for: .credit) != nil else {
+                throw FinanceError.invalidCSVImport(
+                    "Weder Soll noch Haben ist einer Quellspalte zugeordnet."
+                )
+            }
+        }
+        let text = try decodedText(data, encoding: profile.encoding)
+        let parsed = try parsedRows(text, separator: profile.separator.character)
+        let content = profile.hasHeader ? parsed.dropFirst() : parsed[...]
+        let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         var rows: [FinanceTransaction] = []
         var rejected: [String] = []
-        for (offset, line) in lines.dropFirst().enumerated() {
-            let values = fields(line, separator: separator)
-            let record = Dictionary(uniqueKeysWithValues: zip(headings, values))
+        for (offset, values) in content.enumerated() {
+            let lineNumber = offset + (profile.hasHeader ? 2 : 1)
             do {
-                guard
-                    let dateText = record["datum"] ?? record["date"],
-                    let date = parseDate(dateText),
-                    let amountText = record["betrag"] ?? record["amount"]
-                else { throw FinanceError.invalidAmount(line) }
-                let amount = try Money(parsing: amountText, currency: account.currency)
-                let valueDate = (
-                    record["wertstellung"]
-                        ?? record["valuta"]
-                        ?? record["value date"]
-                        ?? record["value_date"]
-                ).flatMap(parseDate)
-                let externalID = record["transaktions-id"]
-                    ?? record["transaktionsid"]
-                    ?? record["bank-id"]
-                    ?? record["transaction id"]
-                    ?? record["transaction_id"]
-                    ?? ""
-                let provider = record["provider"]
-                    ?? record["anbieter"]
-                    ?? record["bank"]
-                    ?? (externalID.isEmpty ? "" : "CSV")
-                let bankBalance = try (
-                    record["saldo danach"]
-                        ?? record["banksaldo"]
-                        ?? record["balance after"]
-                ).map {
-                    try Money(
-                        parsing: $0,
-                        currency: account.currency
-                    ).minorUnits
+                let dateText = value(.bookingDate, in: values, profile: profile)
+                guard !dateText.isEmpty,
+                      let date = parseDate(dateText, format: profile.dateFormat)
+                else {
+                    throw FinanceError.invalidCSVImport(
+                        "Buchungsdatum „\(dateText)“ passt nicht zu \(profile.dateFormat.title)."
+                    )
                 }
+                let rawValueDate = value(.valueDate, in: values, profile: profile)
+                let valueDate: Date?
+                if rawValueDate.isEmpty {
+                    valueDate = nil
+                } else if let parsedDate = parseDate(
+                    rawValueDate, format: profile.dateFormat
+                ) {
+                    valueDate = parsedDate
+                } else {
+                    throw FinanceError.invalidCSVImport(
+                        "Wertstellung „\(rawValueDate)“ passt nicht zu \(profile.dateFormat.title)."
+                    )
+                }
+                let amountMinor = try parsedAmount(
+                    values: values, profile: profile, currency: account.currency
+                )
+                let externalID = value(
+                    .externalTransactionID, in: values, profile: profile
+                )
+                let explicitProvider = value(.provider, in: values, profile: profile)
+                let provider = explicitProvider.isEmpty && !externalID.isEmpty
+                    ? "CSV" : explicitProvider
+                let rawBankBalance = value(
+                    .bankBalanceAfter, in: values, profile: profile
+                )
+                let bankBalance = rawBankBalance.isEmpty ? nil : try parseMoney(
+                    rawBankBalance, profile: profile,
+                    currency: account.currency
+                ).minorUnits
+                let categoryText = value(.category, in: values, profile: profile)
+                let categoryID = try categoryID(
+                    for: categoryText, categories: categories
+                )
                 rows.append(
                     FinanceTransaction(
                         id: UUID(), accountID: account.id, bookingDate: date,
                         valueDate: valueDate,
-                        payee: record["empfänger"] ?? record["empfaenger"] ?? record["payee"] ?? "",
-                        purpose: record["verwendungszweck"] ?? record["purpose"] ?? "",
-                        categoryID: nil, amountMinor: amount.minorUnits, currency: account.currency,
-                        status: .booked, memo: record["notiz"] ?? record["memo"] ?? "",
-                        reference: record["referenz"] ?? record["reference"] ?? "",
+                        payee: value(.payee, in: values, profile: profile),
+                        purpose: value(.purpose, in: values, profile: profile),
+                        categoryID: categoryID, amountMinor: amountMinor,
+                        currency: account.currency,
+                        status: .booked,
+                        memo: value(.memo, in: values, profile: profile),
+                        reference: value(.reference, in: values, profile: profile),
                         transferID: nil, importFingerprint: fingerprint, splits: [],
                         origin: .fileImport,
                         externalProvider: provider,
                         externalTransactionID: externalID,
-                        counterpartyIBAN: record["iban"]
-                            ?? record["gegenkonto iban"]
-                            ?? record["counterparty iban"]
-                            ?? "",
-                        endToEndID: record["end-to-end-id"]
-                            ?? record["endtoendid"]
-                            ?? record["end_to_end_id"]
-                            ?? "",
-                        mandateReference: record["mandatsreferenz"]
-                            ?? record["mandate reference"]
-                            ?? record["mandate_reference"]
-                            ?? "",
+                        counterpartyIBAN: value(
+                            .counterpartyIBAN, in: values, profile: profile
+                        ),
+                        endToEndID: value(.endToEndID, in: values, profile: profile),
+                        mandateReference: value(
+                            .mandateReference, in: values, profile: profile
+                        ),
                         bankBalanceAfterMinor: bankBalance,
-                        counterpartyBIC: record["bic"]
-                            ?? record["gegenkonto bic"]
-                            ?? record["counterparty bic"]
-                            ?? "",
-                        creditorID: record["gläubiger-id"]
-                            ?? record["glaeubiger-id"]
-                            ?? record["creditor id"]
-                            ?? record["creditor_id"]
-                            ?? "",
-                        bookingText: record["buchungstext"]
-                            ?? record["booking text"]
-                            ?? record["booking_text"]
-                            ?? ""
+                        counterpartyBIC: value(
+                            .counterpartyBIC, in: values, profile: profile
+                        ),
+                        creditorID: value(.creditorID, in: values, profile: profile),
+                        bookingText: value(.bookingText, in: values, profile: profile)
                     )
                 )
             } catch {
-                rejected.append("Zeile \(offset + 2): \(line)")
+                rejected.append("Zeile \(lineNumber): \(error.localizedDescription)")
             }
         }
         return ImportPreview(rows: rows, rejectedRows: rejected, fingerprint: fingerprint)
     }
 
-    private static func fields(_ line: String, separator: Character) -> [String] {
-        var values: [String] = []
-        var current = ""
+    static func preview(data: Data, account: FinanceAccount) throws -> ImportPreview {
+        let profile = try suggestedProfile(data: data)
+        return try preview(data: data, account: account, profile: profile)
+    }
+
+    private static func decodedText(
+        _ data: Data,
+        encoding: CSVImportEncoding
+    ) throws -> String {
+        let foundationEncoding: String.Encoding = switch encoding {
+        case .utf8: .utf8
+        case .windows1252: .windowsCP1252
+        case .isoLatin1: .isoLatin1
+        }
+        guard let text = String(data: data, encoding: foundationEncoding) else {
+            throw FinanceError.invalidCSVImport(
+                "Die Datei ist nicht gültig als \(encoding.title) kodiert."
+            )
+        }
+        return text.replacingOccurrences(of: "\u{feff}", with: "")
+    }
+
+    private static func parsedRows(
+        _ text: String,
+        separator: Character
+    ) throws -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
         var quoted = false
-        var index = line.startIndex
-        while index < line.endIndex {
-            let character = line[index]
+        let characters = Array(text)
+        var index = 0
+        func appendField() {
+            row.append(field.trimmingCharacters(in: .whitespacesAndNewlines))
+            field = ""
+        }
+        func appendRow() {
+            appendField()
+            if row.contains(where: { !$0.isEmpty }) { rows.append(row) }
+            row = []
+        }
+        while index < characters.count {
+            let character = characters[index]
             if character == "\"" {
-                let next = line.index(after: index)
-                if quoted, next < line.endIndex, line[next] == "\"" {
-                    current.append("\"")
-                    index = next
+                if quoted, index + 1 < characters.count,
+                   characters[index + 1] == "\"" {
+                    field.append("\"")
+                    index += 1
                 } else {
                     quoted.toggle()
                 }
             } else if character == separator, !quoted {
-                values.append(current.trimmingCharacters(in: .whitespaces))
-                current = ""
+                appendField()
+            } else if (character == "\n" || character == "\r"), !quoted {
+                if character == "\r", index + 1 < characters.count,
+                   characters[index + 1] == "\n" {
+                    index += 1
+                }
+                appendRow()
             } else {
-                current.append(character)
+                field.append(character)
             }
-            index = line.index(after: index)
+            index += 1
         }
-        values.append(current.trimmingCharacters(in: .whitespaces))
-        return values
+        guard !quoted else {
+            throw FinanceError.invalidCSVImport(
+                "Ein Anführungszeichen wurde nicht geschlossen."
+            )
+        }
+        if !field.isEmpty || !row.isEmpty {
+            appendRow()
+        }
+        return rows
     }
 
-    private static func parseDate(_ text: String) -> Date? {
-        for format in ["dd.MM.yyyy", "yyyy-MM-dd", "dd.MM.yy"] {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "de_DE")
-            formatter.timeZone = TimeZone.current
-            formatter.dateFormat = format
-            if let date = formatter.date(from: text.trimmingCharacters(in: .whitespaces)) {
-                return date
+    private static func suggestedMappings(for columns: [String]) -> [String: Int] {
+        let aliases: [CSVImportField: [String]] = [
+            .bookingDate: ["datum", "date", "buchungsdatum"],
+            .valueDate: ["wertstellung", "valuta", "value date", "value_date"],
+            .payee: ["empfänger", "empfaenger", "payee", "auftraggeber"],
+            .purpose: ["verwendungszweck", "purpose", "buchungsbeschreibung"],
+            .amount: ["betrag", "amount", "umsatz"],
+            .debit: ["soll", "belastung", "debit"],
+            .credit: ["haben", "gutschrift", "credit"],
+            .category: ["kategorie", "category", "kategoriepfad"],
+            .memo: ["notiz", "memo"],
+            .reference: ["referenz", "reference", "belegnummer"],
+            .externalTransactionID: [
+                "transaktions-id", "transaktionsid", "bank-id",
+                "transaction id", "transaction_id"
+            ],
+            .provider: ["provider", "anbieter", "bank"],
+            .counterpartyIBAN: ["iban", "gegenkonto iban", "counterparty iban"],
+            .counterpartyBIC: ["bic", "gegenkonto bic", "counterparty bic"],
+            .endToEndID: ["end-to-end-id", "endtoendid", "end_to_end_id"],
+            .mandateReference: [
+                "mandatsreferenz", "mandate reference", "mandate_reference"
+            ],
+            .creditorID: [
+                "gläubiger-id", "glaeubiger-id", "creditor id", "creditor_id"
+            ],
+            .bookingText: ["buchungstext", "booking text", "booking_text"],
+            .bankBalanceAfter: ["saldo danach", "banksaldo", "balance after"]
+        ]
+        var result: [String: Int] = [:]
+        for (index, heading) in columns.enumerated() {
+            let normalized = normalizedHeading(heading)
+            if let field = aliases.first(where: {
+                $0.value.map(normalizedHeading).contains(normalized)
+            })?.key, result[field.rawValue] == nil {
+                result[field.rawValue] = index
             }
         }
-        return nil
+        return result
+    }
+
+    private static func normalizedHeading(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "de_DE")
+        )
+    }
+
+    private static func detectedDateFormat(_ value: String) -> CSVImportDateFormat? {
+        CSVImportDateFormat.allCases.first { parseDate(value, format: $0) != nil }
+    }
+
+    private static func parseDate(
+        _ text: String,
+        format: CSVImportDateFormat
+    ) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone.current
+        formatter.isLenient = false
+        formatter.dateFormat = format.pattern
+        return formatter.date(
+            from: text.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private static func value(
+        _ field: CSVImportField,
+        in row: [String],
+        profile: CSVImportProfile
+    ) -> String {
+        guard let index = profile.column(for: field), index >= 0,
+              index < row.count else { return "" }
+        return row[index].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parsedAmount(
+        values: [String],
+        profile: CSVImportProfile,
+        currency: String
+    ) throws -> Int64 {
+        switch profile.amountMode {
+        case .signed:
+            return try parseMoney(
+                value(.amount, in: values, profile: profile),
+                profile: profile, currency: currency
+            ).minorUnits
+        case .debitCredit:
+            let debitText = value(.debit, in: values, profile: profile)
+            let creditText = value(.credit, in: values, profile: profile)
+            let debit = debitText.isEmpty ? nil : try parseMoney(
+                debitText, profile: profile, currency: currency
+            ).minorUnits
+            let credit = creditText.isEmpty ? nil : try parseMoney(
+                creditText, profile: profile, currency: currency
+            ).minorUnits
+            if let debit, debit != 0, let credit, credit != 0 {
+                throw FinanceError.invalidCSVImport(
+                    "Soll und Haben sind gleichzeitig befüllt."
+                )
+            }
+            if let debit {
+                guard debit != Int64.min else {
+                    throw FinanceError.invalidCSVImport("Der Sollbetrag ist zu groß.")
+                }
+                return -Swift.abs(debit)
+            }
+            if let credit {
+                guard credit != Int64.min else {
+                    throw FinanceError.invalidCSVImport("Der Habenbetrag ist zu groß.")
+                }
+                return Swift.abs(credit)
+            }
+            throw FinanceError.invalidCSVImport("Soll und Haben sind leer.")
+        }
+    }
+
+    private static func parseMoney(
+        _ raw: String,
+        profile: CSVImportProfile,
+        currency: String
+    ) throws -> Money {
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FinanceError.invalidCSVImport("Der Betrag ist leer.")
+        }
+        guard [",", "."].contains(profile.decimalSeparator),
+              profile.thousandsSeparator != profile.decimalSeparator else {
+            throw FinanceError.invalidCSVImport(
+                "Dezimal- und Tausendertrennzeichen sind ungültig."
+            )
+        }
+        var normalized = raw
+            .replacingOccurrences(of: "\u{00a0}", with: "")
+            .replacingOccurrences(of: " ", with: "")
+        if !profile.thousandsSeparator.isEmpty {
+            normalized = normalized.replacingOccurrences(
+                of: profile.thousandsSeparator, with: ""
+            )
+        }
+        if profile.decimalSeparator == "." {
+            normalized = normalized.replacingOccurrences(of: ".", with: ",")
+        }
+        return try Money(parsing: normalized, currency: currency)
+    }
+
+    private static func categoryID(
+        for rawPath: String,
+        categories: [FinanceCategory]
+    ) throws -> UUID? {
+        guard !rawPath.isEmpty else { return nil }
+        let normalizedTarget = normalizedCategoryPath(rawPath)
+        let byID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let matches = categories.filter { category in
+            normalizedCategoryPath(categoryPath(category, byID: byID))
+                == normalizedTarget
+        }
+        if matches.count == 1 { return matches[0].id }
+        let leafMatches = categories.filter {
+            normalizedCategoryPath($0.name) == normalizedTarget
+        }
+        if leafMatches.count == 1 { return leafMatches[0].id }
+        throw FinanceError.invalidCSVImport(
+            matches.isEmpty && leafMatches.isEmpty
+                ? "Kategorie „\(rawPath)“ wurde nicht gefunden."
+                : "Kategorie „\(rawPath)“ ist ohne vollständigen Pfad nicht eindeutig."
+        )
+    }
+
+    private static func categoryPath(
+        _ category: FinanceCategory,
+        byID: [UUID: FinanceCategory]
+    ) -> String {
+        var names = [category.name]
+        var parentID = category.parentID
+        var visited = Set<UUID>([category.id])
+        while let id = parentID, visited.insert(id).inserted,
+              let parent = byID[id] {
+            names.append(parent.name)
+            parentID = parent.parentID
+        }
+        return names.reversed().joined(separator: ":")
+    }
+
+    private static func normalizedCategoryPath(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: " › ", with: ":")
+            .replacingOccurrences(of: ">", with: ":")
+            .split(separator: ":")
+            .map {
+                String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .joined(separator: ":")
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "de_DE")
+            )
     }
 }
 

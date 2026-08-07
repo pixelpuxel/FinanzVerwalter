@@ -2022,3 +2022,37 @@ erfolgter Restore entfernen die Tempkopie. Teste den Vorschauinhalt gegen eine
 echte Sicherung, identischen SHA-256 vor und nach der Vorschau, das Fehlen von
 WAL/SHM sowie die Ablehnung eines integeren Zukunftsschemas bei vollständig
 unveränderter aktiver Finanzdatei.
+
+# Versionierter CSV-/TSV-Profilassistent
+
+Setze vor die bestehende Importvorschau einen modalen Profilassistenten. Ein
+`CSVImportProfile` muss schema-versioniert und `Codable` sein und Encoding
+(UTF-8, Windows-1252, ISO-Latin-1), Trennzeichen (Semikolon, Komma, Tab),
+Kopfzeile, Datumsformat (`dd.MM.yyyy`, `dd.MM.yy`, ISO, US), Dezimal- und
+Tausenderzeichen, Betrag oder getrenntes Soll/Haben sowie eine freie
+Quellspaltenzuordnung speichern. Unterstütze Buchungs-/Valutadatum, Empfänger,
+Zweck, Betrag/Soll/Haben, Kategorie, Notiz, Referenz, externe Transaktions-ID,
+Provider, Gegenkonto-IBAN/-BIC, End-to-End-ID, Mandatsreferenz, Gläubiger-ID,
+Buchungstext und Banksaldo nach der Buchung.
+
+Erkenne ein Ausgangsprofil deterministisch, zeige aber stets die ersten 20
+Rohdatenzeilen und lasse jede Annahme ändern. Der Parser muss CRLF,
+Anführungszeichen, verdoppelte Anführungszeichen, maskierte Trennzeichen und
+Zeilenumbrüche innerhalb maskierter Felder korrekt behandeln und nicht
+geschlossene Felder ablehnen. Lies Geld strikt dezimal und währungsabhängig
+ohne `Double`; Soll ist negativ und Haben positiv. Weise gleichzeitig belegte
+Soll-/Haben-Felder und ungültige Datums-/Betragswerte mit echter
+Quellzeilennummer zurück.
+
+Löse Kategorien über den vollständigen Pfad auf. Ein einfacher Blattname ist
+nur bei Eindeutigkeit zulässig; unbekannte oder mehrdeutige Kategorien dürfen
+nicht still entfallen. Speichere benannte Profile ohne Buchungsdaten lokal als
+versioniertes JSON, erhöhe bei jeder Änderung desselben Profils die Revision
+und lehne unbekannte neuere Schemata ab. Nach dem Assistenten müssen alle
+gültigen Zeilen unverändert das vorhandene gestufte Import-Matching mit
+Datumsfenster, Einzelfallentscheidung und atomarem Commit durchlaufen.
+
+Teste mindestens automatische Erkennung mit Umlaut-Headern, Windows-1252,
+US-Zahlen/Datum, Soll/Haben, mehrzeilige Felder, vollständige Kategoriepfade,
+Dateien ohne Kopfzeile, unbekannte Kategorien, zeilengenaue Fehler,
+Profilrevision, JSON-Rundlauf und Zukunftsschema-Ablehnung.

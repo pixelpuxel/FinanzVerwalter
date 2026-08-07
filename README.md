@@ -93,6 +93,24 @@ Gegenkonto. Das Gegenkonto muss vorhanden und vom bearbeiteten Konto
 verschieden sein. Schließen setzt im direkten Übersichtsablauf den heutigen
 Tag; Wiederöffnen entfernt das Schließdatum.
 
+## CSV-/TSV-Profilassistent
+
+Beim Öffnen einer CSV- oder TSV-Datei zeigt FinanzVerwalter vor der
+Importvorschau einen Profilassistenten. Er erkennt UTF-8 beziehungsweise
+gängige westliche Kodierungen, Trennzeichen, Kopfzeile, Datumsformat,
+Dezimal-/Tausenderzeichen und Betrag oder getrennte Soll-/Haben-Spalten. Alle
+Felder lassen sich anschließend sichtbar einer Quellspalte zuordnen; die
+Rohdatenvorschau unterstützt auch maskierte Trennzeichen, doppelte
+Anführungszeichen und mehrzeilige Felder.
+
+Benannte Profile werden ohne Buchungsdaten lokal und versioniert gespeichert.
+Der Import übernimmt neben Empfänger, Zweck, Kategorie und Notiz auch Valuta,
+Referenz, externe Bank-ID, Provider, IBAN, BIC, End-to-End-ID,
+Mandatsreferenz, Gläubiger-ID, Buchungstext und Banksaldo. Kategorien werden
+über ihren vollständigen Pfad aufgelöst; unbekannte oder mehrdeutige Angaben
+erscheinen zeilengenau als Fehler. Erst danach folgt dieselbe explizite
+Matching- und Dublettenentscheidung wie bei den übrigen Kontoauszügen.
+
 ## QIF-Import
 
 Einzelne Kontoblätter und vollständige Mehrkontenpakete werden unterschieden.

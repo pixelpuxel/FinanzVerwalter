@@ -439,6 +439,7 @@ struct SecurityQuantity: Hashable, Comparable, Codable, Sendable {
 
 enum FinanceError: LocalizedError, Equatable {
     case invalidAmount(String)
+    case invalidCSVImport(String)
     case splitMismatch(expected: Int64, actual: Int64)
     case missingAccount
     case database(String)
@@ -473,6 +474,7 @@ enum FinanceError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidAmount(let value): "„\(value)“ ist kein gültiger Betrag."
+        case .invalidCSVImport(let message): "CSV-/TSV-Importfehler: \(message)"
         case .splitMismatch(let expected, let actual):
             "Die Splits ergeben \(Money(minorUnits: actual).formatted), erwartet sind \(Money(minorUnits: expected).formatted)."
         case .missingAccount: "Bitte wähle ein Konto."
