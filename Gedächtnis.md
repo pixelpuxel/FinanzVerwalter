@@ -2775,6 +2775,14 @@ Rechtsberatung.
   Was-wäre-wenn-Szenarien bleiben gemäß Anforderungsmatrix offen.
 - Der exakte kumulative Zielzählerstand nach Installation und Produktivprüfung
   beträgt 16.922.518 Tokens.
+- Die reproduzierbare Dokumentation wurde als Commit `987eda4` angelegt und
+  zusammen mit `406e9c4` auf `origin/agent/qif-mehrkontenimport` gepusht.
+  GitHub Draft-PR #1 zeigt diesen Stand, ist konfliktfrei und als mergebar
+  ausgewiesen.
+- Telegram-Nachricht 1034 meldet Test-, Release-, Installations-, Datenbank-
+  und GitHub-Stand im gefundenen `/quicken`-Thread 894. Sie nennt transparent
+  die Bildschirmsperre als Grund für den fehlenden echten Screenshot. Der
+  exakte kumulative Zielzählerstand nach dem Versand beträgt 16.941.246 Tokens.
   Der exakte Zielzählerstand vor dieser Dokumentation beträgt 16.682.116
   Tokens.
 - GitHub Draft-PR #1 wurde konfliktfrei mit Head `4ed8485`, dem
