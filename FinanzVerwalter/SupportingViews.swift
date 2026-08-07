@@ -1548,9 +1548,54 @@ struct ReconciliationView: View {
     }
 }
 
+struct ExternalReportWindow: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let request: ReportWindowRequest?
+
+    var body: some View {
+        Group {
+            if let request {
+                if !request.belongs(to: store.currentFinanceFileURL) {
+                    ContentUnavailableView(
+                        "Andere Finanzdatei geöffnet",
+                        systemImage: "doc.badge.exclamationmark",
+                        description: Text(
+                            "Dieses Auswertungsfenster gehört zu „\(request.financeFilePath)“. "
+                                + "Öffne diese Finanzdatei erneut oder schließe das Fenster."
+                        )
+                    )
+                } else if let query = try? request.decodedQuery() {
+                    ReportsView(
+                        launchQuery: query,
+                        launchTitle: request.title
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "Auswertung nicht lesbar",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(
+                            "Die gespeicherte Abfrage dieses Fensters ist beschädigt oder inkompatibel."
+                        )
+                    )
+                }
+            } else {
+                ContentUnavailableView(
+                    "Keine Auswertung gewählt",
+                    systemImage: "chart.bar.doc.horizontal"
+                )
+            }
+        }
+        .frame(minWidth: 1040, minHeight: 680)
+        .navigationTitle(request?.title ?? "Auswertung")
+        .accessibilityIdentifier("externalReportWindow")
+    }
+}
+
 struct ReportsView: View {
     @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.openWindow) private var openWindow
     let launchQuery: TransactionReportQuery?
+    @State private var launchTitle: String?
     @State private var period: ReportPeriodPreset = .all
     @State private var customStart = Calendar.current.date(
         byAdding: .month,
@@ -1610,6 +1655,14 @@ struct ReportsView: View {
     @State private var constrainedTransactionIDs: Set<UUID>?
     @State private var exactPayee: String?
     @State private var includeForecast = false
+
+    init(
+        launchQuery: TransactionReportQuery?,
+        launchTitle: String? = nil
+    ) {
+        self.launchQuery = launchQuery
+        _launchTitle = State(initialValue: launchTitle)
+    }
 
     private var query: TransactionReportQuery {
         let range = period.range(customStart: customStart, customEnd: customEnd)
@@ -1771,6 +1824,12 @@ struct ReportsView: View {
                         } ?? selectedStandardReport?.title ?? ""
                         showTemplateSave = true
                     }
+                    Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                        openCurrentReportWindow()
+                    }
+                    .disabled(store.currentFinanceFileURL == nil)
+                    .help("Aktuelle Auswertung unabhängig in einem eigenen Fenster öffnen")
+                    .accessibilityIdentifier("openExternalReportWindow")
                     Button("Vorlage löschen", systemImage: "trash", role: .destructive) {
                         deleteSelectedTemplate()
                     }
@@ -2640,6 +2699,7 @@ struct ReportsView: View {
         selectedReportGroupID = nil
         selectedStandardReport = nil
         selectedTemplateID = nil
+        launchTitle = nil
     }
 
     private func saveCurrentTemplate() {
@@ -2661,12 +2721,14 @@ struct ReportsView: View {
               let template = store.reportTemplates.first(where: { $0.id == selectedTemplateID })
         else { return }
         apply(template.query)
+        launchTitle = nil
     }
 
     private func applyStandardReport(_ preset: TransactionReportStandardPreset) {
         apply(preset.query())
         selectedStandardReport = preset
         selectedTemplateID = nil
+        launchTitle = nil
     }
 
     private func deleteSelectedTemplate() {
@@ -2854,9 +2916,27 @@ struct ReportsView: View {
     }
 
     private var activeReportTitle: String {
-        selectedTemplateID.flatMap { id in
+        launchTitle ?? selectedTemplateID.flatMap { id in
             store.reportTemplates.first { $0.id == id }?.name
         } ?? selectedStandardReport?.title ?? "\(reportGroupingTitle)-Bericht"
+    }
+
+    private func openCurrentReportWindow() {
+        guard let financeFileURL = store.currentFinanceFileURL else {
+            store.errorMessage = "Bitte öffne zuerst eine Finanzdatei."
+            return
+        }
+        do {
+            openWindow(
+                value: try ReportWindowRequest(
+                    title: activeReportTitle,
+                    financeFileURL: financeFileURL,
+                    query: query
+                )
+            )
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
     }
 
     private var exportFilename: String {

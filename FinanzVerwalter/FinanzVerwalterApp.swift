@@ -177,6 +177,16 @@ struct FinanzVerwalterApp: App {
                 }
             }
         }
+
+        WindowGroup("Auswertung", for: ReportWindowRequest.self) { request in
+            ExternalReportWindow(request: request.wrappedValue)
+                .environmentObject(store)
+                .background(ContextualShortcutMonitorHost())
+                .preferredColorScheme(
+                    AppearanceMode(rawValue: appearanceMode)?.colorScheme ?? .light
+                )
+        }
+        .defaultSize(width: 1380, height: 860)
     }
 
     private var financeFileType: UTType {

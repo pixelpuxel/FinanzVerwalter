@@ -670,6 +670,14 @@ Open-XML-Arbeitsblatt mit numerischen, währungsabhängig formatierten Beträgen
 `Kopieren` legt denselben Bericht gleichzeitig als tabulatorgetrennte Tabelle
 und als maskiertes HTML in die macOS-Zwischenablage.
 
+`Neues Fenster` öffnet die aktuell konfigurierte buchungsbasierte Auswertung
+als eigenständiges macOS-Fenster. Jedes Öffnen erhält eine neue Identität, die
+vollständige Query und den Berichtstitel; dadurch können mehrere Berichte
+gleichzeitig unabhängig gefiltert, gruppiert, gedruckt und exportiert werden.
+Das Fenster ist an den kanonischen Pfad der Finanzdatei gebunden. Nach einem
+Dateiwechsel zeigt es einen eindeutigen Sperrhinweis, statt dieselbe Query
+unbemerkt auf einen anderen Datenbestand anzuwenden.
+
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile
 gerechnet; Brutto, Netto und Steuer stammen dadurch exakt aus der bereits

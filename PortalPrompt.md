@@ -2056,3 +2056,25 @@ Teste mindestens automatische Erkennung mit Umlaut-Headern, Windows-1252,
 US-Zahlen/Datum, Soll/Haben, mehrzeilige Felder, vollständige Kategoriepfade,
 Dateien ohne Kopfzeile, unbekannte Kategorien, zeilengenaue Fehler,
 Profilrevision, JSON-Rundlauf und Zukunftsschema-Ablehnung.
+
+# Unabhängige Berichtsfenster
+
+Ergänze die buchungsbasierte Berichtswerkstatt um `Neues Fenster`. Verpacke
+die vollständige aktuelle `TransactionReportQuery`, den sichtbaren Titel, den
+kanonischen Pfad der aktiven Finanzdatei und eine bei jedem Öffnen neue UUID in
+einen codierbaren, hashbaren `ReportWindowRequest`. Verwende ein typisiertes
+SwiftUI-`WindowGroup`, damit zwei identische Abfragen trotzdem als zwei
+unabhängige macOS-Fenster geöffnet werden können.
+
+Das externe Fenster muss dieselben Filter, Gruppierungen, Diagramme,
+Drill-downs, Vorlagen, CSV-/HTML-/XLSX-/PDF-Ausgaben, Zwischenablage und Druck
+wie der interne Bericht bereitstellen. Es verwendet denselben publizierten
+Datenstand, hält aber seine eigene editierbare UI-State-Kopie. Titel und
+komplette Query müssen den Codable-Rundlauf verlustfrei überstehen.
+
+Binde jedes Fenster an die Finanzdatei, aus der es geöffnet wurde. Wenn die
+aktive Datei geschlossen oder gewechselt wird, darf die gespeicherte Query
+nicht auf den neuen Bestand angewandt werden; zeige stattdessen den erwarteten
+Dateipfad und einen klaren Sperrhinweis. Eine beschädigte oder inkompatible
+Query erhält einen eigenen Fehlerzustand. Teste Query-Rundlauf, Pfadbindung,
+Nil-/Fremddatei, eindeutige Fenster-UUIDs und den vollständigen App-Build.

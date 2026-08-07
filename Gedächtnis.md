@@ -3997,3 +3997,40 @@ Rechtsberatung.
   Draft-PR #1 zeigt denselben Head und ist mergebar.
 - Telegram-Nachricht 1136 meldet den Stand im `/quicken`-Thread 894. Exakter
   kumulativer Zielzählerstand vor dem Versand: 23.764.027 Tokens.
+
+## 08.08.2026 – Unabhängige, finanzdateigebundene Berichtsfenster
+
+- Die buchungsbasierte Berichtswerkstatt besitzt nun `Neues Fenster`. Jeder
+  Aufruf öffnet die vollständige aktuelle Abfrage mit einer frischen UUID als
+  eigenständiges macOS-Fenster; Filter, Gruppierung, Diagramme, Drill-down,
+  Vorlagen, Exporte, Zwischenablage und Druck bleiben je Fenster unabhängig.
+- Der codierbare `ReportWindowRequest` bewahrt Titel, Query und kanonischen
+  Finanzdateipfad. Nach Schließen oder Wechseln der aktiven Datei zeigt das
+  Fenster einen Sperrhinweis mit dem erwarteten Pfad, statt die Abfrage auf
+  einen anderen Datenbestand anzuwenden. Beschädigte Query-Daten haben einen
+  eigenen Fehlerzustand. ADR 0047 hält diese Entscheidung fest.
+- Der gezielte finale Test unter
+  `build/TestResults/ExternalReports-targeted-final-20260808-0131.xcresult`
+  prüft vollständigen Codable-Rundlauf, Pfadbindung, Nil-/Fremddatei,
+  beschädigte Query und getrennte UUIDs. Der vollständige Lauf unter
+  `build/TestResults/ExternalReports-full-20260808-0131.xcresult` umfasst 172
+  Tests: 170 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-ExternalReports-Product` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `dbc8a4228b43d7dd685cbc9d21b547ac43c90edad0c6b0aa104b2a6ebd4d77e8`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0134-external-reports/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0134-external-reports/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und `~/Applications/FinanzVerwalter.app`
+  sind bytegleich, der Schreibtisch-Link zeigt auf `/Applications`, Finder
+  wurde auf die App gelenkt und Prozess 70962 läuft daraus. Die Produktivdatei
+  meldet Integrität `ok`, Schema 39 und unverändert 97 Konten, 2.170 Buchungen
+  und 782 Kategorien.
+- Eine sichtbare Oberflächenabnahme und ein neuer Screenshot bleiben wegen der
+  gesperrten macOS-Sitzung offen; Start, Prozesspfad, Signatur, Binäridentität
+  und Datenbankintegrität sind hingegen direkt geprüft.
+- Exakter kumulativer Zielzählerstand nach Installation und Start:
+  24.021.145 Tokens.

@@ -6610,6 +6610,65 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testExternalReportWindowRequestRoundTripsQueryAndPinsFinanceFile() throws {
+        var query = TransactionReportQuery(
+            dateFrom: Date(timeIntervalSince1970: 1_700_000_000),
+            dateThrough: Date(timeIntervalSince1970: 1_710_000_000),
+            accountIDs: [UUID()], categoryIDs: [UUID()], tagIDs: [UUID()],
+            statuses: [.booked, .reconciled], text: "Grundsteuer Köln",
+            currencies: ["EUR"], includeTransfers: true,
+            grouping: .category, secondaryGrouping: .tag,
+            sort: .amountDescending
+        )
+        query.includeDetailRows = false
+        query.includeSubtotals = true
+        query.includeGrandTotals = true
+        query.visualization = .bar
+        query.chartMetric = .expense
+        let fileURL = URL(fileURLWithPath: "/tmp/FinanzVerwalter/../FinanzVerwalter/Test.qdata")
+        let request = try ReportWindowRequest(
+            title: "  Immobilienbericht  ",
+            financeFileURL: fileURL,
+            query: query
+        )
+
+        XCTAssertEqual(request.title, "Immobilienbericht")
+        XCTAssertEqual(try request.decodedQuery(), query)
+        XCTAssertTrue(request.belongs(to: fileURL.standardizedFileURL))
+        XCTAssertFalse(
+            request.belongs(
+                to: URL(fileURLWithPath: "/tmp/FinanzVerwalter/Andere.qdata")
+            )
+        )
+        XCTAssertFalse(request.belongs(to: nil))
+
+        let encoded = try JSONEncoder().encode(request)
+        let restored = try JSONDecoder().decode(
+            ReportWindowRequest.self, from: encoded
+        )
+        XCTAssertEqual(restored, request)
+        XCTAssertEqual(try restored.decodedQuery(), query)
+
+        var damagedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        damagedObject["queryData"] = Data("keine Abfrage".utf8).base64EncodedString()
+        let damagedData = try JSONSerialization.data(withJSONObject: damagedObject)
+        let damagedRequest = try JSONDecoder().decode(
+            ReportWindowRequest.self, from: damagedData
+        )
+        XCTAssertThrowsError(try damagedRequest.decodedQuery())
+
+        XCTAssertNotEqual(
+            request.id,
+            try ReportWindowRequest(
+                title: request.title,
+                financeFileURL: fileURL,
+                query: query
+            ).id
+        )
+    }
+
     func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {
         let giro = FinanceAccount(
             id: UUID(), name: "Giro", institution: "", type: .checking,

@@ -242,6 +242,33 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var selectedChartMetric: ReportChartMetric { chartMetric ?? .expense }
 }
 
+struct ReportWindowRequest: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    let title: String
+    let financeFilePath: String
+    private let queryData: Data
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        financeFileURL: URL,
+        query: TransactionReportQuery
+    ) throws {
+        self.id = id
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.financeFilePath = financeFileURL.standardizedFileURL.path
+        self.queryData = try JSONEncoder().encode(query)
+    }
+
+    func decodedQuery() throws -> TransactionReportQuery {
+        try JSONDecoder().decode(TransactionReportQuery.self, from: queryData)
+    }
+
+    func belongs(to financeFileURL: URL?) -> Bool {
+        financeFileURL?.standardizedFileURL.path == financeFilePath
+    }
+}
+
 struct SavedReportTemplate: Identifiable, Equatable, Sendable {
     let id: UUID
     var name: String
