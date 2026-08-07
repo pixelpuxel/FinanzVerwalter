@@ -9012,6 +9012,87 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testFinanceCalendarLayoutCoversLeapMonthAndYearBoundaries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        calendar.locale = Locale(identifier: "de_DE")
+        func date(_ year: Int, _ month: Int, _ day: Int) throws -> Date {
+            try XCTUnwrap(calendar.date(from: DateComponents(
+                year: year, month: month, day: day, hour: 12
+            )))
+        }
+
+        let leapMonth = FinanceCalendarLayout.days(
+            containing: try date(2024, 2, 15), mode: .month, calendar: calendar
+        )
+        XCTAssertEqual(leapMonth.count, 35)
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(leapMonth.first).date),
+            DateComponents(year: 2024, month: 1, day: 29)
+        )
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(leapMonth.last).date),
+            DateComponents(year: 2024, month: 3, day: 3)
+        )
+        XCTAssertEqual(leapMonth.filter(\.isInFocusedPeriod).count, 29)
+
+        let yearWeek = FinanceCalendarLayout.days(
+            containing: try date(2026, 1, 1), mode: .week, calendar: calendar
+        )
+        XCTAssertEqual(yearWeek.count, 7)
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(yearWeek.first).date),
+            DateComponents(year: 2025, month: 12, day: 29)
+        )
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(yearWeek.last).date),
+            DateComponents(year: 2026, month: 1, day: 4)
+        )
+        XCTAssertTrue(
+            FinanceCalendarLayout.days(
+                containing: try date(2026, 1, 1), mode: .list, calendar: calendar
+            ).isEmpty
+        )
+
+        let shiftedMonth = FinanceCalendarLayout.shiftedFocus(
+            from: try date(2025, 12, 31), mode: .month, offset: 1, calendar: calendar
+        )
+        XCTAssertEqual(calendar.component(.year, from: shiftedMonth), 2026)
+        XCTAssertEqual(calendar.component(.month, from: shiftedMonth), 1)
+        let shiftedWeek = FinanceCalendarLayout.shiftedFocus(
+            from: try date(2025, 12, 29), mode: .week, offset: 1, calendar: calendar
+        )
+        XCTAssertEqual(
+            calendar.dateComponents([.year, .month, .day], from: shiftedWeek),
+            DateComponents(year: 2026, month: 1, day: 5)
+        )
+    }
+
+    func testFinanceCalendarClassifiesAllTransactionStates() {
+        XCTAssertEqual(
+            FinanceCalendarEntryKind.classify(status: .expected, isRecurring: true),
+            .recurring
+        )
+        XCTAssertEqual(
+            FinanceCalendarEntryKind.classify(status: .expected, isRecurring: false),
+            .expected
+        )
+        XCTAssertEqual(
+            FinanceCalendarEntryKind.classify(status: .pending, isRecurring: false),
+            .pending
+        )
+        for status in [TransactionStatus.booked, .cleared, .reconciled] {
+            XCTAssertEqual(
+                FinanceCalendarEntryKind.classify(status: status, isRecurring: false),
+                .booked
+            )
+        }
+        XCTAssertEqual(
+            FinanceCalendarEntryKind.classify(status: .cancelled, isRecurring: false),
+            .cancelled
+        )
+    }
+
     func testSecureNoteLinksPermitOnlyConfirmedHTTPSAndSafeRegularLocalFiles() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(

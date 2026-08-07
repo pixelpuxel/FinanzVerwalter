@@ -889,6 +889,113 @@ enum ScheduledAction: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum FinanceCalendarViewMode: String, Codable, CaseIterable, Sendable {
+    case month
+    case week
+    case list
+
+    var title: String {
+        switch self {
+        case .month: "Monat"
+        case .week: "Woche"
+        case .list: "Liste"
+        }
+    }
+}
+
+enum FinanceCalendarEntryKind: String, Codable, CaseIterable, Sendable {
+    case recurring
+    case expected
+    case pending
+    case booked
+    case cancelled
+
+    var title: String {
+        switch self {
+        case .recurring: "Regelmäßig"
+        case .expected: "Erwartet"
+        case .pending: "Vorgemerkt"
+        case .booked: "Gebucht"
+        case .cancelled: "Storniert"
+        }
+    }
+
+    static func classify(
+        status: TransactionStatus,
+        isRecurring: Bool
+    ) -> FinanceCalendarEntryKind {
+        if isRecurring { return .recurring }
+        switch status {
+        case .expected: return .expected
+        case .pending: return .pending
+        case .booked, .cleared, .reconciled: return .booked
+        case .cancelled: return .cancelled
+        }
+    }
+}
+
+struct FinanceCalendarDay: Identifiable, Hashable, Sendable {
+    var id: Date { date }
+    let date: Date
+    let isInFocusedPeriod: Bool
+}
+
+enum FinanceCalendarLayout {
+    static func days(
+        containing focusedDate: Date,
+        mode: FinanceCalendarViewMode,
+        calendar sourceCalendar: Calendar = .current
+    ) -> [FinanceCalendarDay] {
+        guard mode != .list else { return [] }
+        var calendar = sourceCalendar
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        let focusedDay = calendar.startOfDay(for: focusedDate)
+        let component: Calendar.Component = mode == .month ? .month : .weekOfYear
+        guard let focusedInterval = calendar.dateInterval(of: component, for: focusedDay)
+        else { return [] }
+        let gridStart: Date
+        let gridEnd: Date
+        if mode == .month {
+            guard let firstWeek = calendar.dateInterval(
+                of: .weekOfYear, for: focusedInterval.start
+            ), let lastDay = calendar.date(byAdding: .day, value: -1, to: focusedInterval.end),
+                  let lastWeek = calendar.dateInterval(of: .weekOfYear, for: lastDay)
+            else { return [] }
+            gridStart = firstWeek.start
+            gridEnd = lastWeek.end
+        } else {
+            gridStart = focusedInterval.start
+            gridEnd = focusedInterval.end
+        }
+        var result: [FinanceCalendarDay] = []
+        var date = gridStart
+        while date < gridEnd, result.count < 42 {
+            result.append(
+                FinanceCalendarDay(
+                    date: date,
+                    isInFocusedPeriod: date >= focusedInterval.start
+                        && date < focusedInterval.end
+                )
+            )
+            guard let next = calendar.date(byAdding: .day, value: 1, to: date)
+            else { break }
+            date = next
+        }
+        return result
+    }
+
+    static func shiftedFocus(
+        from date: Date,
+        mode: FinanceCalendarViewMode,
+        offset: Int,
+        calendar: Calendar = .current
+    ) -> Date {
+        let component: Calendar.Component = mode == .month ? .month : .weekOfYear
+        return calendar.date(byAdding: component, value: offset, to: date) ?? date
+    }
+}
+
 enum ScheduledOccurrenceDisposition: String, Codable, CaseIterable, Sendable {
     case modified
     case skipped

@@ -6425,14 +6425,83 @@ private struct RuleApplicationPreviewSheet: View {
     }
 }
 
+private extension FinanceCalendarEntryKind {
+    var color: Color {
+        switch self {
+        case .recurring: .purple
+        case .expected: .blue
+        case .pending: .orange
+        case .booked: .green
+        case .cancelled: .secondary
+        }
+    }
+}
+
+private struct CalendarDisplayEntry: Identifiable {
+    let transaction: FinanceTransaction
+    let kind: FinanceCalendarEntryKind
+
+    var id: String {
+        kind == .recurring && !transaction.reference.isEmpty
+            ? transaction.reference : transaction.id.uuidString
+    }
+}
+
 struct CalendarForecastView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var editedSchedule: ScheduledTransaction?
     @State private var editedOccurrence: ScheduledOccurrenceEditRequest?
     @State private var forecastDays = 90
+    @State private var viewMode = FinanceCalendarViewMode.list
+    @State private var focusedDate = Date()
+    @State private var selectedAccountID: UUID?
+    @State private var selectedCategoryID: UUID?
+    @State private var selectedTagID: UUID?
 
     private var occurrences: [FinanceTransaction] {
-        store.forecastOccurrences(days: forecastDays)
+        store.forecastOccurrences(days: forecastDays).filter(matchesFilters)
+    }
+
+    private var calendarEntries: [CalendarDisplayEntry] {
+        let real = store.transactions
+            .filter(matchesFilters)
+            .map {
+                CalendarDisplayEntry(
+                    transaction: $0,
+                    kind: calendarKind(for: $0, virtual: false)
+                )
+            }
+        let virtual = occurrences.map {
+            CalendarDisplayEntry(transaction: $0, kind: .recurring)
+        }
+        return (real + virtual).sorted {
+            if $0.transaction.bookingDate != $1.transaction.bookingDate {
+                return $0.transaction.bookingDate < $1.transaction.bookingDate
+            }
+            return $0.id < $1.id
+        }
+    }
+
+    private var calendarDays: [FinanceCalendarDay] {
+        FinanceCalendarLayout.days(containing: focusedDate, mode: viewMode)
+    }
+
+    private var visibleCalendarEntries: [CalendarDisplayEntry] {
+        guard let first = calendarDays.first?.date,
+              let last = calendarDays.last?.date,
+              let exclusiveEnd = Calendar.current.date(byAdding: .day, value: 1, to: last)
+        else { return [] }
+        return calendarEntries.filter {
+            $0.transaction.bookingDate >= first && $0.transaction.bookingDate < exclusiveEnd
+        }
+    }
+
+    private var categoryFilterIDs: Set<UUID>? {
+        selectedCategoryID.map { descendantCategoryIDs(of: $0) }
+    }
+
+    private var tagFilterIDs: Set<UUID>? {
+        selectedTagID.map { descendantTagIDs(of: $0) }
     }
 
     private var visibleExceptions: [ScheduledTransactionException] {
@@ -6443,11 +6512,14 @@ struct CalendarForecastView: View {
             store.accounts.contains {
                 $0.id == schedule.accountID && $0.includeForecast && !$0.isClosed
             }
+                && (selectedAccountID == nil || schedule.accountID == selectedAccountID)
         }.map(\.id))
         return store.scheduledTransactionExceptions.filter {
             includedSchedules.contains($0.scheduledTransactionID)
                 && $0.originalDueDate >= start
                 && $0.originalDueDate <= end
+                && categoryMatches($0.categoryID)
+                && selectedTagID == nil
         }
     }
 
@@ -6459,11 +6531,14 @@ struct CalendarForecastView: View {
             store.accounts.contains {
                 $0.id == schedule.accountID && $0.includeForecast && !$0.isClosed
             }
+                && (selectedAccountID == nil || schedule.accountID == selectedAccountID)
         }.map(\.id))
         return store.scheduledTransactionRevisions.filter {
             includedSchedules.contains($0.scheduledTransactionID)
                 && $0.originalDueDate >= start
                 && $0.originalDueDate <= end
+                && categoryMatches($0.categoryID)
+                && selectedTagID == nil
         }
     }
 
@@ -6502,6 +6577,8 @@ struct CalendarForecastView: View {
                 .disabled(store.accounts.isEmpty)
             }
             .padding(12)
+            Divider()
+            calendarToolbar
             Divider()
 
             HSplitView {
@@ -6555,130 +6632,23 @@ struct CalendarForecastView: View {
 
                 VStack(spacing: 0) {
                     HStack {
-                        Text("Liquiditätsvorschau").font(.headline)
+                        Text(viewMode == .list ? "Liquiditätsvorschau" : "Finanzkalender")
+                            .font(.headline)
                         Spacer()
-                        Text("\(occurrences.count) erwartete Termine")
+                        Text(
+                            viewMode == .list
+                                ? "\(occurrences.count) erwartete Termine"
+                                : "\(visibleCalendarEntries.count) Vorgänge"
+                        )
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     .padding(10)
                     Divider()
-                    if occurrences.isEmpty && visibleExceptions.isEmpty && visibleRevisions.isEmpty {
-                        ContentUnavailableView(
-                            "Keine Termine im Zeitraum",
-                            systemImage: "calendar",
-                            description: Text("Aktive regelmäßige Vorgänge erscheinen hier ohne Doppelzählung.")
-                        )
+                    if viewMode == .list {
+                        forecastList
                     } else {
-                        List {
-                            Section("Erwartete Termine") {
-                                ForEach(occurrences) { value in
-                                    Button {
-                                        editedOccurrence = occurrenceRequest(for: value)
-                                    } label: {
-                                        HStack(spacing: 12) {
-                                            Text(value.bookingDate, format: .dateTime.day().month().year())
-                                                .frame(width: 92, alignment: .leading)
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                HStack(spacing: 6) {
-                                                    Text(value.payee.isEmpty ? value.purpose : value.payee)
-                                                    if store.scheduledTransactionException(
-                                                        forReference: value.reference
-                                                    ) != nil {
-                                                        Text("Geändert")
-                                                            .font(.caption2.bold())
-                                                            .padding(.horizontal, 5)
-                                                            .padding(.vertical, 2)
-                                                            .background(.blue.opacity(0.12), in: Capsule())
-                                                    } else if store.scheduledTransactionRevision(
-                                                        forReference: value.reference
-                                                    ) != nil {
-                                                        Text("Serie geändert")
-                                                            .font(.caption2.bold())
-                                                            .padding(.horizontal, 5)
-                                                            .padding(.vertical, 2)
-                                                            .background(.purple.opacity(0.12), in: Capsule())
-                                                    }
-                                                }
-                                                Text("\(store.accountName(value.accountID)) · \(value.memo)")
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            Spacer()
-                                            VStack(alignment: .trailing, spacing: 2) {
-                                                Text(Money(minorUnits: value.amountMinor).formatted)
-                                                    .monospacedDigit()
-                                                    .foregroundStyle(value.amountMinor < 0 ? .red : .green)
-                                                Text(
-                                                    Money(
-                                                        minorUnits: store.projectedBalanceMinor(
-                                                            accountID: value.accountID,
-                                                            through: value.bookingDate
-                                                        )
-                                                    ).formatted
-                                                )
-                                                .font(.caption.monospacedDigit())
-                                                .foregroundStyle(.secondary)
-                                            }
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel(
-                                        "Serientermin \(value.payee.isEmpty ? value.purpose : value.payee), \(Money(minorUnits: value.amountMinor).formatted)"
-                                    )
-                                }
-                            }
-                            if !visibleExceptions.isEmpty {
-                                Section("Serienausnahmen") {
-                                    ForEach(visibleExceptions) { exception in
-                                        Button {
-                                            editedOccurrence = occurrenceRequest(for: exception)
-                                        } label: {
-                                            HStack {
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text(scheduleName(exception.scheduledTransactionID))
-                                                    Text(exception.originalDueDate, format: .dateTime.day().month().year())
-                                                        .font(.caption)
-                                                        .foregroundStyle(.secondary)
-                                                }
-                                                Spacer()
-                                                Text(exception.disposition.title)
-                                                    .foregroundStyle(
-                                                        exception.disposition == .skipped ? .orange : .blue
-                                                    )
-                                            }
-                                            .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                            }
-                            if !visibleRevisions.isEmpty {
-                                Section("Serienänderungen") {
-                                    ForEach(visibleRevisions) { revision in
-                                        Button {
-                                            editedOccurrence = occurrenceRequest(for: revision)
-                                        } label: {
-                                            HStack {
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text(scheduleName(revision.scheduledTransactionID))
-                                                    Text("Ab \(revision.originalDueDate.formatted(.dateTime.day().month().year()))")
-                                                        .font(.caption)
-                                                        .foregroundStyle(.secondary)
-                                                }
-                                                Spacer()
-                                                Text(Money(minorUnits: revision.amountMinor).formatted)
-                                                    .monospacedDigit()
-                                                    .foregroundStyle(.purple)
-                                            }
-                                            .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                            }
-                        }
+                        calendarPeriodView
                     }
                 }
                 .frame(minWidth: 480)
@@ -6690,6 +6660,356 @@ struct CalendarForecastView: View {
         .sheet(item: $editedOccurrence) { request in
             ScheduledOccurrenceEditor(request: request)
         }
+    }
+
+    private var calendarToolbar: some View {
+        HStack(spacing: 10) {
+            Picker("Ansicht", selection: $viewMode) {
+                ForEach(FinanceCalendarViewMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 230)
+
+            Picker("Konto", selection: $selectedAccountID) {
+                Text("Alle Konten").tag(UUID?.none)
+                ForEach(store.accounts.filter { !$0.isClosed }) { account in
+                    Text(account.name).tag(Optional(account.id))
+                }
+            }
+            .frame(maxWidth: 190)
+
+            Picker("Kategorie", selection: $selectedCategoryID) {
+                Text("Alle Kategorien").tag(UUID?.none)
+                ForEach(store.categoriesByPath.filter(\.isActive)) { category in
+                    Text(store.categoryPath(category.id)).tag(Optional(category.id))
+                }
+            }
+            .frame(maxWidth: 230)
+
+            Picker("Klasse", selection: $selectedTagID) {
+                Text("Alle Klassen/Tags").tag(UUID?.none)
+                ForEach(store.tagsByPath.filter(\.isActive)) { tag in
+                    Text(store.tagPath(tag.id)).tag(Optional(tag.id))
+                }
+            }
+            .frame(maxWidth: 210)
+
+            Spacer(minLength: 6)
+            if viewMode != .list {
+                Button { movePeriod(-1) } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .help("Vorheriger Zeitraum")
+                Button("Heute") { focusedDate = Date() }
+                Button { movePeriod(1) } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .help("Nächster Zeitraum")
+                Text(periodTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minWidth: 150, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var forecastList: some View {
+        if occurrences.isEmpty && visibleExceptions.isEmpty && visibleRevisions.isEmpty {
+            ContentUnavailableView(
+                "Keine Termine im Zeitraum",
+                systemImage: "calendar",
+                description: Text("Aktive regelmäßige Vorgänge erscheinen hier ohne Doppelzählung.")
+            )
+        } else {
+            List {
+                Section("Erwartete Termine") {
+                    ForEach(occurrences) { value in
+                        Button { editedOccurrence = occurrenceRequest(for: value) } label: {
+                            HStack(spacing: 12) {
+                                Text(value.bookingDate, format: .dateTime.day().month().year())
+                                    .frame(width: 92, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(entryTitle(value))
+                                        if store.scheduledTransactionException(
+                                            forReference: value.reference
+                                        ) != nil {
+                                            revisionBadge("Geändert", color: .blue)
+                                        } else if store.scheduledTransactionRevision(
+                                            forReference: value.reference
+                                        ) != nil {
+                                            revisionBadge("Serie geändert", color: .purple)
+                                        }
+                                    }
+                                    Text("\(store.accountName(value.accountID)) · \(store.transactionCategoryPath(value))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(Money(minorUnits: value.amountMinor).formatted)
+                                        .monospacedDigit()
+                                        .foregroundStyle(value.amountMinor < 0 ? .red : .green)
+                                    Text(Money(minorUnits: store.projectedBalanceMinor(
+                                        accountID: value.accountID, through: value.bookingDate
+                                    )).formatted)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "Serientermin \(entryTitle(value)), \(Money(minorUnits: value.amountMinor).formatted)"
+                        )
+                    }
+                }
+                if !visibleExceptions.isEmpty {
+                    Section("Serienausnahmen") {
+                        ForEach(visibleExceptions) { exception in
+                            Button { editedOccurrence = occurrenceRequest(for: exception) } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(scheduleName(exception.scheduledTransactionID))
+                                        Text(exception.originalDueDate, format: .dateTime.day().month().year())
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(exception.disposition.title)
+                                        .foregroundStyle(exception.disposition == .skipped ? .orange : .blue)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if !visibleRevisions.isEmpty {
+                    Section("Serienänderungen") {
+                        ForEach(visibleRevisions) { revision in
+                            Button { editedOccurrence = occurrenceRequest(for: revision) } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(scheduleName(revision.scheduledTransactionID))
+                                        Text("Ab \(revision.originalDueDate.formatted(.dateTime.day().month().year()))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(Money(minorUnits: revision.amountMinor).formatted)
+                                        .monospacedDigit()
+                                        .foregroundStyle(.purple)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var calendarPeriodView: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                ForEach(FinanceCalendarEntryKind.allCases, id: \.self) { kind in
+                    Label {
+                        Text(kind.title)
+                    } icon: {
+                        Circle().fill(kind.color).frame(width: 8, height: 8)
+                    }
+                }
+                .font(.caption)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+
+            LazyVGrid(columns: calendarColumns, spacing: 4) {
+                ForEach(["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"], id: \.self) {
+                    Text($0)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.horizontal, 8)
+
+            ScrollView {
+                LazyVGrid(columns: calendarColumns, spacing: 4) {
+                    ForEach(calendarDays) { day in
+                        calendarDayCell(day)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var calendarColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 70), spacing: 4), count: 7)
+    }
+
+    private func calendarDayCell(_ day: FinanceCalendarDay) -> some View {
+        let entries = visibleCalendarEntries.filter {
+            Calendar.current.isDate($0.transaction.bookingDate, inSameDayAs: day.date)
+        }
+        let visibleLimit = viewMode == .week ? 8 : 3
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(day.date, format: .dateTime.day())
+                    .font(.caption.weight(Calendar.current.isDateInToday(day.date) ? .bold : .regular))
+                Spacer()
+                if !day.isInFocusedPeriod {
+                    Text(day.date, format: .dateTime.month(.abbreviated))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(Array(entries.prefix(visibleLimit))) { entry in
+                Button { openCalendarEntry(entry) } label: {
+                    HStack(spacing: 4) {
+                        Circle().fill(entry.kind.color).frame(width: 6, height: 6)
+                        Text(entryTitle(entry.transaction))
+                            .lineLimit(1)
+                        Spacer(minLength: 2)
+                        Text(Money(minorUnits: entry.transaction.amountMinor).formatted)
+                            .monospacedDigit()
+                    }
+                    .font(.caption2)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .background(entry.kind.color.opacity(0.11), in: RoundedRectangle(cornerRadius: 4))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("\(entry.kind.title): \(store.accountName(entry.transaction.accountID)) · \(store.transactionCategoryPath(entry.transaction))")
+                .accessibilityLabel(
+                    "\(entry.kind.title), \(entryTitle(entry.transaction)), \(Money(minorUnits: entry.transaction.amountMinor).formatted), \(day.date.formatted(.dateTime.day().month().year()))"
+                )
+            }
+            if entries.count > visibleLimit {
+                Text("+ \(entries.count - visibleLimit) weitere")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, minHeight: viewMode == .week ? 330 : 112, alignment: .topLeading)
+        .background(day.isInFocusedPeriod ? Color.primary.opacity(0.025) : Color.secondary.opacity(0.035))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(
+                    Calendar.current.isDateInToday(day.date) ? Color.accentColor : Color.secondary.opacity(0.2),
+                    lineWidth: Calendar.current.isDateInToday(day.date) ? 2 : 1
+                )
+        }
+        .opacity(day.isInFocusedPeriod ? 1 : 0.62)
+    }
+
+    private func revisionBadge(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption2.bold())
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    private var periodTitle: String {
+        if viewMode == .month {
+            return focusedDate.formatted(
+                Date.FormatStyle().month(.wide).year().locale(Locale(identifier: "de_DE"))
+            )
+        }
+        guard let first = calendarDays.first?.date, let last = calendarDays.last?.date else {
+            return ""
+        }
+        return "\(first.formatted(.dateTime.day().month())) – \(last.formatted(.dateTime.day().month().year()))"
+    }
+
+    private func movePeriod(_ offset: Int) {
+        focusedDate = FinanceCalendarLayout.shiftedFocus(
+            from: focusedDate, mode: viewMode, offset: offset
+        )
+    }
+
+    private func calendarKind(
+        for transaction: FinanceTransaction,
+        virtual: Bool
+    ) -> FinanceCalendarEntryKind {
+        .classify(status: transaction.status, isRecurring: virtual)
+    }
+
+    private func entryTitle(_ transaction: FinanceTransaction) -> String {
+        if !transaction.payee.isEmpty { return transaction.payee }
+        if !transaction.purpose.isEmpty { return transaction.purpose }
+        return "Vorgang"
+    }
+
+    private func openCalendarEntry(_ entry: CalendarDisplayEntry) {
+        guard entry.kind == .recurring else { return }
+        editedOccurrence = occurrenceRequest(for: entry.transaction)
+    }
+
+    private func matchesFilters(_ transaction: FinanceTransaction) -> Bool {
+        guard selectedAccountID == nil || transaction.accountID == selectedAccountID else {
+            return false
+        }
+        if let categoryFilterIDs {
+            let directMatch = transaction.categoryID.map(categoryFilterIDs.contains) ?? false
+            let splitMatch = transaction.splits.contains {
+                $0.categoryID.map(categoryFilterIDs.contains) ?? false
+            }
+            guard directMatch || splitMatch else { return false }
+        }
+        if let tagFilterIDs {
+            let directMatch = !Set(transaction.tagIDs).isDisjoint(with: tagFilterIDs)
+            let splitMatch = transaction.splits.contains {
+                !Set($0.tagIDs).isDisjoint(with: tagFilterIDs)
+            }
+            guard directMatch || splitMatch else { return false }
+        }
+        return true
+    }
+
+    private func categoryMatches(_ categoryID: UUID?) -> Bool {
+        guard let categoryFilterIDs else { return true }
+        return categoryID.map(categoryFilterIDs.contains) ?? false
+    }
+
+    private func descendantCategoryIDs(of rootID: UUID) -> Set<UUID> {
+        var result: Set<UUID> = [rootID]
+        var changed = true
+        while changed {
+            let oldCount = result.count
+            for category in store.categories where category.parentID.map(result.contains) == true {
+                result.insert(category.id)
+            }
+            changed = result.count != oldCount
+        }
+        return result
+    }
+
+    private func descendantTagIDs(of rootID: UUID) -> Set<UUID> {
+        var result: Set<UUID> = [rootID]
+        var changed = true
+        while changed {
+            let oldCount = result.count
+            for tag in store.tags where tag.parentID.map(result.contains) == true {
+                result.insert(tag.id)
+            }
+            changed = result.count != oldCount
+        }
+        return result
     }
 
     private func occurrenceRequest(
