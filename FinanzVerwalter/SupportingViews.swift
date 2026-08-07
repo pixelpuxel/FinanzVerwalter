@@ -4941,6 +4941,8 @@ struct ImportExportView: View {
     @State private var backupDocument = BackupDocument(data: Data())
     @State private var showRestoreImporter = false
     @State private var stagedRestoreURL: URL?
+    @State private var restorePreview: FinanceBackupPreview?
+    @State private var restoreSourceName: String?
     @State private var confirmRestore = false
 
     var body: some View {
@@ -5302,25 +5304,46 @@ struct ImportExportView: View {
             let staged = FileManager.default.temporaryDirectory
                 .appendingPathComponent("finanzverwalter-restore-\(UUID().uuidString).qbackup")
             do {
+                cleanupStagedRestore()
                 try FileManager.default.copyItem(at: source, to: staged)
-                try SQLiteFinanceStore.validateBackup(at: staged)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: staged.path
+                )
+                let preview = try SQLiteFinanceStore.backupPreview(at: staged)
                 stagedRestoreURL = staged
+                restorePreview = preview
+                restoreSourceName = source.lastPathComponent
                 confirmRestore = true
             } catch {
+                try? FileManager.default.removeItem(at: staged)
+                cleanupStagedRestore()
                 store.errorMessage = error.localizedDescription
             }
         }
-        .alert("Sicherung wiederherstellen?", isPresented: $confirmRestore) {
-            Button("Abbrechen", role: .cancel) { stagedRestoreURL = nil }
-            Button("Validiert wiederherstellen", role: .destructive) {
-                if let stagedRestoreURL {
-                    _ = store.restoreBackup(from: stagedRestoreURL)
-                }
-                self.stagedRestoreURL = nil
+        .sheet(isPresented: $confirmRestore, onDismiss: cleanupStagedRestore) {
+            if let restorePreview {
+                RestoreBackupPreviewSheet(
+                    preview: restorePreview,
+                    sourceName: restoreSourceName ?? restorePreview.url.lastPathComponent,
+                    cancel: { confirmRestore = false },
+                    restore: {
+                        if let stagedRestoreURL {
+                            _ = store.restoreBackup(from: stagedRestoreURL)
+                        }
+                        confirmRestore = false
+                    }
+                )
             }
-        } message: {
-            Text("Vor dem Austausch wird automatisch eine geprüfte Sicherung der aktuellen Finanzdatei angelegt.")
         }
+    }
+
+    private func cleanupStagedRestore() {
+        if let stagedRestoreURL {
+            try? FileManager.default.removeItem(at: stagedRestoreURL)
+        }
+        stagedRestoreURL = nil
+        restorePreview = nil
+        restoreSourceName = nil
     }
 
     private func autoMapBankStatement(_ package: BankStatementPackage) {
@@ -10442,6 +10465,84 @@ private struct PainInstructionPreviewSheet: View {
                 else { selectedIDs.remove(match.id) }
             }
         )
+    }
+}
+
+private struct RestoreBackupPreviewSheet: View {
+    let preview: FinanceBackupPreview
+    let sourceName: String
+    let cancel: () -> Void
+    let restore: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Sicherung wiederherstellen", systemImage: "clock.arrow.circlepath")
+                .font(.title2.bold())
+            Text(
+                "Prüfe den Inhalt, bevor die aktive Finanzdatei ersetzt wird. "
+                    + "Unmittelbar davor erstellt FinanzVerwalter eine zusätzliche Sicherung."
+            )
+            .foregroundStyle(.secondary)
+            GroupBox("Geprüfter Inhalt") {
+                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
+                    previewRow("Datei", sourceName)
+                    previewRow("Finanzdatei", preview.financeFileName)
+                    previewRow("Basiswährung", preview.baseCurrency)
+                    previewRow("Datenbankschema", "\(preview.schemaVersion)")
+                    previewRow("Konten", "\(preview.accountCount)")
+                    previewRow("Kategorien", "\(preview.categoryCount)")
+                    previewRow("Buchungen", "\(preview.transactionCount)")
+                    previewRow(
+                        "Jüngste Buchung",
+                        preview.latestBookingDate?.formatted(
+                            date: .long, time: .omitted
+                        ) ?? "Keine Buchung"
+                    )
+                    previewRow(
+                        "Dateigröße",
+                        ByteCountFormatter.string(
+                            fromByteCount: preview.byteCount, countStyle: .file
+                        )
+                    )
+                    previewRow(
+                        "Dateistand",
+                        preview.modifiedAt?.formatted(
+                            date: .abbreviated, time: .shortened
+                        ) ?? "Unbekannt"
+                    )
+                }
+                .padding(8)
+            }
+            Label(
+                "Die Sicherung ist integer und mit dieser App-Version kompatibel.",
+                systemImage: "checkmark.shield"
+            )
+            .foregroundStyle(.green)
+            HStack {
+                Spacer()
+                Button("Abbrechen", role: .cancel, action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Geprüft wiederherstellen", role: .destructive, action: restore)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 560)
+        .interactiveDismissDisabled()
+        .accessibilityIdentifier("restoreBackupPreview")
+    }
+
+    @ViewBuilder
+    private func previewRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .textSelection(.enabled)
+                .lineLimit(2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
     }
 }
 

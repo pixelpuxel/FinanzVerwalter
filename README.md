@@ -744,9 +744,14 @@ kennzeichnet die Funktion als Verwaltungshilfe, nicht als Steuerberatung.
 ## Datensicherung und Wiederherstellung
 
 `Import/Export` erstellt manuelle vollständige SQLite-Sicherungen und prüft
-sie vor der Ausgabe. Ein Restore akzeptiert nur eine eigenständig lesbare
-Datei mit gültigem Finanzdateikopf und `integrity_check = ok`; vor dem
-Austausch entsteht zusätzlich eine Sicherheitskopie der aktuellen Datei.
+sie vor der Ausgabe. Vor einem Restore zeigt eine modale, tastaturbedienbare
+Vorschau Dateiname, Finanzdateiname, Basiswährung, Schema, Konten-,
+Kategorien- und Buchungszahl, jüngste Buchung, Dateigröße und Dateistand. Sie
+liest ausschließlich per SQLite `immutable=1` und akzeptiert nur eine
+eigenständig lesbare Datei mit gültigem Finanzdateikopf, kompatiblem Schema
+und `integrity_check = ok`; vor dem Austausch entsteht zusätzlich eine
+Sicherheitskopie der aktuellen Datei. Abbruch und Abschluss entfernen die
+staged Vorschaukopie.
 
 Automatische Sicherungen sind standardmäßig aktiviert. Beim Start und
 Beenden wird nur dann eine neue `.qbackup`-Datei im lokalen Unterordner
@@ -760,8 +765,8 @@ Jede Sicherung wird aus SQLite-WAL vollständig in eine allein nutzbare Datei
 checkpointed, unveränderlich geprüft und erst danach freigegeben. Vor einer
 Schema-Migration entsteht unabhängig von der Rotation eine eigene Sicherung;
 Dateien mit einem neueren unbekannten Schema werden unverändert abgewiesen.
-Verschlüsselung, externe Sicherungsziele und mehrere frei wählbare
-Finanzdateien sind noch nicht implementiert.
+Verschlüsselung, externe Sicherungsziele und der Reparaturmodus auf einer
+Kopie sind noch nicht implementiert.
 
 ## Zahlungsverkehr
 

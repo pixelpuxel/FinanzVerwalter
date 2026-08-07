@@ -1780,30 +1780,56 @@ final class FinanceAppStore: ObservableObject {
         guard let current = repository else { return false }
         let target = current.fileURL
         let safety = target.deletingLastPathComponent().appendingPathComponent(
-            "Autosicherung-vor-Wiederherstellung-\(Int(Date().timeIntervalSince1970)).qbackup"
+            "Autosicherung-vor-Wiederherstellung-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).qbackup"
         )
         do {
-            try SQLiteFinanceStore.validateBackup(at: source)
+            _ = try SQLiteFinanceStore.backupPreview(at: source)
             try current.backup(to: safety)
+            _ = try SQLiteFinanceStore.backupPreview(at: safety)
             current.close()
             repository = nil
             let manager = FileManager.default
-            let staged = target.deletingLastPathComponent()
-                .appendingPathComponent("restore-\(UUID().uuidString).qdata")
-            try manager.copyItem(at: source, to: staged)
-            if manager.fileExists(atPath: target.path) {
-                _ = try manager.replaceItemAt(target, withItemAt: staged)
-            } else {
-                try manager.moveItem(at: staged, to: target)
-            }
-            for suffix in ["-wal", "-shm"] {
-                let sidecar = URL(fileURLWithPath: target.path + suffix)
-                if manager.fileExists(atPath: sidecar.path) {
-                    try manager.removeItem(at: sidecar)
+            func removeSidecars() throws {
+                for suffix in ["-wal", "-shm"] {
+                    let sidecar = URL(fileURLWithPath: target.path + suffix)
+                    if manager.fileExists(atPath: sidecar.path) {
+                        try manager.removeItem(at: sidecar)
+                    }
                 }
             }
-            repository = try SQLiteFinanceStore(fileURL: target)
-            try load()
+            func replaceTarget(with source: URL, stagedName: String) throws {
+                let staged = target.deletingLastPathComponent()
+                    .appendingPathComponent(stagedName)
+                defer { try? manager.removeItem(at: staged) }
+                try manager.copyItem(at: source, to: staged)
+                _ = try SQLiteFinanceStore.backupPreview(at: staged)
+                try removeSidecars()
+                if manager.fileExists(atPath: target.path) {
+                    _ = try manager.replaceItemAt(target, withItemAt: staged)
+                } else {
+                    try manager.moveItem(at: staged, to: target)
+                }
+                try removeSidecars()
+            }
+            try replaceTarget(
+                with: source,
+                stagedName: "restore-\(UUID().uuidString).qdata"
+            )
+            do {
+                repository = try SQLiteFinanceStore(fileURL: target)
+                try load()
+            } catch {
+                let restoreError = error
+                repository?.close()
+                repository = nil
+                try replaceTarget(
+                    with: safety,
+                    stagedName: "restore-rollback-\(UUID().uuidString).qdata"
+                )
+                repository = try SQLiteFinanceStore(fileURL: target)
+                try load()
+                throw restoreError
+            }
             statusText = "Sicherung validiert und wiederhergestellt"
             return true
         } catch {

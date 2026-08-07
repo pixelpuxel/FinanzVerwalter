@@ -2,6 +2,19 @@ import CryptoKit
 import Foundation
 import SQLite3
 
+struct FinanceBackupPreview: Equatable, Sendable {
+    let url: URL
+    let financeFileName: String
+    let baseCurrency: String
+    let schemaVersion: Int
+    let accountCount: Int64
+    let categoryCount: Int64
+    let transactionCount: Int64
+    let latestBookingDate: Date?
+    let byteCount: Int64
+    let modifiedAt: Date?
+}
+
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
@@ -100,6 +113,105 @@ final class SQLiteFinanceStore {
         guard sqlite3_step(statement) == SQLITE_ROW, Self.text(statement, 0) == "ok" else {
             throw FinanceError.invalidBackup
         }
+    }
+
+    static func backupPreview(
+        at rawURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> FinanceBackupPreview {
+        let url = rawURL.standardizedFileURL
+        let values = try url.resourceValues(
+            forKeys: [
+                .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+                .contentModificationDateKey
+            ]
+        )
+        guard values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              let fileSize = values.fileSize,
+              fileSize >= 0 else {
+            throw FinanceError.invalidBackup
+        }
+        try validateBackup(at: url)
+
+        var previewDatabase: OpaquePointer?
+        let immutableURI = url.absoluteString
+            + (url.query == nil ? "?immutable=1" : "&immutable=1")
+        guard sqlite3_open_v2(
+            immutableURI,
+            &previewDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+            nil
+        ) == SQLITE_OK,
+        let database = previewDatabase else {
+            if let previewDatabase { sqlite3_close(previewDatabase) }
+            throw FinanceError.invalidBackup
+        }
+        defer { sqlite3_close(database) }
+
+        func scalarInt64(_ sql: String) throws -> Int64 {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw FinanceError.invalidBackup
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw FinanceError.invalidBackup
+            }
+            return sqlite3_column_int64(statement, 0)
+        }
+
+        func scalarText(_ sql: String) throws -> String {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw FinanceError.invalidBackup
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  sqlite3_column_type(statement, 0) != SQLITE_NULL else {
+                throw FinanceError.invalidBackup
+            }
+            return Self.text(statement, 0)
+        }
+
+        func optionalScalarText(_ sql: String) throws -> String? {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw FinanceError.invalidBackup
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw FinanceError.invalidBackup
+            }
+            return sqlite3_column_type(statement, 0) == SQLITE_NULL
+                ? nil
+                : Self.text(statement, 0)
+        }
+
+        let schemaVersion = Int(try scalarInt64("PRAGMA user_version"))
+        guard schemaVersion > 0 else { throw FinanceError.invalidBackup }
+        guard schemaVersion <= currentSchemaVersion else {
+            throw FinanceError.database(
+                "Die Sicherung verwendet Schema \(schemaVersion); diese App unterstützt höchstens Schema \(currentSchemaVersion)."
+            )
+        }
+        let latestBookingDate = try optionalScalarText(
+            "SELECT MAX(booking_date) FROM transactions"
+        ).flatMap(Self.date)
+        return FinanceBackupPreview(
+            url: url,
+            financeFileName: try scalarText("SELECT name FROM finance_files LIMIT 1"),
+            baseCurrency: try scalarText(
+                "SELECT base_currency FROM finance_files LIMIT 1"
+            ),
+            schemaVersion: schemaVersion,
+            accountCount: try scalarInt64("SELECT COUNT(*) FROM accounts"),
+            categoryCount: try scalarInt64("SELECT COUNT(*) FROM categories"),
+            transactionCount: try scalarInt64("SELECT COUNT(*) FROM transactions"),
+            latestBookingDate: latestBookingDate,
+            byteCount: Int64(fileSize),
+            modifiedAt: values.contentModificationDate
+        )
     }
 
     private func createPreMigrationBackup(schemaVersion: Int) throws {

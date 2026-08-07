@@ -11529,6 +11529,118 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(app.accounts.map(\.id), [account.id])
     }
 
+    func testBackupPreviewIsReadOnlyAndSummarizesRestoreContents() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-backup-preview-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("Quelle.qdata")
+        let backupURL = directory.appendingPathComponent("Vorschau.qbackup")
+        let repository = try SQLiteFinanceStore(fileURL: sourceURL)
+        try repository.renameFinanceFile("Haushalt 2026")
+        let firstAccount = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "Bank", type: .checking,
+            currency: "EUR", openingBalanceMinor: 1_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let secondAccount = FinanceAccount(
+            id: UUID(), name: "Bar", institution: "", type: .cash,
+            currency: "EUR", openingBalanceMinor: 500,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try repository.saveAccount(firstAccount)
+        try repository.saveAccount(secondAccount)
+        let bookingDate = Date(timeIntervalSince1970: 1_767_225_600)
+        try repository.saveTransaction(FinanceTransaction(
+            id: UUID(), accountID: firstAccount.id,
+            bookingDate: bookingDate, valueDate: bookingDate,
+            payee: "Vorschau", purpose: "Bestand prüfen", categoryID: nil,
+            amountMinor: -123, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        ))
+        let expectedCategoryCount = Int64(try repository.categories().count)
+        try repository.backup(to: backupURL)
+        let before = try FinanceFileSnapshotManager.snapshot(for: backupURL)
+
+        let preview = try SQLiteFinanceStore.backupPreview(at: backupURL)
+
+        XCTAssertEqual(preview.url.path, backupURL.path)
+        XCTAssertEqual(preview.financeFileName, "Haushalt 2026")
+        XCTAssertEqual(preview.baseCurrency, "EUR")
+        XCTAssertEqual(preview.schemaVersion, SQLiteFinanceStore.currentSchemaVersion)
+        XCTAssertEqual(preview.accountCount, 2)
+        XCTAssertEqual(preview.categoryCount, expectedCategoryCount)
+        XCTAssertEqual(preview.transactionCount, 1)
+        XCTAssertEqual(preview.latestBookingDate, bookingDate)
+        XCTAssertEqual(preview.byteCount, before.byteCount)
+        XCTAssertNotNil(preview.modifiedAt)
+        XCTAssertEqual(
+            try FinanceFileSnapshotManager.snapshot(for: backupURL), before
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupURL.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupURL.path + "-shm"))
+        repository.close()
+    }
+
+    @MainActor
+    func testFutureSchemaBackupIsRejectedBeforeActiveFileChanges() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-future-restore-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let activeURL = directory.appendingPathComponent("Aktiv.qdata")
+        let app = FinanceAppStore(
+            repository: try SQLiteFinanceStore(fileURL: activeURL)
+        )
+        XCTAssertTrue(app.saveAccount(
+            name: "Muss bleiben", institution: "Bank",
+            type: .checking, openingBalance: "42,00"
+        ))
+
+        let futureURL = directory.appendingPathComponent("Zukunft.qbackup")
+        let futureStore = try SQLiteFinanceStore(fileURL: futureURL)
+        try futureStore.renameFinanceFile("Nicht kompatibel")
+        futureStore.close()
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(futureURL.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "PRAGMA journal_mode=DELETE; PRAGMA user_version=40;",
+                nil, nil, nil
+            ),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+
+        XCTAssertThrowsError(try SQLiteFinanceStore.backupPreview(at: futureURL)) {
+            guard case let FinanceError.database(message) = $0 else {
+                return XCTFail("Unerwarteter Fehler: \($0)")
+            }
+            XCTAssertTrue(message.contains("Schema 40"))
+            XCTAssertTrue(message.contains("höchstens Schema 39"))
+        }
+        XCTAssertFalse(app.restoreBackup(from: futureURL))
+        XCTAssertEqual(app.currentFinanceFileURL?.path, activeURL.path)
+        XCTAssertEqual(app.accounts.map(\.name), ["Muss bleiben"])
+        XCTAssertEqual(try sqliteScalar(activeURL, "PRAGMA user_version"), 39)
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains { $0.hasPrefix("Autosicherung-vor-Wiederherstellung-") }
+        )
+    }
+
     @MainActor
     func testFinanceFileCloseClearsAllStateBacksUpAndAllowsReopeningOrCreating() throws {
         let directory = FileManager.default.temporaryDirectory

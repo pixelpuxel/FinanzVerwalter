@@ -3869,3 +3869,36 @@ Rechtsberatung.
   894. Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein
   neuer Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem
   Versand: 22.946.692 Tokens.
+
+## 08.08.2026 – Read-only Wiederherstellungsvorschau
+
+- Der Sicherungsdialog kopiert die ausgewählte Datei in eine private
+  0600-Tempdatei und liest sie ausschließlich read-only mit SQLite
+  `immutable=1`. Die modale Vorschau zeigt Quelldatei, Finanzdateiname,
+  Basiswährung, Schema, Konten-, Kategorien- und Buchungszahl, jüngste
+  Buchung, Dateigröße und Dateistand. Abbruch, Fehler und Abschluss entfernen
+  die Tempdatei.
+- Ein intaktes, aber neueres Schema wird vor Sicherheitskopie, Schließen oder
+  Austausch mit verständlicher Versionsmeldung abgewiesen. Die Vorschau
+  erzeugt weder WAL noch SHM und verändert den SHA-256 der Sicherung nicht.
+  Der eigentliche Restore validiert Quelle, Sicherheitskopie und interne
+  Staging-Datei erneut, verwendet kollisionsfreie Namen und rollt bei einem
+  nachgelagerten Öffnungsfehler auf die geprüfte Sicherheitskopie zurück.
+- Die gezielten Vorschautests unter
+  `build/TestResults/RestorePreview-targeted-20260808-0027.xcresult` bestanden
+  mit 4 von 4 Tests. Der finale vollständige Lauf unter
+  `build/TestResults/RestorePreview-full-final-20260808-0032.xcresult`
+  umfasst 166 Tests: 164 bestanden, 2 ausdrücklich opt-in übersprungen,
+  0 Fehler und 0 erwartete Fehler.
+- Der native arm64-Release unter `build/DerivedData-RestorePreview-Product`
+  wurde erfolgreich gebaut, lokal ad-hoc signiert und streng geprüft. Die
+  ausführbare Datei hat SHA-256
+  `2857850347be3df8ba0bfac563f41b777a1a6ff230383a7fb00eceda4d356ace`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0035-restore-preview/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0035-restore-preview/Meine Finanzen.qdata`.
+  Beide installierten Apps sind bytegleich, der Schreibtisch-Link zeigt auf
+  `/Applications`, und Prozess 63669 läuft daraus. Die Produktivdatei meldet
+  Integrität `ok`, keine Fremdschlüsselverletzung, Schema 39 und unverändert
+  97 Konten, 2.170 Buchungen und 782 Kategorien.

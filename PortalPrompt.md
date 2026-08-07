@@ -1990,3 +1990,22 @@ Sicherung, vollständige Zustandsleerung, Wiederöffnen und Neuanlegen in der
 zuvor dateilosen Sitzung. Verändere nach dem Archivieren den Arbeitsbestand,
 stelle das Archiv über den validierenden Sicherungsdialog wieder her und prüfe
 Inhalt, aktive Zieldatei sowie Integrität des rückgesicherten Bestands.
+
+# Schreibgeschützte Wiederherstellungsvorschau
+
+Ersetze die pauschale Restore-Warnung durch eine modale, vollständig per
+Tastatur bedienbare Inhaltsvorschau. Kopiere die vom Dateidialog gewählte
+Sicherung zunächst in eine zufällige Tempdatei und öffne ausschließlich diese
+Kopie read-only über SQLite-URI `immutable=1`. Fordere reguläre Datei ohne
+Symlink, Finanzdateikopf und `integrity_check=ok`. Lies Finanzdateiname,
+Basiswährung, `user_version`, Anzahl der Konten, Kategorien und Buchungen,
+jüngstes Buchungsdatum, Dateigröße und Änderungsstand. Zeige alle Werte vor
+der destruktiven Bestätigung sichtbar an.
+
+Schema 0 und unbekannte neuere Schemata müssen vor Sicherheitskopie,
+Schließen oder Austausch der aktiven Datei abgewiesen werden. Die Meldung
+nennt gefundene und maximal unterstützte Version. Abbrechen, Dateifehler und
+erfolgter Restore entfernen die Tempkopie. Teste den Vorschauinhalt gegen eine
+echte Sicherung, identischen SHA-256 vor und nach der Vorschau, das Fehlen von
+WAL/SHM sowie die Ablehnung eines integeren Zukunftsschemas bei vollständig
+unveränderter aktiver Finanzdatei.
