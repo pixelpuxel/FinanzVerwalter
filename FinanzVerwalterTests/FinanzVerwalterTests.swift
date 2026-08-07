@@ -4975,11 +4975,11 @@ final class FinanzVerwalterTests: XCTestCase {
         ).addingTimeInterval(-0.001)
 
         let presets = TransactionReportStandardPreset.allCases
-        XCTAssertEqual(presets.count, 7)
+        XCTAssertEqual(presets.count, 8)
         let queries = presets.map { $0.query(now: now, calendar: calendar) }
         XCTAssertTrue(queries.allSatisfy { $0.dateFrom == expectedStart })
         XCTAssertTrue(queries.allSatisfy { $0.dateThrough == expectedEnd })
-        XCTAssertEqual(Set(queries.map { "\($0.grouping.rawValue):\($0.secondaryGrouping?.rawValue ?? "-"):\($0.sort.rawValue)" }).count, 7)
+        XCTAssertEqual(Set(queries.map { "\($0.grouping.rawValue):\($0.secondaryGrouping?.rawValue ?? "-"):\($0.sort.rawValue)" }).count, 8)
 
         let journal = TransactionReportStandardPreset.bookingJournal.query(
             now: now, calendar: calendar
@@ -4995,6 +4995,14 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(cashFlow.secondaryGrouping, .category)
         XCTAssertFalse(cashFlow.includeTransfers)
         XCTAssertTrue(cashFlow.expandSplits)
+
+        let monthly = TransactionReportStandardPreset.monthlyCashFlow.query(
+            now: now, calendar: calendar
+        )
+        XCTAssertEqual(monthly.grouping, .month)
+        XCTAssertEqual(monthly.sort, .labelAscending)
+        XCTAssertEqual(monthly.selectedVisualization, .line)
+        XCTAssertEqual(monthly.selectedChartMetric, .expense)
 
         let tax = TransactionReportStandardPreset.germanTaxReport.query(
             now: now, calendar: calendar
@@ -5137,6 +5145,73 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertFalse(usdSeries.values.contains { $0.isRemainder })
         XCTAssertEqual(usdSeries.totalMinor, 2_100)
         XCTAssertEqual(first.reduce(0) { $0 + $1.totalMinor }, 3_600)
+    }
+
+    func testMonthlyTimeSeriesIsChronologicalCompleteAndUsesExactFacts() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Laufende Kosten",
+            kind: .expense, color: "", isActive: true
+        )
+        let transactions = try (0..<14).map { offset in
+            let date = try XCTUnwrap(
+                calendar.date(
+                    byAdding: .month,
+                    value: offset,
+                    to: XCTUnwrap(
+                        calendar.date(
+                            from: DateComponents(
+                                year: 2025, month: 1, day: 15, hour: 12
+                            )
+                        )
+                    )
+                )
+            )
+            return FinanceTransaction(
+                id: UUID(), accountID: account.id, bookingDate: date,
+                valueDate: nil, payee: "Lieferant", purpose: "Monat \(offset)",
+                categoryID: category.id, amountMinor: -Int64((offset + 1) * 100),
+                currency: "EUR", status: .booked, memo: "", reference: "",
+                transferID: nil, importFingerprint: nil, splits: []
+            )
+        }
+        let snapshot = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(
+                grouping: .month, sort: .labelAscending
+            ),
+            transactions: transactions, accounts: [account],
+            categories: [category], tags: []
+        )
+
+        XCTAssertEqual(snapshot.groups.count, 14)
+        XCTAssertEqual(snapshot.groups.first?.label, "2025-01")
+        XCTAssertEqual(snapshot.groups.last?.label, "2026-02")
+        let series = try XCTUnwrap(
+            ReportChartEngine.series(
+                snapshot: snapshot,
+                metric: .expense,
+                order: .labelAscending,
+                maximumSegments: nil
+            ).first
+        )
+        XCTAssertEqual(series.values.count, 14)
+        XCTAssertFalse(series.values.contains { $0.isRemainder })
+        XCTAssertEqual(series.values.map(\.label), snapshot.groups.map(\.label))
+        XCTAssertEqual(series.values.first?.amountMinor, 100)
+        XCTAssertEqual(series.values.last?.amountMinor, 1_400)
+        XCTAssertEqual(
+            series.values.reduce(into: Set<String>()) {
+                $0.formUnion($1.factIDs)
+            },
+            Set(snapshot.facts.map(\.id))
+        )
+        XCTAssertEqual(series.totalMinor, 10_500)
     }
 
     func testAccountBalanceReportUsesHistoricalCutoffAndSeparatesCurrencies() throws {

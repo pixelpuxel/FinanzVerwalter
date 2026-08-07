@@ -2068,14 +2068,17 @@ struct ReportsView: View {
 
     @ViewBuilder
     private func reportCharts(_ snapshot: TransactionReportSnapshot) -> some View {
+        let isTimeSeries = visualization == .line || visualization == .area
         let series = ReportChartEngine.series(
             snapshot: snapshot,
-            metric: chartMetric
+            metric: chartMetric,
+            order: isTimeSeries ? .labelAscending : .amountDescending,
+            maximumSegments: isTimeSeries ? nil : 12
         )
         if series.isEmpty {
             ContentUnavailableView(
                 "Keine Diagrammwerte",
-                systemImage: visualization == .pie ? "chart.pie" : "chart.bar",
+                systemImage: chartSystemImage,
                 description: Text(
                     "Die gewählten Filter enthalten keine \(chartMetric.title.lowercased())."
                 )
@@ -2110,7 +2113,7 @@ struct ReportsView: View {
                                     width: 620,
                                     height: max(190, CGFloat(currencySeries.values.count * 31))
                                 )
-                            } else {
+                            } else if visualization == .pie {
                                 Chart(currencySeries.values) { datum in
                                     SectorMark(
                                         angle: .value(chartMetric.title, chartAmount(datum)),
@@ -2128,6 +2131,65 @@ struct ReportsView: View {
                                 }
                                 .chartLegend(position: .trailing, alignment: .center)
                                 .frame(width: 620, height: 270)
+                            } else if visualization == .line {
+                                Chart(currencySeries.values) { datum in
+                                    LineMark(
+                                        x: .value("Zeitraum", datum.label),
+                                        y: .value(chartMetric.title, chartAmount(datum))
+                                    )
+                                    .interpolationMethod(.linear)
+                                    .foregroundStyle(Color.accentColor)
+                                    PointMark(
+                                        x: .value("Zeitraum", datum.label),
+                                        y: .value(chartMetric.title, chartAmount(datum))
+                                    )
+                                    .foregroundStyle(Color.accentColor)
+                                    .accessibilityLabel(datum.label)
+                                    .accessibilityValue(
+                                        Money(
+                                            minorUnits: datum.amountMinor,
+                                            currency: datum.currency
+                                        ).formatted
+                                    )
+                                }
+                                .chartYAxisLabel(chartMetric.title)
+                                .frame(
+                                    width: max(
+                                        620,
+                                        CGFloat(currencySeries.values.count * 72)
+                                    ),
+                                    height: 270
+                                )
+                            } else {
+                                Chart(currencySeries.values) { datum in
+                                    AreaMark(
+                                        x: .value("Zeitraum", datum.label),
+                                        y: .value(chartMetric.title, chartAmount(datum))
+                                    )
+                                    .interpolationMethod(.linear)
+                                    .foregroundStyle(Color.accentColor.opacity(0.28))
+                                    LineMark(
+                                        x: .value("Zeitraum", datum.label),
+                                        y: .value(chartMetric.title, chartAmount(datum))
+                                    )
+                                    .interpolationMethod(.linear)
+                                    .foregroundStyle(Color.accentColor)
+                                    .accessibilityLabel(datum.label)
+                                    .accessibilityValue(
+                                        Money(
+                                            minorUnits: datum.amountMinor,
+                                            currency: datum.currency
+                                        ).formatted
+                                    )
+                                }
+                                .chartYAxisLabel(chartMetric.title)
+                                .frame(
+                                    width: max(
+                                        620,
+                                        CGFloat(currencySeries.values.count * 72)
+                                    ),
+                                    height: 270
+                                )
                             }
                         } label: {
                             HStack {
@@ -2221,6 +2283,15 @@ struct ReportsView: View {
     private func chartAmount(_ datum: ReportChartDatum) -> Decimal {
         Decimal(datum.amountMinor)
             / Decimal(Money.minorUnitFactor(for: datum.currency))
+    }
+
+    private var chartSystemImage: String {
+        switch visualization {
+        case .table, .bar: "chart.bar"
+        case .line: "chart.xyaxis.line"
+        case .area: "chart.line.uptrend.xyaxis"
+        case .pie: "chart.pie"
+        }
     }
 
     private func reportTotals(

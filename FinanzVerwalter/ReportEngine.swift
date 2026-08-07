@@ -5,6 +5,7 @@ enum ReportGrouping: String, CaseIterable, Codable, Identifiable, Sendable {
     case payee
     case account
     case tag
+    case month
     case germanTaxLine
     case none
 
@@ -16,6 +17,7 @@ enum ReportGrouping: String, CaseIterable, Codable, Identifiable, Sendable {
         case .payee: "Empfänger"
         case .account: "Konto"
         case .tag: "Klasse/Tag"
+        case .month: "Monat"
         case .germanTaxLine: "Deutsche Steuerzuordnung"
         case .none: "Keine Gruppierung"
         }
@@ -25,6 +27,8 @@ enum ReportGrouping: String, CaseIterable, Codable, Identifiable, Sendable {
 enum ReportVisualization: String, CaseIterable, Codable, Identifiable, Sendable {
     case table
     case bar
+    case line
+    case area
     case pie
 
     var id: Self { self }
@@ -33,6 +37,8 @@ enum ReportVisualization: String, CaseIterable, Codable, Identifiable, Sendable 
         switch self {
         case .table: "Tabelle"
         case .bar: "Balken"
+        case .line: "Linie"
+        case .area: "Fläche"
         case .pie: "Torte"
         }
     }
@@ -50,6 +56,11 @@ enum ReportChartMetric: String, CaseIterable, Codable, Identifiable, Sendable {
         case .expense: "Ausgaben"
         }
     }
+}
+
+enum ReportChartOrder: Sendable {
+    case amountDescending
+    case labelAscending
 }
 
 enum ReportSort: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -79,6 +90,7 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
     case cashFlow
     case accountActivity
     case categoryAndTag
+    case monthlyCashFlow
     case germanTaxReport
 
     var id: Self { self }
@@ -91,6 +103,7 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
         case .cashFlow: "Cashflow nach Konto und Kategorie"
         case .accountActivity: "Kontobewegungen nach Konto und Empfänger"
         case .categoryAndTag: "Kategorie- und Klassenbericht"
+        case .monthlyCashFlow: "Monatlicher Cashflow"
         case .germanTaxReport: "Deutscher Steuerbericht"
         }
     }
@@ -103,6 +116,7 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
         case .cashFlow: "arrow.left.arrow.right"
         case .accountActivity: "building.columns"
         case .categoryAndTag: "tag"
+        case .monthlyCashFlow: "chart.xyaxis.line"
         case .germanTaxReport: "doc.text.magnifyingglass"
         }
     }
@@ -121,6 +135,8 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
             "Aktuelles Jahr, Konten mit Empfänger-Drill-down"
         case .categoryAndTag:
             "Aktuelles Jahr, Kategorien mit Klassen-/Tag-Drill-down"
+        case .monthlyCashFlow:
+            "Aktuelles Jahr, Einnahmen und Ausgaben chronologisch nach Monat"
         case .germanTaxReport:
             "Aktuelles Jahr, gepflegte deutsche Steuerzuordnungen mit Kategorie-Drill-down"
         }
@@ -167,6 +183,12 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
                 dateFrom: dateFrom, dateThrough: dateThrough,
                 grouping: .category, secondaryGrouping: .tag,
                 sort: .amountDescending
+            )
+        case .monthlyCashFlow:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                grouping: .month, sort: .labelAscending,
+                visualization: .line, chartMetric: .expense
             )
         case .germanTaxReport:
             return TransactionReportQuery(
@@ -667,6 +689,8 @@ enum TransactionReportEngine {
             fact.accountName
         case .tag:
             fact.tagPaths.isEmpty ? "Ohne Klasse/Tag" : fact.tagPaths.joined(separator: " + ")
+        case .month:
+            monthLabel(for: fact.bookingDate)
         case .germanTaxLine:
             fact.germanTaxLine.isEmpty ? "Ohne deutsche Steuerzuordnung" : fact.germanTaxLine
         case .none:
@@ -688,6 +712,14 @@ enum TransactionReportEngine {
     ) -> String {
         guard let categoryID, let category = categoriesByID[categoryID] else { return "" }
         return category.germanTaxLine.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func monthLabel(for date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month], from: date)
+        guard let year = components.year, let month = components.month else {
+            return "Unbekannter Monat"
+        }
+        return String(format: "%04d-%02d", year, month)
     }
 
     private static func descendantIDs(
@@ -764,9 +796,10 @@ enum ReportChartEngine {
     static func series(
         snapshot: TransactionReportSnapshot,
         metric: ReportChartMetric,
-        maximumSegments: Int = 12
+        order: ReportChartOrder = .amountDescending,
+        maximumSegments: Int? = 12
     ) -> [ReportChartSeries] {
-        let limit = max(2, maximumSegments)
+        let limit = maximumSegments.map { max(2, $0) }
         let detailGroups = snapshot.groups.filter { $0.level == .detail }
         if detailGroups.isEmpty {
             return snapshot.totals.compactMap { total in
@@ -796,13 +829,20 @@ enum ReportChartEngine {
                         amountMinor: amount, factIDs: group.factIDs,
                         isRemainder: false
                     )
-                }.sorted {
-                    $0.amountMinor == $1.amountMinor
-                        ? $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
-                        : $0.amountMinor > $1.amountMinor
+                }.sorted { lhs, rhs in
+                    switch order {
+                    case .amountDescending:
+                        return lhs.amountMinor == rhs.amountMinor
+                            ? lhs.label.localizedCaseInsensitiveCompare(rhs.label)
+                                == .orderedAscending
+                            : lhs.amountMinor > rhs.amountMinor
+                    case .labelAscending:
+                        return lhs.label.localizedCaseInsensitiveCompare(rhs.label)
+                            == .orderedAscending
+                    }
                 }
                 guard !sorted.isEmpty else { return nil }
-                guard sorted.count > limit else {
+                guard let limit, sorted.count > limit else {
                     return ReportChartSeries(currency: currency, values: sorted)
                 }
                 let visible = Array(sorted.prefix(limit - 1))
