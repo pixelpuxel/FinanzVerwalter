@@ -2856,9 +2856,33 @@ Rechtsberatung.
   Tages-/Wochen-/Monatsintervall, Währungs- und Bereichsauswahl,
   Schlusssaldo, Minimum, Maximum, Unterdeckungen und Szenarioeffekt. Die
   Betragseingabe folgt den Nachkommastellen der gewählten Kontowährung.
-- Der vollständige Debug-Testlauf vom 07.08.2026 um 15:59 Uhr ist grün:
+- Der finale vollständige Debug-Testlauf vom 07.08.2026 um 16:04 Uhr ist grün:
   131 Tests bestanden, der private opt-in-QIF-Test wurde ohne gesetzten Pfad
   planmäßig übersprungen, 0 Tests schlugen fehl. Er prüft unter anderem
   Deduplizierung der Prognosequellen, Mehrwährungsschutz, Intervallgrenzen,
-  Persistenz/Audit/Kaskade und Migration 34→35. Release-, Installations- und
-  Produktivnachweise werden nach dem optimierten Build ergänzt.
+  Persistenz/Audit/Kaskade und Migration 34→35. Das Result-Bundle liegt unter
+  `build/DerivedData-ForecastScenario-Tests/Logs/Test/Test-FinanzVerwalter-2026.08.07_16-04-06-+0200.xcresult`.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-ForecastScenarios-Release` ist gebaut und streng
+  signaturgeprüft. Der ausführbare Code trägt SHA-256
+  `5e3c3e4477f71095c986f9fcd257426eca3629bd915c18ad1d6004f979d5fd83`;
+  Release, `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich. Der Desktop-Link
+  zeigt weiter auf die Systeminstallation.
+- Vor der Installation wurden beide vorherigen Apps reversibel als
+  `build/FinanzVerwalter-vor-liquiditaetsszenarien-20260807-1610.app` und
+  `build/FinanzVerwalter-user-vor-liquiditaetsszenarien-20260807-1610.app`
+  erhalten. Der echte neue Start läuft als Prozess 89227 direkt aus
+  `/Applications`.
+- Die produktive Datei wurde automatisch von Schema 34 auf 35 migriert und
+  hat Integrität `ok`. Unverändert sind 97 Konten, 2.170 Buchungen,
+  782 Kategorien, eine Berichtsvorlage und jeweils 0 Serien,
+  Einzelausnahmen und Serienrevisionen; neu und erwartungsgemäß leer sind
+  Szenarien und Szenariopositionen. Die automatisch erzeugte Sicherung
+  `FinanzVerwalter-vor-Migration-v34-20260807-140952-538-B24D5678.qbackup`
+  ist separat mit Schema 34, Integrität `ok` und denselben Bestandszahlen
+  verifiziert.
+- Die macOS-Sitzung ist weiterhin gesperrt. Die installierte App konnte
+  deshalb nicht sichtbar per Computersteuerung abgenommen und es wurde kein
+  fingierter Screenshot erzeugt. Exakter kumulativer Zielzählerstand nach
+  Test, Release, Installation und Produktivprüfung: 17.401.704 Tokens.
