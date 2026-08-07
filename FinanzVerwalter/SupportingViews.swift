@@ -1534,6 +1534,7 @@ struct ReportsView: View {
     @State private var showLoanReport = false
     @State private var showPeriodComparisonReport = false
     @State private var showBudgetReport = false
+    @State private var showAssetRegisterReport = false
     @State private var templateName = ""
     @State private var csvSeparator: ReportCSVSeparator = .semicolon
     @State private var csvEncoding: ReportCSVEncoding = .utf8
@@ -1679,6 +1680,11 @@ struct ReportsView: View {
                             showBudgetReport = true
                         } label: {
                             Label("Budget Plan/Ist/Abweichung …", systemImage: "chart.bar.xaxis")
+                        }
+                        Button {
+                            showAssetRegisterReport = true
+                        } label: {
+                            Label("Vertrags- und Inventarübersicht …", systemImage: "doc.text.magnifyingglass")
                         }
                     } label: {
                         Label("Standardberichte", systemImage: "chart.bar.doc.horizontal")
@@ -1966,6 +1972,10 @@ struct ReportsView: View {
         }
         .sheet(isPresented: $showBudgetReport) {
             BudgetComparisonReportView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showAssetRegisterReport) {
+            AssetRegisterReportView()
                 .environmentObject(store)
         }
         .fileExporter(
@@ -4046,6 +4056,358 @@ private struct VATReportView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return "FinanzVerwalter-Umsatzsteuer-\(formatter.string(from: query.dateFrom))-bis-"
             + formatter.string(from: query.dateThrough)
+    }
+}
+
+private struct AssetRegisterReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var referenceDate = Date()
+    @State private var horizon: AssetRegisterReportHorizon = .all
+    @State private var includeInactive = false
+    @State private var contractTypes = Set<ContractType>()
+    @State private var inventoryCategories = Set<InventoryCategory>()
+    @State private var searchText = ""
+    @State private var selectedContractID: UUID?
+    @State private var selectedInventoryID: UUID?
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    private var query: AssetRegisterReportQuery {
+        AssetRegisterReportQuery(
+            referenceDate: referenceDate, horizon: horizon,
+            includeInactive: includeInactive, contractTypes: contractTypes,
+            inventoryCategories: inventoryCategories, text: searchText
+        )
+    }
+
+    private var snapshot: AssetRegisterReportSnapshot {
+        AssetRegisterReportEngine.snapshot(
+            query: query, contracts: store.contracts,
+            inventory: store.inventoryItems, accounts: store.accounts,
+            categories: store.categories
+        )
+    }
+
+    var body: some View {
+        let value = snapshot
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Vertrags- und Inventarübersicht").font(.title2.bold())
+                    Text("Jahreskosten, Kündigungsfristen, Werte und Garantien")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                InvestmentValue(
+                    title: "Vertragskosten/Jahr",
+                    value: Money(minorUnits: value.annualContractCostMinor).formatted
+                )
+                InvestmentValue(
+                    title: "Inventar aktuell",
+                    value: Money(minorUnits: value.currentValueMinor).formatted
+                )
+                InvestmentValue(
+                    title: "Versicherungswert",
+                    value: Money(minorUnits: value.insuranceValueMinor).formatted
+                )
+                Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            HStack(spacing: 10) {
+                DatePicker("Stichtag", selection: $referenceDate, displayedComponents: .date)
+                Picker("Fristen", selection: $horizon) {
+                    ForEach(AssetRegisterReportHorizon.allCases) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                .frame(width: 175)
+                contractTypeMenu
+                inventoryCategoryMenu
+                Toggle("Inaktive", isOn: $includeInactive).toggleStyle(.checkbox)
+                TextField("Suche", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 150, maxWidth: 230)
+                Spacer()
+                Button("CSV exportieren …", systemImage: "tablecells") {
+                    csvDocument = ReportCSVDocument(
+                        data: AssetRegisterReportCSVExporter.data(
+                            snapshot: value, metadata: metadata
+                        )
+                    )
+                    showCSVExporter = true
+                }
+                Menu {
+                    Picker("Papierausrichtung", selection: $orientation) {
+                        ForEach(ReportPDFOrientation.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Divider()
+                    Button("Drucken …", systemImage: "printer.fill") { printReport(value) }
+                    Button("PDF exportieren …", systemImage: "doc.richtext") {
+                        exportPDF(value)
+                    }
+                } label: {
+                    Label("PDF · \(orientation.title)", systemImage: "printer")
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            VSplitView {
+                VStack(spacing: 0) {
+                    sectionHeader(
+                        "Verträge", count: value.contracts.count,
+                        detail: "\(Money(minorUnits: value.annualContractCostMinor).formatted) pro Jahr"
+                    )
+                    Table(value.contracts, selection: $selectedContractID) {
+                        TableColumn("Vertrag") { row in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(row.name).fontWeight(.semibold)
+                                Text(row.provider).font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }.width(min: 170, ideal: 220)
+                        TableColumn("Typ") { Text($0.type.title) }.width(115)
+                        TableColumn("Status") { Text($0.isActive ? "Aktiv" : "Inaktiv") }.width(65)
+                        TableColumn("Jahreskosten") { reportMoney($0.annualCostMinor) }.width(110)
+                        TableColumn("Kündigungsfrist") {
+                            deadlineText($0.cancellationDeadline)
+                        }.width(105)
+                        TableColumn("Verlängerung") { Text(reportDate($0.nextRenewal)) }.width(100)
+                        TableColumn("Konto") { Text($0.accountName).lineLimit(1) }.width(130)
+                        TableColumn("Kategorie") { Text($0.categoryPath).lineLimit(1) }
+                            .width(min: 160, ideal: 240)
+                    }
+                    .overlay {
+                        if value.contracts.isEmpty {
+                            ContentUnavailableView(
+                                "Keine Verträge", systemImage: "doc.text",
+                                description: Text("Für die gewählten Filter sind keine Verträge enthalten.")
+                            )
+                        }
+                    }
+                }
+                .frame(minHeight: 230)
+                VStack(spacing: 0) {
+                    sectionHeader(
+                        "Inventar", count: value.inventory.count,
+                        detail: "\(Money(minorUnits: value.currentValueMinor).formatted) aktuell"
+                    )
+                    Table(value.inventory, selection: $selectedInventoryID) {
+                        TableColumn("Gegenstand") { row in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(row.name).fontWeight(.semibold)
+                                Text(row.room.isEmpty ? "Ohne Raum" : row.room)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }.width(min: 170, ideal: 220)
+                        TableColumn("Kategorie") { Text($0.category.title) }.width(105)
+                        TableColumn("Status") { Text($0.isActive ? "Aktiv" : "Inaktiv") }.width(65)
+                        TableColumn("Kaufpreis") { reportMoney($0.purchasePriceMinor) }.width(105)
+                        TableColumn("Aktueller Wert") { reportMoney($0.currentValueMinor) }.width(110)
+                        TableColumn("Versicherungswert") { reportMoney($0.insuranceValueMinor) }.width(125)
+                        TableColumn("Garantieende") { warrantyText($0.warrantyEnd) }.width(105)
+                        TableColumn("Händler") { Text($0.retailer).lineLimit(1) }.width(120)
+                        TableColumn("Seriennummer") { Text($0.serialNumber).lineLimit(1) }
+                            .width(min: 120, ideal: 180)
+                    }
+                    .overlay {
+                        if value.inventory.isEmpty {
+                            ContentUnavailableView(
+                                "Kein Inventar", systemImage: "shippingbox",
+                                description: Text("Für die gewählten Filter sind keine Gegenstände enthalten.")
+                            )
+                        }
+                    }
+                }
+                .frame(minHeight: 230)
+            }
+            Divider()
+            drillDown(value)
+                .frame(height: 54)
+                .padding(.horizontal, 14)
+        }
+        .frame(minWidth: 1_180, minHeight: 760)
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: filename
+        ) { result in
+            switch result {
+            case .success: store.statusText = "Vertrags- und Inventarbericht als CSV exportiert"
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: filename
+        ) { result in
+            switch result {
+            case .success: store.statusText = "Vertrags- und Inventarbericht als PDF exportiert"
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var contractTypeMenu: some View {
+        Menu {
+            Button("Alle Vertragstypen") { contractTypes.removeAll() }
+            ForEach(ContractType.allCases) { type in
+                Toggle(type.title, isOn: member(type, in: $contractTypes))
+            }
+        } label: {
+            Label(
+                contractTypes.isEmpty ? "Alle Vertragstypen" : "Vertragstypen (\(contractTypes.count))",
+                systemImage: "doc.text"
+            )
+        }
+    }
+
+    private var inventoryCategoryMenu: some View {
+        Menu {
+            Button("Alle Inventarkategorien") { inventoryCategories.removeAll() }
+            ForEach(InventoryCategory.allCases) { category in
+                Toggle(category.title, isOn: member(category, in: $inventoryCategories))
+            }
+        } label: {
+            Label(
+                inventoryCategories.isEmpty
+                    ? "Alle Inventarkategorien" : "Inventar (\(inventoryCategories.count))",
+                systemImage: "shippingbox"
+            )
+        }
+    }
+
+    private func sectionHeader(_ title: String, count: Int, detail: String) -> some View {
+        HStack {
+            Text(title).font(.headline)
+            Text("\(count)").foregroundStyle(.secondary)
+            Spacer()
+            Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.quaternary.opacity(0.25))
+    }
+
+    @ViewBuilder
+    private func drillDown(_ snapshot: AssetRegisterReportSnapshot) -> some View {
+        if let id = selectedContractID,
+           let row = snapshot.contracts.first(where: { $0.id == id }) {
+            HStack {
+                Label(row.name, systemImage: "doc.text")
+                Text("\(row.provider) · \(row.type.title)").foregroundStyle(.secondary)
+                Spacer()
+                Text("Kündigung: \(reportDate(row.cancellationDeadline))")
+                Text("Jahreskosten: \(Money(minorUnits: row.annualCostMinor).formatted)")
+                    .monospacedDigit()
+            }
+        } else if let id = selectedInventoryID,
+                  let row = snapshot.inventory.first(where: { $0.id == id }) {
+            HStack {
+                Label(row.name, systemImage: "shippingbox")
+                Text("\(row.category.title) · \(row.room)").foregroundStyle(.secondary)
+                Spacer()
+                Text("Garantie: \(reportDate(row.warrantyEnd))")
+                Text("Aktuell: \(Money(minorUnits: row.currentValueMinor).formatted)")
+                    .monospacedDigit()
+            }
+        } else {
+            Label(
+                "Zeile auswählen, um die wichtigsten Stammdaten im Drill-down zu sehen.",
+                systemImage: "cursorarrow.click"
+            )
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func member<Value: Hashable>(
+        _ value: Value, in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { included in
+                if included { selection.wrappedValue.insert(value) }
+                else { selection.wrappedValue.remove(value) }
+            }
+        )
+    }
+
+    private func reportMoney(_ minor: Int64) -> some View {
+        Text(Money(minorUnits: minor).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+    }
+
+    private func deadlineText(_ date: Date?) -> some View {
+        Text(reportDate(date))
+            .foregroundStyle(
+                date.map { $0 < Calendar.current.startOfDay(for: referenceDate) } == true
+                    ? Color.red : Color.primary
+            )
+    }
+
+    private func warrantyText(_ date: Date?) -> some View {
+        Text(reportDate(date))
+            .foregroundStyle(
+                date.map { $0 < Calendar.current.startOfDay(for: referenceDate) } == true
+                    ? Color.orange : Color.primary
+            )
+    }
+
+    private func reportDate(_ date: Date?) -> String {
+        guard let date else { return "–" }
+        return date.formatted(.dateTime.day().month().year())
+    }
+
+    private var filterSummary: String {
+        let deadline = horizon.title
+        let status = includeInactive ? "inklusive inaktiv" : "nur aktiv"
+        let contract = contractTypes.isEmpty
+            ? "alle Vertragstypen" : contractTypes.map(\.title).sorted().joined(separator: ", ")
+        let inventory = inventoryCategories.isEmpty
+            ? "alle Inventarkategorien"
+            : inventoryCategories.map(\.title).sorted().joined(separator: ", ")
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [deadline, status, contract, inventory, text.isEmpty ? nil : "Suche: \(text)"]
+            .compactMap { $0 }.joined(separator: "; ")
+    }
+
+    private var metadata: AssetRegisterReportExportMetadata {
+        AssetRegisterReportExportMetadata(
+            title: "Vertrags- und Inventarübersicht",
+            filterSummary: filterSummary, generatedAt: .now
+        )
+    }
+
+    private func pdfData(_ snapshot: AssetRegisterReportSnapshot) throws -> Data {
+        try ComparisonReportPDFExporter.assetRegisterData(
+            snapshot: snapshot, metadata: metadata, orientation: orientation
+        )
+    }
+
+    private func printReport(_ snapshot: AssetRegisterReportSnapshot) {
+        do { try RegisterPrintService.printPDF(try pdfData(snapshot)) }
+        catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private func exportPDF(_ snapshot: AssetRegisterReportSnapshot) {
+        do {
+            pdfDocument = ReportPDFDocument(data: try pdfData(snapshot))
+            showPDFExporter = true
+        } catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private var filename: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "FinanzVerwalter-Vertraege-Inventar-\(formatter.string(from: referenceDate))"
     }
 }
 

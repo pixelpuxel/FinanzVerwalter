@@ -544,6 +544,17 @@ und Systemdruck verwenden denselben Snapshot. Der Bericht kennzeichnet
 sichtbar, dass ein Abgleich mit tatsächlich gebuchten Kreditraten noch nicht
 implementiert ist.
 
+Die eigenständige `Vertrags- und Inventarübersicht` verbindet die beiden
+Fachakten in einem gemeinsamen, unveränderlichen Snapshot. Vertragstypen,
+Inventarkategorien, Aktivstatus, Volltext und Kündigungs-/Garantiehorizonte von
+30, 90 oder 365 Tagen sind kombinierbar. Vertragszeilen zeigen Anbieter,
+Jahreskosten, nächste Verlängerung, Kündigungsfrist, Zahlungskonto und den
+vollständigen Kategoriepfad. Inventarzeilen zeigen Raum, Kaufpreis, aktuellen
+Wert, Versicherungswert, Garantie, Händler und Seriennummer. Zeilenauswahl,
+deterministisches Semikolon-CSV, PDF und Systemdruck verwenden denselben
+Snapshot; die derzeitigen Vertrags- und Inventarwerte sind fachmodellbedingt
+EUR-Werte.
+
 Jeder buchungsbasierte Bericht kann zusätzlich als Balken-, Linien-, Flächen-
 oder Tortendiagramm für Einnahmen oder Ausgaben dargestellt werden. Die Diagramme
 verwenden ausschließlich die bereits gefilterten Detailgruppen desselben

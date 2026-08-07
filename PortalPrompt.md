@@ -124,7 +124,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 Migrationen 1 bis 35 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 133 XCTest-Fälle: 132 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 134 XCTest-Fälle: 133 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -843,6 +843,22 @@ Für Kredite und Vermögenswerte gilt reproduzierbar:
   semantisch lesbares mehrseitiges PDF.
 - Noch offen sind die automatische Splitbuchung realer Raten, der
   Ist-Abgleich, Szenarien und der optionale Debt-Reduction-Planner.
+
+Für die Vertrags- und Inventarübersicht gilt reproduzierbar:
+
+- Implementiere genau einen unveränderlichen `AssetRegisterReportSnapshot`.
+  Filtere Aktivstatus, Vertragstypen, Inventarkategorien,
+  diakritikaunabhängigen Volltext sowie Kündigungs- und Garantiefristen für
+  alle oder die nächsten 30/90/365 Tage.
+- Vertragszeilen enthalten Anbieter, Vertragsnummer, Typ, Jahreskosten,
+  nächste Verlängerung, Kündigungsfrist, Zahlungskonto und vollständigen
+  Kategoriepfad. Inventarzeilen enthalten Kategorie, Raum, Kaufpreis,
+  aktuellen Wert, Versicherungswert, Garantieende, Händler und Seriennummer.
+- Zeige alle Summen und einen Zeilen-Drill-down. Deterministisches
+  Semikolon-CSV, PDF in beiden Ausrichtungen und direkter Systemdruck nutzen
+  denselben Snapshot und dieselben Filtermetadaten. Solange das Fachmodell
+  keine Währung speichert, sind diese Werte ausdrücklich als EUR auszuweisen
+  und dürfen nicht als Mehrwährungsbericht bezeichnet werden.
 
 Für konfigurierbare Kontoblattansichten gilt reproduzierbar:
 

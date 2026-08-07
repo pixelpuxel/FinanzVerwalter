@@ -187,11 +187,14 @@ P0:
 - Kredit- und Tilgungsbericht *(Planwerte, Zins-/Gebühren-/Sondertilgungsanteile,
   Restschuldverlauf, Drill-down, CSV, PDF und Druck umgesetzt; Ist-Abgleich
   noch offen)*
+- Vertrags- und Inventarübersicht *(Aktivstatus, Typ/Kategorie, Volltext,
+  30/90/365-Tage-Fristen, Jahreskosten, Werte, Garantie, Zeilen-Drill-down,
+  deterministisches CSV, PDF und Druck umgesetzt; Fachmodell derzeit EUR)*
 
 P1:
 
 - Depot-, Performance- und Steuerbericht
-- Vertrags-, Inventar- und Vermietungsbericht
+- Vermietungsbericht
 
 Jeder Bericht unterstützt Tabelle, Balken, Linie, Fläche oder Kreis, soweit
 die Dimensionen fachlich dazu passen. Tabellen benötigen konfigurierbare

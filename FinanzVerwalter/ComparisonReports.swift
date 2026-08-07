@@ -967,6 +967,274 @@ struct LoanReportExportMetadata: Equatable, Sendable {
     let generatedAt: Date
 }
 
+enum AssetRegisterReportHorizon: Int, CaseIterable, Identifiable, Sendable {
+    case all = 0
+    case next30Days = 30
+    case next90Days = 90
+    case next365Days = 365
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: "Alle Fristen"
+        case .next30Days: "Nächste 30 Tage"
+        case .next90Days: "Nächste 90 Tage"
+        case .next365Days: "Nächste 365 Tage"
+        }
+    }
+}
+
+struct AssetRegisterReportQuery: Equatable, Sendable {
+    var referenceDate: Date
+    var horizon: AssetRegisterReportHorizon = .all
+    var includeInactive = false
+    var contractTypes = Set<ContractType>()
+    var inventoryCategories = Set<InventoryCategory>()
+    var text = ""
+}
+
+struct ContractReportRow: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let name: String
+    let provider: String
+    let type: ContractType
+    let contractNumber: String
+    let isActive: Bool
+    let annualCostMinor: Int64
+    let nextRenewal: Date?
+    let cancellationDeadline: Date?
+    let accountName: String
+    let categoryPath: String
+}
+
+struct InventoryReportRow: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let name: String
+    let category: InventoryCategory
+    let room: String
+    let isActive: Bool
+    let purchasePriceMinor: Int64
+    let currentValueMinor: Int64
+    let insuranceValueMinor: Int64
+    let warrantyEnd: Date?
+    let retailer: String
+    let serialNumber: String
+}
+
+struct AssetRegisterReportSnapshot: Equatable, Sendable {
+    let referenceDate: Date
+    let horizon: AssetRegisterReportHorizon
+    let contracts: [ContractReportRow]
+    let inventory: [InventoryReportRow]
+
+    var annualContractCostMinor: Int64 {
+        contracts.reduce(Int64.zero) { $0 + $1.annualCostMinor }
+    }
+
+    var purchasePriceMinor: Int64 {
+        inventory.reduce(Int64.zero) { $0 + $1.purchasePriceMinor }
+    }
+
+    var currentValueMinor: Int64 {
+        inventory.reduce(Int64.zero) { $0 + $1.currentValueMinor }
+    }
+
+    var insuranceValueMinor: Int64 {
+        inventory.reduce(Int64.zero) { $0 + $1.insuranceValueMinor }
+    }
+}
+
+enum AssetRegisterReportEngine {
+    static func snapshot(
+        query: AssetRegisterReportQuery,
+        contracts: [FinanceContract],
+        inventory: [InventoryItem],
+        accounts: [FinanceAccount],
+        categories: [FinanceCategory],
+        calendar: Calendar = .current
+    ) -> AssetRegisterReportSnapshot {
+        let referenceDay = calendar.startOfDay(for: query.referenceDate)
+        let through = query.horizon == .all ? nil : calendar.date(
+            byAdding: .day, value: query.horizon.rawValue, to: referenceDay
+        )
+        let normalizedText = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0.name) })
+        let categoryPaths = categoryPathMap(categories)
+
+        let contractRows = contracts.compactMap { contract -> ContractReportRow? in
+            guard query.includeInactive || contract.isActive else { return nil }
+            guard query.contractTypes.isEmpty || query.contractTypes.contains(contract.type)
+            else { return nil }
+            let renewal = contract.nextRenewal(after: referenceDay, calendar: calendar)
+            let deadline = contract.cancellationDeadline(after: referenceDay, calendar: calendar)
+            if let through {
+                guard let deadline, deadline <= through else { return nil }
+            }
+            let accountName = contract.accountID.flatMap { accountsByID[$0] } ?? "–"
+            let categoryPath = contract.categoryID.flatMap { categoryPaths[$0] } ?? "–"
+            guard matches(
+                normalizedText,
+                values: [contract.name, contract.provider, contract.contractNumber,
+                         contract.type.title, accountName, categoryPath]
+            ) else { return nil }
+            return ContractReportRow(
+                id: contract.id, name: contract.name, provider: contract.provider,
+                type: contract.type, contractNumber: contract.contractNumber,
+                isActive: contract.isActive, annualCostMinor: contract.annualCostMinor,
+                nextRenewal: renewal, cancellationDeadline: deadline,
+                accountName: accountName, categoryPath: categoryPath
+            )
+        }.sorted {
+            compareDatesThenNames(
+                $0.cancellationDeadline, $1.cancellationDeadline,
+                $0.name, $1.name
+            )
+        }
+
+        let inventoryRows = inventory.compactMap { item -> InventoryReportRow? in
+            guard query.includeInactive || item.isActive else { return nil }
+            guard query.inventoryCategories.isEmpty
+                    || query.inventoryCategories.contains(item.category) else { return nil }
+            if let through {
+                guard let warrantyEnd = item.warrantyEnd, warrantyEnd <= through else {
+                    return nil
+                }
+            }
+            guard matches(
+                normalizedText,
+                values: [item.name, item.category.title, item.room, item.retailer,
+                         item.serialNumber]
+            ) else { return nil }
+            return InventoryReportRow(
+                id: item.id, name: item.name, category: item.category, room: item.room,
+                isActive: item.isActive, purchasePriceMinor: item.purchasePriceMinor,
+                currentValueMinor: item.currentValueMinor,
+                insuranceValueMinor: item.insuranceValueMinor,
+                warrantyEnd: item.warrantyEnd, retailer: item.retailer,
+                serialNumber: item.serialNumber
+            )
+        }.sorted {
+            compareDatesThenNames($0.warrantyEnd, $1.warrantyEnd, $0.name, $1.name)
+        }
+
+        return AssetRegisterReportSnapshot(
+            referenceDate: referenceDay, horizon: query.horizon,
+            contracts: contractRows, inventory: inventoryRows
+        )
+    }
+
+    private static func matches(_ needle: String, values: [String]) -> Bool {
+        guard !needle.isEmpty else { return true }
+        return values.contains {
+            $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .contains(needle)
+        }
+    }
+
+    private static func compareDatesThenNames(
+        _ lhsDate: Date?, _ rhsDate: Date?, _ lhsName: String, _ rhsName: String
+    ) -> Bool {
+        switch (lhsDate, rhsDate) {
+        case let (lhs?, rhs?) where lhs != rhs: return lhs < rhs
+        case (_?, nil): return true
+        case (nil, _?): return false
+        default:
+            return lhsName.localizedCaseInsensitiveCompare(rhsName) == .orderedAscending
+        }
+    }
+
+    private static func categoryPathMap(_ categories: [FinanceCategory]) -> [UUID: String] {
+        let byID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        return Dictionary(uniqueKeysWithValues: categories.map { category in
+            var names = [String]()
+            var current: FinanceCategory? = category
+            var visited = Set<UUID>()
+            while let value = current, visited.insert(value.id).inserted {
+                names.append(value.name)
+                current = value.parentID.flatMap { byID[$0] }
+            }
+            return (category.id, names.reversed().joined(separator: " > "))
+        })
+    }
+}
+
+struct AssetRegisterReportExportMetadata: Equatable, Sendable {
+    let title: String
+    let filterSummary: String
+    let generatedAt: Date
+}
+
+enum AssetRegisterReportCSVExporter {
+    static func data(
+        snapshot: AssetRegisterReportSnapshot,
+        metadata: AssetRegisterReportExportMetadata
+    ) -> Data {
+        var lines = [
+            csv(["Bericht", metadata.title]),
+            csv(["Filter", metadata.filterSummary]),
+            csv(["Stichtag", date(snapshot.referenceDate)]),
+            csv(["Erstellt", ISO8601DateFormatter().string(from: metadata.generatedAt)]),
+            "",
+            csv(["Verträge"]),
+            csv(["Bezeichnung", "Anbieter", "Typ", "Vertragsnummer", "Status",
+                 "Jahreskosten", "Kündigungsfrist", "Verlängerung", "Konto",
+                 "Kategorie", "Währung"])
+        ]
+        lines.append(contentsOf: snapshot.contracts.map { row in
+            csv([row.name, row.provider, row.type.title, row.contractNumber,
+                 row.isActive ? "Aktiv" : "Inaktiv", decimal(row.annualCostMinor),
+                 optionalDate(row.cancellationDeadline), optionalDate(row.nextRenewal),
+                 row.accountName, row.categoryPath, "EUR"])
+        })
+        lines.append(csv(["Gesamt", "", "", "", "", decimal(snapshot.annualContractCostMinor),
+                          "", "", "", "", "EUR"]))
+        lines.append("")
+        lines.append(csv(["Inventar"]))
+        lines.append(csv(["Gegenstand", "Kategorie", "Raum", "Status", "Kaufpreis",
+                          "Aktueller Wert", "Versicherungswert", "Garantieende", "Händler",
+                          "Seriennummer", "Währung"]))
+        lines.append(contentsOf: snapshot.inventory.map { row in
+            csv([row.name, row.category.title, row.room, row.isActive ? "Aktiv" : "Inaktiv",
+                 decimal(row.purchasePriceMinor), decimal(row.currentValueMinor),
+                 decimal(row.insuranceValueMinor), optionalDate(row.warrantyEnd),
+                 row.retailer, row.serialNumber, "EUR"])
+        })
+        lines.append(csv(["Gesamt", "", "", "", decimal(snapshot.purchasePriceMinor),
+                          decimal(snapshot.currentValueMinor), decimal(snapshot.insuranceValueMinor),
+                          "", "", "", "EUR"]))
+        return Data((lines.joined(separator: "\r\n") + "\r\n").utf8)
+    }
+
+    private static func csv(_ values: [String]) -> String {
+        values.map { value in
+            let escaped = value.replacingOccurrences(of: "\"", with: "\"\"")
+            return escaped.contains(";") || escaped.contains("\"")
+                || escaped.contains("\n") || escaped.contains("\r")
+                ? "\"\(escaped)\"" : escaped
+        }.joined(separator: ";")
+    }
+
+    private static func decimal(_ minor: Int64) -> String {
+        let sign = minor < 0 ? "-" : ""
+        let magnitude = minor.magnitude
+        return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100))"
+    }
+
+    private static func optionalDate(_ value: Date?) -> String {
+        value.map(date) ?? ""
+    }
+
+    private static func date(_ value: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter.string(from: value)
+    }
+}
+
 enum LoanReportCSVExporter {
     static func data(
         snapshot: LoanReportSnapshot,
@@ -1247,6 +1515,44 @@ enum ComparisonReportCSVExporter {
 }
 
 enum ComparisonReportPDFExporter {
+    static func assetRegisterData(
+        snapshot: AssetRegisterReportSnapshot,
+        metadata: AssetRegisterReportExportMetadata,
+        orientation: ReportPDFOrientation = .landscape
+    ) throws -> Data {
+        let contractRows = snapshot.contracts.map { row in
+            ["Vertrag", row.name, row.provider, row.type.title,
+             money(row.annualCostMinor, "EUR"),
+             dateOrDash(row.cancellationDeadline), row.accountName, row.categoryPath]
+        }
+        let inventoryRows = snapshot.inventory.map { row in
+            ["Inventar", row.name, row.room, row.category.title,
+             money(row.currentValueMinor, "EUR"), dateOrDash(row.warrantyEnd),
+             row.retailer, row.serialNumber]
+        }
+        let totalRows = [
+            ["Summe", "Vertragskosten/Jahr", "", "",
+             money(snapshot.annualContractCostMinor, "EUR"), "", "", ""],
+            ["Summe", "Inventar aktuell", "", "",
+             money(snapshot.currentValueMinor, "EUR"), "", "Versicherungswert",
+             money(snapshot.insuranceValueMinor, "EUR")]
+        ]
+        return try data(
+            rows: contractRows + inventoryRows + totalRows,
+            headers: ["Bereich", "Bezeichnung", "Anbieter/Raum", "Typ/Kategorie",
+                      "Jahreskosten/Wert", "Frist/Garantie", "Konto/Händler",
+                      "Kategorie/Seriennr."],
+            metadata: ComparisonReportExportMetadata(
+                title: metadata.title,
+                currentLabel: "Stichtag \(date(snapshot.referenceDate))",
+                referenceLabel: metadata.filterSummary,
+                generatedAt: metadata.generatedAt
+            ),
+            orientation: orientation,
+            subtitle: metadata.filterSummary
+        )
+    }
+
     static func loanData(
         snapshot: LoanReportSnapshot,
         metadata: LoanReportExportMetadata,
@@ -1426,6 +1732,10 @@ enum ComparisonReportPDFExporter {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateStyle = .short
         return formatter.string(from: value)
+    }
+
+    private static func dateOrDash(_ value: Date?) -> String {
+        value.map(date) ?? "–"
     }
 }
 

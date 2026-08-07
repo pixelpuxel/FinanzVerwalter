@@ -4492,6 +4492,108 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testAssetRegisterReportFiltersTotalsHierarchyAndExportsDeterministically() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let reference = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 1))
+        )
+        let start = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 9, day: 1))
+        )
+        let warranty = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 20))
+        )
+        let account = FinanceAccount(
+            id: UUID(), name: "Haushaltskonto", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let parent = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Wohnen", kind: .expense,
+            color: "#336699", isActive: true
+        )
+        let child = FinanceCategory(
+            id: UUID(), parentID: parent.id, name: "Versicherung", kind: .expense,
+            color: "#336699", isActive: true
+        )
+        let includedContract = FinanceContract(
+            id: UUID(), provider: "Versicherung; Nord", contractNumber: "V-1",
+            name: "Hausrat", type: .insurance, startDate: start,
+            initialTermMonths: 12, renewalMonths: 12, cancellationNoticeDays: 14,
+            amountMinor: 2_500, frequency: .monthly, accountID: account.id,
+            categoryID: child.id, reminderDays: 14, note: "", isActive: true
+        )
+        let inactiveContract = FinanceContract(
+            id: UUID(), provider: "Altanbieter", contractNumber: "A-1",
+            name: "Alter Vertrag", type: .subscription, startDate: start,
+            initialTermMonths: 12, renewalMonths: 12, cancellationNoticeDays: 14,
+            amountMinor: 999, frequency: .monthly, accountID: nil,
+            categoryID: nil, reminderDays: 7, note: "", isActive: false
+        )
+        let includedInventory = InventoryItem(
+            id: UUID(), name: "Laptop", category: .electronics, room: "Büro",
+            purchaseDate: start, purchasePriceMinor: 200_000,
+            currentValueMinor: 120_000, insuranceValueMinor: 180_000,
+            retailer: "Händler \"Mitte\"", serialNumber: "LT-1",
+            warrantyEnd: warranty, note: "", isActive: true
+        )
+        let excludedInventory = InventoryItem(
+            id: UUID(), name: "Sofa", category: .furniture, room: "Wohnzimmer",
+            purchaseDate: start, purchasePriceMinor: 80_000,
+            currentValueMinor: 40_000, insuranceValueMinor: 50_000,
+            retailer: "Möbelhaus", serialNumber: "", warrantyEnd: nil,
+            note: "", isActive: true
+        )
+        let query = AssetRegisterReportQuery(
+            referenceDate: reference, horizon: .next30Days,
+            includeInactive: false, contractTypes: [.insurance],
+            inventoryCategories: [.electronics], text: ""
+        )
+        let snapshot = AssetRegisterReportEngine.snapshot(
+            query: query, contracts: [inactiveContract, includedContract],
+            inventory: [excludedInventory, includedInventory], accounts: [account],
+            categories: [child, parent], calendar: calendar
+        )
+        XCTAssertEqual(snapshot.contracts.map(\.id), [includedContract.id])
+        XCTAssertEqual(snapshot.inventory.map(\.id), [includedInventory.id])
+        XCTAssertEqual(snapshot.contracts.first?.accountName, "Haushaltskonto")
+        XCTAssertEqual(snapshot.contracts.first?.categoryPath, "Wohnen > Versicherung")
+        XCTAssertEqual(snapshot.annualContractCostMinor, 30_000)
+        XCTAssertEqual(snapshot.purchasePriceMinor, 200_000)
+        XCTAssertEqual(snapshot.currentValueMinor, 120_000)
+        XCTAssertEqual(snapshot.insuranceValueMinor, 180_000)
+
+        let metadata = AssetRegisterReportExportMetadata(
+            title: "Vertrags- und Inventarübersicht",
+            filterSummary: "Nächste 30 Tage; nur aktiv",
+            generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let csv = AssetRegisterReportCSVExporter.data(
+            snapshot: snapshot, metadata: metadata
+        )
+        XCTAssertEqual(
+            csv,
+            AssetRegisterReportCSVExporter.data(snapshot: snapshot, metadata: metadata)
+        )
+        let csvText = try XCTUnwrap(String(data: csv, encoding: .utf8))
+        XCTAssertTrue(csvText.contains("\"Versicherung; Nord\""))
+        XCTAssertTrue(csvText.contains("Wohnen > Versicherung"))
+        XCTAssertTrue(csvText.contains("2000,00;1200,00;1800,00"))
+
+        let pdf = try ComparisonReportPDFExporter.assetRegisterData(
+            snapshot: snapshot, metadata: metadata, orientation: .landscape
+        )
+        let document = try XCTUnwrap(PDFDocument(data: pdf))
+        let pdfText = (0..<document.pageCount).compactMap {
+            document.page(at: $0)?.string
+        }.joined(separator: "\n")
+        XCTAssertTrue(pdfText.contains("Vertrags- und Inventarübersicht"))
+        XCTAssertTrue(pdfText.contains("Hausrat"))
+        XCTAssertTrue(pdfText.contains("Laptop"))
+        XCTAssertTrue(pdfText.contains("Versicherungswert"))
+    }
+
     func testCategoryHierarchyRejectsCyclesAndPersistsSubcategories() throws {
         let context = try TestDatabase()
         let root = try XCTUnwrap(
