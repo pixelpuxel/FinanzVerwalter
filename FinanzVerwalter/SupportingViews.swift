@@ -1403,6 +1403,7 @@ struct ReportsView: View {
     @State private var selectedTemplateID: UUID?
     @State private var showTemplateSave = false
     @State private var showAccountBalanceReport = false
+    @State private var showVATReport = false
     @State private var showPeriodComparisonReport = false
     @State private var showBudgetReport = false
     @State private var templateName = ""
@@ -1530,6 +1531,11 @@ struct ReportsView: View {
                             showAccountBalanceReport = true
                         } label: {
                             Label("Kontosalden und Nettovermögen …", systemImage: "scalemass")
+                        }
+                        Button {
+                            showVATReport = true
+                        } label: {
+                            Label("Umsatzsteuerbericht …", systemImage: "percent")
                         }
                         Button {
                             showPeriodComparisonReport = true
@@ -1811,6 +1817,10 @@ struct ReportsView: View {
         }
         .sheet(isPresented: $showAccountBalanceReport) {
             AccountBalanceReportView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showVATReport) {
+            VATReportView()
                 .environmentObject(store)
         }
         .sheet(isPresented: $showPeriodComparisonReport) {
@@ -3165,6 +3175,362 @@ private struct BudgetComparisonReportView: View {
         let magnitude = basisPoints.magnitude
         let sign = basisPoints < 0 ? "−" : ""
         return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100)) %"
+    }
+}
+
+private struct VATReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var dateFrom: Date
+    @State private var dateThrough: Date
+    @State private var accountIDs = Set<UUID>()
+    @State private var accountGroupIDs = Set<UUID>()
+    @State private var currencies = Set<String>()
+    @State private var statuses = Set(
+        TransactionStatus.allCases.filter { $0 != .cancelled }
+    )
+    @State private var includeHidden = false
+    @State private var includeExcluded = false
+    @State private var includeTransfers = false
+    @State private var selectedRowID: String?
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    init(now: Date = .now, calendar: Calendar = .current) {
+        let interval = calendar.dateInterval(of: .year, for: now)
+        _dateFrom = State(initialValue: interval?.start ?? now)
+        _dateThrough = State(
+            initialValue: interval?.end.addingTimeInterval(-0.001) ?? now
+        )
+    }
+
+    private var query: VATReportQuery {
+        let calendar = Calendar.current
+        let first = min(dateFrom, dateThrough)
+        let last = max(dateFrom, dateThrough)
+        let start = calendar.startOfDay(for: first)
+        let end = calendar.date(
+            byAdding: .day, value: 1, to: calendar.startOfDay(for: last)
+        )?.addingTimeInterval(-0.001) ?? last
+        return VATReportQuery(
+            dateFrom: start, dateThrough: end,
+            accountIDs: accountIDs, accountGroupIDs: accountGroupIDs,
+            currencies: currencies, statuses: statuses,
+            includeHiddenAccounts: includeHidden,
+            includeAccountsExcludedFromReports: includeExcluded,
+            includeTransfers: includeTransfers
+        )
+    }
+
+    var body: some View {
+        let snapshot = store.vatReport(query)
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Umsatzsteuerbericht")
+                        .font(.title2.bold())
+                    Text("Brutto, Netto, Umsatzsteuer, Vorsteuer und Zahllast je Schlüssel")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(snapshot.facts.count) MwSt.-Positionen")
+                    .font(.headline)
+                Button("Schließen") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            HStack(spacing: 10) {
+                DatePicker("Von", selection: $dateFrom, displayedComponents: .date)
+                DatePicker("Bis", selection: $dateThrough, displayedComponents: .date)
+                accountMenu
+                currencyMenu
+                statusMenu
+                Menu {
+                    Toggle("Ausgeblendete/geschlossene Konten", isOn: $includeHidden)
+                    Toggle("Von Berichten ausgeschlossene Konten", isOn: $includeExcluded)
+                    Toggle("Umbuchungen einbeziehen", isOn: $includeTransfers)
+                } label: {
+                    Label("Optionen", systemImage: "slider.horizontal.3")
+                }
+                Spacer()
+                Button("CSV exportieren …", systemImage: "tablecells") {
+                    csvDocument = ReportCSVDocument(
+                        data: VATReportCSVExporter.data(snapshot: snapshot, metadata: metadata)
+                    )
+                    showCSVExporter = true
+                }
+                Menu {
+                    Picker("Papierausrichtung", selection: $orientation) {
+                        ForEach(ReportPDFOrientation.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Divider()
+                    Button("Drucken …", systemImage: "printer.fill") {
+                        printReport(snapshot)
+                    }
+                    Button("PDF exportieren …", systemImage: "doc.richtext") {
+                        exportPDF(snapshot)
+                    }
+                } label: {
+                    Label("PDF · \(orientation.title)", systemImage: "printer")
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            VSplitView {
+                ScrollView(.horizontal) {
+                    Table(snapshot.rows, selection: $selectedRowID) {
+                        TableColumn("MwSt.-Schlüssel") { row in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(row.vatCodeName).lineLimit(1)
+                                Text("\(row.bookingCount) Positionen")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .width(180)
+                        TableColumn("Satz") { row in Text(rate(row.rateBasisPoints)) }
+                            .width(70)
+                        TableColumn("Bruttoumsatz") {
+                            reportMoney($0.grossSalesMinor, $0.currency)
+                        }.width(125)
+                        TableColumn("Nettoumsatz") {
+                            reportMoney($0.netSalesMinor, $0.currency)
+                        }.width(125)
+                        TableColumn("Umsatzsteuer") {
+                            reportMoney($0.outputTaxMinor, $0.currency)
+                        }.width(115)
+                        TableColumn("Bruttoeinkauf") {
+                            reportMoney($0.grossPurchasesMinor, $0.currency)
+                        }.width(125)
+                        TableColumn("Nettoeinkauf") {
+                            reportMoney($0.netPurchasesMinor, $0.currency)
+                        }.width(125)
+                        TableColumn("Vorsteuer") {
+                            reportMoney($0.inputTaxMinor, $0.currency)
+                        }.width(110)
+                        TableColumn("Zahllast") {
+                            reportMoney($0.payableMinor, $0.currency)
+                        }.width(115)
+                        TableColumn("Währung") { Text($0.currency) }.width(70)
+                    }
+                    .frame(width: 1_285, height: 300)
+                }
+                .overlay {
+                    if snapshot.rows.isEmpty {
+                        ContentUnavailableView(
+                            "Keine MwSt.-Positionen", systemImage: "percent",
+                            description: Text(
+                                "Im gewählten Zeitraum sind keine Buchungs- oder Splitzeilen mit MwSt.-Schlüssel vorhanden."
+                            )
+                        )
+                    }
+                }
+
+                Table(snapshot.facts(inRowID: selectedRowID)) {
+                    TableColumn("Datum") { Text(reportDate($0.bookingDate)) }.width(90)
+                    TableColumn("Konto") { Text($0.accountName).lineLimit(1) }.width(135)
+                    TableColumn("Empfänger") { Text($0.payee).lineLimit(1) }.width(150)
+                    TableColumn("Kategorie") { Text($0.categoryPath).lineLimit(2) }.width(220)
+                    TableColumn("Brutto") { reportMoney($0.grossMinor, $0.currency) }.width(110)
+                    TableColumn("Netto") { reportMoney($0.netMinor, $0.currency) }.width(110)
+                    TableColumn("Steuer") { reportMoney($0.taxMinor, $0.currency) }.width(100)
+                    TableColumn("Split") { Text($0.splitID == nil ? "Nein" : "Ja") }.width(60)
+                }
+                .frame(minHeight: 190)
+                .overlay {
+                    if selectedRowID == nil && !snapshot.rows.isEmpty {
+                        ContentUnavailableView(
+                            "MwSt.-Schlüssel auswählen", systemImage: "arrow.up",
+                            description: Text("Die zugehörigen Buchungs- und Splitpositionen erscheinen hier.")
+                        )
+                    }
+                }
+            }
+            Divider()
+            ScrollView(.horizontal) {
+                HStack(spacing: 18) {
+                    Text("Summen").fontWeight(.semibold)
+                    ForEach(snapshot.totals) { total in
+                        Text(
+                            "\(total.currency): Umsatzsteuer "
+                                + Money(minorUnits: total.outputTaxMinor,
+                                        currency: total.currency).formatted
+                                + " · Vorsteuer "
+                                + Money(minorUnits: total.inputTaxMinor,
+                                        currency: total.currency).formatted
+                                + " · Zahllast "
+                                + Money(minorUnits: total.payableMinor,
+                                        currency: total.currency).formatted
+                        )
+                        .monospacedDigit()
+                    }
+                    if snapshot.totals.count > 1 {
+                        Label("Keine Addition ohne FX-Kurs", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            }
+        }
+        .frame(minWidth: 1_260, minHeight: 720)
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: filename
+        ) { result in
+            switch result {
+            case .success: store.statusText = "Umsatzsteuerbericht als CSV exportiert"
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: filename
+        ) { result in
+            switch result {
+            case .success: store.statusText = "Umsatzsteuerbericht als PDF exportiert"
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var accountMenu: some View {
+        Menu {
+            Button("Alle Konten") { accountIDs.removeAll(); accountGroupIDs.removeAll() }
+            Section("Kontengruppen") {
+                ForEach(store.accountGroups.filter(\.isActive)) { group in
+                    Toggle(group.name, isOn: member(group.id, in: $accountGroupIDs))
+                }
+            }
+            Section("Einzelkonten") {
+                ForEach(store.accounts) { account in
+                    Toggle(account.name, isOn: member(account.id, in: $accountIDs))
+                }
+            }
+        } label: {
+            Label(
+                accountIDs.isEmpty && accountGroupIDs.isEmpty
+                    ? "Alle Konten" : "Konten (\(accountIDs.count + accountGroupIDs.count))",
+                systemImage: "building.columns"
+            )
+        }
+    }
+
+    private var currencyMenu: some View {
+        Menu {
+            Button("Alle Währungen") { currencies.removeAll() }
+            ForEach(Set(store.transactions.map { $0.currency.uppercased() }).sorted(), id: \.self) {
+                currency in
+                Toggle(currency, isOn: member(currency, in: $currencies))
+            }
+        } label: {
+            Label(currencies.isEmpty ? "Alle Währungen" : "Währungen (\(currencies.count))",
+                  systemImage: "eurosign.arrow.circlepath")
+        }
+    }
+
+    private var statusMenu: some View {
+        Menu {
+            Button("Alle regulären Status") {
+                statuses = Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+            }
+            Button("Alle einschließlich Storniert") {
+                statuses = Set(TransactionStatus.allCases)
+            }
+            Divider()
+            ForEach(TransactionStatus.allCases, id: \.self) { status in
+                Toggle(status.title, isOn: member(status, in: $statuses))
+            }
+        } label: {
+            Label("Status \(statuses.count)/\(TransactionStatus.allCases.count)",
+                  systemImage: "checkmark.circle")
+        }
+    }
+
+    private func member<Value: Hashable>(
+        _ value: Value, in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { included in
+                if included { selection.wrappedValue.insert(value) }
+                else { selection.wrappedValue.remove(value) }
+            }
+        )
+    }
+
+    private func reportMoney(_ minor: Int64, _ currency: String) -> some View {
+        Text(Money(minorUnits: minor, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+    }
+
+    private func rate(_ basisPoints: Int) -> String {
+        let whole = basisPoints / 100
+        let remainder = abs(basisPoints % 100)
+        return remainder == 0
+            ? "\(whole) %"
+            : "\(whole),\(String(format: "%02d", remainder)) %"
+    }
+
+    private func reportDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.dateStyle = .short
+        return formatter.string(from: date)
+    }
+
+    private var metadata: VATReportExportMetadata {
+        VATReportExportMetadata(
+            title: "Umsatzsteuerbericht", dateLabel: dateLabel,
+            filterSummary: filterSummary, generatedAt: .now
+        )
+    }
+
+    private var filterSummary: String {
+        let accounts = accountIDs.isEmpty && accountGroupIDs.isEmpty
+            ? "alle Konten"
+            : "\(accountIDs.count) Konten, \(accountGroupIDs.count) Gruppen"
+        let currency = currencies.isEmpty ? "alle Währungen" : currencies.sorted().joined(separator: ", ")
+        return "\(accounts); \(currency); \(statuses.count) Status"
+    }
+
+    private var dateLabel: String {
+        "\(reportDate(query.dateFrom))–\(reportDate(query.dateThrough))"
+    }
+
+    private func pdfData(_ snapshot: VATReportSnapshot) throws -> Data {
+        try ComparisonReportPDFExporter.vatData(
+            snapshot: snapshot, metadata: metadata, orientation: orientation
+        )
+    }
+
+    private func printReport(_ snapshot: VATReportSnapshot) {
+        do { try RegisterPrintService.printPDF(try pdfData(snapshot)) }
+        catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private func exportPDF(_ snapshot: VATReportSnapshot) {
+        do {
+            pdfDocument = ReportPDFDocument(data: try pdfData(snapshot))
+            showPDFExporter = true
+        } catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private var filename: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "FinanzVerwalter-Umsatzsteuer-\(formatter.string(from: query.dateFrom))-bis-"
+            + formatter.string(from: query.dateThrough)
     }
 }
 

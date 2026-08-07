@@ -5214,6 +5214,203 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(series.totalMinor, 10_500)
     }
 
+    func testVATReportUsesRoundedSplitLinesAndSeparatesCurrencies() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let date = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 6, day: 15, hour: 12))
+        )
+        let groupID = UUID()
+        let euro = FinanceAccount(
+            id: UUID(), name: "Geschäftskonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0, groupID: groupID
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "USD-Konto", institution: "", type: .foreignCurrency,
+            currency: "USD", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1, groupID: groupID
+        )
+        let income = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Umsätze", kind: .income,
+            color: "", isActive: true
+        )
+        let office = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Betrieb", kind: .expense,
+            color: "", isActive: true
+        )
+        let supplies = FinanceCategory(
+            id: UUID(), parentID: office.id, name: "Material", kind: .expense,
+            color: "", isActive: true
+        )
+        let code19 = VATCode(
+            id: UUID(), name: "USt. 19 %", rateBasisPoints: 1_900,
+            description: "", isActive: true
+        )
+        let code7 = VATCode(
+            id: UUID(), name: "USt. 7 %", rateBasisPoints: 700,
+            description: "", isActive: true
+        )
+        let sale = try VATCalculator.automatic(
+            grossMinor: 11_900, rateBasisPoints: code19.rateBasisPoints
+        )
+        let purchase19 = try VATCalculator.automatic(
+            grossMinor: -11_900, rateBasisPoints: code19.rateBasisPoints
+        )
+        let purchase7 = try VATCalculator.automatic(
+            grossMinor: -10_700, rateBasisPoints: code7.rateBasisPoints
+        )
+        let purchaseRefund = try VATCalculator.automatic(
+            grossMinor: 1_070, rateBasisPoints: code7.rateBasisPoints
+        )
+        let receipt = try VATCalculator.receipt([purchase19, purchase7])
+        let euroSale = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: date, valueDate: nil,
+            payee: "Kunde", purpose: "Rechnung", categoryID: income.id,
+            amountMinor: sale.grossMinor, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [], vatCodeID: code19.id, vatMode: .automatic,
+            netMinor: sale.netMinor, taxMinor: sale.taxMinor
+        )
+        let euroPurchase = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: date.addingTimeInterval(60),
+            valueDate: nil, payee: "Lieferant", purpose: "Gemischter Beleg",
+            categoryID: nil, amountMinor: receipt.grossMinor, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: supplies.id,
+                    amountMinor: purchase19.grossMinor, memo: "19 %", sortOrder: 0,
+                    vatCodeID: code19.id, vatMode: .automatic,
+                    netMinor: purchase19.netMinor, taxMinor: purchase19.taxMinor
+                ),
+                FinanceSplit(
+                    id: UUID(), categoryID: supplies.id,
+                    amountMinor: purchase7.grossMinor, memo: "7 %", sortOrder: 1,
+                    vatCodeID: code7.id, vatMode: .manual,
+                    netMinor: purchase7.netMinor, taxMinor: purchase7.taxMinor
+                )
+            ], vatCodeID: nil, vatMode: .none,
+            netMinor: receipt.netMinor, taxMinor: receipt.taxMinor
+        )
+        let dollarSale = FinanceTransaction(
+            id: UUID(), accountID: dollar.id, bookingDate: date, valueDate: nil,
+            payee: "US Customer", purpose: "Invoice", categoryID: income.id,
+            amountMinor: sale.grossMinor, currency: "USD", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [], vatCodeID: code19.id, vatMode: .automatic,
+            netMinor: sale.netMinor, taxMinor: sale.taxMinor
+        )
+        let euroRefund = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: date.addingTimeInterval(120),
+            valueDate: nil, payee: "Lieferant", purpose: "Materialgutschrift",
+            categoryID: supplies.id, amountMinor: purchaseRefund.grossMinor,
+            currency: "EUR", status: .booked, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: [],
+            vatCodeID: code7.id, vatMode: .automatic,
+            netMinor: purchaseRefund.netMinor, taxMinor: purchaseRefund.taxMinor
+        )
+        let cancelled = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: date, valueDate: nil,
+            payee: "Storniert", purpose: "", categoryID: income.id,
+            amountMinor: sale.grossMinor, currency: "EUR", status: .cancelled,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [], vatCodeID: code19.id, vatMode: .automatic,
+            netMinor: sale.netMinor, taxMinor: sale.taxMinor
+        )
+        try [euroSale, euroPurchase, dollarSale, euroRefund, cancelled]
+            .forEach { try $0.validate() }
+
+        let snapshot = VATReportEngine.snapshot(
+            query: VATReportQuery(
+                dateFrom: date.addingTimeInterval(-3_600),
+                dateThrough: date.addingTimeInterval(3_600),
+                accountGroupIDs: [groupID]
+            ),
+            transactions: [cancelled, dollarSale, euroRefund, euroPurchase, euroSale],
+            accounts: [euro, dollar], categories: [income, office, supplies],
+            vatCodes: [code19, code7]
+        )
+
+        XCTAssertEqual(snapshot.facts.count, 5)
+        XCTAssertEqual(snapshot.rows.count, 3)
+        XCTAssertEqual(snapshot.totals.count, 2)
+        let euroTotal = try XCTUnwrap(snapshot.totals.first { $0.currency == "EUR" })
+        XCTAssertEqual(euroTotal.grossSalesMinor, 11_900)
+        XCTAssertEqual(euroTotal.netSalesMinor, 10_000)
+        XCTAssertEqual(euroTotal.outputTaxMinor, 1_900)
+        XCTAssertEqual(euroTotal.grossPurchasesMinor, 21_530)
+        XCTAssertEqual(euroTotal.netPurchasesMinor, 19_000)
+        XCTAssertEqual(euroTotal.inputTaxMinor, 2_530)
+        XCTAssertEqual(euroTotal.payableMinor, -630)
+        let dollarTotal = try XCTUnwrap(snapshot.totals.first { $0.currency == "USD" })
+        XCTAssertEqual(dollarTotal.outputTaxMinor, 1_900)
+        XCTAssertEqual(dollarTotal.inputTaxMinor, 0)
+        XCTAssertEqual(dollarTotal.payableMinor, 1_900)
+        let code19Euro = try XCTUnwrap(snapshot.rows.first {
+            $0.vatCodeID == code19.id && $0.currency == "EUR"
+        })
+        XCTAssertEqual(code19Euro.bookingCount, 2)
+        XCTAssertEqual(code19Euro.payableMinor, 0)
+        XCTAssertEqual(snapshot.facts(inRowID: code19Euro.id).count, 2)
+        XCTAssertTrue(snapshot.facts.contains { $0.categoryPath == "Betrieb › Material" })
+        XCTAssertEqual(Set(snapshot.facts.map(\.id)).count, snapshot.facts.count)
+    }
+
+    func testVATReportCSVAndPDFUseTheSameSnapshotDeterministically() throws {
+        let codeID = UUID(uuidString: "00000000-0000-0000-0000-000000000019")!
+        let fact = VATReportFact(
+            id: "fact-1", transactionID: UUID(), splitID: nil,
+            bookingDate: Date(timeIntervalSince1970: 1_735_689_600),
+            accountName: "Geschäft;Giro", payee: "Kunde \"Nord\"",
+            categoryPath: "Umsätze › Beratung", categoryKind: .income,
+            vatCodeID: codeID,
+            vatCodeName: "USt. 19 %", rateBasisPoints: 1_900,
+            grossMinor: 11_900, netMinor: 10_000, taxMinor: 1_900,
+            currency: "EUR"
+        )
+        let row = VATReportRow(
+            id: "row-1", vatCodeID: codeID, vatCodeName: "USt. 19 %",
+            rateBasisPoints: 1_900, currency: "EUR",
+            grossSalesMinor: 11_900, netSalesMinor: 10_000,
+            outputTaxMinor: 1_900, grossPurchasesMinor: 0,
+            netPurchasesMinor: 0, inputTaxMinor: 0, payableMinor: 1_900,
+            factIDs: [fact.id]
+        )
+        let snapshot = VATReportSnapshot(
+            dateFrom: fact.bookingDate, dateThrough: fact.bookingDate,
+            facts: [fact], rows: [row],
+            totals: [VATReportCurrencyTotal(
+                currency: "EUR", grossSalesMinor: 11_900, netSalesMinor: 10_000,
+                outputTaxMinor: 1_900, grossPurchasesMinor: 0,
+                netPurchasesMinor: 0, inputTaxMinor: 0, payableMinor: 1_900
+            )]
+        )
+        let metadata = VATReportExportMetadata(
+            title: "Umsatzsteuerbericht", dateLabel: "01.01.2025–31.12.2025",
+            filterSummary: "alle Konten; EUR", generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let csv = VATReportCSVExporter.data(snapshot: snapshot, metadata: metadata)
+        let csvText = try XCTUnwrap(String(data: csv, encoding: .utf8))
+        XCTAssertTrue(csvText.contains("119,00;100,00;19,00"))
+        XCTAssertTrue(csvText.contains("\"Geschäft;Giro\";\"Kunde \"\"Nord\"\"\""))
+        XCTAssertTrue(csvText.contains("Umsätze › Beratung"))
+        XCTAssertEqual(csv, VATReportCSVExporter.data(snapshot: snapshot, metadata: metadata))
+
+        let pdf = try ComparisonReportPDFExporter.vatData(
+            snapshot: snapshot, metadata: metadata, orientation: .landscape
+        )
+        let document = try XCTUnwrap(PDFDocument(data: pdf))
+        XCTAssertGreaterThanOrEqual(document.pageCount, 1)
+        let text = (0..<document.pageCount).compactMap {
+            document.page(at: $0)?.string
+        }.joined(separator: "\n")
+        XCTAssertTrue(text.contains("Umsatzsteuerbericht"))
+        XCTAssertTrue(text.contains("USt. 19 %"))
+        XCTAssertTrue(text.contains("Zahllast"))
+    }
+
     func testAccountBalanceReportUsesHistoricalCutoffAndSeparatesCurrencies() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))

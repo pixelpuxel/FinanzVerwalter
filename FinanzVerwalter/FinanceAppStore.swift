@@ -392,6 +392,13 @@ final class FinanceAppStore: ObservableObject {
         )
     }
 
+    func vatReport(_ query: VATReportQuery) -> VATReportSnapshot {
+        VATReportEngine.snapshot(
+            query: query, transactions: transactions, accounts: accounts,
+            categories: categories, vatCodes: vatCodes
+        )
+    }
+
     func periodComparisonReport(
         _ query: PeriodComparisonQuery
     ) -> PeriodComparisonSnapshot {

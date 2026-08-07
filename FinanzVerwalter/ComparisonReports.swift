@@ -2,6 +2,235 @@ import CoreGraphics
 import CoreText
 import Foundation
 
+struct VATReportQuery: Equatable, Sendable {
+    var dateFrom: Date
+    var dateThrough: Date
+    var accountIDs = Set<UUID>()
+    var accountGroupIDs = Set<UUID>()
+    var currencies = Set<String>()
+    var statuses = Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+    var includeHiddenAccounts = false
+    var includeAccountsExcludedFromReports = false
+    var includeTransfers = false
+}
+
+struct VATReportFact: Identifiable, Equatable, Sendable {
+    let id: String
+    let transactionID: UUID
+    let splitID: UUID?
+    let bookingDate: Date
+    let accountName: String
+    let payee: String
+    let categoryPath: String
+    let categoryKind: CategoryKind?
+    let vatCodeID: UUID
+    let vatCodeName: String
+    let rateBasisPoints: Int
+    let grossMinor: Int64
+    let netMinor: Int64
+    let taxMinor: Int64
+    let currency: String
+}
+
+struct VATReportRow: Identifiable, Equatable, Sendable {
+    let id: String
+    let vatCodeID: UUID
+    let vatCodeName: String
+    let rateBasisPoints: Int
+    let currency: String
+    let grossSalesMinor: Int64
+    let netSalesMinor: Int64
+    let outputTaxMinor: Int64
+    let grossPurchasesMinor: Int64
+    let netPurchasesMinor: Int64
+    let inputTaxMinor: Int64
+    let payableMinor: Int64
+    let factIDs: Set<String>
+
+    var bookingCount: Int { factIDs.count }
+}
+
+struct VATReportCurrencyTotal: Identifiable, Equatable, Sendable {
+    var id: String { currency }
+    let currency: String
+    let grossSalesMinor: Int64
+    let netSalesMinor: Int64
+    let outputTaxMinor: Int64
+    let grossPurchasesMinor: Int64
+    let netPurchasesMinor: Int64
+    let inputTaxMinor: Int64
+    let payableMinor: Int64
+}
+
+struct VATReportSnapshot: Equatable, Sendable {
+    let dateFrom: Date
+    let dateThrough: Date
+    let facts: [VATReportFact]
+    let rows: [VATReportRow]
+    let totals: [VATReportCurrencyTotal]
+
+    func facts(inRowID id: String?) -> [VATReportFact] {
+        guard let id, let row = rows.first(where: { $0.id == id }) else { return [] }
+        return facts.filter { row.factIDs.contains($0.id) }
+    }
+}
+
+enum VATReportEngine {
+    static func snapshot(
+        query: VATReportQuery,
+        transactions: [FinanceTransaction],
+        accounts: [FinanceAccount],
+        categories: [FinanceCategory],
+        vatCodes: [VATCode]
+    ) -> VATReportSnapshot {
+        let start = min(query.dateFrom, query.dateThrough)
+        let end = max(query.dateFrom, query.dateThrough)
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        let categoriesByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let codesByID = Dictionary(uniqueKeysWithValues: vatCodes.map { ($0.id, $0) })
+        let currencies = Set(query.currencies.map { $0.uppercased() })
+        var facts: [VATReportFact] = []
+
+        for transaction in transactions {
+            guard let account = accountsByID[transaction.accountID] else { continue }
+            guard transaction.bookingDate >= start, transaction.bookingDate <= end else { continue }
+            guard query.statuses.contains(transaction.status) else { continue }
+            guard query.includeTransfers || transaction.transferID == nil else { continue }
+            guard (query.accountIDs.isEmpty && query.accountGroupIDs.isEmpty)
+                || query.accountIDs.contains(account.id)
+                || account.groupID.map(query.accountGroupIDs.contains) == true
+            else { continue }
+            guard query.includeHiddenAccounts || (!account.isHidden && !account.isClosed) else {
+                continue
+            }
+            guard query.includeAccountsExcludedFromReports || account.includeReports else {
+                continue
+            }
+            let currency = transaction.currency.uppercased()
+            guard currencies.isEmpty || currencies.contains(currency) else { continue }
+
+            if transaction.splits.isEmpty {
+                if let fact = fact(
+                    transaction: transaction, split: nil, account: account,
+                    categoriesByID: categoriesByID, codesByID: codesByID
+                ) {
+                    facts.append(fact)
+                }
+            } else {
+                facts.append(contentsOf: transaction.splits
+                    .sorted { $0.sortOrder < $1.sortOrder }
+                    .compactMap { split in
+                        fact(
+                            transaction: transaction, split: split, account: account,
+                            categoriesByID: categoriesByID, codesByID: codesByID
+                        )
+                    })
+            }
+        }
+
+        facts.sort {
+            $0.bookingDate == $1.bookingDate ? $0.id < $1.id : $0.bookingDate < $1.bookingDate
+        }
+        let rows = Dictionary(grouping: facts) {
+            "\($0.vatCodeID.uuidString)\u{1F}\($0.currency)"
+        }.map { key, values in
+            let sales = values.filter(isSales)
+            let purchases = values.filter { !isSales($0) }
+            let first = values[0]
+            let outputTax = sales.reduce(Int64.zero) { $0 + $1.taxMinor }
+            let inputTax = purchases.reduce(Int64.zero) { $0 - $1.taxMinor }
+            return VATReportRow(
+                id: key, vatCodeID: first.vatCodeID,
+                vatCodeName: first.vatCodeName, rateBasisPoints: first.rateBasisPoints,
+                currency: first.currency,
+                grossSalesMinor: sales.reduce(0) { $0 + $1.grossMinor },
+                netSalesMinor: sales.reduce(0) { $0 + $1.netMinor },
+                outputTaxMinor: outputTax,
+                grossPurchasesMinor: purchases.reduce(0) { $0 - $1.grossMinor },
+                netPurchasesMinor: purchases.reduce(0) { $0 - $1.netMinor },
+                inputTaxMinor: inputTax,
+                payableMinor: outputTax - inputTax,
+                factIDs: Set(values.map(\.id))
+            )
+        }.sorted {
+            if $0.rateBasisPoints != $1.rateBasisPoints {
+                return $0.rateBasisPoints < $1.rateBasisPoints
+            }
+            let nameOrder = $0.vatCodeName.localizedCaseInsensitiveCompare($1.vatCodeName)
+            return nameOrder == .orderedSame
+                ? $0.currency < $1.currency : nameOrder == .orderedAscending
+        }
+        let totals = Dictionary(grouping: rows, by: \.currency).map { currency, values in
+            VATReportCurrencyTotal(
+                currency: currency,
+                grossSalesMinor: values.reduce(0) { $0 + $1.grossSalesMinor },
+                netSalesMinor: values.reduce(0) { $0 + $1.netSalesMinor },
+                outputTaxMinor: values.reduce(0) { $0 + $1.outputTaxMinor },
+                grossPurchasesMinor: values.reduce(0) { $0 + $1.grossPurchasesMinor },
+                netPurchasesMinor: values.reduce(0) { $0 + $1.netPurchasesMinor },
+                inputTaxMinor: values.reduce(0) { $0 + $1.inputTaxMinor },
+                payableMinor: values.reduce(0) { $0 + $1.payableMinor }
+            )
+        }.sorted { $0.currency < $1.currency }
+        return VATReportSnapshot(
+            dateFrom: start, dateThrough: end, facts: facts, rows: rows, totals: totals
+        )
+    }
+
+    private static func fact(
+        transaction: FinanceTransaction,
+        split: FinanceSplit?,
+        account: FinanceAccount,
+        categoriesByID: [UUID: FinanceCategory],
+        codesByID: [UUID: VATCode]
+    ) -> VATReportFact? {
+        let mode = split?.vatMode ?? transaction.vatMode
+        guard mode != .none,
+              let codeID = split?.vatCodeID ?? transaction.vatCodeID
+        else { return nil }
+        let code = codesByID[codeID]
+        let categoryID = split?.categoryID ?? transaction.categoryID
+        return VATReportFact(
+            id: split.map { "\(transaction.id.uuidString):\($0.id.uuidString)" }
+                ?? transaction.id.uuidString,
+            transactionID: transaction.id, splitID: split?.id,
+            bookingDate: transaction.bookingDate, accountName: account.name,
+            payee: transaction.payee,
+            categoryPath: hierarchyPath(categoryID, categoriesByID: categoriesByID),
+            categoryKind: categoryID.flatMap { categoriesByID[$0]?.kind },
+            vatCodeID: codeID,
+            vatCodeName: code?.name ?? "Unbekannter MwSt.-Schlüssel",
+            rateBasisPoints: code?.rateBasisPoints ?? 0,
+            grossMinor: split?.amountMinor ?? transaction.amountMinor,
+            netMinor: split?.netMinor ?? transaction.netMinor,
+            taxMinor: split?.taxMinor ?? transaction.taxMinor,
+            currency: transaction.currency.uppercased()
+        )
+    }
+
+    private static func hierarchyPath(
+        _ id: UUID?, categoriesByID: [UUID: FinanceCategory]
+    ) -> String {
+        guard var current = id else { return "Ohne Kategorie" }
+        var names: [String] = []
+        var visited = Set<UUID>()
+        while let value = categoriesByID[current], visited.insert(current).inserted {
+            names.append(value.name)
+            guard let parentID = value.parentID else { break }
+            current = parentID
+        }
+        return names.isEmpty ? "Ohne Kategorie" : names.reversed().joined(separator: " › ")
+    }
+
+    private static func isSales(_ fact: VATReportFact) -> Bool {
+        switch fact.categoryKind {
+        case .income: true
+        case .expense: false
+        case .transfer, .none: fact.grossMinor >= 0
+        }
+    }
+}
+
 enum PeriodComparisonMetric: String, CaseIterable, Identifiable, Sendable {
     case income
     case expense
@@ -559,6 +788,102 @@ struct ComparisonReportExportMetadata: Equatable, Sendable {
     let generatedAt: Date
 }
 
+struct VATReportExportMetadata: Equatable, Sendable {
+    let title: String
+    let dateLabel: String
+    let filterSummary: String
+    let generatedAt: Date
+}
+
+enum VATReportCSVExporter {
+    static func data(
+        snapshot: VATReportSnapshot,
+        metadata: VATReportExportMetadata
+    ) -> Data {
+        var rows = [
+            ["Bericht", metadata.title],
+            ["Zeitraum", metadata.dateLabel],
+            ["Filter", metadata.filterSummary],
+            ["Erstellt", ISO8601DateFormatter().string(from: metadata.generatedAt)],
+            [],
+            ["MwSt.-Schlüssel", "Satz", "Bruttoumsatz", "Nettoumsatz",
+             "Umsatzsteuer", "Bruttoeinkauf", "Nettoeinkauf", "Vorsteuer",
+             "Zahllast", "Währung", "Positionen"]
+        ]
+        rows.append(contentsOf: snapshot.rows.map { row in
+            [row.vatCodeName, rate(row.rateBasisPoints),
+             amount(row.grossSalesMinor, row.currency),
+             amount(row.netSalesMinor, row.currency),
+             amount(row.outputTaxMinor, row.currency),
+             amount(row.grossPurchasesMinor, row.currency),
+             amount(row.netPurchasesMinor, row.currency),
+             amount(row.inputTaxMinor, row.currency),
+             amount(row.payableMinor, row.currency), row.currency,
+             String(row.bookingCount)]
+        })
+        rows.append([])
+        rows.append(["Gesamtsummen", "", "Bruttoumsatz", "Nettoumsatz",
+                     "Umsatzsteuer", "Bruttoeinkauf", "Nettoeinkauf", "Vorsteuer",
+                     "Zahllast", "Währung", ""])
+        rows.append(contentsOf: snapshot.totals.map { total in
+            ["Gesamt", "", amount(total.grossSalesMinor, total.currency),
+             amount(total.netSalesMinor, total.currency),
+             amount(total.outputTaxMinor, total.currency),
+             amount(total.grossPurchasesMinor, total.currency),
+             amount(total.netPurchasesMinor, total.currency),
+             amount(total.inputTaxMinor, total.currency),
+             amount(total.payableMinor, total.currency), total.currency, ""]
+        })
+        rows.append([])
+        rows.append(["Buchungen und Splitpositionen"])
+        rows.append(["Datum", "Konto", "Empfänger", "Kategorie", "MwSt.-Schlüssel",
+                     "Satz", "Brutto", "Netto", "Steuer", "Währung", "Split"])
+        rows.append(contentsOf: snapshot.facts.map { fact in
+            [date(fact.bookingDate), fact.accountName, fact.payee, fact.categoryPath,
+             fact.vatCodeName, rate(fact.rateBasisPoints),
+             amount(fact.grossMinor, fact.currency), amount(fact.netMinor, fact.currency),
+             amount(fact.taxMinor, fact.currency), fact.currency,
+             fact.splitID == nil ? "Nein" : "Ja"]
+        })
+        let text = rows.map { $0.map(csv).joined(separator: ";") }
+            .joined(separator: "\r\n") + "\r\n"
+        return Data(text.utf8)
+    }
+
+    private static func csv(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "\"", with: "\"\"")
+        return escaped.contains(";") || escaped.contains("\"")
+            || escaped.contains("\n") || escaped.contains("\r")
+            ? "\"\(escaped)\"" : escaped
+    }
+
+    private static func amount(_ minor: Int64, _ currency: String) -> String {
+        let factor = UInt64(Money.minorUnitFactor(for: currency))
+        let magnitude = minor.magnitude
+        let sign = minor < 0 ? "-" : ""
+        guard factor > 1 else { return "\(sign)\(magnitude)" }
+        var digits = 0
+        var divisor = factor
+        while divisor > 1 { digits += 1; divisor /= 10 }
+        return "\(sign)\(magnitude / factor),"
+            + String(format: "%0*llu", digits, magnitude % factor)
+    }
+
+    private static func rate(_ basisPoints: Int) -> String {
+        let whole = basisPoints / 100
+        let remainder = abs(basisPoints % 100)
+        return remainder == 0 ? "\(whole) %" : "\(whole),\(String(format: "%02d", remainder)) %"
+    }
+
+    private static func date(_ value: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter.string(from: value)
+    }
+}
+
 enum ComparisonReportCSVExporter {
     static func periodData(
         snapshot: PeriodComparisonSnapshot,
@@ -653,6 +978,42 @@ enum ComparisonReportCSVExporter {
 }
 
 enum ComparisonReportPDFExporter {
+    static func vatData(
+        snapshot: VATReportSnapshot,
+        metadata: VATReportExportMetadata,
+        orientation: ReportPDFOrientation = .landscape
+    ) throws -> Data {
+        let rows = snapshot.rows.map { row in
+            [row.vatCodeName, rate(row.rateBasisPoints),
+             money(row.grossSalesMinor, row.currency),
+             money(row.netSalesMinor, row.currency),
+             money(row.outputTaxMinor, row.currency),
+             money(row.grossPurchasesMinor, row.currency),
+             money(row.netPurchasesMinor, row.currency),
+             money(row.inputTaxMinor, row.currency),
+             money(row.payableMinor, row.currency), row.currency]
+        } + snapshot.totals.map { total in
+            ["Gesamt", "", money(total.grossSalesMinor, total.currency),
+             money(total.netSalesMinor, total.currency),
+             money(total.outputTaxMinor, total.currency),
+             money(total.grossPurchasesMinor, total.currency),
+             money(total.netPurchasesMinor, total.currency),
+             money(total.inputTaxMinor, total.currency),
+             money(total.payableMinor, total.currency), total.currency]
+        }
+        return try data(
+            rows: rows,
+            headers: ["MwSt.-Schlüssel", "Satz", "Brutto U.", "Netto U.", "USt.",
+                      "Brutto E.", "Netto E.", "Vorsteuer", "Zahllast", "Währ."],
+            metadata: ComparisonReportExportMetadata(
+                title: metadata.title, currentLabel: metadata.dateLabel,
+                referenceLabel: metadata.filterSummary, generatedAt: metadata.generatedAt
+            ),
+            orientation: orientation,
+            subtitle: "\(metadata.dateLabel) · \(metadata.filterSummary)"
+        )
+    }
+
     static func periodData(
         snapshot: PeriodComparisonSnapshot,
         metadata: ComparisonReportExportMetadata,
@@ -713,7 +1074,8 @@ enum ComparisonReportPDFExporter {
     private static func data(
         rows: [[String]], headers: [String],
         metadata: ComparisonReportExportMetadata,
-        orientation: ReportPDFOrientation
+        orientation: ReportPDFOrientation,
+        subtitle: String? = nil
     ) throws -> Data {
         let portrait = CGSize(width: 595.28, height: 841.89)
         let pageSize = orientation == .portrait
@@ -728,7 +1090,9 @@ enum ComparisonReportPDFExporter {
         }
         ComparisonReportPDFRenderer(
             context: context, pageSize: pageSize, headers: headers,
-            rows: rows, metadata: metadata
+            rows: rows, metadata: metadata,
+            subtitle: subtitle
+                ?? "\(metadata.currentLabel) · Vergleich: \(metadata.referenceLabel)"
         ).render()
         context.closePDF()
         return output as Data
@@ -744,6 +1108,14 @@ enum ComparisonReportPDFExporter {
         let magnitude = basisPoints.magnitude
         return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100)) %"
     }
+
+    private static func rate(_ basisPoints: Int) -> String {
+        let whole = basisPoints / 100
+        let remainder = abs(basisPoints % 100)
+        return remainder == 0
+            ? "\(whole) %"
+            : "\(whole),\(String(format: "%02d", remainder)) %"
+    }
 }
 
 private struct ComparisonReportPDFRenderer {
@@ -752,6 +1124,7 @@ private struct ComparisonReportPDFRenderer {
     let headers: [String]
     let rows: [[String]]
     let metadata: ComparisonReportExportMetadata
+    let subtitle: String
 
     private let margin: CGFloat = 30
     private let headerHeight: CGFloat = 94
@@ -770,7 +1143,7 @@ private struct ComparisonReportPDFRenderer {
                  size: 18, bold: true, color: green)
             drawRight("Seite \(page + 1) von \(pageCount)", right: pageSize.width - margin,
                       top: 30, width: 140, size: 8.2, color: secondary)
-            draw("\(metadata.currentLabel) · Vergleich: \(metadata.referenceLabel)",
+            draw(subtitle,
                  x: margin, top: 55, width: pageSize.width - 2 * margin,
                  size: 8.2, color: secondary)
             drawTableHeader()
