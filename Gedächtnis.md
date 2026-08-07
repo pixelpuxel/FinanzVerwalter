@@ -2945,3 +2945,49 @@ Rechtsberatung.
   `/quicken`-Thread 894 und erklärt ausdrücklich den wegen der gesperrten
   Sitzung fehlenden Screenshot. Exakter kumulativer Zielzählerstand nach
   Telegram-, GitHub- und Prozessprüfung: 17.666.801 Tokens.
+
+## 07.08.2026 – Vertrags- und Inventarübersicht
+
+- Das Menü `Standardberichte` öffnet jetzt eine eigenständige Vertrags- und
+  Inventarübersicht aus einem unveränderlichen gemeinsamen Snapshot. Kombiniert
+  werden Aktivstatus, Vertragstypen, Inventarkategorien,
+  diakritikaunabhängiger Volltext und Kündigungs-/Garantiehorizonte für alle
+  oder die nächsten 30, 90 beziehungsweise 365 Tage.
+- Vertragszeilen zeigen Anbieter, Vertragsnummer, Typ, Jahreskosten, nächste
+  Verlängerung, Kündigungsfrist, Zahlungskonto und vollständigen
+  Kategoriepfad. Inventarzeilen zeigen Kategorie, Raum, Kaufpreis, aktuellen
+  Wert, Versicherungswert, Garantieende, Händler und Seriennummer. Auswahl
+  liefert einen kompakten Zeilen-Drill-down; abgelaufene Fristen werden
+  farblich markiert.
+- Semikolon-CSV, A4-PDF in beiden Ausrichtungen und Systemdruck verwenden
+  denselben Snapshot und dieselben Filtermetadaten. Da das vorhandene
+  Vertrags-/Inventarmodell noch kein Währungsfeld besitzt, weist der Bericht
+  diese Werte ehrlich und explizit als EUR aus.
+- Der gezielte Golden-Test prüft Status-/Typ-/Kategorie-/Fristfilter,
+  vollständige Kategoriehierarchie, Jahreskosten, Kauf-/aktuelle/
+  Versicherungswerte, CSV-Escaping und semantisch lesbaren PDF-Inhalt. Der
+  finale Einzeltest bestand unter
+  `build/DerivedData-AssetRegisterReport/Logs/Test/Test-FinanzVerwalter-2026.08.07_16-44-09-+0200.xcresult`.
+- Die vollständige Regression vom 07.08.2026 um 16:36 Uhr ist grün: 133 Tests
+  bestanden, der private opt-in-QIF-Test wurde ohne gesetzten Pfad planmäßig
+  übersprungen, 0 Tests schlugen fehl. Das Result-Bundle liegt unter
+  `build/DerivedData-AssetRegisterReport/Logs/Test/Test-FinanzVerwalter-2026.08.07_16-36-14-+0200.xcresult`.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-AssetRegisterReport-Release` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Der ausführbare Code trägt
+  SHA-256 `a7ed148c66eaeeecd605bb72be97f1a529cba5eabbafd549e3772de084e358dc`;
+  Release, `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich.
+- Die Vorgängerinstallationen wurden reversibel als
+  `build/FinanzVerwalter-vor-vertrags-inventarbericht-20260807-164930.app`
+  und
+  `build/FinanzVerwalter-user-vor-vertrags-inventarbericht-20260807-164930.app`
+  erhalten. Der neue Prozess 96275 läuft direkt aus `/Applications`; der
+  Desktop-Link zeigt weiterhin auf diese Systeminstallation.
+- Die produktive Datei blieb bei Schema 35 und Integrität `ok`: 97 Konten,
+  2.170 Buchungen, 782 Kategorien sowie derzeit 0 Verträge, 0
+  Inventargegenstände und 0 Szenarien. Die macOS-Sitzung ist weiterhin
+  gesperrt; deshalb konnte der neue Bericht nicht ehrlich sichtbar abgenommen
+  und kein aktueller Screenshot erzeugt werden. Exakter kumulativer
+  Zielzählerstand nach Test, Release, Installation und Produktivprüfung:
+  17.922.308 Tokens.
