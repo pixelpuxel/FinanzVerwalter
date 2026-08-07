@@ -2317,3 +2317,11 @@ Rechtsberatung.
   versucht. Die macOS-Sitzung blieb gesperrt und konnte nicht automatisch
   entsperrt werden; deshalb wurde kein Screenshot vorgetäuscht. Der exakte
   Zielzählerstand vor Commit und Veröffentlichung beträgt 14.426.153 Tokens.
+- Implementierung und Tests wurden als Commit `6fdf9b7`, die reproduzierbare
+  Dokumentation als Commit `4638c0f` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 trägt nun
+  den Titel `FinanzVerwalter: Konten, Zahlungsverkehr, Berichte, Undo und
+  Beleganhänge`.
+- Telegram-Nachricht 1007 dokumentiert denselben Stand im gefundenen
+  `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
+  deshalb fehlenden Screenshot sowie den exakten Zielzählerstand 14.448.428.
