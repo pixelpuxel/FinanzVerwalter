@@ -373,12 +373,16 @@ Verwendungszweck, Kategorie, Klasse/Tags, Konto, Betrag und Saldo lassen sich
 vollständig ein- oder ausblenden. Benannte Ansichten speichern Konto, Filter,
 Zeitraum, Zeilenmodus, Sortierung und Spaltenauswahl und können später wieder
 geladen oder gelöscht werden. Das Menü `Sortierung` ordnet auf- oder
-absteigend nach jeder Standardspalte: Datum, Wertstellung, Belegnummer,
+absteigend nach jeder Standardspalte; alternativ lässt sich der jeweilige
+Spaltenkopf direkt anklicken und ein erneuter Klick kehrt die Richtung um:
+Datum, Wertstellung, Belegnummer,
 Status, Empfänger, Zweck, vollständigem Kategoriepfad, Klassen/Tags, Konto,
 Betrag oder Saldo. Deutsche Texte werden diakritikaunabhängig und natürlich
 numerisch sortiert; gleiche Werte sind über Datum und Buchungs-UUID stabil.
 Der angezeigte Saldo bleibt immer der historisch-chronologische Saldo genau
 dieser Buchung und wird durch eine andere Zeilenreihenfolge nicht verfälscht.
+Der native macOS-Tabellenkopf zeigt die aktive Richtung und stellt dieselbe
+Sortieraktion über Tastatur und VoiceOver bereit.
 Beim ersten Start nach dem Saldo-Update wird die Spalte
 einmalig auch in vorhandene Spalteneinstellungen und benannte Ansichten
 aufgenommen; anschließend bleibt sie wie jede andere Spalte frei schaltbar.

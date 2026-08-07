@@ -82,6 +82,68 @@ struct RegisterSortLabels: Equatable, Sendable {
     var tags: String
 }
 
+struct RegisterSortState: Equatable, Sendable {
+    var column: RegisterColumn
+    var ascending: Bool
+}
+
+enum RegisterSortInteraction {
+    static func state(
+        from sortOrder: [RegisterTableComparator],
+        fallback: RegisterSortState
+    ) -> RegisterSortState {
+        guard let comparator = sortOrder.first else { return fallback }
+        return RegisterSortState(
+            column: comparator.column,
+            ascending: comparator.order == .forward
+        )
+    }
+}
+
+struct RegisterTableComparator: SortComparator {
+    var column: RegisterColumn
+    var order: SortOrder = .forward
+    var runningBalances: [UUID: Int64] = [:]
+    var labels: [UUID: RegisterSortLabels] = [:]
+
+    static func == (
+        left: RegisterTableComparator,
+        right: RegisterTableComparator
+    ) -> Bool {
+        left.column == right.column && left.order == right.order
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(column)
+        hasher.combine(order)
+    }
+
+    func compare(
+        _ left: FinanceTransaction,
+        _ right: FinanceTransaction
+    ) -> ComparisonResult {
+        let primary = RegisterSorter.comparison(
+            left,
+            right,
+            column: column,
+            runningBalances: runningBalances,
+            labels: labels
+        )
+        if primary != .orderedSame {
+            guard order == .reverse else { return primary }
+            return primary == .orderedAscending
+                ? .orderedDescending : .orderedAscending
+        }
+        if left.bookingDate != right.bookingDate {
+            return left.bookingDate < right.bookingDate
+                ? .orderedAscending : .orderedDescending
+        }
+        if left.id == right.id { return .orderedSame }
+        return left.id.uuidString < right.id.uuidString
+            ? .orderedAscending : .orderedDescending
+    }
+}
+
 enum RegisterSorter {
     static func sorted(
         _ transactions: [FinanceTransaction],
@@ -91,7 +153,7 @@ enum RegisterSorter {
         labels: [UUID: RegisterSortLabels]
     ) -> [FinanceTransaction] {
         transactions.sorted { left, right in
-            let comparison = compare(
+            let comparison = comparison(
                 left,
                 right,
                 column: column,
@@ -110,7 +172,7 @@ enum RegisterSorter {
         }
     }
 
-    private static func compare(
+    static func comparison(
         _ left: FinanceTransaction,
         _ right: FinanceTransaction,
         column: RegisterColumn,

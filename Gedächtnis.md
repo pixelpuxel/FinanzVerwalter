@@ -3345,3 +3345,43 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter kumulativer Zielzählerstand der Nachricht: 20.270.407 Tokens;
   Zählerstand nach überprüfter Zustellung: 20.272.829 Tokens.
+
+## 07.08.2026 – native anklickbare Sortierung in den Spaltenköpfen
+
+- Jede dynamische Spalte des Einzelkontoblatts verwendet jetzt einen nativen
+  SwiftUI-`TableColumn`-Komparator über `sortUsing`. Die Tabelle bindet ihr
+  `sortOrder` an denselben persistenten Spalten-/Richtungszustand wie das
+  Menü und die benannten Ansichten. Ein Klick auf einen anderen Kopf wählt
+  ihn aufsteigend, der nächste Klick kehrt die Richtung um; macOS zeigt den
+  Pfeil und stellt die systemeigene Tastatur-/Accessibility-Semantik bereit.
+- `RegisterTableComparator` benutzt für alle elf Felder dieselben typisierten
+  Werte, vollständigen Kategorie-/Klassenpfade, deutschen Textregeln,
+  chronologischen Salden und stabilen Gleichstandsregeln wie
+  `RegisterSorter`. Der native Tabellenkopfordner und die explizite Engine
+  können dadurch nicht fachlich auseinanderlaufen.
+- Der gezielte Lauf unter
+  `build/TestResults/RegisterHeaderSort-final-targeted-20260807-2042.xcresult`
+  prüft Zustandsübernahme sowie alle elf Spalten in beiden Richtungen. Die
+  vollständige Regression unter
+  `build/TestResults/RegisterHeaderSort-full-20260807-2045.xcresult` umfasst
+  152 Tests: 151 bestanden, 1 privater opt-in-Real-QIF-Test ohne temporären
+  Pfad erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0 erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-RegisterHeaderSort-Release` wurde gebaut, lokal ad-hoc
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `f84a9444c7907af54dfef7542ef2046b1d96cff7311c151641697dc2a94baea2`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link zeigt weiterhin auf die Systeminstallation.
+- Die Vorgängerinstallationen liegen unter
+  `build/InstallBackups/20260807-2034-register-header-sort/`, die geprüfte
+  SQLite-Sicherung unter
+  `build/ProductionBackups/20260807-2034-register-header-sort/Meine Finanzen.qdata`.
+  Nach dem Austausch läuft Prozess 35722 direkt aus `/Applications`.
+  Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- Die Computersteuerung bestätigt weiterhin eine gesperrte macOS-Sitzung und
+  konnte den Tabellenkopfpfeil deshalb nicht sichtbar prüfen oder
+  fotografieren; die Sperre wurde nicht umgangen. Exakter kumulativer
+  Zielzählerstand nach Test, Release, Installation und Produktivprüfung:
+  20.454.891 Tokens.

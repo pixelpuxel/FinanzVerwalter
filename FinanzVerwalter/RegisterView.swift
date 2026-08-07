@@ -124,21 +124,7 @@ struct RegisterView: View {
         let runningBalances = store.runningBalances(
             accountID: store.selectedAccountID
         )
-        let labels = Dictionary(uniqueKeysWithValues: filtered.map { value in
-            (
-                value.id,
-                RegisterSortLabels(
-                    account: store.accountName(value.accountID),
-                    category: store.transactionCategoryPath(value),
-                    tags: value.tagIDs.map(store.tagPath)
-                        .sorted {
-                            $0.localizedCaseInsensitiveCompare($1)
-                                == .orderedAscending
-                        }
-                        .joined(separator: ", ")
-                )
-            )
-        })
+        let labels = registerSortLabels(for: filtered)
         return RegisterSorter.sorted(
             filtered,
             by: RegisterColumn(rawValue: sortColumnRaw) ?? .date,
@@ -150,6 +136,8 @@ struct RegisterView: View {
 
     var body: some View {
         let runningBalances = store.runningBalances(accountID: store.selectedAccountID)
+        let visibleRows = visibleTransactions
+        let sortLabels = registerSortLabels(for: visibleRows)
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -379,23 +367,27 @@ struct RegisterView: View {
             }
 
             HStack(spacing: 0) {
-                Table(visibleTransactions, selection: $selection) {
+                Table(
+                    visibleRows,
+                    selection: $selection,
+                    sortOrder: registerSortOrderBinding(
+                        runningBalances: runningBalances,
+                        labels: sortLabels
+                    )
+                ) {
                     TableColumnForEach(orderedVisibleColumns) { column in
-                        TableColumn(column.title) { value in
-                            registerCell(
+                        TableColumn(
+                            column.title,
+                            sortUsing: RegisterTableComparator(
+                                column: column,
+                                runningBalances: runningBalances,
+                                labels: sortLabels
+                            )
+                        ) { value in
+                            accessibleRegisterCell(
                                 value,
                                 column: column,
                                 runningBalances: runningBalances
-                            )
-                            .accessibilityLabel(
-                                RegisterAccessibility.cellLabel(
-                                    column: column,
-                                    value: registerCellText(
-                                        value,
-                                        column: column,
-                                        runningBalances: runningBalances
-                                    )
-                                )
                             )
                         }
                         .width(min: column.minimumWidth, ideal: column.idealWidth)
@@ -1058,6 +1050,60 @@ struct RegisterView: View {
         RegisterColumn.allCases.filter(visibleColumns.contains)
     }
 
+    private var registerSortState: RegisterSortState {
+        RegisterSortState(
+            column: RegisterColumn(rawValue: sortColumnRaw) ?? .date,
+            ascending: sortAscending
+        )
+    }
+
+    private func registerSortOrderBinding(
+        runningBalances: [UUID: Int64],
+        labels: [UUID: RegisterSortLabels]
+    ) -> Binding<[RegisterTableComparator]> {
+        Binding(
+            get: {
+                [
+                    RegisterTableComparator(
+                        column: registerSortState.column,
+                        order: registerSortState.ascending ? .forward : .reverse,
+                        runningBalances: runningBalances,
+                        labels: labels
+                    )
+                ]
+            },
+            set: { order in
+                let next = RegisterSortInteraction.state(
+                    from: order,
+                    fallback: registerSortState
+                )
+                sortColumnRaw = next.column.rawValue
+                sortAscending = next.ascending
+                selectedSavedViewID = nil
+            }
+        )
+    }
+
+    private func registerSortLabels(
+        for transactions: [FinanceTransaction]
+    ) -> [UUID: RegisterSortLabels] {
+        Dictionary(uniqueKeysWithValues: transactions.map { value in
+            (
+                value.id,
+                RegisterSortLabels(
+                    account: store.accountName(value.accountID),
+                    category: store.transactionCategoryPath(value),
+                    tags: value.tagIDs.map(store.tagPath)
+                        .sorted {
+                            $0.localizedCaseInsensitiveCompare($1)
+                                == .orderedAscending
+                        }
+                        .joined(separator: ", ")
+                )
+            )
+        })
+    }
+
     private func migrateBalanceColumnIfNeeded() {
         guard !visibleColumnsIncludesBalance else { return }
         visibleColumnsRaw = RegisterPreferencesCodec.addingBalanceColumn(
@@ -1067,6 +1113,28 @@ struct RegisterView: View {
             savedViewsRaw
         )
         visibleColumnsIncludesBalance = true
+    }
+
+    private func accessibleRegisterCell(
+        _ value: FinanceTransaction,
+        column: RegisterColumn,
+        runningBalances: [UUID: Int64]
+    ) -> some View {
+        registerCell(
+            value,
+            column: column,
+            runningBalances: runningBalances
+        )
+        .accessibilityLabel(
+            RegisterAccessibility.cellLabel(
+                column: column,
+                value: registerCellText(
+                    value,
+                    column: column,
+                    runningBalances: runningBalances
+                )
+            )
+        )
     }
 
     @ViewBuilder

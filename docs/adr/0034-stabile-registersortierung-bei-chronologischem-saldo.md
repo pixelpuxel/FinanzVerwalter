@@ -25,10 +25,16 @@ berechnet und anschließend nur als zeilenfeste Werte sortiert. Sortierspalte
 und Richtung sind lokale Einstellungen und optionale Felder einer benannten
 Kontoblattansicht. Fehlen sie in älteren Ansichten, gilt Datum aufsteigend.
 
+Jede dynamische `TableColumn` erhält zusätzlich einen
+`RegisterTableComparator` über `sortUsing`; die Tabelle bindet ihr natives
+`sortOrder` direkt an denselben persistenten Zustand. Dadurch wählt ein Klick
+auf einen anderen Spaltenkopf diese Spalte aufsteigend, ein weiterer Klick
+kehrt die Richtung um, und macOS liefert Richtungspfeil, Tastaturbedienung und
+Accessibility-Semantik systemkonform.
+
 ## Folgen
 
-Jede Standardspalte ist reproduzierbar sortierbar, ohne den fachlichen Saldo
-zu verändern. CSV, PDF und Druck erhalten weiterhin exakt die sichtbare,
-bereits sortierte Zeilenfolge. Das Menü ist tastatur- und
-barrierefreiheitsfähig; eine spätere anklickbare Tabellenkopfsteuerung kann
-dieselbe Sortierengine verwenden.
+Jede Standardspalte ist über Menü oder Tabellenkopf reproduzierbar sortierbar,
+ohne den fachlichen Saldo zu verändern. CSV, PDF und Druck erhalten weiterhin
+exakt die sichtbare, bereits sortierte Zeilenfolge. Menü, Tabellenkopf und
+benannte Ansicht verwenden immer denselben Zustand.

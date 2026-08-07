@@ -7864,17 +7864,59 @@ final class FinanzVerwalterTests: XCTestCase {
             [travel.id, berlin.id, secondBerlin.id, hamburg.id]
         )
         for column in RegisterColumn.allCases {
-            let first = RegisterSorter.sorted(
-                values, by: column, ascending: true,
-                runningBalances: balances, labels: labels
-            ).map(\.id)
-            let second = RegisterSorter.sorted(
-                Array(values.reversed()), by: column, ascending: true,
-                runningBalances: balances, labels: labels
-            ).map(\.id)
-            XCTAssertEqual(first, second, "Instabile Sortierung für \(column.title)")
-            XCTAssertEqual(Set(first), Set(values.map(\.id)))
+            for ascending in [true, false] {
+                let first = RegisterSorter.sorted(
+                    values, by: column, ascending: ascending,
+                    runningBalances: balances, labels: labels
+                ).map(\.id)
+                let second = RegisterSorter.sorted(
+                    Array(values.reversed()), by: column, ascending: ascending,
+                    runningBalances: balances, labels: labels
+                ).map(\.id)
+                let native = values.sorted(
+                    using: RegisterTableComparator(
+                        column: column,
+                        order: ascending ? .forward : .reverse,
+                        runningBalances: balances,
+                        labels: labels
+                    )
+                ).map(\.id)
+                XCTAssertEqual(
+                    first, second,
+                    "Instabile Sortierung für \(column.title)"
+                )
+                XCTAssertEqual(
+                    native, first,
+                    "Tabellenkopf weicht bei \(column.title) ab"
+                )
+                XCTAssertEqual(Set(first), Set(values.map(\.id)))
+            }
         }
+    }
+
+    func testRegisterSortHeaderBindingAcceptsNativeColumnAndDirection() {
+        let fallback = RegisterSortState(column: .date, ascending: false)
+        var state = RegisterSortInteraction.state(
+            from: [RegisterTableComparator(column: .category, order: .forward)],
+            fallback: fallback
+        )
+        XCTAssertEqual(state, RegisterSortState(column: .category, ascending: true))
+
+        state = RegisterSortInteraction.state(
+            from: [RegisterTableComparator(column: .category, order: .reverse)],
+            fallback: state
+        )
+        XCTAssertEqual(state, RegisterSortState(column: .category, ascending: false))
+
+        state = RegisterSortInteraction.state(
+            from: [RegisterTableComparator(column: .amount, order: .forward)],
+            fallback: state
+        )
+        XCTAssertEqual(state, RegisterSortState(column: .amount, ascending: true))
+        XCTAssertEqual(
+            RegisterSortInteraction.state(from: [], fallback: state),
+            state
+        )
     }
 
     func testRegisterF3SelectionUsesConfiguredTransactionField() throws {
