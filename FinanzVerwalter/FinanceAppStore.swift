@@ -754,10 +754,15 @@ final class FinanceAppStore: ObservableObject {
         vatCodeID: UUID? = nil,
         vatMode: VATMode = .none,
         netMinor: Int64 = 0,
-        taxMinor: Int64 = 0
+        taxMinor: Int64 = 0,
+        originalAmount: String = "",
+        originalCurrency: String = ""
     ) -> Bool {
         guard let repository else { return false }
         do {
+            guard let account = accounts.first(where: { $0.id == accountID }) else {
+                throw FinanceError.missingAccount
+            }
             let normalizedCreditorID = SEPACreditorIDValidator.normalized(
                 creditorID
             )
@@ -775,7 +780,40 @@ final class FinanceAppStore: ObservableObject {
                     "Die Mandatsreferenz darf höchstens 35 Zeichen lang sein."
                 )
             }
-            let money = try Money(parsing: amount)
+            let money = try Money(parsing: amount, currency: account.currency)
+            let normalizedOriginalCurrency = originalCurrency
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+            let originalMoney: Money?
+            let exchangeRate: ExchangeRate?
+            if originalAmount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               normalizedOriginalCurrency.isEmpty {
+                originalMoney = nil
+                exchangeRate = nil
+            } else {
+                guard normalizedOriginalCurrency.count == 3,
+                      normalizedOriginalCurrency != account.currency.uppercased() else {
+                    throw FinanceError.invalidExchangeRate(
+                        "Bitte gib eine von der Kontowährung abweichende dreistellige ISO-Währung an."
+                    )
+                }
+                let parsedInput = try Money(
+                    parsing: originalAmount,
+                    currency: normalizedOriginalCurrency
+                )
+                let parsed = Money(
+                    minorUnits: money.minorUnits < 0
+                        ? -abs(parsedInput.minorUnits) : abs(parsedInput.minorUnits),
+                    currency: parsedInput.currency
+                )
+                originalMoney = parsed
+                exchangeRate = try ExchangeRate.derived(
+                    originalMinor: parsed.minorUnits,
+                    originalCurrency: parsed.currency,
+                    bookedMinor: money.minorUnits,
+                    bookedCurrency: money.currency
+                )
+            }
             let existing = id.flatMap { transactionID in
                 transactions.first { $0.id == transactionID }
             }
@@ -799,7 +837,10 @@ final class FinanceAppStore: ObservableObject {
                 bankBalanceAfterMinor: existing?.bankBalanceAfterMinor,
                 counterpartyBIC: existing?.counterpartyBIC ?? "",
                 creditorID: normalizedCreditorID,
-                bookingText: existing?.bookingText ?? ""
+                bookingText: existing?.bookingText ?? "",
+                originalAmountMinor: originalMoney?.minorUnits,
+                originalCurrency: originalMoney?.currency ?? "",
+                exchangeRateScaled: exchangeRate?.scaledValue
             )
             try repository.saveTransaction(value)
             try load()
@@ -910,16 +951,44 @@ final class FinanceAppStore: ObservableObject {
         date: Date,
         purpose: String
     ) -> Bool {
+        createTransfer(
+            from: sourceID,
+            to: destinationID,
+            sourceAmount: amount,
+            destinationAmount: amount,
+            date: date,
+            purpose: purpose
+        )
+    }
+
+    func createTransfer(
+        from sourceID: UUID,
+        to destinationID: UUID,
+        sourceAmount: String,
+        destinationAmount: String,
+        date: Date,
+        purpose: String
+    ) -> Bool {
         guard
             let repository,
             let source = accounts.first(where: { $0.id == sourceID }),
             let destination = accounts.first(where: { $0.id == destinationID })
         else { return false }
         do {
-            let money = try Money(parsing: amount)
+            let sourceMoney = try Money(
+                parsing: sourceAmount,
+                currency: source.currency
+            )
+            let destinationMoney = try Money(
+                parsing: destinationAmount,
+                currency: destination.currency
+            )
             try repository.createTransfer(
                 from: source, to: destination,
-                amountMinor: abs(money.minorUnits), date: date, purpose: purpose
+                sourceAmountMinor: abs(sourceMoney.minorUnits),
+                destinationAmountMinor: abs(destinationMoney.minorUnits),
+                date: date,
+                purpose: purpose
             )
             try load()
             statusText = "Umbuchung atomar gespeichert"

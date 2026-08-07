@@ -235,8 +235,12 @@ struct FinanceTransaction: Identifiable, Hashable, Codable, Sendable {
     var counterpartyBIC: String = ""
     var creditorID: String = ""
     var bookingText: String = ""
+    var originalAmountMinor: Int64? = nil
+    var originalCurrency: String = ""
+    var exchangeRateScaled: Int64? = nil
 
     func validate() throws {
+        try validateForeignCurrency()
         if splits.isEmpty {
             switch vatMode {
             case .none:
@@ -286,6 +290,45 @@ struct FinanceTransaction: Identifiable, Hashable, Codable, Sendable {
             )
         }
     }
+
+    private func validateForeignCurrency() throws {
+        guard let originalAmountMinor, let exchangeRateScaled else {
+            guard self.originalAmountMinor == nil,
+                  self.exchangeRateScaled == nil,
+                  originalCurrency.isEmpty else {
+                throw FinanceError.invalidExchangeRate(
+                    "Originalbetrag, Originalwährung und Wechselkurs müssen gemeinsam gesetzt sein."
+                )
+            }
+            return
+        }
+        let sourceCurrency = originalCurrency.uppercased()
+        let targetCurrency = currency.uppercased()
+        guard sourceCurrency.count == 3, targetCurrency.count == 3,
+              sourceCurrency != targetCurrency else {
+            throw FinanceError.invalidExchangeRate(
+                "Original- und Kontowährung müssen unterschiedliche ISO-Währungen sein."
+            )
+        }
+        guard originalAmountMinor != 0, amountMinor != 0,
+              (originalAmountMinor < 0) == (amountMinor < 0) else {
+            throw FinanceError.invalidExchangeRate(
+                "Original- und Kontobetrag müssen ungleich null sein und dasselbe Vorzeichen besitzen."
+            )
+        }
+        let rate = try ExchangeRate(scaledValue: exchangeRateScaled)
+        let converted = try rate.convertedMinor(
+            originalMinor: originalAmountMinor,
+            originalCurrency: sourceCurrency,
+            bookedCurrency: targetCurrency
+        )
+        let difference = Decimal(converted) - Decimal(amountMinor)
+        guard difference >= -1, difference <= 1 else {
+            throw FinanceError.invalidExchangeRate(
+                "Originalbetrag und Wechselkurs ergeben nicht den Kontobetrag."
+            )
+        }
+    }
 }
 
 struct TransactionTemplateSplit: Codable, Equatable, Sendable {
@@ -318,6 +361,9 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
     var vatMode: VATMode?
     var netMinor: Int64?
     var taxMinor: Int64?
+    var originalAmountMinor: Int64?
+    var originalCurrency: String?
+    var exchangeRateScaled: Int64?
 
     init(id: UUID = UUID(), name: String, transaction: FinanceTransaction) {
         self.id = id
@@ -341,6 +387,10 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
         vatMode = transaction.vatMode
         netMinor = transaction.netMinor
         taxMinor = transaction.taxMinor
+        originalAmountMinor = transaction.originalAmountMinor
+        originalCurrency = transaction.originalCurrency.isEmpty
+            ? nil : transaction.originalCurrency
+        exchangeRateScaled = transaction.exchangeRateScaled
         splits = transaction.splits.map {
             TransactionTemplateSplit(
                 categoryID: $0.categoryID,
@@ -391,7 +441,10 @@ struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
             vatCodeID: vatCodeID,
             vatMode: vatMode ?? .none,
             netMinor: netMinor ?? 0,
-            taxMinor: taxMinor ?? 0
+            taxMinor: taxMinor ?? 0,
+            originalAmountMinor: originalAmountMinor,
+            originalCurrency: originalCurrency ?? "",
+            exchangeRateScaled: exchangeRateScaled
         )
     }
 }

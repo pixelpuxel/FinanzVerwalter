@@ -568,7 +568,8 @@ struct TransferEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sourceID: UUID?
     @State private var destinationID: UUID?
-    @State private var amount = ""
+    @State private var sourceAmount = ""
+    @State private var destinationAmount = ""
     @State private var date = Date()
     @State private var purpose = "Umbuchung"
 
@@ -580,15 +581,46 @@ struct TransferEditorView: View {
             Form {
                 Picker("Von Konto", selection: $sourceID) {
                     Text("Bitte wählen").tag(UUID?.none)
-                    ForEach(store.accounts) { Text($0.name).tag(UUID?.some($0.id)) }
+                    ForEach(openAccounts) {
+                        Text("\($0.name) · \($0.currency)")
+                            .tag(UUID?.some($0.id))
+                    }
                 }
                 Picker("Auf Konto", selection: $destinationID) {
                     Text("Bitte wählen").tag(UUID?.none)
-                    ForEach(store.accounts.filter { $0.id != sourceID }) {
-                        Text($0.name).tag(UUID?.some($0.id))
+                    ForEach(openAccounts.filter { $0.id != sourceID }) {
+                        Text("\($0.name) · \($0.currency)")
+                            .tag(UUID?.some($0.id))
                     }
                 }
-                TextField("Betrag", text: $amount, prompt: Text("250,00"))
+                TextField(
+                    "Abgang \(sourceAccount?.currency ?? "")",
+                    text: $sourceAmount,
+                    prompt: Text("250,00")
+                )
+                if isForeignCurrency {
+                    TextField(
+                        "Gutschrift \(destinationAccount?.currency ?? "")",
+                        text: $destinationAmount,
+                        prompt: Text("275,00")
+                    )
+                    if let transferRatePreview {
+                        LabeledContent("Wechselkurs") {
+                            Text(transferRatePreview)
+                                .monospacedDigit()
+                        }
+                    }
+                } else if sourceAccount != nil, destinationAccount != nil {
+                    LabeledContent("Gutschrift") {
+                        Text(
+                            (try? Money(
+                                parsing: sourceAmount,
+                                currency: sourceAccount?.currency ?? "EUR"
+                            ).formatted) ?? "–"
+                        )
+                        .monospacedDigit()
+                    }
+                }
                 DatePicker("Datum", selection: $date, displayedComponents: .date)
                 TextField("Verwendungszweck", text: $purpose)
             }
@@ -600,7 +632,10 @@ struct TransferEditorView: View {
                     guard let sourceID, let destinationID else { return }
                     if store.createTransfer(
                         from: sourceID, to: destinationID,
-                        amount: amount, date: date, purpose: purpose
+                        sourceAmount: sourceAmount,
+                        destinationAmount: isForeignCurrency
+                            ? destinationAmount : sourceAmount,
+                        date: date, purpose: purpose
                     ) {
                         dismiss()
                     }
@@ -608,21 +643,82 @@ struct TransferEditorView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     sourceID == nil || destinationID == nil
-                        || sourceID == destinationID || amount.isEmpty
+                        || sourceID == destinationID
+                        || sourceAmount.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                        || (isForeignCurrency
+                            && destinationAmount.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty)
                 )
             }
         }
         .padding(24)
         .frame(width: 500)
         .onAppear {
-            sourceID = store.selectedAccountID ?? store.accounts.first?.id
-            destinationID = store.accounts.first { $0.id != sourceID }?.id
+            sourceID = store.selectedAccountID.flatMap { selectedID in
+                openAccounts.contains(where: { $0.id == selectedID })
+                    ? selectedID : nil
+            } ?? openAccounts.first?.id
+            destinationID = openAccounts.first { $0.id != sourceID }?.id
         }
         .onChange(of: sourceID) {
             if destinationID == sourceID {
-                destinationID = store.accounts.first { $0.id != sourceID }?.id
+                destinationID = openAccounts.first { $0.id != sourceID }?.id
             }
+            synchronizeAmountsIfNeeded()
         }
+        .onChange(of: destinationID) {
+            synchronizeAmountsIfNeeded()
+        }
+        .onChange(of: sourceAmount) {
+            synchronizeAmountsIfNeeded()
+        }
+    }
+
+    private var openAccounts: [FinanceAccount] {
+        store.accounts.filter { !$0.isClosed }
+    }
+
+    private var sourceAccount: FinanceAccount? {
+        sourceID.flatMap { id in openAccounts.first { $0.id == id } }
+    }
+
+    private var destinationAccount: FinanceAccount? {
+        destinationID.flatMap { id in openAccounts.first { $0.id == id } }
+    }
+
+    private var isForeignCurrency: Bool {
+        guard let sourceAccount, let destinationAccount else { return false }
+        return sourceAccount.currency.uppercased()
+            != destinationAccount.currency.uppercased()
+    }
+
+    private var transferRatePreview: String? {
+        guard isForeignCurrency,
+              let sourceAccount, let destinationAccount,
+              let source = try? Money(
+                parsing: sourceAmount,
+                currency: sourceAccount.currency
+              ),
+              let destination = try? Money(
+                parsing: destinationAmount,
+                currency: destinationAccount.currency
+              ),
+              let rate = try? ExchangeRate.derived(
+                originalMinor: source.minorUnits,
+                originalCurrency: source.currency,
+                bookedMinor: destination.minorUnits,
+                bookedCurrency: destination.currency
+              )
+        else { return nil }
+        return "1 \(source.currency) = \(rate.formatted) \(destination.currency)"
+    }
+
+    private func synchronizeAmountsIfNeeded() {
+        guard !isForeignCurrency else { return }
+        destinationAmount = sourceAmount
     }
 }
 

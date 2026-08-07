@@ -10,10 +10,20 @@ struct Money: Hashable, Comparable, Codable, Sendable {
     }
 
     init(parsing text: String, currency: String = "EUR") throws {
+        let normalizedCurrency = currency.uppercased()
         let cleaned = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\u{00a0}", with: "")
             .replacingOccurrences(of: "€", with: "")
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: "£", with: "")
+            .replacingOccurrences(of: "¥", with: "")
+            .replacingOccurrences(
+                of: normalizedCurrency,
+                with: "",
+                options: [.caseInsensitive]
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw FinanceError.invalidAmount(text) }
 
         let normalized: String
@@ -27,25 +37,25 @@ struct Money: Hashable, Comparable, Codable, Sendable {
         guard var decimal = Decimal(string: normalized, locale: Locale(identifier: "en_US_POSIX")) else {
             throw FinanceError.invalidAmount(text)
         }
-        var factor = Decimal(100)
+        var factor = Decimal(Self.minorUnitFactor(for: normalizedCurrency))
         var scaled = Decimal()
         NSDecimalMultiply(&scaled, &decimal, &factor, .bankers)
         var rounded = Decimal()
         NSDecimalRound(&rounded, &scaled, 0, .bankers)
         let number = NSDecimalNumber(decimal: rounded)
         guard number != .notANumber else { throw FinanceError.invalidAmount(text) }
-        self.init(minorUnits: number.int64Value, currency: currency)
+        self.init(minorUnits: number.int64Value, currency: normalizedCurrency)
     }
 
     var decimal: Decimal {
-        Decimal(minorUnits) / Decimal(100)
+        Decimal(minorUnits) / Decimal(Self.minorUnitFactor(for: currency))
     }
 
     var formatted: String {
         decimal.formatted(
             .currency(code: currency)
                 .locale(Locale(identifier: "de_DE"))
-                .precision(.fractionLength(2))
+                .precision(.fractionLength(Self.fractionDigits(for: currency)))
         )
     }
 
@@ -53,7 +63,7 @@ struct Money: Hashable, Comparable, Codable, Sendable {
         decimal.formatted(
             .number
                 .locale(Locale(identifier: "de_DE"))
-                .precision(.fractionLength(2))
+                .precision(.fractionLength(Self.fractionDigits(for: currency)))
         )
     }
 
@@ -65,6 +75,116 @@ struct Money: Hashable, Comparable, Codable, Sendable {
     static func < (lhs: Money, rhs: Money) -> Bool {
         precondition(lhs.currency == rhs.currency)
         return lhs.minorUnits < rhs.minorUnits
+    }
+
+    static func fractionDigits(for currency: String) -> Int {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .currency
+        formatter.currencyCode = currency.uppercased()
+        return min(max(formatter.maximumFractionDigits, 0), 4)
+    }
+
+    static func minorUnitFactor(for currency: String) -> Int64 {
+        (0..<fractionDigits(for: currency)).reduce(Int64(1)) { value, _ in
+            value * 10
+        }
+    }
+}
+
+struct ExchangeRate: Hashable, Codable, Sendable {
+    static let scale: Int64 = 100_000_000
+    let scaledValue: Int64
+
+    init(scaledValue: Int64) throws {
+        guard scaledValue > 0 else {
+            throw FinanceError.invalidExchangeRate("Der Wechselkurs muss größer als null sein.")
+        }
+        self.scaledValue = scaledValue
+    }
+
+    init(parsing text: String) throws {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = cleaned.contains(",")
+            ? cleaned.replacingOccurrences(of: ".", with: "")
+                .replacingOccurrences(of: ",", with: ".")
+            : cleaned
+        guard var decimal = Decimal(
+            string: normalized,
+            locale: Locale(identifier: "en_US_POSIX")
+        ), decimal > 0 else {
+            throw FinanceError.invalidExchangeRate("„\(text)“ ist kein gültiger Wechselkurs.")
+        }
+        var scale = Decimal(Self.scale)
+        var scaled = Decimal()
+        NSDecimalMultiply(&scaled, &decimal, &scale, .bankers)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &scaled, 0, .bankers)
+        let number = NSDecimalNumber(decimal: rounded)
+        guard number != .notANumber, number.compare(NSNumber(value: Int64.max)) != .orderedDescending,
+              number.int64Value > 0 else {
+            throw FinanceError.invalidExchangeRate("Der Wechselkurs liegt außerhalb des gültigen Bereichs.")
+        }
+        scaledValue = number.int64Value
+    }
+
+    static func derived(
+        originalMinor: Int64,
+        originalCurrency: String,
+        bookedMinor: Int64,
+        bookedCurrency: String
+    ) throws -> ExchangeRate {
+        guard originalMinor != 0, bookedMinor != 0 else {
+            throw FinanceError.invalidExchangeRate("Für eine Währungsumrechnung sind zwei Beträge ungleich null erforderlich.")
+        }
+        let originalMajor = decimalMagnitude(originalMinor)
+            / Decimal(Money.minorUnitFactor(for: originalCurrency))
+        let bookedMajor = decimalMagnitude(bookedMinor)
+            / Decimal(Money.minorUnitFactor(for: bookedCurrency))
+        var rate = bookedMajor / originalMajor
+        var scale = Decimal(Self.scale)
+        var scaled = Decimal()
+        NSDecimalMultiply(&scaled, &rate, &scale, .bankers)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &scaled, 0, .bankers)
+        return try ExchangeRate(scaledValue: NSDecimalNumber(decimal: rounded).int64Value)
+    }
+
+    func convertedMinor(
+        originalMinor: Int64,
+        originalCurrency: String,
+        bookedCurrency: String
+    ) throws -> Int64 {
+        var originalMajor = Decimal(originalMinor)
+            / Decimal(Money.minorUnitFactor(for: originalCurrency))
+        var rate = Decimal(scaledValue) / Decimal(Self.scale)
+        var bookedMajor = Decimal()
+        NSDecimalMultiply(&bookedMajor, &originalMajor, &rate, .bankers)
+        var factor = Decimal(Money.minorUnitFactor(for: bookedCurrency))
+        var bookedMinor = Decimal()
+        NSDecimalMultiply(&bookedMinor, &bookedMajor, &factor, .bankers)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &bookedMinor, 0, .bankers)
+        let number = NSDecimalNumber(decimal: rounded)
+        guard number != .notANumber,
+              number.compare(NSNumber(value: Int64.max)) != .orderedDescending,
+              number.compare(NSNumber(value: Int64.min)) != .orderedAscending else {
+            throw FinanceError.invalidExchangeRate("Der umgerechnete Betrag liegt außerhalb des gültigen Bereichs.")
+        }
+        return number.int64Value
+    }
+
+    var formatted: String {
+        (Decimal(scaledValue) / Decimal(Self.scale)).formatted(
+            .number
+                .locale(Locale(identifier: "de_DE"))
+                .precision(.fractionLength(0...8))
+        )
+    }
+
+    private static func decimalMagnitude(_ value: Int64) -> Decimal {
+        let decimal = Decimal(value)
+        return decimal < 0 ? -decimal : decimal
     }
 }
 
@@ -136,6 +256,7 @@ enum FinanceError: LocalizedError, Equatable {
     case allocationMismatch(Int)
     case invalidLoanTerms(String)
     case invalidVAT(String)
+    case invalidExchangeRate(String)
 
     var errorDescription: String? {
         switch self {
@@ -185,6 +306,8 @@ enum FinanceError: LocalizedError, Equatable {
             "Der Tilgungsplan ist ungültig: \(message)"
         case .invalidVAT(let message):
             "Mehrwertsteuerfehler: \(message)"
+        case .invalidExchangeRate(let message):
+            "Währungsfehler: \(message)"
         }
     }
 }

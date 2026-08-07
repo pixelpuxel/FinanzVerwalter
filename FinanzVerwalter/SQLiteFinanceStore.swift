@@ -3,7 +3,7 @@ import Foundation
 import SQLite3
 
 final class SQLiteFinanceStore {
-    static let currentSchemaVersion = 29
+    static let currentSchemaVersion = 30
     private var database: OpaquePointer?
     private var transactionDepth = 0
     let fileURL: URL
@@ -1658,6 +1658,20 @@ final class SQLiteFinanceStore {
                     "ALTER TABLE standing_order_runs ADD COLUMN banking_calendar_version INTEGER NOT NULL DEFAULT 1 CHECK(banking_calendar_version > 0)"
                 )
                 try execute("PRAGMA user_version = 29")
+            }
+        }
+        if version < 30 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN original_amount_minor INTEGER"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN original_currency TEXT NOT NULL DEFAULT '' CHECK(original_currency='' OR length(original_currency)=3)"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN exchange_rate_scaled INTEGER CHECK(exchange_rate_scaled IS NULL OR exchange_rate_scaled>0)"
+                )
+                try execute("PRAGMA user_version = 30")
             }
         }
     }
@@ -5669,7 +5683,8 @@ final class SQLiteFinanceStore {
                    origin,external_provider,external_transaction_id,counterparty_iban,
                    end_to_end_id,mandate_reference,duplicate_fingerprint,
                    bank_balance_after_minor,counterparty_bic,creditor_id,
-                   booking_text
+                   booking_text,original_amount_minor,original_currency,
+                   exchange_rate_scaled
             FROM transactions
             \(accountID == nil ? "" : "WHERE account_id = ?")
             ORDER BY booking_date DESC,id DESC
@@ -5718,7 +5733,12 @@ final class SQLiteFinanceStore {
                         ? nil : sqlite3_column_int64(statement, 26),
                     counterpartyBIC: Self.text(statement, 27),
                     creditorID: Self.text(statement, 28),
-                    bookingText: Self.text(statement, 29)
+                    bookingText: Self.text(statement, 29),
+                    originalAmountMinor: sqlite3_column_type(statement, 30)
+                        == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 30),
+                    originalCurrency: Self.text(statement, 31),
+                    exchangeRateScaled: sqlite3_column_type(statement, 32)
+                        == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 32)
                 )
             )
         }
@@ -6297,24 +6317,86 @@ final class SQLiteFinanceStore {
         date: Date,
         purpose: String
     ) throws {
-        let transferID = UUID()
-        let sourceValue = FinanceTransaction(
-            id: UUID(), accountID: source.id, bookingDate: date, valueDate: date,
-            payee: destination.name, purpose: purpose, categoryID: nil,
-            amountMinor: -abs(amountMinor), currency: source.currency, status: .booked,
-            memo: "", reference: "", transferID: transferID, importFingerprint: nil, splits: []
+        try createTransfer(
+            from: source,
+            to: destination,
+            sourceAmountMinor: amountMinor,
+            destinationAmountMinor: amountMinor,
+            date: date,
+            purpose: purpose
         )
-        let destinationValue = FinanceTransaction(
-            id: UUID(), accountID: destination.id, bookingDate: date, valueDate: date,
-            payee: source.name, purpose: purpose, categoryID: nil,
-            amountMinor: abs(amountMinor), currency: destination.currency, status: .booked,
-            memo: "", reference: "", transferID: transferID, importFingerprint: nil, splits: []
-        )
+    }
+
+    func createTransfer(
+        from source: FinanceAccount,
+        to destination: FinanceAccount,
+        sourceAmountMinor: Int64,
+        destinationAmountMinor: Int64,
+        date: Date,
+        purpose: String
+    ) throws {
         let now = Self.timestamp(Date())
         try transaction {
+            let currentAccounts = try accounts()
+            guard source.id != destination.id,
+                  let source = currentAccounts.first(where: { $0.id == source.id }),
+                  let destination = currentAccounts.first(where: { $0.id == destination.id }),
+                  !source.isClosed, !destination.isClosed else {
+                throw FinanceError.database(
+                    "Quell- und Zielkonto müssen verschieden, vorhanden und geöffnet sein."
+                )
+            }
+            let sourceAmount = abs(sourceAmountMinor)
+            let destinationAmount = abs(destinationAmountMinor)
+            guard sourceAmount > 0, destinationAmount > 0 else {
+                throw FinanceError.invalidAmount("0")
+            }
+            let isForeignCurrency = source.currency.uppercased()
+                != destination.currency.uppercased()
+            guard isForeignCurrency || sourceAmount == destinationAmount else {
+                throw FinanceError.invalidExchangeRate(
+                    "Bei gleicher Währung müssen beide Kontoseiten denselben Betrag besitzen."
+                )
+            }
+            let sourceRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: destinationAmount,
+                originalCurrency: destination.currency,
+                bookedMinor: sourceAmount,
+                bookedCurrency: source.currency
+            ) : nil
+            let destinationRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: sourceAmount,
+                originalCurrency: source.currency,
+                bookedMinor: destinationAmount,
+                bookedCurrency: destination.currency
+            ) : nil
+            let transferID = UUID()
+            let sourceValue = FinanceTransaction(
+                id: UUID(), accountID: source.id, bookingDate: date, valueDate: date,
+                payee: destination.name, purpose: purpose, categoryID: nil,
+                amountMinor: -sourceAmount, currency: source.currency, status: .booked,
+                memo: "", reference: "", transferID: transferID,
+                importFingerprint: nil, splits: [], origin: .transfer,
+                originalAmountMinor: isForeignCurrency ? -destinationAmount : nil,
+                originalCurrency: isForeignCurrency ? destination.currency : "",
+                exchangeRateScaled: sourceRate?.scaledValue
+            )
+            let destinationValue = FinanceTransaction(
+                id: UUID(), accountID: destination.id, bookingDate: date, valueDate: date,
+                payee: source.name, purpose: purpose, categoryID: nil,
+                amountMinor: destinationAmount, currency: destination.currency,
+                status: .booked, memo: "", reference: "", transferID: transferID,
+                importFingerprint: nil, splits: [], origin: .transfer,
+                originalAmountMinor: isForeignCurrency ? sourceAmount : nil,
+                originalCurrency: isForeignCurrency ? source.currency : "",
+                exchangeRateScaled: destinationRate?.scaledValue
+            )
             try writeTransaction(sourceValue, now: now)
             try writeTransaction(destinationValue, now: now)
-            try audit(entity: "transfer", id: transferID, action: "create", details: purpose)
+            let details = isForeignCurrency
+                ? "\(purpose); \(Money(minorUnits: sourceAmount, currency: source.currency).editingString) \(source.currency) → \(Money(minorUnits: destinationAmount, currency: destination.currency).editingString) \(destination.currency)"
+                : purpose
+            try audit(entity: "transfer", id: transferID, action: "create", details: details)
         }
     }
 
@@ -7408,6 +7490,17 @@ final class SQLiteFinanceStore {
         now: String,
         computeFingerprint: Bool = true
     ) throws {
+        try value.validate()
+        var accountCurrency: String?
+        try query(
+            "SELECT currency FROM accounts WHERE id=?",
+            [.text(value.accountID.uuidString)]
+        ) { accountCurrency = Self.text($0, 0).uppercased() }
+        guard accountCurrency == value.currency.uppercased() else {
+            throw FinanceError.invalidExchangeRate(
+                "Die Buchungswährung muss der Währung des Kontos entsprechen."
+            )
+        }
         try run(
             """
             INSERT INTO transactions(
@@ -7418,9 +7511,10 @@ final class SQLiteFinanceStore {
                 origin,external_provider,external_transaction_id,
                 counterparty_iban,end_to_end_id,mandate_reference,
                 duplicate_fingerprint,bank_balance_after_minor,
-                counterparty_bic,creditor_id,booking_text
+                counterparty_bic,creditor_id,booking_text,
+                original_amount_minor,original_currency,exchange_rate_scaled
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET booking_date=excluded.booking_date,value_date=excluded.value_date,
                 payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                 amount_minor=excluded.amount_minor,currency=excluded.currency,status=excluded.status,
@@ -7438,6 +7532,9 @@ final class SQLiteFinanceStore {
                 counterparty_bic=excluded.counterparty_bic,
                 creditor_id=excluded.creditor_id,
                 booking_text=excluded.booking_text,
+                original_amount_minor=excluded.original_amount_minor,
+                original_currency=excluded.original_currency,
+                exchange_rate_scaled=excluded.exchange_rate_scaled,
                 updated_at=excluded.updated_at,version=version+1
             """,
             [
@@ -7469,7 +7566,10 @@ final class SQLiteFinanceStore {
                 value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null,
                 .text(value.counterpartyBIC),
                 .text(value.creditorID),
-                .text(value.bookingText)
+                .text(value.bookingText),
+                value.originalAmountMinor.map(SQLiteValue.integer) ?? .null,
+                .text(value.originalCurrency.uppercased()),
+                value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null
             ]
         )
         try run("DELETE FROM transaction_tags WHERE transaction_id=?", [.text(value.id.uuidString)])

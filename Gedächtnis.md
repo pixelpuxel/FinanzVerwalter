@@ -2039,3 +2039,58 @@ Rechtsberatung.
 - Telegram-Nachricht 994 wurde im Projektthread 894 (`/quicken`) mit dem
   exakten Messwert von 13.021.148 Tokens veröffentlicht. Wegen der bestätigten
   Bildschirmsperre wurde ausdrücklich kein neuer Screenshot vorgetäuscht.
+
+## 2026-08-07 – Fremdwährungsbeträge und währungskorrekte Umbuchungen
+
+- `Money` verwendet nicht mehr pauschal zwei Dezimalstellen, sondern die zur
+  ISO-Währung gehörende kleinste Einheit. Sämtliche Skalierung erfolgt mit
+  `Decimal` und `.bankers`; `ExchangeRate` speichert den Kurs mit dem festen
+  Faktor 100.000.000 ohne binäre Fließkommazahl.
+- Eine Fremdwährungsbuchung speichert Originalbetrag, Originalwährung und
+  Kontowährungsbetrag gemeinsam mit einem rückprüfbaren Kurs. Teilweise
+  gesetzte Felder, Nullbeträge, unterschiedliche Vorzeichen, dieselbe Währung,
+  unplausible Umrechnung und eine vom Konto abweichende Buchungswährung werden
+  vor dem Schreiben abgelehnt.
+- Der Buchungseditor zeigt Originalbetrag, ISO-Code und Live-Kurs. In der
+  zweizeiligen Kontoblattansicht steht der Originalbetrag kompakt unter dem
+  gebuchten Betrag. Buchungsvorlagen erhalten diese Angaben beim
+  Speichern/Laden und erzeugen weiterhin frische Entwürfe ohne Import- oder
+  Transferidentität.
+- Der Umbuchungsdialog nimmt bei unterschiedlichen Währungen getrennten
+  Abgang und Zugang entgegen und zeigt den daraus abgeleiteten Kurs. Beide
+  Seiten werden atomar in ihrer jeweiligen Kontowährung mit Gegenbetrag und
+  reziprokem Kurs geschrieben. Bei gleicher Währung müssen beide Beträge
+  identisch sein; geschlossene oder identische Konten sowie Nullbeträge werden
+  vollständig ohne Teilbuchung abgewiesen.
+- Schema 30 ergänzt `original_amount_minor`, `original_currency` und
+  `exchange_rate_scaled`. Der direkte 29→30-Test beweist Erhalt bestehender
+  Buchungen; auch 10→30, 14→30, 22→30 und Zukunftsschema-Ablehnung bleiben
+  regressionsgeprüft.
+- Der finale Result-Bundle liegt unter
+  `/tmp/FinanzVerwalter-FX-full-final-8.xcresult`: 98 Tests, 97 bestanden, der
+  private opt-in-QIF-Test ohne Pfad planmäßig übersprungen, 0 Fehler und 0
+  erwartete Fehler. `git diff --check` ist sauber.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-ForeignCurrency-Release` ist streng signaturgeprüft. Sein
+  ausführbarer Code hat SHA-256
+  `48eb2e67ab5f5871f7b12e5a9cf65e84a172436afe5a19413e5433bcb971f579`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert. Die Vorgänger liegen
+  reversibel unter
+  `build/FinanzVerwalter-vor-fremdwaehrung-20260807-1103.app` und
+  `build/FinanzVerwalter-user-vor-fremdwaehrung-20260807-1103.app`; der
+  Schreibtisch-Link zeigt weiterhin auf die Systeminstallation.
+- Beim echten Start wurde die Produktivdatei auf Schema 30 migriert. Nach
+  beendetem WAL-Checkpoint trägt sie SHA-256
+  `e76a7733b0729bebcd85437f0bad425ecc67326e7e7df738161da18f9701e746`,
+  meldet Integrität `ok` und unverändert 97 Konten, 2.170 Buchungen sowie 782
+  Kategorien. Vor der Migration entstand
+  `Sicherungen/FinanzVerwalter-vor-Migration-v29-20260807-090257-797-6D9ECC18.qbackup`
+  mit SHA-256
+  `4e580a923fb8e93c18bbbdf9d325e8305a1f625a86b89fd8ca91c62479665e92`.
+  Die Datei ist Schema 29, Integrität `ok`, ohne WAL/SHM und enthält dieselben
+  Objektzahlen.
+- Die installierte App läuft wieder als Prozess 49965. Eine sichtbare Abnahme
+  und ein neuer App-Screenshot waren wegen der bestätigten macOS-Sperre nicht
+  möglich und wurden nicht vorgetäuscht. Der dokumentierte Tokenstand vor der
+  Veröffentlichung beträgt exakt 13.311.533 Tokens.

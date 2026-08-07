@@ -110,8 +110,26 @@ ungeschützte Buchstaben-/Zifferntasten werden vor dem Anwenden abgelehnt.
 Eine im Kontoblatt markierte Buchung kann mit dem zugeordneten Befehl als
 Vorlage gespeichert und aus dem Menü `Vorlagen` als neuer Entwurf geöffnet
 werden. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen auch
-Splits und Tags, aber niemals altes Datum, Belegnummer, Transfer- oder
-Importidentität. Eine einzelne Umbuchungsseite ist keine zulässige Vorlage.
+Splits, Tags und vorhandene Fremdwährungsangaben, aber niemals altes Datum,
+Belegnummer, Transfer- oder Importidentität. Eine einzelne Umbuchungsseite ist
+keine zulässige Vorlage.
+
+## Fremdwährungen
+
+Jede Buchung bleibt zwingend in der Währung ihres Kontos. Bei einem Beleg in
+einer anderen Währung speichert FinanzVerwalter zusätzlich Originalbetrag,
+dreistelligen ISO-Code und den daraus abgeleiteten Kurs mit acht festen
+Dezimalstellen. Die Umrechnung verwendet ausschließlich `Decimal` und
+kaufmännisch symmetrische Banker's-Rundung; JPY, KWD und andere Währungen
+verwenden ihre vom System gemeldete Anzahl an Nachkommastellen.
+
+Bei einer Umbuchung zwischen unterschiedlichen Währungen werden Abgang und
+Gutschrift getrennt eingegeben. Beide Kontoseiten entstehen atomar mit ihrer
+jeweiligen Kontowährung, gegenseitigem Originalbetrag und reproduzierbarem
+Kurs. In der zweizeiligen Kontoblattansicht steht der Originalbetrag direkt
+unter dem gebuchten Betrag. Summen und Salden bleiben immer nach Währung
+getrennt; ohne explizite Umrechnungsregel werden verschiedene Währungen nicht
+addiert.
 
 Kontoblatt, zweites Kontoblatt und Sammelkontoblatt besitzen stabile
 Accessibility-Bezeichner. VoiceOver erhält für jede dynamische Zelle den

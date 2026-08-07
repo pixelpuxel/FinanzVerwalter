@@ -1734,6 +1734,9 @@ struct TransactionEditorView: View {
     @State private var purpose = ""
     @State private var categoryID: UUID?
     @State private var amount = ""
+    @State private var useForeignCurrency = false
+    @State private var originalAmount = ""
+    @State private var originalCurrency = "USD"
     @State private var vatCodeID: UUID?
     @State private var vatMode: VATMode = .none
     @State private var manualTax = ""
@@ -1854,6 +1857,32 @@ struct TransactionEditorView: View {
                     }
                 }
                 TextField("Betrag", text: $amount, prompt: Text("-123,45"))
+                Section("Fremdwährung") {
+                    Toggle("Originalbetrag in anderer Währung", isOn: $useForeignCurrency)
+                    if useForeignCurrency {
+                        HStack {
+                            TextField(
+                                "Originalbetrag",
+                                text: $originalAmount,
+                                prompt: Text("125,00")
+                            )
+                            TextField("ISO-Währung", text: $originalCurrency)
+                                .textCase(.uppercase)
+                                .frame(width: 110)
+                        }
+                        if let preview = foreignCurrencyPreview {
+                            LabeledContent(
+                                "Reproduzierbarer Kurs",
+                                value: "1 \(preview.originalCurrency) = \(preview.rate.formatted) \(accountCurrency)"
+                            )
+                        }
+                        Text(
+                            "Der Kontobetrag bleibt in \(accountCurrency). Der Originalbetrag und der daraus mit acht Dezimalstellen abgeleitete Kurs werden gemeinsam gespeichert."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
                 if !useSplits {
                     Section("Mehrwertsteuer") {
                         Picker("MwSt.-Schlüssel", selection: $vatCodeID) {
@@ -1893,19 +1922,22 @@ struct TransactionEditorView: View {
                                 LabeledContent(
                                     "Brutto",
                                     value: Money(
-                                        minorUnits: breakdown.grossMinor
+                                        minorUnits: breakdown.grossMinor,
+                                        currency: accountCurrency
                                     ).formatted
                                 )
                                 LabeledContent(
                                     "Netto",
                                     value: Money(
-                                        minorUnits: breakdown.netMinor
+                                        minorUnits: breakdown.netMinor,
+                                        currency: accountCurrency
                                     ).formatted
                                 )
                                 LabeledContent(
                                     "Steuer",
                                     value: Money(
-                                        minorUnits: breakdown.taxMinor
+                                        minorUnits: breakdown.taxMinor,
+                                        currency: accountCurrency
                                     ).formatted
                                 )
                             }
@@ -2020,8 +2052,8 @@ struct TransactionEditorView: View {
                                             manualTaxText: draft.manualTax
                                         ) {
                                             Text(
-                                                "Netto \(Money(minorUnits: breakdown.netMinor).formatted) · "
-                                                    + "Steuer \(Money(minorUnits: breakdown.taxMinor).formatted)"
+                                                "Netto \(Money(minorUnits: breakdown.netMinor, currency: accountCurrency).formatted) · "
+                                                    + "Steuer \(Money(minorUnits: breakdown.taxMinor, currency: accountCurrency).formatted)"
                                             )
                                             .font(.caption.monospacedDigit())
                                             .foregroundStyle(.secondary)
@@ -2057,7 +2089,7 @@ struct TransactionEditorView: View {
             }
         }
         .padding(24)
-        .frame(width: useSplits ? 860 : 620)
+        .frame(width: useSplits ? 860 : 680)
         .onAppear {
             guard !initialized else { return }
             initialized = true
@@ -2077,12 +2109,26 @@ struct TransactionEditorView: View {
             purpose = source?.purpose ?? ""
             categoryID = source?.categoryID
             amount = source.map {
-                NSDecimalNumber(decimal: Decimal($0.amountMinor) / Decimal(100)).stringValue
+                Money(minorUnits: $0.amountMinor, currency: $0.currency).editingString
             } ?? ""
+            useForeignCurrency = source?.originalAmountMinor != nil
+            originalAmount = source.flatMap { value in
+                value.originalAmountMinor.map {
+                    Money(
+                        minorUnits: $0,
+                        currency: value.originalCurrency
+                    ).editingString
+                }
+            } ?? ""
+            originalCurrency = source?.originalCurrency.isEmpty == false
+                ? (source?.originalCurrency ?? "USD") : "USD"
             vatCodeID = source?.vatCodeID
             vatMode = source?.vatMode ?? .none
             manualTax = source?.vatMode == .manual
-                ? Money(minorUnits: source?.taxMinor ?? 0).editingString
+                ? Money(
+                    minorUnits: source?.taxMinor ?? 0,
+                    currency: source?.currency ?? accountCurrency
+                ).editingString
                 : ""
             status = source?.status ?? .booked
             memo = source?.memo ?? ""
@@ -2092,13 +2138,19 @@ struct TransactionEditorView: View {
                 SplitDraft(
                     id: $0.id,
                     categoryID: $0.categoryID,
-                    amount: NSDecimalNumber(decimal: Decimal($0.amountMinor) / Decimal(100)).stringValue,
+                    amount: Money(
+                        minorUnits: $0.amountMinor,
+                        currency: source?.currency ?? accountCurrency
+                    ).editingString,
                     memo: $0.memo,
                     tagIDs: Set($0.tagIDs),
                     vatCodeID: $0.vatCodeID,
                     vatMode: $0.vatMode,
                     manualTax: $0.vatMode == .manual
-                        ? Money(minorUnits: $0.taxMinor).editingString
+                        ? Money(
+                            minorUnits: $0.taxMinor,
+                            currency: source?.currency ?? accountCurrency
+                        ).editingString
                         : ""
                 )
             } ?? []
@@ -2127,26 +2179,52 @@ struct TransactionEditorView: View {
         }
     }
 
+    private var accountCurrency: String {
+        accountID.flatMap { id in
+            store.accounts.first(where: { $0.id == id })?.currency
+        } ?? "EUR"
+    }
+
     private var totalMinor: Int64 {
-        (try? Money(parsing: amount).minorUnits) ?? 0
+        (try? Money(parsing: amount, currency: accountCurrency).minorUnits) ?? 0
     }
 
     private var splitSumMinor: Int64 {
         splitDrafts.reduce(Int64.zero) {
-            $0 + ((try? Money(parsing: $1.amount).minorUnits) ?? 0)
+            $0 + ((try? Money(
+                parsing: $1.amount,
+                currency: accountCurrency
+            ).minorUnits) ?? 0)
         }
     }
 
     private var remainingSplitMinor: Int64 { totalMinor - splitSumMinor }
-    private var remainingSplitText: String { Money(minorUnits: remainingSplitMinor).formatted }
+    private var remainingSplitText: String {
+        Money(minorUnits: remainingSplitMinor, currency: accountCurrency).formatted
+    }
+
+    private var foreignCurrencyPreview: (
+        originalCurrency: String,
+        rate: ExchangeRate
+    )? {
+        guard useForeignCurrency,
+              let booked = try? Money(parsing: amount, currency: accountCurrency),
+              let values = try? resolvedForeignCurrency(booked: booked)
+        else { return nil }
+        return (values.currency, values.rate)
+    }
 
     private func assignRemainder() {
         guard let index = splitDrafts.indices.last else { return }
-        let adjusted = ((try? Money(parsing: splitDrafts[index].amount).minorUnits) ?? 0)
+        let adjusted = ((try? Money(
+            parsing: splitDrafts[index].amount,
+            currency: accountCurrency
+        ).minorUnits) ?? 0)
             + remainingSplitMinor
-        splitDrafts[index].amount = NSDecimalNumber(
-            decimal: Decimal(adjusted) / Decimal(100)
-        ).stringValue
+        splitDrafts[index].amount = Money(
+            minorUnits: adjusted,
+            currency: accountCurrency
+        ).editingString
     }
 
     private func save() {
@@ -2185,7 +2263,9 @@ struct TransactionEditorView: View {
                     vatCodeID: vatValues?.codeID,
                     vatMode: vatValues?.mode ?? .none,
                     netMinor: vatValues?.breakdown.netMinor ?? 0,
-                    taxMinor: vatValues?.breakdown.taxMinor ?? 0
+                    taxMinor: vatValues?.breakdown.taxMinor ?? 0,
+                    originalAmount: useForeignCurrency ? originalAmount : "",
+                    originalCurrency: useForeignCurrency ? originalCurrency : ""
                 ) {
                     dismiss()
                 }
@@ -2247,7 +2327,10 @@ struct TransactionEditorView: View {
         mode: VATMode,
         manualTaxText: String
     ) throws -> VATBreakdown {
-        let gross = try Money(parsing: grossText).minorUnits
+        let gross = try Money(
+            parsing: grossText,
+            currency: accountCurrency
+        ).minorUnits
         switch mode {
         case .none:
             return VATBreakdown(
@@ -2271,7 +2354,10 @@ struct TransactionEditorView: View {
             }
             return try VATCalculator.manual(
                 grossMinor: gross,
-                taxMinor: try Money(parsing: manualTaxText).minorUnits
+                taxMinor: try Money(
+                    parsing: manualTaxText,
+                    currency: accountCurrency
+                ).minorUnits
             )
         }
     }
@@ -2294,7 +2380,8 @@ struct TransactionEditorView: View {
 
     private func saveSplit(accountID: UUID) {
         do {
-            let total = try Money(parsing: amount)
+            let total = try Money(parsing: amount, currency: accountCurrency)
+            let foreignCurrency = try resolvedForeignCurrency(booked: total)
             let splits = try splitDrafts.enumerated().map { offset, draft in
                 let breakdown = try vatBreakdown(
                     grossText: draft.amount,
@@ -2305,7 +2392,10 @@ struct TransactionEditorView: View {
                 return FinanceSplit(
                     id: draft.id,
                     categoryID: draft.categoryID,
-                    amountMinor: try Money(parsing: draft.amount).minorUnits,
+                    amountMinor: try Money(
+                        parsing: draft.amount,
+                        currency: accountCurrency
+                    ).minorUnits,
                     memo: draft.memo,
                     sortOrder: offset,
                     tagIDs: Array(draft.tagIDs),
@@ -2357,7 +2447,10 @@ struct TransactionEditorView: View {
                 bankBalanceAfterMinor: transaction?.bankBalanceAfterMinor,
                 counterpartyBIC: transaction?.counterpartyBIC ?? "",
                 creditorID: SEPACreditorIDValidator.normalized(creditorID),
-                bookingText: transaction?.bookingText ?? ""
+                bookingText: transaction?.bookingText ?? "",
+                originalAmountMinor: foreignCurrency?.amountMinor,
+                originalCurrency: foreignCurrency?.currency ?? "",
+                exchangeRateScaled: foreignCurrency?.rate.scaledValue
             )
             if store.saveSplitTransaction(value) {
                 dismiss()
@@ -2365,6 +2458,30 @@ struct TransactionEditorView: View {
         } catch {
             store.errorMessage = error.localizedDescription
         }
+    }
+
+    private func resolvedForeignCurrency(
+        booked: Money
+    ) throws -> (amountMinor: Int64, currency: String, rate: ExchangeRate)? {
+        guard useForeignCurrency else { return nil }
+        let currency = originalCurrency
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        guard currency.count == 3, currency != booked.currency else {
+            throw FinanceError.invalidExchangeRate(
+                "Bitte gib eine von der Kontowährung abweichende dreistellige ISO-Währung an."
+            )
+        }
+        let input = try Money(parsing: originalAmount, currency: currency)
+        let signedAmount = booked.minorUnits < 0
+            ? -abs(input.minorUnits) : abs(input.minorUnits)
+        let rate = try ExchangeRate.derived(
+            originalMinor: signedAmount,
+            originalCurrency: currency,
+            bookedMinor: booked.minorUnits,
+            bookedCurrency: booked.currency
+        )
+        return (signedAmount, currency, rate)
     }
 }
 
@@ -2557,12 +2674,26 @@ private struct SecondaryRegisterPane: View {
                 }
                 .width(min: 100, ideal: 145)
                 TableColumn("Betrag") { transaction in
-                    Text(
-                        Money(
-                            minorUnits: transaction.amountMinor,
-                            currency: transaction.currency
-                        ).formatted
-                    )
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(
+                            Money(
+                                minorUnits: transaction.amountMinor,
+                                currency: transaction.currency
+                            ).formatted
+                        )
+                        if rowMode == .twoLines,
+                           let original = transaction.originalAmountMinor {
+                            Text(
+                                "Orig. " + Money(
+                                    minorUnits: original,
+                                    currency: transaction.originalCurrency
+                                ).formatted
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
+                    }
                     .monospacedDigit()
                     .frame(
                         maxWidth: .infinity,
@@ -2570,7 +2701,7 @@ private struct SecondaryRegisterPane: View {
                         alignment: .trailing
                     )
                 }
-                .width(min: 82, ideal: 100)
+                .width(min: 90, ideal: 120)
                 TableColumn("Saldo") { transaction in
                     Text(
                         Money(
@@ -3122,12 +3253,26 @@ private struct SecondaryCombinedRegisterPane: View {
                 }
                 .width(min: 100, ideal: 140)
                 TableColumn("Betrag") { transaction in
-                    Text(
-                        Money(
-                            minorUnits: transaction.amountMinor,
-                            currency: transaction.currency
-                        ).formatted
-                    )
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(
+                            Money(
+                                minorUnits: transaction.amountMinor,
+                                currency: transaction.currency
+                            ).formatted
+                        )
+                        if rowMode == .twoLines,
+                           let original = transaction.originalAmountMinor {
+                            Text(
+                                "Orig. " + Money(
+                                    minorUnits: original,
+                                    currency: transaction.originalCurrency
+                                ).formatted
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
+                    }
                     .monospacedDigit()
                     .frame(
                         maxWidth: .infinity,
@@ -3135,7 +3280,7 @@ private struct SecondaryCombinedRegisterPane: View {
                         alignment: .trailing
                     )
                 }
-                .width(min: 82, ideal: 100)
+                .width(min: 90, ideal: 120)
                 TableColumn("Saldo") { transaction in
                     Text(
                         Money(

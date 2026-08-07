@@ -625,6 +625,31 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try Money(parsing: "0,005").minorUnits, 0)
     }
 
+    func testMoneyUsesCurrencyMinorUnitsAndExchangeRatesDeterministically() throws {
+        XCTAssertEqual(Money.fractionDigits(for: "JPY"), 0)
+        XCTAssertEqual(Money.fractionDigits(for: "KWD"), 3)
+        XCTAssertEqual(try Money(parsing: "123,5", currency: "JPY").minorUnits, 124)
+        XCTAssertEqual(try Money(parsing: "1,234", currency: "KWD").minorUnits, 1_234)
+
+        let rate = try ExchangeRate.derived(
+            originalMinor: 10_000,
+            originalCurrency: "EUR",
+            bookedMinor: 10_950,
+            bookedCurrency: "USD"
+        )
+        XCTAssertEqual(rate.scaledValue, 109_500_000)
+        XCTAssertEqual(
+            try rate.convertedMinor(
+                originalMinor: -10_000,
+                originalCurrency: "EUR",
+                bookedCurrency: "USD"
+            ),
+            -10_950
+        )
+        XCTAssertEqual(try ExchangeRate(parsing: "1,09500000"), rate)
+        XCTAssertThrowsError(try ExchangeRate(parsing: "0"))
+    }
+
     func testVATCalculatorRoundsPerLineAndValidatesManualTax() throws {
         XCTAssertEqual(
             try VATCalculator.automatic(
@@ -858,6 +883,118 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(values.reduce(Int64.zero) { $0 + $1.amountMinor }, 0)
         XCTAssertEqual(try context.store.accountBalanceMinor(account: source), 75_000)
         XCTAssertEqual(try context.store.accountBalanceMinor(account: destination), 25_000)
+    }
+
+    func testForeignCurrencyTransferPersistsBothAmountsRatesAndBalances() throws {
+        let context = try TestDatabase()
+        let euro = FinanceAccount(
+            id: UUID(), name: "Eurokonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "Dollarkonto", institution: "",
+            type: .foreignCurrency, currency: "USD", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(euro)
+        try context.store.saveAccount(dollar)
+
+        try context.store.createTransfer(
+            from: euro,
+            to: dollar,
+            sourceAmountMinor: 10_000,
+            destinationAmountMinor: 10_950,
+            date: Date(timeIntervalSince1970: 1_735_689_600),
+            purpose: "Währungstausch"
+        )
+
+        let values = try context.store.transactions()
+        XCTAssertEqual(values.count, 2)
+        XCTAssertEqual(Set(values.compactMap(\.transferID)).count, 1)
+        let source = try XCTUnwrap(values.first { $0.accountID == euro.id })
+        let destination = try XCTUnwrap(values.first { $0.accountID == dollar.id })
+        XCTAssertEqual(source.amountMinor, -10_000)
+        XCTAssertEqual(source.currency, "EUR")
+        XCTAssertEqual(source.originalAmountMinor, -10_950)
+        XCTAssertEqual(source.originalCurrency, "USD")
+        XCTAssertNotNil(source.exchangeRateScaled)
+        XCTAssertEqual(destination.amountMinor, 10_950)
+        XCTAssertEqual(destination.currency, "USD")
+        XCTAssertEqual(destination.originalAmountMinor, 10_000)
+        XCTAssertEqual(destination.originalCurrency, "EUR")
+        XCTAssertEqual(destination.exchangeRateScaled, 109_500_000)
+        XCTAssertEqual(source.origin, .transfer)
+        XCTAssertEqual(destination.origin, .transfer)
+        XCTAssertNoThrow(try source.validate())
+        XCTAssertNoThrow(try destination.validate())
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: euro), -10_000)
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: dollar), 10_950)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testForeignCurrencyInvariantsRejectMismatchWithoutPartialWrite() throws {
+        let context = try TestDatabase()
+        let euro = FinanceAccount(
+            id: UUID(), name: "Euro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let secondEuro = FinanceAccount(
+            id: UUID(), name: "Euro 2", institution: "", type: .savings,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "Dollar", institution: "",
+            type: .foreignCurrency, currency: "USD", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 2
+        )
+        try [euro, secondEuro, dollar].forEach(context.store.saveAccount)
+
+        XCTAssertThrowsError(
+            try context.store.createTransfer(
+                from: euro, to: secondEuro,
+                sourceAmountMinor: 1_000, destinationAmountMinor: 999,
+                date: Date(), purpose: "Ungültig"
+            )
+        )
+        XCTAssertTrue(try context.store.transactions().isEmpty)
+
+        let mismatch = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: Date(), valueDate: nil,
+            payee: "Test", purpose: "Falsche Kontowährung", categoryID: nil,
+            amountMinor: -1_000, currency: "USD", status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        XCTAssertThrowsError(try context.store.saveTransaction(mismatch))
+        XCTAssertTrue(try context.store.transactions().isEmpty)
+
+        let validRate = try ExchangeRate.derived(
+            originalMinor: -1_100,
+            originalCurrency: "USD",
+            bookedMinor: -1_000,
+            bookedCurrency: "EUR"
+        )
+        var foreign = FinanceTransaction(
+            id: UUID(), accountID: euro.id, bookingDate: Date(), valueDate: nil,
+            payee: "Hotel", purpose: "Originalbeleg", categoryID: nil,
+            amountMinor: -1_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: [],
+            originalAmountMinor: -1_100, originalCurrency: "USD",
+            exchangeRateScaled: validRate.scaledValue
+        )
+        try context.store.saveTransaction(foreign)
+        let restored = try XCTUnwrap(context.store.transactions().first)
+        XCTAssertEqual(restored.originalAmountMinor, -1_100)
+        XCTAssertEqual(restored.originalCurrency, "USD")
+        XCTAssertEqual(restored.exchangeRateScaled, validRate.scaledValue)
+
+        foreign.exchangeRateScaled = ExchangeRate.scale
+        XCTAssertThrowsError(try context.store.saveTransaction(foreign))
+        XCTAssertEqual(try context.store.transactions().count, 1)
     }
 
     func testMovingTransactionIsAtomicAndProtectsAccountingInvariants() throws {
@@ -4122,7 +4259,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=30", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=31", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -4131,10 +4268,83 @@ final class FinanzVerwalterTests: XCTestCase {
             guard case let FinanceError.database(message) = error else {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
+            XCTAssertTrue(message.contains("Schema 31"))
             XCTAssertTrue(message.contains("Schema 30"))
-            XCTAssertTrue(message.contains("Schema 29"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
+        sqlite3_finalize(statement)
+        sqlite3_close(database)
+    }
+
+    func testMigration29To30PreservesTransactionsAndAddsEmptyFXFields() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-migration-29-30-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.qdata")
+        let account = FinanceAccount(
+            id: UUID(), name: "Bestandskonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(),
+            valueDate: nil, payee: "Altbestand", purpose: "Unverändert",
+            categoryID: nil, amountMinor: -12_345, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        var initial: SQLiteFinanceStore? = try SQLiteFinanceStore(fileURL: url)
+        try initial?.saveAccount(account)
+        try initial?.saveTransaction(transaction)
+        initial?.close()
+        initial = nil
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        let downgrade = """
+        ALTER TABLE transactions DROP COLUMN exchange_rate_scaled;
+        ALTER TABLE transactions DROP COLUMN original_currency;
+        ALTER TABLE transactions DROP COLUMN original_amount_minor;
+        PRAGMA user_version=29;
+        """
+        var message: UnsafeMutablePointer<CChar>?
+        XCTAssertEqual(
+            sqlite3_exec(database, downgrade, nil, nil, &message),
+            SQLITE_OK,
+            message.map { String(cString: $0) } ?? ""
+        )
+        if let message { sqlite3_free(message) }
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        let restored = try XCTUnwrap(
+            migrated.transactions().first { $0.id == transaction.id }
+        )
+        XCTAssertEqual(restored.amountMinor, -12_345)
+        XCTAssertEqual(restored.currency, "EUR")
+        XCTAssertNil(restored.originalAmountMinor)
+        XCTAssertTrue(restored.originalCurrency.isEmpty)
+        XCTAssertNil(restored.exchangeRateScaled)
+        XCTAssertTrue(try migrated.integrityCheck())
+
+        XCTAssertEqual(
+            sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil),
+            SQLITE_OK
+        )
         var statement: OpaquePointer?
         XCTAssertEqual(
             sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil),
@@ -4146,7 +4356,7 @@ final class FinanzVerwalterTests: XCTestCase {
         sqlite3_close(database)
     }
 
-    func testMigration14To29PreservesLegacyReconciliationHistory() throws {
+    func testMigration14To30PreservesLegacyReconciliationHistory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-14-16-\(UUID().uuidString)",
@@ -4263,11 +4473,11 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 29)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 30)
         sqlite3_finalize(statement)
     }
 
-    func testMigration22To29PromotesLegacyPayeeBankData() throws {
+    func testMigration22To30PromotesLegacyPayeeBankData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-22-23-\(UUID().uuidString)",
@@ -4308,6 +4518,9 @@ final class FinanzVerwalterTests: XCTestCase {
         ALTER TABLE payment_orders DROP COLUMN payee_bank_account_id;
         ALTER TABLE payment_orders DROP COLUMN payee_id;
         DROP TABLE payee_bank_accounts;
+        ALTER TABLE transactions DROP COLUMN exchange_rate_scaled;
+        ALTER TABLE transactions DROP COLUMN original_currency;
+        ALTER TABLE transactions DROP COLUMN original_amount_minor;
         PRAGMA user_version=22;
         """
         var message: UnsafeMutablePointer<CChar>?
@@ -5804,6 +6017,12 @@ final class FinanzVerwalterTests: XCTestCase {
             sortOrder: 0
         )
         try context.store.saveAccount(account)
+        let templateRate = try ExchangeRate.derived(
+            originalMinor: -110_000,
+            originalCurrency: "USD",
+            bookedMinor: -100_000,
+            bookedCurrency: "EUR"
+        )
         let source = FinanceTransaction(
             id: UUID(),
             accountID: account.id,
@@ -5834,7 +6053,10 @@ final class FinanzVerwalterTests: XCTestCase {
                     memo: "Nebenkosten",
                     sortOrder: 1
                 )
-            ]
+            ],
+            originalAmountMinor: -110_000,
+            originalCurrency: "USD",
+            exchangeRateScaled: templateRate.scaledValue
         )
         let template = TransactionTemplate(
             name: "  Monatsmiete  ",
@@ -5846,6 +6068,9 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(restored.name, "Monatsmiete")
         XCTAssertEqual(restored.status, .booked)
         XCTAssertEqual(restored.splits.map(\.amountMinor), [-80_000, -20_000])
+        XCTAssertEqual(restored.originalAmountMinor, -110_000)
+        XCTAssertEqual(restored.originalCurrency, "USD")
+        XCTAssertEqual(restored.exchangeRateScaled, templateRate.scaledValue)
         var cancelledSource = source
         cancelledSource.status = .cancelled
         XCTAssertEqual(
@@ -5864,6 +6089,9 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(draft.reference, "")
         XCTAssertNil(draft.importFingerprint)
         XCTAssertEqual(draft.amountMinor, source.amountMinor)
+        XCTAssertEqual(draft.originalAmountMinor, -110_000)
+        XCTAssertEqual(draft.originalCurrency, "USD")
+        XCTAssertEqual(draft.exchangeRateScaled, templateRate.scaledValue)
         try draft.validate()
 
         try context.store.deleteTransactionTemplate(id: restored.id)

@@ -1267,3 +1267,37 @@ verändert. Teste Zeitprüfung, Änderungsprüfung, deaktivierte und erzwungene
 Sicherung, Mengen- und Altersrotation, eigenständige Lesbarkeit ohne
 Seitendateien, Quell-/Zielschutz, Alt-Schema-Sicherung, Zukunftsschema-
 Ablehnung, Restore-Regression und Datenbankintegrität.
+
+# Reproduzierbare Fremdwährungsbuchungen
+
+Speichere jede Buchung zwingend in der Währung ihres Kontos. Ergänze für einen
+abweichenden Beleg die drei gemeinsam verpflichtenden Felder
+`original_amount_minor`, `original_currency` und `exchange_rate_scaled`.
+`exchange_rate_scaled` ist der Kontowährungsbetrag je Einheit Originalwährung
+mit dem festen Faktor 100.000.000. Original- und Kontobetrag müssen ungleich
+null sein, dasselbe Vorzeichen besitzen und nach Umrechnung höchstens eine
+kleinste Kontowährungseinheit voneinander abweichen. Teilweise gesetzte oder
+gleichlautende Währungen werden abgewiesen.
+
+Ermittle die Nachkommastellen einer ISO-Währung über `NumberFormatter`, führe
+sämtliche Rechnungen mit `Decimal` aus und runde `.bankers`. Ein deutsches
+Komma ist das Dezimaltrennzeichen, Punkte davor sind Gruppierungszeichen; bei
+Eingaben ohne Komma bleibt der Punkt Dezimaltrennzeichen. Speichere niemals
+binäre Fließkommazahlen in Finanzfeldern.
+
+Eine Umbuchung gleicher Währung verlangt identische kleinste Einheiten. Bei
+unterschiedlichen Währungen nimmt der Dialog getrennte positive Abgangs- und
+Gutschriftbeträge entgegen. Schreibe beide Seiten in einer SQLite-Transaktion:
+Quelle negativ in Quellwährung, Ziel positiv in Zielwährung, jeweils mit dem
+anderen Betrag als Originalwert und dem passenden reziproken Kurs. Prüfe
+vorher Existenz, Verschiedenheit und Offenstatus der Konten. Keine ungültige
+Eingabe darf eine einzelne Transferseite hinterlassen.
+
+Zeige im Buchungseditor Originalbetrag, ISO-Code und den abgeleiteten Kurs.
+Zeige im Transferdialog beide Kontowährungen und eine Live-Kursvorschau. Die
+zweizeilige Kontoblattansicht zeigt den Originalbetrag unter dem Kontobetrag.
+Buchungsvorlagen erhalten Fremdwährungsdaten; Transferidentitäten bleiben wie
+bisher ausgeschlossen. Migriere Schema 29 atomar auf Schema 30 und sichere
+vorher die unveränderte Schema-29-Datei. Teste JPY/KWD-Nachkommastellen,
+Kursrundlauf, Vorzeichen, Kontowährungszwang, atomare Transfers, Salden,
+Persistenz, Vorlagen, 29→30-Migration, Zukunftsschema und Integrität.
