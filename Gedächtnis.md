@@ -2821,6 +2821,13 @@ Rechtsberatung.
   und Serienrevisionen. Die Sitzung ist weiterhin gesperrt, weshalb kein
   fingierter Screenshot erzeugt wurde. Exakter kumulativer Zielzählerstand
   nach Installation und Produktivprüfung: 17.059.375 Tokens.
+- Implementierung und Tests wurden als Commit `cae4bf1`, Dokumentation als
+  `abfca28` angelegt und auf den Arbeitsbranch gepusht. Draft-PR #1 enthält
+  den aktuellen 129-Test-Nachweis und ist konfliktfrei/mergebar.
+- Telegram-Nachricht 1036 meldet Drag-and-drop, Validierung, Test-, Release-,
+  Installations-, Datenbank- und GitHub-Stand im `/quicken`-Thread 894. Der
+  exakte kumulative Zielzählerstand nach Versand und PR-Prüfung beträgt
+  17.069.149 Tokens.
   Der exakte Zielzählerstand vor dieser Dokumentation beträgt 16.682.116
   Tokens.
 - GitHub Draft-PR #1 wurde konfliktfrei mit Head `4ed8485`, dem
