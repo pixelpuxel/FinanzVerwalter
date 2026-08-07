@@ -626,6 +626,81 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try Money(parsing: "0,005").minorUnits, 0)
     }
 
+    func testGermanMoneyExpressionUsesDecimalPrecedenceAndUnicodeOperators() throws {
+        XCTAssertEqual(
+            try Money(evaluating: "= (1.234,56 + 5,44) / 2 €").minorUnits,
+            62_000
+        )
+        XCTAssertEqual(try Money(evaluating: "100 + 20 * 3").minorUnits, 16_000)
+        XCTAssertEqual(try Money(evaluating: "-(10,00 - 2,50) × 2").minorUnits, -1_500)
+        XCTAssertEqual(try Money(evaluating: "5--2").minorUnits, 700)
+        XCTAssertEqual(try Money(evaluating: "1 ÷ 3").minorUnits, 33)
+    }
+
+    func testGermanMoneyExpressionUsesCurrencyPrecisionAndSymbols() throws {
+        XCTAssertEqual(
+            try Money(evaluating: "1,234 + 0,001", currency: "KWD").minorUnits,
+            1_235
+        )
+        XCTAssertEqual(try Money(evaluating: "EUR 1,00 + € 2,00").minorUnits, 300)
+    }
+
+    func testStrictMoneyParserRejectsExpressions() throws {
+        XCTAssertThrowsError(try Money(parsing: "1 + 2"))
+    }
+
+    func testGermanMoneyExpressionRejectsMalformedInput() throws {
+        for invalid in ["", "1 / 0", "(1 + 2", "1..2", "1 +", "()"] {
+            XCTAssertThrowsError(try Money(evaluating: invalid), invalid)
+        }
+    }
+
+    func testGermanMoneyExpressionRejectsOverflow() throws {
+        XCTAssertThrowsError(
+            try Money(evaluating: String(repeating: "9", count: 80) + " * 9")
+        )
+    }
+
+    func testGermanMoneyExpressionRejectsExcessiveNesting() throws {
+        XCTAssertThrowsError(
+            try Money(evaluating: String(repeating: "(", count: 34) + "1"
+                + String(repeating: ")", count: 34))
+        )
+    }
+
+    @MainActor
+    func testTransactionEntryEvaluatesAmountAndForeignCurrencyExpressions() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Rechnerkonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let appStore = FinanceAppStore(repository: context.store)
+        XCTAssertTrue(
+            appStore.saveTransaction(
+                accountID: account.id, date: .now, payee: "Ausdruck",
+                purpose: "Grundrechenarten", categoryID: nil,
+                amount: "-(100,00 + 23,45) / 2", status: .booked,
+                originalAmount: "50 + 11,725", originalCurrency: "USD"
+            )
+        )
+        let stored = try XCTUnwrap(context.store.transactions().first)
+        XCTAssertEqual(stored.amountMinor, -6_172)
+        XCTAssertEqual(stored.originalAmountMinor, -6_172)
+        XCTAssertEqual(stored.originalCurrency, "USD")
+        XCTAssertNotNil(stored.exchangeRateScaled)
+        XCTAssertFalse(
+            appStore.saveTransaction(
+                accountID: account.id, date: .now, payee: "Ungültig",
+                purpose: "Nullteilung", categoryID: nil,
+                amount: "10 / 0", status: .booked
+            )
+        )
+        XCTAssertEqual(try context.store.transactions().count, 1)
+    }
+
     func testMoneyUsesCurrencyMinorUnitsAndExchangeRatesDeterministically() throws {
         XCTAssertEqual(Money.fractionDigits(for: "JPY"), 0)
         XCTAssertEqual(Money.fractionDigits(for: "KWD"), 3)

@@ -1886,7 +1886,11 @@ struct TransactionEditorView: View {
                         vatMode = .automatic
                     }
                 }
-                TextField("Betrag", text: $amount, prompt: Text("-123,45"))
+                TextField("Betrag", text: $amount, prompt: Text("-123,45 oder 100 + 23,45"))
+                    .help("Grundrechenarten +, −, ×, ÷ und Klammern sind erlaubt.")
+                Text("Rechner: +, −, ×, ÷ und Klammern; gerechnet wird exakt mit Decimal.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Section("Fremdwährung") {
                     Toggle("Originalbetrag in anderer Währung", isOn: $useForeignCurrency)
                     if useForeignCurrency {
@@ -2225,13 +2229,13 @@ struct TransactionEditorView: View {
     }
 
     private var totalMinor: Int64 {
-        (try? Money(parsing: amount, currency: accountCurrency).minorUnits) ?? 0
+        (try? Money(evaluating: amount, currency: accountCurrency).minorUnits) ?? 0
     }
 
     private var splitSumMinor: Int64 {
         splitDrafts.reduce(Int64.zero) {
             $0 + ((try? Money(
-                parsing: $1.amount,
+                evaluating: $1.amount,
                 currency: accountCurrency
             ).minorUnits) ?? 0)
         }
@@ -2247,7 +2251,7 @@ struct TransactionEditorView: View {
         rate: ExchangeRate
     )? {
         guard useForeignCurrency,
-              let booked = try? Money(parsing: amount, currency: accountCurrency),
+              let booked = try? Money(evaluating: amount, currency: accountCurrency),
               let values = try? resolvedForeignCurrency(booked: booked)
         else { return nil }
         return (values.currency, values.rate)
@@ -2256,7 +2260,7 @@ struct TransactionEditorView: View {
     private func assignRemainder() {
         guard let index = splitDrafts.indices.last else { return }
         let adjusted = ((try? Money(
-            parsing: splitDrafts[index].amount,
+            evaluating: splitDrafts[index].amount,
             currency: accountCurrency
         ).minorUnits) ?? 0)
             + remainingSplitMinor
@@ -2290,10 +2294,20 @@ struct TransactionEditorView: View {
             saveSplit(accountID: accountID)
         } else {
             do {
+                let booked = try Money(evaluating: amount, currency: accountCurrency)
+                let normalizedOriginalAmount = useForeignCurrency
+                    ? try Money(
+                        evaluating: originalAmount,
+                        currency: originalCurrency.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).uppercased()
+                    ).editingString
+                    : ""
                 let vatValues = try resolvedSimpleVAT()
                 if store.saveTransaction(
                     id: transaction?.id, accountID: accountID, date: date, payee: payee,
-                    purpose: purpose, categoryID: categoryID, amount: amount,
+                    purpose: purpose, categoryID: categoryID,
+                    amount: booked.editingString,
                     status: status, memo: memo,
                     reference: transaction?.reference ?? "",
                     payeeID: payeeID, tagIDs: Array(selectedTagIDs),
@@ -2303,7 +2317,7 @@ struct TransactionEditorView: View {
                     vatMode: vatValues?.mode ?? .none,
                     netMinor: vatValues?.breakdown.netMinor ?? 0,
                     taxMinor: vatValues?.breakdown.taxMinor ?? 0,
-                    originalAmount: useForeignCurrency ? originalAmount : "",
+                    originalAmount: normalizedOriginalAmount,
                     originalCurrency: useForeignCurrency ? originalCurrency : ""
                 ) {
                     dismiss()
@@ -2367,7 +2381,7 @@ struct TransactionEditorView: View {
         manualTaxText: String
     ) throws -> VATBreakdown {
         let gross = try Money(
-            parsing: grossText,
+            evaluating: grossText,
             currency: accountCurrency
         ).minorUnits
         switch mode {
@@ -2394,7 +2408,7 @@ struct TransactionEditorView: View {
             return try VATCalculator.manual(
                 grossMinor: gross,
                 taxMinor: try Money(
-                    parsing: manualTaxText,
+                    evaluating: manualTaxText,
                     currency: accountCurrency
                 ).minorUnits
             )
@@ -2419,7 +2433,7 @@ struct TransactionEditorView: View {
 
     private func saveSplit(accountID: UUID) {
         do {
-            let total = try Money(parsing: amount, currency: accountCurrency)
+            let total = try Money(evaluating: amount, currency: accountCurrency)
             let foreignCurrency = try resolvedForeignCurrency(booked: total)
             let splits = try splitDrafts.enumerated().map { offset, draft in
                 let breakdown = try vatBreakdown(
@@ -2432,7 +2446,7 @@ struct TransactionEditorView: View {
                     id: draft.id,
                     categoryID: draft.categoryID,
                     amountMinor: try Money(
-                        parsing: draft.amount,
+                        evaluating: draft.amount,
                         currency: accountCurrency
                     ).minorUnits,
                     memo: draft.memo,
@@ -2511,7 +2525,7 @@ struct TransactionEditorView: View {
                 "Bitte gib eine von der Kontowährung abweichende dreistellige ISO-Währung an."
             )
         }
-        let input = try Money(parsing: originalAmount, currency: currency)
+        let input = try Money(evaluating: originalAmount, currency: currency)
         let signedAmount = booked.minorUnits < 0
             ? -abs(input.minorUnits) : abs(input.minorUnits)
         let rate = try ExchangeRate.derived(

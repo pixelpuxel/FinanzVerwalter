@@ -807,7 +807,7 @@ final class FinanceAppStore: ObservableObject {
                     "Die Mandatsreferenz darf höchstens 35 Zeichen lang sein."
                 )
             }
-            let money = try Money(parsing: amount, currency: account.currency)
+            let money = try Money(evaluating: amount, currency: account.currency)
             let normalizedOriginalCurrency = originalCurrency
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .uppercased()
@@ -825,7 +825,7 @@ final class FinanceAppStore: ObservableObject {
                     )
                 }
                 let parsedInput = try Money(
-                    parsing: originalAmount,
+                    evaluating: originalAmount,
                     currency: normalizedOriginalCurrency
                 )
                 let parsed = Money(

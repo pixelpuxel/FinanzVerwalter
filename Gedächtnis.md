@@ -3096,3 +3096,45 @@ Rechtsberatung.
 - Telegram-Nachricht 1057 meldet denselben Stand im `/quicken`-Thread 894 und
   erklärt ausdrücklich den wegen der gesperrten Sitzung fehlenden Screenshot.
   Exakter kumulativer Zielzählerstand nach Veröffentlichung: 19.181.251 Tokens.
+
+## 07.08.2026 – Decimal-Betragsrechner für manuelle Buchungen
+
+- Der manuelle Buchungsdialog wertet in Hauptbetrag,
+  Fremdwährungs-Originalbetrag, Splitzeilen und manuellen MwSt.-Beträgen nun
+  `+`, `−`, `×`, `÷`, die Tastaturvarianten, Klammern, unäre Vorzeichen und ein
+  optionales führendes `=` aus. Punktrechnung geht vor Strichrechnung;
+  Split-Restbetrag, Fremdwährungskurs und MwSt. arbeiten anschließend mit den
+  ausgewerteten Minor-Units.
+- `MoneyExpressionParser` rechnet ohne `Double` ausschließlich mit `Decimal`,
+  validiert deutsche Zahlentrenner vollständig und rundet erst das Endergebnis
+  nach Währungspräzision. Division durch null, unvollständige Eingaben,
+  Überlauf, mehr als 256 Zeichen, 32 Verschachtelungsebenen oder 128 Operationen
+  werden ohne Teilbuchung abgewiesen. Dabei wurde auch der strikte
+  Einzelwertparser gehärtet, weil Apples Decimal-Initialisierer `1..2` sonst
+  stillschweigend als `1` akzeptiert.
+- README, Anforderungsmatrix, `PortalPrompt.md` und ADR 0030 beschreiben
+  Bedienung, Grenzen und eine vollständige Reproduktion ohne neue Abhängigkeit.
+- Die gezielte Abnahme bestand mit 14/14 Parser-, Buchungs-, Split-,
+  Fremdwährungs- und MwSt.-Tests. Der vollständige Testlauf ist grün: 145 Tests
+  insgesamt, 144 bestanden, 1 privater opt-in-QIF-Test erwartungsgemäß
+  übersprungen, 0 fehlgeschlagen. Das Result-Bundle liegt unter
+  `build/TestResults/AmountCalculator-full-20260807-1856.xcresult`.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-AmountCalculator-Release` wurde erfolgreich gebaut,
+  ad-hoc signiert und streng geprüft. Release,
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` tragen für die ausführbare Datei
+  SHA-256
+  `6981888547bbc757f93911592631f934e71fbc4ee2502b147b84c44c5cbefd8f`.
+  Die beiden Vorgängerinstallationen sind wiederherstellbar unter
+  `build/InstallBackups/20260807-1900-amount-calculator/` gesichert; die
+  validierte Datenbanksicherung liegt unter
+  `build/ProductionBackups/20260807-1900-amount-calculator/`.
+- Prozess 17324 läuft direkt aus `/Applications`; der Desktop-Link zeigt
+  weiterhin dorthin. Die produktive Datei besitzt Schema 37 und Integrität
+  `ok`; 97 Konten, 2.170 Buchungen und 782 Kategorien blieben unverändert.
+- Die Computer-Use-Fertigkeit konnte das Fenster wegen der gesperrten
+  macOS-Sitzung weiterhin nicht sichtbar abnehmen oder fotografieren. Die
+  Sperre wurde nicht umgangen; die gestartete App steht nach manuellem
+  Entsperren bereit. Exakter kumulativer Zielzählerstand nach Test, Release,
+  Installation und Produktivprüfung: 19.473.734 Tokens.

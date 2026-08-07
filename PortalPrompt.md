@@ -59,7 +59,8 @@ dürfen nicht übernommen werden.
 ## Finanzielle Regeln
 
 - Persistiere Geld ausschließlich als `Int64`-Minor-Units.
-- Parse deutsche Eingaben über `Decimal`; runde explizit auf Cent.
+- Parse deutsche Eingaben und Betragsausdrücke über `Decimal`; runde explizit
+  auf die Nachkommastellen der jeweiligen Währung.
 - Validiere `Summe(Splits) == Hauptbetrag` vor jedem Speichern.
 - Erzeuge, ändere und lösche beide Transferseiten atomar.
 - Berechne Salden als Eröffnungssaldo plus relevante Buchungen.
@@ -124,7 +125,7 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 Migrationen 1 bis 37 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 138 XCTest-Fälle: 137 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 145 XCTest-Fälle: 144 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -1104,6 +1105,33 @@ unangetastet sein. Enthält die Menge eine abgeglichene Buchung, ändere
 nichts. Zeige immer eine Bestätigung mit der Zahl der Buchungen. Lösche
 danach die gesamte validierte Menge in genau einer SQLite-Transaktion und
 schreibe Auditereignisse.
+
+# Reproduzierbarer Betragsrechner für manuelle Buchungen
+
+Implementiere in `Money.swift` zusätzlich zum strikten Einzelwertparser einen
+eigenen rekursiven Decimal-Ausdrucksparser. Er akzeptiert optional ein
+führendes `=`, deutsche Zahlen mit Komma und korrekt gruppierten
+Tausenderpunkten, Klammern, unäre Vorzeichen sowie `+`, `-`, `*`, `/` und die
+Unicode-Zeichen `−`, `×`, `÷`. Punktrechnung hat Vorrang vor Strichrechnung.
+Verwende weder `Double` noch `NSExpression`; führe jede Operation mit den
+`NSDecimal...`-Funktionen und `.bankers` aus und runde erst das Gesamtergebnis
+auf die Minor-Units der gewählten Währung.
+
+Begrenze den Eingabetext auf 256 Zeichen, die Verschachtelung auf 32 Ebenen
+und die Zahl der Operationen auf 128. Weise Division durch null, leere oder
+unvollständige Ausdrücke, fehlerhafte Trennzeichen, arithmetischen Überlauf und
+Ergebnisse außerhalb von `Int64` als normale ungültige Betragseingabe ab.
+Der bisherige `Money(parsing:)`-Pfad bleibt ein strikter einzelner Zahlenwert
+und darf keinen Ausdruck nur teilweise akzeptieren.
+
+Verwende die Auswertung im manuellen Buchungsdialog für Hauptbetrag,
+Fremdwährungs-Originalbetrag, jede Splitzeile und manuelle MwSt.-Beträge. Vor
+dem Speichern normalisiere Haupt- und Originalbetrag auf deren
+währungsabhängige `editingString`; die zentrale Store-Methode wertet dennoch
+selbst aus, damit alle Aufrufer dieselbe Regel erhalten. Splitinvariante,
+Vorzeichenregeln, Fremdwährungskurs und MwSt.-Rundung arbeiten anschließend
+ausschließlich mit den ausgewerteten Minor-Units. Zeige die erlaubten
+Operatoren am Betragsfeld als Hilfetext an.
 
 # Reproduzierbare Mehrwertsteuer und Steuerzuordnung
 

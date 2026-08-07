@@ -124,6 +124,22 @@ Splits, Tags und vorhandene Fremdwährungsangaben, aber niemals altes Datum,
 Belegnummer, Transfer- oder Importidentität. Eine einzelne Umbuchungsseite ist
 keine zulässige Vorlage.
 
+## Betragsrechner im Buchungsdialog
+
+Das Betragsfeld wertet neben deutschen Beträgen auch die Grundrechenarten
+`+`, `−`, `×`, `÷`, die Tastaturzeichen `-`, `*`, `/` und Klammern aus. Eine
+optionale führende `=` ist erlaubt. Beispielsweise wird
+`=(1.234,56 + 5,44) / 2` exakt zu `620,00 €` ausgewertet. Multiplikation und
+Division haben Vorrang; Zwischenergebnisse verwenden ausschließlich
+`Decimal`, die Rundung auf die Nachkommastellen der Kontowährung erfolgt erst
+am Ende.
+
+Dieselbe Eingabe gilt für Originalbeträge in Fremdwährung, Splitzeilen und
+manuelle Steuerbeträge. Der Split-Restbetrag bezieht sich auf die bereits
+ausgewerteten Zeilen. Division durch null, unvollständige oder übergroße
+Ausdrücke und ungültige deutsche Zahlengruppierung werden ohne Teilbuchung
+abgewiesen.
+
 ## Fremdwährungen
 
 Jede Buchung bleibt zwingend in der Währung ihres Kontos. Bei einem Beleg in
