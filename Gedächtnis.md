@@ -2622,3 +2622,49 @@ Rechtsberatung.
   `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
   deshalb fehlenden Screenshot. Der exakte Zielzählerstand nach dem Versand
   beträgt 16.114.449 Tokens.
+
+## 07.08.2026 – Einzelne Serieninstanzen ändern und überspringen
+
+- Der Kalender kann eine einzelne Instanz eines regelmäßigen Vorgangs jetzt
+  dauerhaft ändern oder überspringen. Der Editor erlaubt Datum, Empfänger,
+  Verwendungszweck, vollständige Kategorie einschließlich `keine Kategorie`,
+  Betrag und Notiz. Geänderte und übersprungene Termine bleiben in
+  `Serienausnahmen` sichtbar und lassen sich einzeln auf den Serienwert
+  zurücksetzen.
+- Migration 33 ergänzt `scheduled_transaction_exceptions` mit genau einer
+  Ausnahme je Serie und ursprünglichem Fälligkeitsdatum. Eine verschobene
+  Instanz behält ihre stabile Ursprungskennung. Dadurch wird sie weder neu
+  erzeugt noch bei vorhandener Materialisierung doppelt gezählt. Speichern,
+  Aktualisieren, Rücksetzen und Audit sind atomar; ungültige Termine werden
+  ohne Teiländerung abgelehnt. Änderungen an dieser und allen zukünftigen
+  Instanzen, Wochenansicht, Drag-and-drop und Szenarien bleiben offen.
+- Zwei neue Tests prüfen vollständiges Ändern, Kategorieentfernung,
+  Überspringen, Neustartpersistenz, stabile Identität, Deduplizierung,
+  eindeutiges Aktualisieren, atomare Ablehnung, Rücksetzen und die Migration
+  32 auf 33. Der abschließende Result-Bundle
+  `/tmp/FinanzVerwalter-ScheduledExceptions-final-20260807.xcresult` enthält
+  123 Tests: 122 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig
+  übersprungen, 0 Fehler und 0 erwartete Fehler. `git diff --check` und der
+  optimierte arm64-Release-Build sind ebenfalls grün.
+- Der streng signaturgeprüfte Release liegt unter
+  `build/DerivedData-ScheduledExceptions-Release`. Sein ausführbarer Code hat
+  SHA-256
+  `2959b372cf6285b11e85c4b60a5d5f24ccbf636acf304d6454d2ec9fbd292c64`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-serienausnahmen-20260807-1441.app` und
+  `build/FinanzVerwalter-user-vor-serienausnahmen-20260807-1441.app`.
+- Der echte Start läuft als Prozess 73325 direkt aus `/Applications`. Die
+  produktive Datei wurde automatisch von Schema 32 auf 33 migriert:
+  Datenintegrität `ok`, 97 Konten, 2.170 Buchungen, 782 Kategorien und eine
+  Berichtsvorlage blieben unverändert; der Bestand enthält 0 Serientermine
+  und 0 Serienausnahmen. Die automatisch erstellte Vor-Migrationssicherung
+  `FinanzVerwalter-vor-Migration-v32-20260807-123955-335-388E7FA0.qbackup`
+  wurde separat mit Integrität `ok`, Schema 32 und identischen Kernzählungen
+  geprüft.
+- Implementierung und Tests wurden als Commit `dd14897`, die reproduzierbare
+  Dokumentation als Commit `f42f3cc` angelegt. Die macOS-Sitzung ist
+  nachweislich gesperrt; deshalb wurde kein fingierter Screenshot erzeugt.
+  Der exakte Zielzählerstand vor dieser Dokumentation beträgt 16.384.191
+  Tokens.
