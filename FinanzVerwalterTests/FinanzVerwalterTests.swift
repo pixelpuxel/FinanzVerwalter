@@ -7733,6 +7733,11 @@ final class FinanzVerwalterTests: XCTestCase {
         sqlite3_close(database)
         store = try SQLiteFinanceStore(fileURL: databaseURL)
         XCTAssertThrowsError(try store?.attachmentPreviewURL(id: attachment.id))
+        let corruptExport = directory.appendingPathComponent("manipuliert.txt")
+        XCTAssertThrowsError(
+            try store?.exportAttachment(id: attachment.id, to: corruptExport)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corruptExport.path))
         store?.close()
     }
 
@@ -7896,6 +7901,135 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"), 0)
         XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_links"), 0)
         XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testAttachmentExportVerifiesPayloadProtectsTargetsAndUsesPrivatePermissions() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Exportkonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Export", purpose: "Beleg", categoryID: nil,
+            amountMinor: -100, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(value)
+        let payload = Data("Verifizierter Exportinhalt".utf8)
+        let source = context.directory.appendingPathComponent("original.txt")
+        try payload.write(to: source)
+        let attachment = try context.store.addAttachment(
+            from: source, to: .transaction, entityID: value.id
+        )
+
+        let destination = context.directory.appendingPathComponent("export.txt")
+        XCTAssertEqual(
+            try context.store.exportAttachment(id: attachment.id, to: destination),
+            destination
+        )
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        let permissions = try FileManager.default.attributesOfItem(
+            atPath: destination.path
+        )[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+        XCTAssertThrowsError(
+            try context.store.exportAttachment(id: attachment.id, to: destination)
+        )
+        try Data("wird ersetzt".utf8).write(to: destination, options: .atomic)
+        XCTAssertNoThrow(
+            try context.store.exportAttachment(
+                id: attachment.id, to: destination, replaceExisting: true
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+        XCTAssertEqual(
+            try sqliteScalar(
+                context.store.fileURL,
+                "SELECT COUNT(*) FROM audit_events WHERE entity_type='attachment' AND action='export'"
+            ),
+            2
+        )
+
+        let wrongSuffix = context.directory.appendingPathComponent("export.pdf")
+        XCTAssertThrowsError(
+            try context.store.exportAttachment(id: attachment.id, to: wrongSuffix)
+        )
+        let symlinkTarget = context.directory.appendingPathComponent("ziel.txt")
+        let symlink = context.directory.appendingPathComponent("link.txt")
+        try Data("fremd".utf8).write(to: symlinkTarget)
+        try FileManager.default.createSymbolicLink(
+            at: symlink, withDestinationURL: symlinkTarget
+        )
+        XCTAssertThrowsError(
+            try context.store.exportAttachment(
+                id: attachment.id, to: symlink, replaceExisting: true
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: symlinkTarget), Data("fremd".utf8))
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testSecureNoteLinksPermitOnlyConfirmedHTTPSAndSafeRegularLocalFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-note-links-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("Vertrag 2026.pdf")
+        try Data("lokaler Testbeleg".utf8).write(to: document)
+        let https = try XCTUnwrap(URL(string: "https://example.org/hilfe?privat=1"))
+        let note = "Web \(https.absoluteString), Datei \(document.absoluteString), unsicher http://example.org und ftp://example.org/datei."
+
+        let links = SecureNoteLinkPolicy.links(in: note)
+        XCTAssertEqual(links.map(\.kind), [.https, .localFile])
+        XCTAssertEqual(links.first?.displayName, "example.org/hilfe")
+        XCTAssertEqual(links.last?.displayName, "Vertrag 2026.pdf")
+        XCTAssertEqual(
+            try SecureNoteLinkPolicy.validatedURLForOpening(https),
+            https
+        )
+        XCTAssertEqual(
+            try SecureNoteLinkPolicy.validatedURLForOpening(document),
+            document.standardizedFileURL
+        )
+        XCTAssertThrowsError(
+            try SecureNoteLinkPolicy.validatedURLForOpening(
+                try XCTUnwrap(URL(string: "http://example.org"))
+            )
+        )
+        XCTAssertThrowsError(
+            try SecureNoteLinkPolicy.validatedURLForOpening(
+                try XCTUnwrap(URL(string: "https://user:secret@example.org"))
+            )
+        )
+
+        let executable = directory.appendingPathComponent("start.command")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: executable.path
+        )
+        XCTAssertThrowsError(
+            try SecureNoteLinkPolicy.validatedURLForOpening(executable)
+        )
+        let symlink = directory.appendingPathComponent("verweis.pdf")
+        try FileManager.default.createSymbolicLink(
+            at: symlink, withDestinationURL: document
+        )
+        XCTAssertThrowsError(
+            try SecureNoteLinkPolicy.validatedURLForOpening(symlink)
+        )
+        XCTAssertTrue(
+            SecureNoteLinkPolicy.links(
+                in: "Nur http://example.org und javascript:alert(1)"
+            ).isEmpty
+        )
     }
 }
 

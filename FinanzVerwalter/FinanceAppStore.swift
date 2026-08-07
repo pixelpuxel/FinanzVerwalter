@@ -1020,6 +1020,27 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func exportAttachment(
+        _ attachment: FinanceAttachment,
+        to destinationURL: URL,
+        replaceExisting: Bool
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            let exported = try repository.exportAttachment(
+                id: attachment.id,
+                to: destinationURL,
+                replaceExisting: replaceExisting
+            )
+            statusText = "Anhang „\(attachment.fileName)“ nach „\(exported.lastPathComponent)“ exportiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func createTransfer(
         from sourceID: UUID,
         to destinationID: UUID,

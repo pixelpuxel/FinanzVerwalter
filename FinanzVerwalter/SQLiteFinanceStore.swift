@@ -6487,6 +6487,103 @@ final class SQLiteFinanceStore {
     }
 
     @discardableResult
+    func exportAttachment(
+        id: UUID,
+        to destinationURL: URL,
+        replaceExisting: Bool = false
+    ) throws -> URL {
+        let (metadata, payload) = try verifiedAttachmentPayload(id: id)
+        guard destinationURL.isFileURL,
+              destinationURL.host == nil
+                || destinationURL.host?.isEmpty == true
+                || destinationURL.host == "localhost"
+        else {
+            throw FinanceError.database("Anhänge können nur lokal exportiert werden.")
+        }
+        let destination = destinationURL.standardizedFileURL
+        let destinationName = destination.lastPathComponent
+        guard !destinationName.isEmpty,
+              destinationName != ".", destinationName != "..",
+              destination != fileURL.standardizedFileURL else {
+            throw FinanceError.database("Das Exportziel ist nicht zulässig.")
+        }
+        let originalSuffix = URL(fileURLWithPath: metadata.fileName)
+            .pathExtension.lowercased()
+        let destinationSuffix = destination.pathExtension.lowercased()
+        let equivalentJPEG = Set([originalSuffix, destinationSuffix]) == Set(["jpg", "jpeg"])
+        guard originalSuffix == destinationSuffix || equivalentJPEG else {
+            throw FinanceError.database(
+                "Die Dateiendung des Exports muss zum Originalanhang passen."
+            )
+        }
+
+        let fileManager = FileManager.default
+        let directory = destination.deletingLastPathComponent()
+        let directoryValues = try directory.resourceValues(forKeys: [
+            .isDirectoryKey, .isSymbolicLinkKey
+        ])
+        guard directoryValues.isDirectory == true,
+              directoryValues.isSymbolicLink != true else {
+            throw FinanceError.database("Der Exportordner ist nicht zulässig.")
+        }
+
+        let exists = fileManager.fileExists(atPath: destination.path)
+        if exists {
+            let values = try destination.resourceValues(forKeys: [
+                .isRegularFileKey, .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey
+            ])
+            guard replaceExisting else {
+                throw FinanceError.database(
+                    "Am Exportziel besteht bereits eine Datei. Ersetze sie nur nach Bestätigung."
+                )
+            }
+            guard values.isRegularFile == true,
+                  values.isDirectory != true,
+                  values.isPackage != true,
+                  values.isSymbolicLink != true else {
+                throw FinanceError.database(
+                    "Das vorhandene Exportziel ist keine ersetzbare reguläre Datei."
+                )
+            }
+        }
+
+        let staged = directory.appendingPathComponent(
+            ".finanzverwalter-export-\(UUID().uuidString).tmp"
+        )
+        defer { try? fileManager.removeItem(at: staged) }
+        try payload.write(to: staged, options: [.withoutOverwriting])
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: staged.path
+        )
+        if exists {
+            _ = try fileManager.replaceItemAt(
+                destination, withItemAt: staged,
+                backupItemName: nil, options: []
+            )
+        } else {
+            try fileManager.moveItem(at: staged, to: destination)
+        }
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: destination.path
+        )
+        let exported = try Data(contentsOf: destination, options: [.mappedIfSafe])
+        let digest = SHA256.hash(data: exported)
+            .map { String(format: "%02x", $0) }.joined()
+        guard Int64(exported.count) == metadata.byteCount,
+              digest == metadata.sha256 else {
+            try? fileManager.removeItem(at: destination)
+            throw FinanceError.database(
+                "Die Prüfung des exportierten Anhangs ist fehlgeschlagen."
+            )
+        }
+        try audit(
+            entity: "attachment", id: id, action: "export",
+            details: "\(metadata.sha256);\(destinationName)"
+        )
+        return destination
+    }
+
+    @discardableResult
     func undoTransactionMutation(id: UUID) throws -> Int {
         var beforeJSON: String?
         var afterJSON: String?

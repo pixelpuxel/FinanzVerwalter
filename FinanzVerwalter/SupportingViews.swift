@@ -42,6 +42,10 @@ struct AttachmentManagerView: View {
                             confirmOpen = true
                         }
                         .accessibilityLabel("Anhang \(attachment.fileName) öffnen")
+                        Button("Exportieren …") {
+                            exportAttachment(attachment)
+                        }
+                        .accessibilityLabel("Anhang \(attachment.fileName) exportieren")
                         Button(role: .destructive) {
                             pendingRemoval = attachment
                             confirmRemoval = true
@@ -149,6 +153,124 @@ struct AttachmentManagerView: View {
         ) else { return false }
         reload()
         return true
+    }
+
+    private func exportAttachment(_ attachment: FinanceAttachment) {
+        let panel = NSSavePanel()
+        panel.title = "Anhang exportieren"
+        panel.prompt = "Exportieren"
+        panel.nameFieldStringValue = attachment.fileName
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        let suffix = URL(fileURLWithPath: attachment.fileName).pathExtension
+        if let contentType = UTType(filenameExtension: suffix) {
+            panel.allowedContentTypes = [contentType]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let replaceExisting = FileManager.default.fileExists(atPath: destination.path)
+        _ = store.exportAttachment(
+            attachment,
+            to: destination,
+            replaceExisting: replaceExisting
+        )
+    }
+}
+
+struct SecureNoteView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let text: String
+    var showsText = true
+
+    @State private var pendingLink: SecureNoteLink?
+    @State private var confirmOpen = false
+
+    private var links: [SecureNoteLink] {
+        SecureNoteLinkPolicy.links(in: text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if showsText {
+                Text(text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ForEach(links) { link in
+                Button {
+                    pendingLink = link
+                    confirmOpen = true
+                } label: {
+                    Label(
+                        link.displayName,
+                        systemImage: link.kind == .https ? "globe" : "doc"
+                    )
+                }
+                .buttonStyle(.link)
+                .accessibilityLabel(
+                    link.kind == .https
+                        ? "HTTPS-Link \(link.displayName) nach Bestätigung öffnen"
+                        : "Lokale Datei \(link.displayName) nach Bestätigung öffnen"
+                )
+            }
+            if !links.isEmpty {
+                Text(
+                    "Links öffnen nie automatisch. Erlaubt sind HTTPS-Webseiten und "
+                        + "reguläre, nicht ausführbare lokale Dateien."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .confirmationDialog(
+            "Notizlink sicher öffnen?",
+            isPresented: $confirmOpen,
+            titleVisibility: .visible
+        ) {
+            Button("Nach Sicherheitsprüfung öffnen") {
+                openPendingLink()
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingLink = nil
+            }
+        } message: {
+            if let pendingLink {
+                switch pendingLink.kind {
+                case .https:
+                    Text(
+                        "Die App wird verlassen und die HTTPS-Seite „\(pendingLink.displayName)“ im Standardbrowser geöffnet."
+                    )
+                case .localFile:
+                    Text(
+                        "„\(pendingLink.url.path)“ wird unmittelbar vor dem Öffnen erneut als reguläre, nicht ausführbare Datei geprüft."
+                    )
+                }
+            }
+        }
+        .onChange(of: text) {
+            pendingLink = nil
+            confirmOpen = false
+        }
+    }
+
+    private func openPendingLink() {
+        guard let pendingLink else { return }
+        defer { self.pendingLink = nil }
+        do {
+            let validated = try SecureNoteLinkPolicy.validatedURLForOpening(
+                pendingLink.url
+            )
+            guard NSWorkspace.shared.open(validated) else {
+                throw FinanceError.database(
+                    "Für diesen bestätigten Notizlink ist keine Anwendung registriert."
+                )
+            }
+            store.statusText = pendingLink.kind == .https
+                ? "Bestätigten HTTPS-Link geöffnet"
+                : "Bestätigte lokale Datei geöffnet"
+        } catch {
+            store.errorMessage = error.localizedDescription
+            store.statusText = "Notizlink blockiert"
+        }
     }
 }
 
@@ -523,6 +645,7 @@ struct AccountEditorView: View {
                     TextField("Kurzname", text: $shortName)
                     TextField("Beschreibung", text: $descriptionText, axis: .vertical)
                         .lineLimit(2...4)
+                    SecureNoteView(text: descriptionText, showsText: false)
                     Picker("Kontogruppe", selection: $groupID) {
                         Text("Ohne Gruppe").tag(UUID?.none)
                         ForEach(store.accountGroups.filter(\.isActive)) {
@@ -9541,6 +9664,11 @@ struct InvestmentsView: View {
                                 )
                             }
                             .padding(.top, 6)
+                            if !selectedSecurity.note.isEmpty {
+                                GroupBox("Notiz") {
+                                    SecureNoteView(text: selectedSecurity.note)
+                                }
+                            }
                         }
                         .padding(12)
                     }
@@ -9612,6 +9740,7 @@ private struct SecurityEditor: View {
                 .disabled(true)
                 Toggle("Aktiv", isOn: $value.isActive)
                 TextField("Notiz", text: $value.note)
+                SecureNoteView(text: value.note, showsText: false)
             }
             .formStyle(.grouped)
         }
@@ -10568,7 +10697,7 @@ struct ContractsView: View {
                 }
                 if !contract.note.isEmpty {
                     GroupBox("Notiz") {
-                        Text(contract.note).frame(maxWidth: .infinity, alignment: .leading)
+                        SecureNoteView(text: contract.note)
                     }
                 }
                 GroupBox("Dokumente") {
@@ -10657,6 +10786,7 @@ private struct ContractEditor: View {
                     value: $reminderDays, in: 0...365
                 )
                 TextField("Notiz", text: $note, axis: .vertical)
+                SecureNoteView(text: note, showsText: false)
             }
             .formStyle(.grouped)
         }
@@ -10818,7 +10948,7 @@ struct InventoryView: View {
                 }
                 if !item.note.isEmpty {
                     GroupBox("Notiz") {
-                        Text(item.note).frame(maxWidth: .infinity, alignment: .leading)
+                        SecureNoteView(text: item.note)
                     }
                 }
                 GroupBox("Fotos & Belege") {
@@ -10887,6 +11017,7 @@ private struct InventoryItemEditor: View {
                     DatePicker("Garantieende", selection: $warrantyEnd, displayedComponents: .date)
                 }
                 TextField("Notiz", text: $note, axis: .vertical)
+                SecureNoteView(text: note, showsText: false)
             }
             .formStyle(.grouped)
         }

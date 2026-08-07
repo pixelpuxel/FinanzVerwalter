@@ -1978,6 +1978,7 @@ struct TransactionEditorView: View {
                     ForEach(TransactionStatus.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 TextField("Notiz", text: $memo)
+                SecureNoteView(text: memo, showsText: false)
                 if let transaction {
                     Section("Anhänge") {
                         AttachmentManagerView(

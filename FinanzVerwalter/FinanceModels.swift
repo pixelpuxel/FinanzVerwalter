@@ -359,6 +359,108 @@ struct FinanceAttachment: Identifiable, Hashable, Sendable {
     let ocrText: String
 }
 
+enum SecureNoteLinkKind: String, Hashable, Sendable {
+    case https
+    case localFile
+}
+
+struct SecureNoteLink: Identifiable, Hashable, Sendable {
+    let url: URL
+    let kind: SecureNoteLinkKind
+
+    var id: String { url.absoluteString }
+
+    var displayName: String {
+        switch kind {
+        case .https:
+            guard let host = url.host else { return url.absoluteString }
+            let path = url.path == "/" ? "" : url.path
+            return host + path
+        case .localFile:
+            return url.lastPathComponent
+        }
+    }
+}
+
+enum SecureNoteLinkPolicy {
+    private static let blockedLocalExtensions: Set<String> = [
+        "app", "application", "appref-ms", "bat", "bin", "bash", "cmd",
+        "command", "com", "csh", "exe", "fish", "gadget", "hta", "inf",
+        "ins", "isp", "jar", "js", "jse", "ksh", "lnk", "msc", "msi",
+        "msp", "mst", "pif", "pl", "ps1", "py", "rb", "reg", "run",
+        "scr", "sh", "shortcut", "terminal", "url", "vb", "vbe", "vbs",
+        "workflow", "ws", "wsc", "wsf", "wsh", "zsh"
+    ]
+
+    static func links(in text: String) -> [SecureNoteLink] {
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var seen = Set<String>()
+        return detector.matches(in: text, options: [], range: range).compactMap { match in
+            guard let rawURL = match.url,
+                  let link = permittedLink(rawURL),
+                  seen.insert(link.id).inserted
+            else { return nil }
+            return link
+        }
+    }
+
+    static func validatedURLForOpening(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard let link = permittedLink(url) else {
+            throw FinanceError.database(
+                "Notizlinks dürfen nur HTTPS-Webseiten oder lokale Dateien verwenden."
+            )
+        }
+        switch link.kind {
+        case .https:
+            return link.url
+        case .localFile:
+            let target = link.url.standardizedFileURL
+            let values = try target.resourceValues(forKeys: [
+                .isRegularFileKey, .isDirectoryKey, .isPackageKey,
+                .isSymbolicLinkKey, .isExecutableKey
+            ])
+            let suffix = target.pathExtension.lowercased()
+            guard values.isRegularFile == true,
+                  values.isDirectory != true,
+                  values.isPackage != true,
+                  values.isSymbolicLink != true,
+                  values.isExecutable != true,
+                  !fileManager.isExecutableFile(atPath: target.path),
+                  !blockedLocalExtensions.contains(suffix)
+            else {
+                throw FinanceError.database(
+                    "Der lokale Notizlink ist keine sichere reguläre Datei."
+                )
+            }
+            return target
+        }
+    }
+
+    private static func permittedLink(_ url: URL) -> SecureNoteLink? {
+        guard let scheme = url.scheme?.lowercased() else { return nil }
+        switch scheme {
+        case "https":
+            guard url.host?.isEmpty == false,
+                  url.user == nil, url.password == nil else { return nil }
+            return SecureNoteLink(url: url, kind: .https)
+        case "file":
+            guard url.isFileURL,
+                  url.user == nil, url.password == nil,
+                  url.host == nil || url.host?.isEmpty == true || url.host == "localhost"
+            else { return nil }
+            return SecureNoteLink(url: url.standardizedFileURL, kind: .localFile)
+        default:
+            return nil
+        }
+    }
+}
+
 struct TransactionTemplateSplit: Codable, Equatable, Sendable {
     var categoryID: UUID?
     var amountMinor: Int64
