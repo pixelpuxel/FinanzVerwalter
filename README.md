@@ -445,12 +445,21 @@ gespeichert werden. Systemdruck, mehrseitiger PDF- und wählbarer CSV-Export
 verwenden exakt die sichtbaren Zeilen und Spalten einschließlich
 Zukunftsvorgängen.
 
+Direkt über der Tabelle zeigt jede Währung ihren eigenen Tagesverlauf. Ohne
+Filter beginnt er bei der Summe der Eröffnungssalden und zeigt den echten
+aggregierten Kontostand nach der letzten Buchung jedes Tages. Mit irgendeiner
+inhaltlichen oder Kontenauswahl wird er orange als kumulierte gefilterte
+Bewegungssumme bezeichnet; Eröffnungssalden, Stornos und Umbuchungen fließen
+dann nicht ein. Bei weniger als 30 Tageswerten erscheinen sichtbare Punkte.
+Das Verweilen über einem Tag markiert in der Tabelle dessen letzte Buchung.
+
 `Zweite Ansicht` teilt den Arbeitsbereich in zwei gleichzeitig sichtbare
 Sammelkontoblätter. Ansicht B besitzt eine eigene persistente Kontenkombination,
 eigene Status-, Kategorie- und Zeitraumfilter sowie einen eigenen
 Zukunftsschalter; globale Volltextsuche und Ein-/Zweizeilenmodus bleiben
-bewusst gemeinsam. Beide Seiten zeigen Konto, Betrag und echten laufenden
-Saldo, ohne gefilterte Bewegungssummen als Kontostand auszugeben.
+bewusst gemeinsam. Beide Seiten zeigen Konto, Betrag, echten laufenden Saldo
+und denselben währungsgetrennten Tagesverlauf, ohne gefilterte
+Bewegungssummen als Kontostand auszugeben.
 
 Das Menü `Bericht` öffnet die Berichtswerkstatt wahlweise für exakt alle
 sichtbaren Buchungen – einschließlich errechneter Zukunft – oder für den

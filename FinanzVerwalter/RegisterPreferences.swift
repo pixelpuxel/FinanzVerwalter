@@ -119,6 +119,106 @@ enum RegisterAmountPresentation {
     }
 }
 
+enum CombinedRegisterChartMode: String, Equatable, Sendable {
+    case balance
+    case filteredMovement
+
+    var title: String {
+        switch self {
+        case .balance: "Saldoverlauf"
+        case .filteredMovement: "Gefilterte Bewegungssumme"
+        }
+    }
+}
+
+struct CombinedRegisterChartPoint: Identifiable, Equatable, Sendable {
+    let date: Date
+    let valueMinor: Int64
+    let lastTransactionID: UUID
+
+    var id: String {
+        "\(date.timeIntervalSinceReferenceDate)-\(lastTransactionID.uuidString)"
+    }
+}
+
+struct CombinedRegisterChartSeries: Identifiable, Equatable, Sendable {
+    let currency: String
+    let points: [CombinedRegisterChartPoint]
+
+    var id: String { currency }
+}
+
+struct CombinedRegisterChartSnapshot: Equatable, Sendable {
+    let mode: CombinedRegisterChartMode
+    let series: [CombinedRegisterChartSeries]
+
+    var pointCount: Int {
+        series.reduce(0) { $0 + $1.points.count }
+    }
+}
+
+enum CombinedRegisterChartEngine {
+    static func make(
+        accounts: [FinanceAccount],
+        rows: [FinanceTransaction],
+        isFiltered: Bool,
+        calendar: Calendar = .current
+    ) -> CombinedRegisterChartSnapshot {
+        let mode: CombinedRegisterChartMode = isFiltered
+            ? .filteredMovement : .balance
+        var valuesByCurrency: [String: Int64] = [:]
+        if !isFiltered {
+            for account in accounts {
+                valuesByCurrency[account.currency, default: 0] +=
+                    account.openingBalanceMinor
+            }
+        }
+
+        var dailyPoints: [String: [Date: CombinedRegisterChartPoint]] = [:]
+        for transaction in rows.sorted(by: chronologicalTransactionOrder) {
+            if transaction.status == .cancelled
+                || isFiltered && transaction.transferID != nil {
+                continue
+            }
+            valuesByCurrency[transaction.currency, default: 0] +=
+                transaction.amountMinor
+            let day = calendar.startOfDay(for: transaction.bookingDate)
+            dailyPoints[transaction.currency, default: [:]][day] =
+                CombinedRegisterChartPoint(
+                    date: day,
+                    valueMinor: valuesByCurrency[transaction.currency] ?? 0,
+                    lastTransactionID: transaction.id
+                )
+        }
+
+        let series: [CombinedRegisterChartSeries] = dailyPoints.compactMap {
+            entry -> CombinedRegisterChartSeries? in
+            let (currency, values) = entry
+            let points = values.values.sorted {
+                if $0.date != $1.date { return $0.date < $1.date }
+                return $0.lastTransactionID.uuidString
+                    < $1.lastTransactionID.uuidString
+            }
+            guard !points.isEmpty else { return nil }
+            return CombinedRegisterChartSeries(
+                currency: currency,
+                points: points
+            )
+        }.sorted { $0.currency < $1.currency }
+        return CombinedRegisterChartSnapshot(mode: mode, series: series)
+    }
+
+    private static func chronologicalTransactionOrder(
+        _ lhs: FinanceTransaction,
+        _ rhs: FinanceTransaction
+    ) -> Bool {
+        if lhs.bookingDate != rhs.bookingDate {
+            return lhs.bookingDate < rhs.bookingDate
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
 enum RegisterAccessibility {
     static func cellLabel(column: RegisterColumn, value: String) -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)

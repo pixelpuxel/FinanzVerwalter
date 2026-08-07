@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
+import Charts
 
 struct RegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
@@ -3653,6 +3654,174 @@ private struct RegisterMiniReportPanel: View {
     }
 }
 
+private struct CombinedRegisterChartPanel: View {
+    let snapshot: CombinedRegisterChartSnapshot
+    let accessibilityIdentifier: String
+    @Binding var transactionSelection: Set<UUID>
+
+    var body: some View {
+        Group {
+            if snapshot.series.isEmpty {
+                HStack {
+                    Label(
+                        "Keine Diagrammdaten",
+                        systemImage: "chart.xyaxis.line"
+                    )
+                    Spacer()
+                    Text("Die aktuelle Sicht enthält keine wirksamen Bewegungen.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .frame(height: 44)
+            } else {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 14) {
+                        ForEach(snapshot.series) { series in
+                            CombinedRegisterCurrencyChart(
+                                mode: snapshot.mode,
+                                series: series,
+                                showsPoints: snapshot.pointCount < 30,
+                                transactionSelection: $transactionSelection
+                            )
+                            .frame(minWidth: 330, idealWidth: 440)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
+private struct CombinedRegisterCurrencyChart: View {
+    let mode: CombinedRegisterChartMode
+    let series: CombinedRegisterChartSeries
+    let showsPoints: Bool
+    @Binding var transactionSelection: Set<UUID>
+    @State private var hoveredPoint: CombinedRegisterChartPoint?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(mode.title, systemImage: "chart.xyaxis.line")
+                    .font(.caption.bold())
+                Spacer()
+                Text(series.currency)
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+            Chart(series.points) { point in
+                LineMark(
+                    x: .value("Tag", point.date),
+                    y: .value("Wert", chartValue(point.valueMinor))
+                )
+                .interpolationMethod(.linear)
+                .foregroundStyle(.blue)
+                if showsPoints {
+                    PointMark(
+                        x: .value("Tag", point.date),
+                        y: .value("Wert", chartValue(point.valueMinor))
+                    )
+                    .foregroundStyle(.blue)
+                }
+                if hoveredPoint?.id == point.id {
+                    RuleMark(x: .value("Gewählter Tag", point.date))
+                        .foregroundStyle(.secondary)
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 5)) {
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel(format: .dateTime.day().month())
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading)
+            }
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location):
+                                guard let anchor = proxy.plotFrame else { return }
+                                let frame = geometry[anchor]
+                                let plotX = location.x - frame.origin.x
+                                guard plotX >= 0, plotX <= frame.width,
+                                      let date: Date = proxy.value(atX: plotX),
+                                      let nearest = nearestPoint(to: date)
+                                else { return }
+                                hoveredPoint = nearest
+                                transactionSelection = [nearest.lastTransactionID]
+                            case .ended:
+                                hoveredPoint = nil
+                            }
+                        }
+                }
+            }
+            .frame(height: 112)
+            .accessibilityLabel("\(mode.title) \(series.currency)")
+            .accessibilityValue(
+                "\(series.points.count) Tageswerte; letzter Wert "
+                    + lastValueText
+            )
+            if let hoveredPoint {
+                Text(
+                    "\(hoveredPoint.date.formatted(.dateTime.day().month().year())) · "
+                        + Money(
+                            minorUnits: hoveredPoint.valueMinor,
+                            currency: series.currency
+                        ).formatted
+                        + " · letzte Buchung des Tages ausgewählt"
+                )
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            } else {
+                Text(
+                    mode == .balance
+                        ? "Echter Kontostand; über einem Tag verweilen wählt dessen letzte Buchung."
+                        : "Kein Kontostand: kumulierte wirksame Bewegungen der Filtermenge."
+                )
+                .font(.caption2)
+                .foregroundStyle(
+                    mode == .balance
+                        ? Color(nsColor: .secondaryLabelColor)
+                        : Color.orange
+                )
+            }
+        }
+    }
+
+    private var lastValueText: String {
+        guard let point = series.points.last else { return "—" }
+        return Money(
+            minorUnits: point.valueMinor,
+            currency: series.currency
+        ).formatted
+    }
+
+    private func chartValue(_ minorUnits: Int64) -> Double {
+        Double(minorUnits) / Double(Money.minorUnitFactor(for: series.currency))
+    }
+
+    private func nearestPoint(to date: Date) -> CombinedRegisterChartPoint? {
+        series.points.min {
+            abs($0.date.timeIntervalSince(date))
+                < abs($1.date.timeIntervalSince(date))
+        }
+    }
+}
+
 private struct SecondaryCombinedRegisterPane: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selection = Set<UUID>()
@@ -3715,6 +3884,18 @@ private struct SecondaryCombinedRegisterPane: View {
         ) { transaction in
             store.transactionCategoryPath(transaction)
         }
+    }
+
+    private var chartSnapshot: CombinedRegisterChartSnapshot {
+        CombinedRegisterChartEngine.make(
+            accounts: store.accounts.filter {
+                !$0.isClosed
+                    && (includedAccountIDs.isEmpty
+                        || includedAccountIDs.contains($0.id))
+            },
+            rows: result.rows,
+            isFiltered: result.isFiltered
+        )
     }
 
     var body: some View {
@@ -3795,6 +3976,12 @@ private struct SecondaryCombinedRegisterPane: View {
                 .padding(.bottom, 7)
             }
             .scrollIndicators(.hidden)
+            Divider()
+            CombinedRegisterChartPanel(
+                snapshot: chartSnapshot,
+                accessibilityIdentifier: "combinedRegister.secondaryBalanceChart",
+                transactionSelection: $selection
+            )
             Divider()
             Table(result.rows, selection: $selection) {
                 TableColumn("Datum") { transaction in
@@ -4156,6 +4343,18 @@ struct CombinedRegisterView: View {
         }
     }
 
+    private var chartSnapshot: CombinedRegisterChartSnapshot {
+        CombinedRegisterChartEngine.make(
+            accounts: store.accounts.filter {
+                !$0.isClosed
+                    && (includedAccountIDs.isEmpty
+                        || includedAccountIDs.contains($0.id))
+            },
+            rows: queryResult.rows,
+            isFiltered: queryResult.isFiltered
+        )
+    }
+
     private var savedViews: [SavedCombinedRegisterView] {
         RegisterPreferencesCodec.decodeCombinedViews(savedViewsRaw)
     }
@@ -4297,6 +4496,12 @@ struct CombinedRegisterView: View {
                 .padding(.vertical, 7)
             }
             .scrollIndicators(.hidden)
+            Divider()
+            CombinedRegisterChartPanel(
+                snapshot: chartSnapshot,
+                accessibilityIdentifier: "combinedRegister.balanceChart",
+                transactionSelection: $selection
+            )
             Divider()
             HStack(spacing: 0) {
                 Table(queryResult.rows, selection: $selection) {

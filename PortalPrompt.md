@@ -178,13 +178,13 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 153 XCTest-Fälle: 152 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 154 XCTest-Fälle: 153 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
 unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
 Die installierte ausführbare Datei besitzt SHA-256
-`0b923cc5efed83bb980d4d2cd52e5fe72732cad50eec294724ad4e656a65e352`.
+`7f10e90e3f8819f4b9e2870a39cebe5df2eeff3059ea296e0b9c796e8700416f`.
 Details und der ehrliche Nachweis der wegen der gesperrten macOS-Sitzung noch
 ausstehenden sichtbaren Abnahme stehen in `Gedächtnis.md`.
 
@@ -1433,6 +1433,20 @@ Saldo. Die Kopfsumme ist dagegen eine währungsgetrennte Bewegungssumme ohne
 Umbuchungen und Stornos. Sobald Konten, Status, Kategorie, Zeitraum oder Text
 eingeschränkt sind, zeige ausdrücklich „Gefilterte Summe ist kein
 Kontostand“.
+
+Zeige oberhalb jeder Sammelkontoblatt-Tabelle einen währungsgetrennten
+Tagesverlauf. Ungefiltert beginnt jede Währungsserie mit der Summe der
+Eröffnungssalden ihrer eingeschlossenen offenen Konten und speichert pro Tag
+den Wert nach dessen letzter chronologischer Buchung; Stornos verändern ihn
+nicht. Sobald irgendein Konto-, Status-, Kategorie-, Klassen-/Tag-, Zeitraum-
+oder Textfilter aktiv ist, wechsle fachlich auf eine bei null beginnende,
+kumulierte Bewegungssumme der Sichtmenge. Schließe dabei Stornos und beide
+Seiten von Umbuchungen aus und nenne die Serie sichtbar „Gefilterte
+Bewegungssumme“, niemals Saldo. Zeige bei insgesamt weniger als 30 Tageswerten
+Punkte. Hover über einem Tag wählt die zugehörige letzte wirksame Buchung in
+derselben Tabelle. Haupt- und zweite Sammelansicht verwenden denselben reinen
+Snapshot-Algorithmus; teste Eröffnungssalden, Tagesverdichtung, Zukunft,
+Storno, Transferausschluss, Navigation und Währungstrennung deterministisch.
 
 Erlaube Mehrfachkategorisierung nur für UUIDs real gespeicherter Buchungen;
 errechnete Zukunftszeilen dürfen niemals an den Repository-Commit gelangen.

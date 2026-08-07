@@ -8792,6 +8792,130 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testCombinedRegisterChartUsesTrueBalancesOrFilteredMovementsByDay() {
+        let euroAccount = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 1_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let euroCash = FinanceAccount(
+            id: UUID(), name: "Kasse", institution: "", type: .cash,
+            currency: "EUR", openingBalanceMinor: 500,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        let dollarAccount = FinanceAccount(
+            id: UUID(), name: "Dollar", institution: "", type: .cash,
+            currency: "USD", openingBalanceMinor: 2_000,
+            isHidden: false, isClosed: false, sortOrder: 2
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayOne = Date(timeIntervalSince1970: 1_720_000_000)
+        let dayTwo = calendar.date(byAdding: .day, value: 1, to: dayOne)!
+        let dayThree = calendar.date(byAdding: .day, value: 2, to: dayOne)!
+        func transaction(
+            accountID: UUID,
+            date: Date,
+            amount: Int64,
+            currency: String,
+            status: TransactionStatus = .booked,
+            transferID: UUID? = nil
+        ) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: accountID, bookingDate: date,
+                valueDate: nil, payee: "Test", purpose: "", categoryID: nil,
+                amountMinor: amount, currency: currency, status: status,
+                memo: "", reference: "", transferID: transferID,
+                importFingerprint: nil, splits: []
+            )
+        }
+        let booked = transaction(
+            accountID: euroAccount.id,
+            date: dayOne,
+            amount: -100,
+            currency: "EUR"
+        )
+        let cancelled = transaction(
+            accountID: euroAccount.id,
+            date: dayOne.addingTimeInterval(60),
+            amount: -500,
+            currency: "EUR",
+            status: .cancelled
+        )
+        let transferID = UUID()
+        let transferOut = transaction(
+            accountID: euroAccount.id,
+            date: dayTwo,
+            amount: -200,
+            currency: "EUR",
+            transferID: transferID
+        )
+        let transferIn = transaction(
+            accountID: euroCash.id,
+            date: dayTwo.addingTimeInterval(60),
+            amount: 200,
+            currency: "EUR",
+            transferID: transferID
+        )
+        let dollar = transaction(
+            accountID: dollarAccount.id,
+            date: dayTwo,
+            amount: 300,
+            currency: "USD"
+        )
+        let forecast = transaction(
+            accountID: euroAccount.id,
+            date: dayThree,
+            amount: -50,
+            currency: "EUR",
+            status: .expected
+        )
+        let rows = [
+            forecast, transferIn, cancelled, dollar, booked, transferOut
+        ]
+
+        let balance = CombinedRegisterChartEngine.make(
+            accounts: [euroAccount, euroCash, dollarAccount],
+            rows: rows,
+            isFiltered: false,
+            calendar: calendar
+        )
+        XCTAssertEqual(balance.mode, .balance)
+        XCTAssertEqual(balance.pointCount, 4)
+        let euroBalance = balance.series.first { $0.currency == "EUR" }
+        XCTAssertEqual(euroBalance?.points.map(\.valueMinor), [1_400, 1_400, 1_350])
+        XCTAssertEqual(euroBalance?.points.first?.lastTransactionID, booked.id)
+        XCTAssertEqual(euroBalance?.points.last?.lastTransactionID, forecast.id)
+        XCTAssertEqual(
+            balance.series.first { $0.currency == "USD" }?.points.map(\.valueMinor),
+            [2_300]
+        )
+
+        let filtered = CombinedRegisterChartEngine.make(
+            accounts: [euroAccount, euroCash, dollarAccount],
+            rows: rows,
+            isFiltered: true,
+            calendar: calendar
+        )
+        XCTAssertEqual(filtered.mode, .filteredMovement)
+        let euroMovement = filtered.series.first { $0.currency == "EUR" }
+        XCTAssertEqual(euroMovement?.points.map(\.valueMinor), [-100, -150])
+        XCTAssertEqual(euroMovement?.points.map(\.lastTransactionID), [
+            booked.id, forecast.id
+        ])
+        XCTAssertEqual(
+            filtered.series.first { $0.currency == "USD" }?.points.map(\.valueMinor),
+            [300]
+        )
+        XCTAssertFalse(
+            filtered.series.flatMap(\.points).contains {
+                $0.lastTransactionID == cancelled.id
+                    || $0.lastTransactionID == transferOut.id
+                    || $0.lastTransactionID == transferIn.id
+            }
+        )
+    }
+
     @MainActor
     func testDirectReportFiltersExactSelectionAndIncludesScheduledFuture() throws {
         let context = try TestDatabase()

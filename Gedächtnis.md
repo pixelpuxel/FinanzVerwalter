@@ -3447,3 +3447,52 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 20.645.964 Tokens; Zählerstand nach
   überprüfter Zustellung: 20.648.647 Tokens.
+
+## 07.08.2026 – Saldoverlauf im Sammelkontoblatt
+
+- Haupt- und zweite Sammelansicht zeigen jetzt oberhalb ihrer Tabellen einen
+  währungsgetrennten Tagesverlauf. Ohne Filter beginnt jede Serie mit der
+  Summe der Eröffnungssalden der eingeschlossenen offenen Konten, verarbeitet
+  reale und erwartete Buchungen chronologisch und verdichtet auf den Wert
+  nach der letzten wirksamen Buchung jedes Kalendertags. Stornos werden
+  vollständig übersprungen.
+- Sobald Konto-, Status-, Kategorie-, Klassen-/Tag-, Zeitraum- oder
+  Volltextfilter die Grundgesamtheit einschränken, wechselt der Graph auf
+  eine bei null beginnende kumulierte Bewegungssumme. Er schließt Stornos und
+  beide Umbuchungsseiten aus und wird in Text, Farbe und Accessibility
+  ausdrücklich `Gefilterte Bewegungssumme` statt Saldo genannt.
+- Bei insgesamt weniger als 30 Tagespunkten sind die Punkte sichtbar. Hover
+  ermittelt den zeitlich nächsten Tagespunkt, zeigt Datum und formatierten
+  Währungsbetrag und markiert über die gespeicherte UUID die letzte wirksame
+  Buchung dieses Tages in derselben Tabelle. EUR, USD und weitere Währungen
+  besitzen unabhängige Serien und Skalen.
+- `CombinedRegisterChartEngine` ist reine, deterministische Snapshot-Logik.
+  Der gezielte Lauf unter
+  `build/TestResults/CombinedChart-final-targeted-20260807-2102.xcresult`
+  bestand. Die finale vollständige Regression unter
+  `build/TestResults/CombinedChart-release-final-full-20260807-2108.xcresult`
+  umfasst 154 Tests: 153 bestanden, 1 privater opt-in-Real-QIF-Test ohne
+  temporären Pfad erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0
+  erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-CombinedChart-Release` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `7f10e90e3f8819f4b9e2870a39cebe5df2eeff3059ea296e0b9c796e8700416f`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link zeigt weiterhin auf `/Applications/FinanzVerwalter.app`.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2110-combined-chart-final/`. Die mit
+  SQLite konsistent erzeugte und danach geprüfte Produktionssicherung liegt
+  unter
+  `build/ProductionBackups/20260807-2110-combined-chart-final/Meine Finanzen.qdata`.
+  Nach dem Austausch läuft Prozess 39840 direkt aus `/Applications`.
+  Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien; die
+  Produktivdatei enthält weiterhin 0 Serienbuchungen. Die private echte
+  QIF-Datei wurde weder kopiert noch in Git aufgenommen.
+- Die Computersteuerung bestätigte nach dem Start der neuen Installation
+  erneut die gesperrte macOS-Sitzung. Sie konnte den Graphen deshalb weder
+  sichtbar bedienen noch fotografieren; die Sperre wurde nicht umgangen.
+  Exakter kumulativer Zielzählerstand nach Umsetzung, Test, Release,
+  Installation, Produktivprüfung und dem finalen Prüfversuch: 20.977.013 Tokens.
