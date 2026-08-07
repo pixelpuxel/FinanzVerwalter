@@ -2673,3 +2673,55 @@ Rechtsberatung.
   denselben Stand im gefundenen `/quicken`-Thread 894 und erklärt transparent
   den wegen der gesperrten Sitzung fehlenden Screenshot. Der exakte
   Zielzählerstand nach dem Versand beträgt 16.416.968 Tokens.
+
+## 07.08.2026 – Diese und alle folgenden Serientermine ändern
+
+- Der Editor einer virtuellen Serienfälligkeit trennt jetzt klar zwischen
+  `Änderung speichern` für genau eine Instanz und `Diesen und alle folgenden
+  ändern`. Die zweite Aktion besitzt einen Bestätigungsdialog und übernimmt
+  Datum, Empfänger, Verwendungszweck, vollständige Kategorie einschließlich
+  `keine Kategorie`, Betrag und Notiz ab dem gewählten Termin. Die vorhandene
+  Frequenz läuft vom neuen Datum aus weiter.
+- Migration 34 ergänzt `scheduled_transaction_revisions` mit genau einem
+  versionierten Änderungspunkt je Serie und ursprünglicher Fälligkeit. Die
+  logische Serien-ID und die positionsgleiche ursprüngliche Herkunftskennung
+  bleiben erhalten. Dadurch erkennen Prognose und Materialisierung auch
+  verschobene Folgetermine ohne Doppelzählung. Spätere Revisionen lösen den
+  Verlauf erneut ab; spätere Einzelausnahmen übersteuern genau eine revidierte
+  Instanz. Beide Ebenen sind sichtbar und getrennt rücksetzbar.
+- Speichern einer Serienrevision ersetzt eine Einzelausnahme am identischen
+  Ursprungstermin atomar und schreibt für beide Mutationen ein eigenes
+  Auditereignis. Widersprüchliche IDs und Termine außerhalb der kanonischen
+  Serie werden ohne Teiländerung abgelehnt.
+- Der abschließende Result-Bundle
+  `/tmp/FinanzVerwalter-ScheduledRevisions-full-2-20260807.xcresult` enthält
+  125 Tests: 124 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig
+  übersprungen, 0 Fehler und 0 erwartete Fehler. Neue Tests prüfen zwei
+  aufeinanderfolgende Revisionen, neu verankerte Monatsfolgen,
+  Kategorieentfernung, stabile Referenzen, Deduplizierung,
+  Einzelübersteuerung, atomaren Ausnahmeersatz samt Audit, Update mit stabiler
+  ID, ungültige Grenzen, Rücksetzen sowie Migration 33 auf 34. Debug-Build,
+  `git diff --check` und optimierter arm64-Release-Build sind ebenfalls grün.
+- Der streng signaturgeprüfte Release liegt unter
+  `build/DerivedData-ScheduledRevisions-Release`. Sein ausführbarer Code hat
+  SHA-256
+  `47f3c9eb501218c7f1fae6b2c213a20b0c95f31ee091ea9d1904070b31d6067e`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiter auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-serienrevisionen-20260807-1509.app` und
+  `build/FinanzVerwalter-user-vor-serienrevisionen-20260807-1509.app`.
+- Der echte Start läuft als Prozess 77225 direkt aus `/Applications`. Die
+  produktive Datei wurde automatisch von Schema 33 auf 34 migriert:
+  Datenintegrität `ok`, 97 Konten, 2.170 Buchungen, 782 Kategorien und eine
+  Berichtsvorlage blieben unverändert; der reale Bestand enthält 0
+  Serientermine, 0 Einzelausnahmen und 0 Serienrevisionen. Die automatische
+  Vor-Migrationssicherung
+  `FinanzVerwalter-vor-Migration-v33-20260807-130902-172-A2150DF6.qbackup`
+  wurde separat mit Integrität `ok`, Schema 33 und identischen Kernzählungen
+  geprüft.
+- Implementierung und Tests wurden als Commit `07f006d`, die reproduzierbare
+  Dokumentation als Commit `b67acb0` angelegt. Die macOS-Sitzung ist weiterhin
+  nachweislich gesperrt; deshalb wurde kein fingierter Screenshot erzeugt.
+  Der exakte Zielzählerstand vor dieser Dokumentation beträgt 16.682.116
+  Tokens.
