@@ -3942,3 +3942,10 @@ Rechtsberatung.
   daraus. Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
   jeweils 97 Konten, 2.170 Buchungen und 782 Kategorien; die Produktivdatei
   hat keine Fremdschlüsselverletzung.
+- Implementierung, Test, ADR und Reproduktionsdokumentation wurden als Commit
+  `306209a` auf `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub
+  Draft-PR #1 zeigte denselben Head und war mergebar.
+- Telegram-Nachricht 1129 meldet den geprüften Stand im `/quicken`-Thread
+  894. Wegen der weiterhin nicht sichtbar entsperrten macOS-Sitzung wurde
+  transparent kein neuer Screenshot behauptet. Exakter kumulativer
+  Zielzählerstand vor dem Versand: 23.293.152 Tokens.
