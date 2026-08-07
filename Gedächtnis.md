@@ -2367,3 +2367,10 @@ Rechtsberatung.
   werden; deshalb wurde weder ein Klickergebnis noch ein Screenshot
   vorgetäuscht. Der exakte Zielzählerstand vor Commit und Veröffentlichung
   beträgt 14.780.957 Tokens.
+- Implementierung, Mehrzieltest und reproduzierbare Dokumentation wurden als
+  Commit `26402dc` auf `origin/agent/qif-mehrkontenimport` veröffentlicht.
+  Der offene Draft-PR #1 beschreibt jetzt alle fünf Anhangsoberflächen, den
+  112-Test-Nachweis und den installierten Release-Hash.
+- Telegram-Nachricht 1009 dokumentiert denselben Stand im gefundenen
+  `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
+  deshalb fehlenden Screenshot sowie den exakten Zielzählerstand 14.807.849.
