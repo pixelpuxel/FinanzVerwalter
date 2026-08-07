@@ -385,6 +385,24 @@ Die Werkstatt kennzeichnet diese Direktauswahl und lässt sie ausdrücklich
 lösen. Exakte Empfängervergleiche sind großschreibungs- und
 diakritikaunabhängig; alte Berichtsvorlagen bleiben kompatibel.
 
+## Kalender und Prognose
+
+Der Kalender erzeugt aus persistenten regelmäßigen Vorgängen eine
+30-, 90-, 180- oder 365-Tage-Prognose. Monatsbasierte Serien bewahren ihre
+Monatsende-Semantik. Der prognostizierte Saldo beginnt beim realen Bestand
+und berücksichtigt anschließend erwartete Buchungen sowie noch nicht
+materialisierte Serientermine.
+
+Eine einzelne Serieninstanz kann über ihren stabilen Ursprungstermin
+geändert oder übersprungen werden. Datum, Empfänger, Verwendungszweck,
+Kategorie und Betrag der geänderten Instanz werden dauerhaft als Ausnahme
+gespeichert; ein verschobener Termin behält intern seine ursprüngliche
+Identität und wird deshalb weder erneut erzeugt noch doppelt gezählt.
+Geänderte und übersprungene Instanzen bleiben in `Serienausnahmen` sichtbar
+und können dort auf den Serienwert zurückgesetzt werden. Änderungen an
+dieser und allen zukünftigen Instanzen, Wochenansicht, Drag-and-drop und
+Szenarien sind noch nicht umgesetzt.
+
 ## Kategorien und Mehrwertsteuer
 
 Kategorien besitzen neben einer beliebig tiefen Hierarchie eine Beschreibung,

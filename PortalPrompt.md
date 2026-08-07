@@ -323,11 +323,21 @@ oder persönliche Pfade committen.
 Für Serientermine gilt reproduzierbar:
 
 - Persistenz in `scheduled_transactions` ab SQLite-Migration 4.
+- Einzelne geänderte oder übersprungene Instanzen werden ab Migration 33 in
+  `scheduled_transaction_exceptions` gespeichert. Pro Serie und
+  ursprünglichem Fälligkeitsdatum existiert höchstens eine Ausnahme.
 - Geld als `Int64`-Minor-Units, Fälligkeiten als kalendarisches ISO-Datum.
 - Monatsbasierte Rhythmen erhalten die Monatsende-Semantik, auch über den
   29. Februar eines Schaltjahres.
 - Jede virtuelle Instanz trägt
   `schedule:<Serien-UUID>:<Unixzeit der Fälligkeit>` als Herkunftskennung.
+- Eine verschobene Instanz behält diese Herkunftskennung des ursprünglichen
+  Fälligkeitsdatums. Dadurch bleiben Identität, Materialisierungsprüfung und
+  Rücksetzen unabhängig vom wirksamen neuen Datum stabil.
+- Eine geänderte Einzelinstanz kann Fälligkeit, Empfänger,
+  Verwendungszweck, Kategorie einschließlich `keine Kategorie` und Betrag
+  vollständig überschreiben. Eine übersprungene Instanz wird nicht in die
+  Prognose aufgenommen, bleibt aber als rücksetzbare Ausnahme sichtbar.
 - Die Vorschau filtert Herkunftskennungen, die bereits als echte erwartete
   Buchung vorhanden sind, damit kein realer Vorgang doppelt zählt.
 - Der Prognosesaldo beginnt mit Eröffnungssaldo plus nicht stornierter,
