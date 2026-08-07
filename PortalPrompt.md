@@ -326,6 +326,9 @@ Für Serientermine gilt reproduzierbar:
 - Einzelne geänderte oder übersprungene Instanzen werden ab Migration 33 in
   `scheduled_transaction_exceptions` gespeichert. Pro Serie und
   ursprünglichem Fälligkeitsdatum existiert höchstens eine Ausnahme.
+- Änderungen dieser und aller folgenden Instanzen werden ab Migration 34 in
+  `scheduled_transaction_revisions` gespeichert. Pro Serie und
+  ursprünglichem Beginn existiert höchstens ein versionierter Änderungspunkt.
 - Geld als `Int64`-Minor-Units, Fälligkeiten als kalendarisches ISO-Datum.
 - Monatsbasierte Rhythmen erhalten die Monatsende-Semantik, auch über den
   29. Februar eines Schaltjahres.
@@ -338,6 +341,15 @@ Für Serientermine gilt reproduzierbar:
   Verwendungszweck, Kategorie einschließlich `keine Kategorie` und Betrag
   vollständig überschreiben. Eine übersprungene Instanz wird nicht in die
   Prognose aufgenommen, bleibt aber als rücksetzbare Ausnahme sichtbar.
+- Eine Serienrevision überschreibt ab ihrer ursprünglichen Fälligkeit Datum,
+  Empfänger, Verwendungszweck, Kategorie und Betrag. Die unveränderte
+  Frequenz läuft vom neuen Datum aus weiter; die n-te wirksame Instanz behält
+  die Ursprungskennung der n-ten kanonischen Instanz. Eine spätere Revision
+  löst den wirksamen Verlauf erneut ab. Einzelausnahmen werden danach
+  angewendet und können eine einzelne revidierte Instanz übersteuern.
+- Speichern einer Revision ersetzt atomar eine Einzelausnahme am gleichen
+  Ursprungstermin und auditiert beide Mutationen. Löschen der Revision stellt
+  ab diesem Termin den vorherigen Serienverlauf wieder her.
 - Die Vorschau filtert Herkunftskennungen, die bereits als echte erwartete
   Buchung vorhanden sind, damit kein realer Vorgang doppelt zählt.
 - Der Prognosesaldo beginnt mit Eröffnungssaldo plus nicht stornierter,

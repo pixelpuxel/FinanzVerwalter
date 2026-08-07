@@ -399,9 +399,15 @@ Kategorie und Betrag der geänderten Instanz werden dauerhaft als Ausnahme
 gespeichert; ein verschobener Termin behält intern seine ursprüngliche
 Identität und wird deshalb weder erneut erzeugt noch doppelt gezählt.
 Geänderte und übersprungene Instanzen bleiben in `Serienausnahmen` sichtbar
-und können dort auf den Serienwert zurückgesetzt werden. Änderungen an
-dieser und allen zukünftigen Instanzen, Wochenansicht, Drag-and-drop und
-Szenarien sind noch nicht umgesetzt.
+und können dort auf den Serienwert zurückgesetzt werden. Alternativ lassen
+sich Datum, Empfänger, Verwendungszweck, Kategorie und Betrag ab einer
+gewählten Instanz für diese und alle folgenden Fälligkeiten ändern. Der
+Rhythmus wird dabei vom neuen Datum aus mit derselben Frequenz fortgeführt;
+alle virtuellen Termine behalten dennoch ihre stabile ursprüngliche
+Herkunftskennung. Solche Änderungspunkte sind als `Serienänderungen`
+sichtbar, einzeln rücksetzbar und können weiterhin durch eine spätere
+Einzelausnahme übersteuert werden. Wochenansicht, Drag-and-drop und Szenarien
+sind noch nicht umgesetzt.
 
 ## Kategorien und Mehrwertsteuer
 
