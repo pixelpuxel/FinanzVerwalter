@@ -4770,7 +4770,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=35", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=36", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -4779,8 +4779,8 @@ final class FinanzVerwalterTests: XCTestCase {
             guard case let FinanceError.database(message) = error else {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
+            XCTAssertTrue(message.contains("Schema 36"))
             XCTAssertTrue(message.contains("Schema 35"))
-            XCTAssertTrue(message.contains("Schema 34"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         var statement: OpaquePointer?
@@ -4789,7 +4789,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 36)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4839,7 +4839,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions(), [])
         XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 34)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -4897,7 +4897,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions().map(\.id), [exception.id])
         XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 34)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -4969,7 +4969,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -5091,7 +5091,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
         sqlite3_finalize(statement)
     }
 
@@ -8585,7 +8585,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -8820,7 +8820,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.transactions().first?.id, value.id)
         XCTAssertEqual(try migrated.transactions().first?.amountMinor, -987)
         XCTAssertEqual(try migrated.attachments(entityType: .transaction, entityID: value.id), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 34)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
         XCTAssertEqual(try sqliteScalar(url, "SELECT COUNT(*) FROM attachment_blobs"), 0)
         XCTAssertTrue(try migrated.integrityCheck())
     }
@@ -9182,6 +9182,178 @@ final class FinanzVerwalterTests: XCTestCase {
             for: invalid, existing: nil, to: try date(14),
             now: try date(7), calendar: calendar
         )) { XCTAssertEqual($0 as? FinanceCalendarMoveError, .invalidRecurringReference) }
+    }
+
+    func testLiquidityForecastCombinesOriginsIntervalsAndScenarioWithoutCurrencyMixing() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        func date(_ year: Int = 2026, _ month: Int = 8, _ day: Int) throws -> Date {
+            try XCTUnwrap(calendar.date(from: DateComponents(year: year, month: month, day: day)))
+        }
+        let account = FinanceAccount(
+            id: UUID(), name: "Plan", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        func transaction(_ day: Int, _ amount: Int64, _ status: TransactionStatus) throws -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: account.id, bookingDate: try date(2026, 8, day),
+                valueDate: nil, payee: status.title, purpose: "", categoryID: nil,
+                amountMinor: amount, currency: "EUR", status: status, memo: "",
+                reference: "", transferID: nil, importFingerprint: nil, splits: []
+            )
+        }
+        let prior = try transaction(2, 500, .booked)
+        let expected = try transaction(3, -3_000, .expected)
+        let pending = try transaction(4, -1_000, .pending)
+        let booked = try transaction(5, 2_000, .booked)
+        var duplicateBooked = try transaction(5, -700, .booked)
+        duplicateBooked.payee = "Doppelter Auftrag"
+        var recurring = try transaction(6, -4_000, .expected)
+        recurring.reference = "schedule:\(UUID().uuidString):\(recurring.bookingDate.timeIntervalSince1970)"
+        let paymentDuplicate = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .scheduledCreditTransfer,
+            recipientName: "Doppelter Auftrag", iban: "DE12500105170648489890", bic: "",
+            amountMinor: 700, currency: "EUR", executionDate: try date(2026, 8, 5),
+            purpose: "Test", endToEndID: "NOTPROVIDED", status: .accepted,
+            idempotencyKey: "duplicate", bankReference: "", createdAt: Date(), updatedAt: Date()
+        )
+        let payment = PaymentOrder(
+            id: UUID(), accountID: account.id, type: .scheduledCreditTransfer,
+            recipientName: "Miete", iban: "DE12500105170648489890", bic: "",
+            amountMinor: 900, currency: "EUR", executionDate: try date(2026, 8, 6),
+            purpose: "Test", endToEndID: "NOTPROVIDED", status: .submitted,
+            idempotencyKey: "payment", bankReference: "", createdAt: Date(), updatedAt: Date()
+        )
+        let standing = StandingOrder(
+            id: UUID(), accountID: account.id, name: "Energie",
+            recipientName: "Stadtwerke", iban: "DE12500105170648489890", bic: "",
+            amountMinor: 800, currency: "EUR", purpose: "Abschlag",
+            nextExecutionDate: try date(2026, 8, 8), endDate: nil,
+            frequency: .monthly, businessDayAdjustment: .none, status: .active,
+            createdAt: Date(), updatedAt: Date()
+        )
+        let scenario = ForecastScenarioEntry(
+            id: UUID(), scenarioID: UUID(), accountID: account.id,
+            date: try date(2026, 8, 7), name: "Reparatur", amountMinor: -6_000,
+            isEnabled: true, note: "", createdAt: Date(), updatedAt: Date()
+        )
+        let buckets = LiquidityForecastEngine.buckets(
+            accounts: [account],
+            transactions: [prior, expected, pending, booked, duplicateBooked],
+            paymentOrders: [paymentDuplicate, payment], standingOrders: [standing],
+            recurring: [recurring], scenarioEntries: [scenario],
+            accountIDs: [account.id], from: try date(2026, 8, 3),
+            through: try date(2026, 8, 9), interval: .weekly, calendar: calendar
+        )
+        XCTAssertEqual(buckets.count, 1)
+        let bucket = try XCTUnwrap(buckets.first)
+        XCTAssertEqual(bucket.openingBalanceMinor, 10_500)
+        XCTAssertEqual(bucket.changeMinor, -14_400)
+        XCTAssertEqual(bucket.closingBalanceMinor, -3_900)
+        XCTAssertEqual(bucket.minimumBalanceMinor, -3_900)
+        XCTAssertEqual(bucket.maximumBalanceMinor, 10_500)
+        XCTAssertEqual(
+            Set(bucket.positions.map(\.origin)),
+            [.expected, .pending, .booked, .paymentOrder, .standingOrder, .recurring, .scenario]
+        )
+        XCTAssertEqual(bucket.positions.filter { $0.title == "Doppelter Auftrag" }.count, 1)
+
+        let monthly = LiquidityForecastEngine.buckets(
+            accounts: [account], transactions: [], recurring: [], scenarioEntries: [],
+            accountIDs: [account.id], from: try date(2026, 1, 30),
+            through: try date(2026, 2, 3), interval: .monthly, calendar: calendar
+        )
+        XCTAssertEqual(monthly.count, 2)
+        XCTAssertEqual(calendar.component(.day, from: monthly[0].endDate), 31)
+        XCTAssertEqual(calendar.component(.day, from: monthly[1].startDate), 1)
+
+        let usd = FinanceAccount(
+            id: UUID(), name: "USD", institution: "", type: .checking,
+            currency: "USD", openingBalanceMinor: 100, isHidden: false,
+            isClosed: false, sortOrder: 1
+        )
+        XCTAssertTrue(LiquidityForecastEngine.buckets(
+            accounts: [account, usd], transactions: [], recurring: [], scenarioEntries: [],
+            accountIDs: [account.id, usd.id], from: try date(2026, 8, 3),
+            through: try date(2026, 8, 9), interval: .daily, calendar: calendar
+        ).isEmpty)
+    }
+
+    @MainActor
+    func testForecastScenarioPersistsUpdatesAuditsAndCascadesEntries() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Szenariokonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let now = Date()
+        var scenario = ForecastScenario(
+            id: UUID(), name: "Umzug", note: "Test", isActive: true,
+            createdAt: now, updatedAt: now
+        )
+        try context.store.saveForecastScenario(scenario)
+        var entry = ForecastScenarioEntry(
+            id: UUID(), scenarioID: scenario.id, accountID: account.id,
+            date: now, name: "Kaution", amountMinor: -120_000,
+            isEnabled: true, note: "einmalig", createdAt: now, updatedAt: now
+        )
+        try context.store.saveForecastScenarioEntry(entry)
+        scenario.name = "Umzug Berlin"
+        entry.amountMinor = -130_000
+        try context.store.saveForecastScenario(scenario)
+        try context.store.saveForecastScenarioEntry(entry)
+        XCTAssertEqual(try context.store.forecastScenarios().first?.name, "Umzug Berlin")
+        XCTAssertEqual(try context.store.forecastScenarioEntries().first?.amountMinor, -130_000)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "PRAGMA user_version"), 35)
+        XCTAssertEqual(try sqliteScalar(
+            context.store.fileURL,
+            "SELECT COUNT(*) FROM audit_events WHERE entity_type IN ('forecast_scenario','forecast_scenario_entry') AND action='save'"
+        ), 4)
+        scenario.isActive = false
+        try context.store.saveForecastScenario(scenario)
+        let appStore = FinanceAppStore(repository: context.store)
+        let inactiveBuckets = appStore.liquidityForecast(
+            accountIDs: [account.id], scenarioID: scenario.id,
+            from: Calendar.current.startOfDay(for: now),
+            through: Calendar.current.date(byAdding: .day, value: 1, to: now) ?? now,
+            interval: .daily
+        )
+        XCTAssertFalse(inactiveBuckets.flatMap(\.positions).contains { $0.origin == .scenario })
+        try context.store.deleteForecastScenario(id: scenario.id)
+        XCTAssertTrue(try context.store.forecastScenarios().isEmpty)
+        XCTAssertTrue(try context.store.forecastScenarioEntries().isEmpty)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testMigration34To35AddsEmptyForecastScenariosWithoutChangingBookings() throws {
+        let context = try TestDatabase()
+        let url = context.store.fileURL
+        let account = FinanceAccount(
+            id: UUID(), name: "Bestand", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 1_000, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        context.store.close()
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(
+            database,
+            "DROP TABLE forecast_scenario_entries; DROP TABLE forecast_scenarios; PRAGMA user_version=34;",
+            nil, nil, nil
+        ), SQLITE_OK)
+        sqlite3_close(database)
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        XCTAssertEqual(try migrated.accounts().map(\.id), [account.id])
+        XCTAssertTrue(try migrated.forecastScenarios().isEmpty)
+        XCTAssertTrue(try migrated.forecastScenarioEntries().isEmpty)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
+        XCTAssertTrue(try migrated.integrityCheck())
     }
 
     func testSecureNoteLinksPermitOnlyConfirmedHTTPSAndSafeRegularLocalFiles() throws {

@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 34
+    static let currentSchemaVersion = 35
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -1796,6 +1796,44 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 34")
             }
         }
+        if version < 35 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS forecast_scenarios (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL CHECK(length(trim(name))>0),
+                        note TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS forecast_scenario_entries (
+                        id TEXT PRIMARY KEY,
+                        scenario_id TEXT NOT NULL REFERENCES forecast_scenarios(id) ON DELETE CASCADE,
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        entry_date TEXT NOT NULL,
+                        name TEXT NOT NULL CHECK(length(trim(name))>0),
+                        amount_minor INTEGER NOT NULL,
+                        is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0,1)),
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS forecast_entries_scenario_date ON forecast_scenario_entries(scenario_id,entry_date,account_id)"
+                )
+                try execute("PRAGMA user_version = 35")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2654,6 +2692,114 @@ final class SQLiteFinanceStore {
                 entity: "scheduled_transaction_revision", id: revisionID,
                 action: "delete", details: originalDay
             )
+        }
+    }
+
+    func forecastScenarios() throws -> [ForecastScenario] {
+        var values: [ForecastScenario] = []
+        try query(
+            "SELECT id,name,note,is_active,created_at,updated_at FROM forecast_scenarios ORDER BY lower(name),id"
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 4)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 5)) else { return }
+            values.append(ForecastScenario(
+                id: id, name: Self.text(statement, 1), note: Self.text(statement, 2),
+                isActive: sqlite3_column_int(statement, 3) != 0,
+                createdAt: createdAt, updatedAt: updatedAt
+            ))
+        }
+        return values
+    }
+
+    func forecastScenarioEntries() throws -> [ForecastScenarioEntry] {
+        var values: [ForecastScenarioEntry] = []
+        try query(
+            """
+            SELECT id,scenario_id,account_id,entry_date,name,amount_minor,is_enabled,note,created_at,updated_at
+            FROM forecast_scenario_entries ORDER BY entry_date,lower(name),id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let scenarioID = UUID(uuidString: Self.text(statement, 1)),
+                  let accountID = UUID(uuidString: Self.text(statement, 2)),
+                  let date = Self.date(Self.text(statement, 3)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 8)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 9)) else { return }
+            values.append(ForecastScenarioEntry(
+                id: id, scenarioID: scenarioID, accountID: accountID, date: date,
+                name: Self.text(statement, 4), amountMinor: sqlite3_column_int64(statement, 5),
+                isEnabled: sqlite3_column_int(statement, 6) != 0,
+                note: Self.text(statement, 7), createdAt: createdAt, updatedAt: updatedAt
+            ))
+        }
+        return values
+    }
+
+    func saveForecastScenario(_ value: ForecastScenario) throws {
+        let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Das Szenario benötigt einen Namen.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO forecast_scenarios(id,name,note,is_active,created_at,updated_at)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,note=excluded.note,is_active=excluded.is_active,
+                updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(name), .text(value.note),
+                 .integer(value.isActive ? 1 : 0), .text(Self.timestamp(value.createdAt)), .text(now)]
+            )
+            try audit(entity: "forecast_scenario", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func saveForecastScenarioEntry(_ value: ForecastScenarioEntry) throws {
+        let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Die Szenarioposition benötigt einen Namen.")
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM forecast_scenarios WHERE id=?", [.text(value.scenarioID.uuidString)]
+        ) == 1 else { throw FinanceError.database("Das Szenario existiert nicht mehr.") }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM accounts WHERE id=? AND is_closed=0", [.text(value.accountID.uuidString)]
+        ) == 1 else { throw FinanceError.database("Das Prognosekonto ist geschlossen oder fehlt.") }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO forecast_scenario_entries(
+                    id,scenario_id,account_id,entry_date,name,amount_minor,is_enabled,note,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    scenario_id=excluded.scenario_id,account_id=excluded.account_id,
+                    entry_date=excluded.entry_date,name=excluded.name,amount_minor=excluded.amount_minor,
+                    is_enabled=excluded.is_enabled,note=excluded.note,updated_at=excluded.updated_at,
+                    version=version+1
+                """,
+                [.text(value.id.uuidString), .text(value.scenarioID.uuidString),
+                 .text(value.accountID.uuidString), .text(Self.day(value.date)), .text(name),
+                 .integer(value.amountMinor), .integer(value.isEnabled ? 1 : 0), .text(value.note),
+                 .text(Self.timestamp(value.createdAt)), .text(now)]
+            )
+            try audit(entity: "forecast_scenario_entry", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func deleteForecastScenario(id: UUID) throws {
+        try transaction {
+            try run("DELETE FROM forecast_scenarios WHERE id=?", [.text(id.uuidString)])
+            try audit(entity: "forecast_scenario", id: id, action: "delete", details: "")
+        }
+    }
+
+    func deleteForecastScenarioEntry(id: UUID) throws {
+        try transaction {
+            try run("DELETE FROM forecast_scenario_entries WHERE id=?", [.text(id.uuidString)])
+            try audit(entity: "forecast_scenario_entry", id: id, action: "delete", details: "")
         }
     }
 

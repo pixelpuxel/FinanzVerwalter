@@ -251,6 +251,8 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var scheduledTransactionExceptions: [ScheduledTransactionException] = []
     @Published private(set) var scheduledTransactionRevisions: [ScheduledTransactionRevision] = []
+    @Published private(set) var forecastScenarios: [ForecastScenario] = []
+    @Published private(set) var forecastScenarioEntries: [ForecastScenarioEntry] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
@@ -1768,6 +1770,10 @@ final class FinanceAppStore: ObservableObject {
 
     func forecastOccurrences(days: Int = 90) -> [FinanceTransaction] {
         let end = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
+        return forecastOccurrences(through: end)
+    }
+
+    private func forecastOccurrences(through end: Date) -> [FinanceTransaction] {
         let existingReferences = Set(transactions.map(\.reference).filter { !$0.isEmpty })
         let includedAccounts = Set(
             accounts.filter { $0.includeForecast && !$0.isClosed }.map(\.id)
@@ -1813,6 +1819,63 @@ final class FinanceAppStore: ObservableObject {
             .filter { $0.accountID == accountID && $0.bookingDate <= date }
             .reduce(Int64.zero) { $0 + $1.amountMinor }
         return posted + pendingExpected + scheduled
+    }
+
+    func liquidityForecast(
+        accountIDs: Set<UUID>, scenarioID: UUID?, from start: Date,
+        through end: Date, interval: ForecastInterval
+    ) -> [ForecastBucket] {
+        return LiquidityForecastEngine.buckets(
+            accounts: accounts, transactions: transactions,
+            paymentOrders: paymentOrders, standingOrders: standingOrders,
+            recurring: forecastOccurrences(through: end),
+            scenarioEntries: scenarioID.flatMap { id in
+                forecastScenarios.first { $0.id == id && $0.isActive }.map { _ in
+                    forecastScenarioEntries.filter { $0.scenarioID == id }
+                }
+            } ?? [],
+            accountIDs: accountIDs, from: start, through: end, interval: interval
+        )
+    }
+
+    func saveForecastScenario(_ value: ForecastScenario) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveForecastScenario(value)
+            try load()
+            statusText = "Szenario „\(value.name)“ gespeichert"
+            return true
+        } catch { present(error); return false }
+    }
+
+    func saveForecastScenarioEntry(_ value: ForecastScenarioEntry) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveForecastScenarioEntry(value)
+            try load()
+            statusText = "Szenarioposition „\(value.name)“ gespeichert"
+            return true
+        } catch { present(error); return false }
+    }
+
+    func deleteForecastScenario(id: UUID) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.deleteForecastScenario(id: id)
+            try load()
+            statusText = "Szenario gelöscht"
+            return true
+        } catch { present(error); return false }
+    }
+
+    func deleteForecastScenarioEntry(id: UUID) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.deleteForecastScenarioEntry(id: id)
+            try load()
+            statusText = "Szenarioposition gelöscht"
+            return true
+        } catch { present(error); return false }
     }
 
     func saveScheduledTransaction(_ value: ScheduledTransaction) -> Bool {
@@ -2837,6 +2900,8 @@ final class FinanceAppStore: ObservableObject {
         scheduledTransactions = try repository.scheduledTransactions()
         scheduledTransactionExceptions = try repository.scheduledTransactionExceptions()
         scheduledTransactionRevisions = try repository.scheduledTransactionRevisions()
+        forecastScenarios = try repository.forecastScenarios()
+        forecastScenarioEntries = try repository.forecastScenarioEntries()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()
         directDebitOrders = try repository.directDebitOrders()

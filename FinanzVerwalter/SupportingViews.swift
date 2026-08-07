@@ -6465,6 +6465,7 @@ struct CalendarForecastView: View {
     @State private var selectedTagID: UUID?
     @State private var pendingMove: CalendarMoveRequest?
     @State private var moveErrorMessage = ""
+    @State private var showLiquidityScenarios = false
 
     private var occurrences: [FinanceTransaction] {
         store.forecastOccurrences(days: forecastDays).filter(matchesFilters)
@@ -6583,6 +6584,11 @@ struct CalendarForecastView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(store.accounts.isEmpty)
+                Button {
+                    showLiquidityScenarios = true
+                } label: {
+                    Label("Szenarien", systemImage: "chart.line.uptrend.xyaxis")
+                }
             }
             .padding(12)
             Divider()
@@ -6667,6 +6673,10 @@ struct CalendarForecastView: View {
         }
         .sheet(item: $editedOccurrence) { request in
             ScheduledOccurrenceEditor(request: request)
+        }
+        .sheet(isPresented: $showLiquidityScenarios) {
+            LiquidityScenarioView()
+                .environmentObject(store)
         }
         .alert(
             "Prognosetermin verschieben?",
@@ -7183,6 +7193,413 @@ struct CalendarForecastView: View {
 
     private func scheduleName(_ id: UUID) -> String {
         store.scheduledTransactions.first { $0.id == id }?.name ?? "Regelmäßiger Vorgang"
+    }
+}
+
+private enum ForecastScope: String, CaseIterable {
+    case all
+    case account
+    case group
+
+    var title: String {
+        switch self {
+        case .all: "Alle Konten"
+        case .account: "Konto"
+        case .group: "Kontengruppe"
+        }
+    }
+}
+
+private struct LiquidityScenarioView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State private var selectedScenarioID: UUID?
+    @State private var interval = ForecastInterval.weekly
+    @State private var horizon = 90
+    @State private var scope = ForecastScope.all
+    @State private var scopeID: UUID?
+    @State private var currency = "EUR"
+    @State private var editedScenario: ForecastScenario?
+    @State private var editedEntry: ForecastScenarioEntry?
+    @State private var deleteScenarioID: UUID?
+    @State private var deleteEntryID: UUID?
+
+    private var currencies: [String] {
+        Array(Set(store.accounts.filter { !$0.isClosed && $0.includeForecast }.map {
+            $0.currency.uppercased()
+        })).sorted()
+    }
+
+    private var accountIDs: Set<UUID> {
+        Set(store.accounts.filter { account in
+            guard !account.isClosed, account.includeForecast,
+                  account.currency.uppercased() == currency else { return false }
+            switch scope {
+            case .all: return true
+            case .account: return account.id == scopeID
+            case .group: return account.groupID == scopeID
+            }
+        }.map(\.id))
+    }
+
+    private var buckets: [ForecastBucket] {
+        store.liquidityForecast(
+            accountIDs: accountIDs, scenarioID: selectedScenarioID,
+            from: Calendar.current.startOfDay(for: Date()),
+            through: Calendar.current.date(byAdding: .day, value: horizon, to: Date()) ?? Date(),
+            interval: interval
+        )
+    }
+
+    private var baselineBuckets: [ForecastBucket] {
+        store.liquidityForecast(
+            accountIDs: accountIDs, scenarioID: nil,
+            from: Calendar.current.startOfDay(for: Date()),
+            through: Calendar.current.date(byAdding: .day, value: horizon, to: Date()) ?? Date(),
+            interval: interval
+        )
+    }
+
+    private var selectedScenario: ForecastScenario? {
+        selectedScenarioID.flatMap { id in store.forecastScenarios.first { $0.id == id } }
+    }
+
+    private var selectedEntries: [ForecastScenarioEntry] {
+        guard let selectedScenarioID else { return [] }
+        return store.forecastScenarioEntries.filter { $0.scenarioID == selectedScenarioID }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Liquiditätsprognose & Szenarien").font(.title2.bold())
+                    Text("Basisverlauf und Was-wäre-wenn-Positionen mit nachvollziehbarer Herkunft")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Schließen") { dismiss() }
+            }
+            .padding(14)
+            Divider()
+
+            HSplitView {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Szenarien").font(.headline)
+                        Spacer()
+                        Button { newScenario() } label: { Image(systemName: "plus") }
+                            .help("Neues Szenario")
+                    }
+                    .padding(10)
+                    Divider()
+                    List(selection: $selectedScenarioID) {
+                        Text("Basis ohne Szenario").tag(UUID?.none)
+                        ForEach(store.forecastScenarios) { scenario in
+                            HStack {
+                                Circle().fill(scenario.isActive ? .green : .secondary)
+                                    .frame(width: 7, height: 7)
+                                Text(scenario.name)
+                                Spacer()
+                                Text("\(store.forecastScenarioEntries.filter { $0.scenarioID == scenario.id }.count)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .tag(Optional(scenario.id))
+                            .contextMenu {
+                                Button("Bearbeiten") { editedScenario = scenario }
+                                Button("Löschen", role: .destructive) { deleteScenarioID = scenario.id }
+                            }
+                        }
+                    }
+                    if let scenario = selectedScenario {
+                        Divider()
+                        HStack {
+                            Text("Positionen").font(.headline)
+                            Spacer()
+                            Button { newEntry(scenarioID: scenario.id) } label: {
+                                Image(systemName: "plus")
+                            }
+                            .disabled(store.accounts.filter { !$0.isClosed }.isEmpty)
+                        }
+                        .padding(10)
+                        List(selectedEntries) { entry in
+                            Button { editedEntry = entry } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack {
+                                        Text(entry.name).lineLimit(1)
+                                        Spacer()
+                                        Text(Money(minorUnits: entry.amountMinor, currency: store.accounts.first { $0.id == entry.accountID }?.currency ?? "EUR").formatted)
+                                            .monospacedDigit()
+                                    }
+                                    Text("\(store.accountName(entry.accountID)) · \(entry.date.formatted(.dateTime.day().month().year()))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Löschen", role: .destructive) { deleteEntryID = entry.id }
+                            }
+                        }
+                        .frame(minHeight: 180)
+                    }
+                }
+                .frame(minWidth: 280, idealWidth: 330)
+
+                VStack(spacing: 0) {
+                    forecastControls
+                    Divider()
+                    if accountIDs.isEmpty {
+                        ContentUnavailableView(
+                            "Keine passenden Prognosekonten", systemImage: "building.columns",
+                            description: Text("Wähle eine Währung und einen Bereich mit offenen Prognosekonten.")
+                        )
+                    } else {
+                        forecastSummary
+                        Divider()
+                        forecastList
+                    }
+                }
+                .frame(minWidth: 720)
+            }
+        }
+        .frame(minWidth: 1100, minHeight: 720)
+        .onAppear {
+            if !currencies.contains(currency) { currency = currencies.first ?? "EUR" }
+        }
+        .sheet(item: $editedScenario) { value in
+            ForecastScenarioEditor(value: value).environmentObject(store)
+        }
+        .sheet(item: $editedEntry) { value in
+            ForecastScenarioEntryEditor(value: value).environmentObject(store)
+        }
+        .alert("Szenario löschen?", isPresented: Binding(
+            get: { deleteScenarioID != nil }, set: { if !$0 { deleteScenarioID = nil } }
+        )) {
+            Button("Löschen", role: .destructive) {
+                if let id = deleteScenarioID { _ = store.deleteForecastScenario(id: id) }
+                selectedScenarioID = nil
+                deleteScenarioID = nil
+            }
+            Button("Abbrechen", role: .cancel) { deleteScenarioID = nil }
+        } message: { Text("Alle Positionen dieses Szenarios werden ebenfalls gelöscht.") }
+        .alert("Position löschen?", isPresented: Binding(
+            get: { deleteEntryID != nil }, set: { if !$0 { deleteEntryID = nil } }
+        )) {
+            Button("Löschen", role: .destructive) {
+                if let id = deleteEntryID { _ = store.deleteForecastScenarioEntry(id: id) }
+                deleteEntryID = nil
+            }
+            Button("Abbrechen", role: .cancel) { deleteEntryID = nil }
+        }
+    }
+
+    private var forecastControls: some View {
+        HStack(spacing: 10) {
+            Picker("Intervall", selection: $interval) {
+                ForEach(ForecastInterval.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.frame(width: 150)
+            Picker("Horizont", selection: $horizon) {
+                Text("30 Tage").tag(30); Text("90 Tage").tag(90); Text("1 Jahr").tag(365)
+            }.frame(width: 130)
+            Picker("Währung", selection: $currency) {
+                ForEach(currencies, id: \.self) { Text($0).tag($0) }
+            }.frame(width: 105)
+            Picker("Bereich", selection: $scope) {
+                ForEach(ForecastScope.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.frame(width: 150)
+            if scope == .account {
+                Picker("Konto", selection: $scopeID) {
+                    Text("Bitte wählen").tag(UUID?.none)
+                    ForEach(store.accounts.filter { !$0.isClosed && $0.includeForecast && $0.currency.uppercased() == currency }) {
+                        Text($0.name).tag(Optional($0.id))
+                    }
+                }.frame(maxWidth: 210)
+            } else if scope == .group {
+                Picker("Gruppe", selection: $scopeID) {
+                    Text("Bitte wählen").tag(UUID?.none)
+                    ForEach(store.accountGroups.filter(\.isActive)) {
+                        Text($0.name).tag(Optional($0.id))
+                    }
+                }.frame(maxWidth: 210)
+            }
+            Spacer()
+        }
+        .padding(10)
+        .onChange(of: scope) { _, _ in scopeID = nil }
+        .onChange(of: currency) { _, _ in scopeID = nil }
+    }
+
+    private var forecastSummary: some View {
+        let minimum = buckets.map(\.minimumBalanceMinor).min() ?? 0
+        let maximum = buckets.map(\.maximumBalanceMinor).max() ?? 0
+        let underfunded = buckets.filter { $0.minimumBalanceMinor < 0 }.count
+        let closing = buckets.last?.closingBalanceMinor ?? 0
+        let baselineClosing = baselineBuckets.last?.closingBalanceMinor ?? closing
+        return HStack(spacing: 24) {
+            summaryValue("Schlusssaldo", closing)
+            summaryValue("Minimum", minimum, warning: minimum < 0)
+            summaryValue("Maximum", maximum)
+            VStack(alignment: .leading) {
+                Text("Unterdeckung").font(.caption).foregroundStyle(.secondary)
+                Text(underfunded == 0 ? "Keine" : "\(underfunded) Intervalle")
+                    .foregroundStyle(underfunded == 0 ? Color.primary : Color.red).fontWeight(.semibold)
+            }
+            summaryValue("Szenarioeffekt", closing - baselineClosing)
+            Spacer()
+        }
+        .padding(12)
+    }
+
+    private func summaryValue(_ title: String, _ value: Int64, warning: Bool = false) -> some View {
+        VStack(alignment: .leading) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(Money(minorUnits: value, currency: currency).formatted)
+                .monospacedDigit().fontWeight(.semibold)
+                .foregroundStyle(warning ? .red : .primary)
+        }
+    }
+
+    private var forecastList: some View {
+        List {
+            ForEach(buckets) { bucket in
+                Section {
+                    ForEach(bucket.positions) { position in
+                        HStack {
+                            Text(position.date, format: .dateTime.day().month().year())
+                                .frame(width: 90, alignment: .leading)
+                            Text(position.origin.title)
+                                .font(.caption.bold()).foregroundStyle(originColor(position.origin))
+                                .frame(width: 85, alignment: .leading)
+                            VStack(alignment: .leading) {
+                                Text(position.title)
+                                Text(store.accountName(position.accountID))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(Money(minorUnits: position.amountMinor, currency: currency).formatted)
+                                .monospacedDigit()
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text(periodTitle(bucket))
+                        Spacer()
+                        Text("Anfang \(Money(minorUnits: bucket.openingBalanceMinor, currency: currency).formatted)")
+                        Text("Änderung \(Money(minorUnits: bucket.changeMinor, currency: currency).formatted)")
+                        Text("Schluss \(Money(minorUnits: bucket.closingBalanceMinor, currency: currency).formatted)")
+                            .foregroundStyle(bucket.closingBalanceMinor < 0 ? .red : .secondary)
+                    }.font(.caption)
+                }
+            }
+        }
+    }
+
+    private func periodTitle(_ bucket: ForecastBucket) -> String {
+        if Calendar.current.isDate(bucket.startDate, inSameDayAs: bucket.endDate) {
+            return bucket.startDate.formatted(.dateTime.day().month().year())
+        }
+        return "\(bucket.startDate.formatted(.dateTime.day().month())) – \(bucket.endDate.formatted(.dateTime.day().month().year()))"
+    }
+
+    private func originColor(_ origin: ForecastPositionOrigin) -> Color {
+        switch origin {
+        case .booked: .green
+        case .pending: .orange
+        case .expected: .blue
+        case .paymentOrder: .cyan
+        case .standingOrder: .indigo
+        case .recurring: .purple
+        case .scenario: .pink
+        }
+    }
+
+    private func newScenario() {
+        let now = Date()
+        editedScenario = ForecastScenario(
+            id: UUID(), name: "Neues Szenario", note: "", isActive: true,
+            createdAt: now, updatedAt: now
+        )
+    }
+
+    private func newEntry(scenarioID: UUID) {
+        let eligible = store.accounts.filter {
+            !$0.isClosed && $0.includeForecast && $0.currency.uppercased() == currency
+        }
+        guard let account = eligible.first(where: { accountIDs.contains($0.id) })
+                ?? eligible.first else { return }
+        let now = Date()
+        editedEntry = ForecastScenarioEntry(
+            id: UUID(), scenarioID: scenarioID, accountID: account.id,
+            date: now, name: "Neue Annahme", amountMinor: 0, isEnabled: true,
+            note: "", createdAt: now, updatedAt: now
+        )
+    }
+}
+
+private struct ForecastScenarioEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State var value: ForecastScenario
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Text("Szenario").font(.title2.bold()); Spacer(); Button("Abbrechen") { dismiss() }; Button("Speichern") { if store.saveForecastScenario(value) { dismiss() } }.buttonStyle(.borderedProminent) }
+                .padding(14)
+            Divider()
+            Form {
+                TextField("Name", text: $value.name)
+                TextField("Notiz", text: $value.note, axis: .vertical).lineLimit(3...6)
+                Toggle("Aktiv", isOn: $value.isActive)
+            }.padding(14)
+        }.frame(width: 520, height: 300)
+    }
+}
+
+private struct ForecastScenarioEntryEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    @State var value: ForecastScenarioEntry
+    @State private var amountText: String
+
+    init(value: ForecastScenarioEntry) {
+        _value = State(initialValue: value)
+        _amountText = State(initialValue: "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Text("Szenarioposition").font(.title2.bold()); Spacer(); Button("Abbrechen") { dismiss() }; Button("Speichern") { save() }.buttonStyle(.borderedProminent) }
+                .padding(14)
+            Divider()
+            Form {
+                TextField("Bezeichnung", text: $value.name)
+                Picker("Konto", selection: $value.accountID) {
+                    ForEach(store.accounts.filter { !$0.isClosed && $0.includeForecast }) {
+                        Text("\($0.name) (\($0.currency))").tag($0.id)
+                    }
+                }
+                DatePicker("Datum", selection: $value.date, displayedComponents: .date)
+                TextField("Betrag", text: $amountText)
+                Toggle("In Berechnung einbeziehen", isOn: $value.isEnabled)
+                TextField("Notiz", text: $value.note, axis: .vertical).lineLimit(2...5)
+            }.padding(14)
+        }
+        .frame(width: 560, height: 430)
+        .onAppear {
+            guard amountText.isEmpty else { return }
+            let currency = store.accounts.first { $0.id == value.accountID }?.currency ?? "EUR"
+            amountText = Money(minorUnits: value.amountMinor, currency: currency).editingString
+        }
+    }
+
+    private func save() {
+        guard let account = store.accounts.first(where: { $0.id == value.accountID }),
+              let money = try? Money(parsing: amountText, currency: account.currency) else {
+            store.errorMessage = "Bitte gib einen gültigen Betrag ein."
+            return
+        }
+        value.amountMinor = money.minorUnits
+        if store.saveForecastScenarioEntry(value) { dismiss() }
     }
 }
 

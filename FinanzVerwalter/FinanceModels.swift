@@ -1092,6 +1092,259 @@ enum FinanceCalendarMovePolicy {
     }
 }
 
+enum ForecastInterval: String, Codable, CaseIterable, Sendable {
+    case daily
+    case weekly
+    case monthly
+
+    var title: String {
+        switch self {
+        case .daily: "Täglich"
+        case .weekly: "Wöchentlich"
+        case .monthly: "Monatlich"
+        }
+    }
+}
+
+struct ForecastScenario: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var name: String
+    var note: String
+    var isActive: Bool
+    var createdAt: Date
+    var updatedAt: Date
+}
+
+struct ForecastScenarioEntry: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var scenarioID: UUID
+    var accountID: UUID
+    var date: Date
+    var name: String
+    var amountMinor: Int64
+    var isEnabled: Bool
+    var note: String
+    var createdAt: Date
+    var updatedAt: Date
+}
+
+enum ForecastPositionOrigin: String, Codable, CaseIterable, Sendable {
+    case booked
+    case pending
+    case expected
+    case paymentOrder
+    case standingOrder
+    case recurring
+    case scenario
+
+    var title: String {
+        switch self {
+        case .booked: "Gebucht"
+        case .pending: "Vorgemerkt"
+        case .expected: "Erwartet"
+        case .paymentOrder: "Zahlungsauftrag"
+        case .standingOrder: "Dauerauftrag"
+        case .recurring: "Regelmäßig"
+        case .scenario: "Szenario"
+        }
+    }
+}
+
+struct ForecastPosition: Identifiable, Hashable, Sendable {
+    let id: String
+    let accountID: UUID
+    let date: Date
+    let amountMinor: Int64
+    let title: String
+    let origin: ForecastPositionOrigin
+}
+
+struct ForecastBucket: Identifiable, Hashable, Sendable {
+    var id: Date { startDate }
+    let startDate: Date
+    let endDate: Date
+    let openingBalanceMinor: Int64
+    let changeMinor: Int64
+    let closingBalanceMinor: Int64
+    let minimumBalanceMinor: Int64
+    let maximumBalanceMinor: Int64
+    let positions: [ForecastPosition]
+}
+
+enum LiquidityForecastEngine {
+    static func buckets(
+        accounts: [FinanceAccount],
+        transactions: [FinanceTransaction],
+        paymentOrders: [PaymentOrder] = [],
+        standingOrders: [StandingOrder] = [],
+        recurring: [FinanceTransaction],
+        scenarioEntries: [ForecastScenarioEntry],
+        accountIDs: Set<UUID>,
+        from startDate: Date,
+        through endDate: Date,
+        interval: ForecastInterval,
+        calendar sourceCalendar: Calendar = .current
+    ) -> [ForecastBucket] {
+        var calendar = sourceCalendar
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        let start = calendar.startOfDay(for: startDate)
+        let end = calendar.startOfDay(for: endDate)
+        let includedAccounts = accounts.filter { accountIDs.contains($0.id) }
+        guard start <= end, !accountIDs.isEmpty,
+              Set(includedAccounts.map { $0.currency.uppercased() }).count == 1
+        else { return [] }
+        let baseline = includedAccounts.reduce(Int64.zero) {
+            $0 + $1.openingBalanceMinor
+        } + transactions.filter {
+            accountIDs.contains($0.accountID) && $0.status != .cancelled
+                && $0.status != .expected && $0.bookingDate < start
+        }.reduce(Int64.zero) { $0 + $1.amountMinor }
+        let realPositions = transactions.compactMap { value -> ForecastPosition? in
+            guard accountIDs.contains(value.accountID), value.status != .cancelled,
+                  value.bookingDate >= start, value.bookingDate < dayAfter(end, calendar: calendar)
+            else { return nil }
+            let origin: ForecastPositionOrigin
+            switch value.status {
+            case .expected: origin = .expected
+            case .pending: origin = .pending
+            case .booked, .cleared, .reconciled: origin = .booked
+            case .cancelled: return nil
+            }
+            return ForecastPosition(
+                id: "transaction:\(value.id.uuidString)", accountID: value.accountID,
+                date: value.bookingDate, amountMinor: value.amountMinor,
+                title: value.payee.isEmpty ? value.purpose : value.payee, origin: origin
+            )
+        }
+        let paymentOrderPositions = paymentOrders.compactMap { value -> ForecastPosition? in
+            guard accountIDs.contains(value.accountID),
+                  value.status != .rejected, value.status != .cancelled,
+                  value.executionDate >= start,
+                  value.executionDate < dayAfter(end, calendar: calendar)
+            else { return nil }
+            return ForecastPosition(
+                id: "payment-order:\(value.id.uuidString)", accountID: value.accountID,
+                date: value.executionDate, amountMinor: -abs(value.amountMinor),
+                title: value.recipientName, origin: .paymentOrder
+            )
+        }
+        var standingOrderPositions: [ForecastPosition] = []
+        for value in standingOrders where value.status == .active
+            && accountIDs.contains(value.accountID) {
+            var dueDate = value.nextExecutionDate
+            var occurrence = 0
+            while dueDate <= end, occurrence < 10_000 {
+                let executionDate = value.businessDayAdjustment.adjusted(
+                    dueDate, bankingCalendar: value.bankingCalendar, calendar: calendar
+                )
+                if executionDate >= start,
+                   executionDate < dayAfter(end, calendar: calendar),
+                   value.endDate.map({ dueDate <= $0 }) ?? true {
+                    standingOrderPositions.append(ForecastPosition(
+                        id: "standing-order:\(value.id.uuidString):\(Int(dueDate.timeIntervalSince1970))",
+                        accountID: value.accountID, date: executionDate,
+                        amountMinor: -abs(value.amountMinor), title: value.recipientName,
+                        origin: .standingOrder
+                    ))
+                }
+                let next = value.frequency.next(after: dueDate, calendar: calendar)
+                guard next > dueDate else { break }
+                dueDate = next
+                occurrence += 1
+            }
+        }
+        let recurringPositions = recurring.compactMap { value -> ForecastPosition? in
+            guard accountIDs.contains(value.accountID), value.bookingDate >= start,
+                  value.bookingDate < dayAfter(end, calendar: calendar) else { return nil }
+            return ForecastPosition(
+                id: value.reference, accountID: value.accountID, date: value.bookingDate,
+                amountMinor: value.amountMinor,
+                title: value.payee.isEmpty ? value.purpose : value.payee, origin: .recurring
+            )
+        }
+        let scenarioPositions = scenarioEntries.compactMap { value -> ForecastPosition? in
+            guard value.isEnabled, accountIDs.contains(value.accountID), value.date >= start,
+                  value.date < dayAfter(end, calendar: calendar) else { return nil }
+            return ForecastPosition(
+                id: "scenario:\(value.id.uuidString)", accountID: value.accountID,
+                date: value.date, amountMinor: value.amountMinor,
+                title: value.name, origin: .scenario
+            )
+        }
+        let plannedPositions = deduplicated(
+            realPositions + paymentOrderPositions + standingOrderPositions + recurringPositions,
+            calendar: calendar
+        )
+        let positions = (plannedPositions + scenarioPositions).sorted {
+            $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date
+        }
+        var result: [ForecastBucket] = []
+        var cursor = start
+        var running = baseline
+        while cursor <= end {
+            let boundary = nextBoundary(after: cursor, interval: interval, calendar: calendar)
+            let bucketEnd = min(end, calendar.date(byAdding: .day, value: -1, to: boundary) ?? end)
+            let values = positions.filter { $0.date >= cursor && $0.date < boundary }
+            let opening = running
+            var minimum = running
+            var maximum = running
+            for value in values {
+                running += value.amountMinor
+                minimum = min(minimum, running)
+                maximum = max(maximum, running)
+            }
+            result.append(ForecastBucket(
+                startDate: cursor, endDate: bucketEnd, openingBalanceMinor: opening,
+                changeMinor: running - opening, closingBalanceMinor: running,
+                minimumBalanceMinor: minimum, maximumBalanceMinor: maximum,
+                positions: values
+            ))
+            cursor = boundary
+        }
+        return result
+    }
+
+    private static func dayAfter(_ date: Date, calendar: Calendar) -> Date {
+        calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date)) ?? date
+    }
+
+    /// Reale Buchungen haben Vorrang vor Zahlungsaufträgen, diese vor
+    /// Daueraufträgen und allgemeinen Serienterminen. Nur exakt gleiche,
+    /// starke Schlüssel werden zusammengeführt; Szenariopositionen werden
+    /// absichtlich nie dedupliziert, weil sie additive Annahmen darstellen.
+    private static func deduplicated(
+        _ positions: [ForecastPosition], calendar: Calendar
+    ) -> [ForecastPosition] {
+        var seen: Set<String> = []
+        return positions.filter { value in
+            let day = Int64(calendar.startOfDay(for: value.date).timeIntervalSinceReferenceDate)
+            let title = value.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(
+                    options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                    locale: Locale(identifier: "de_DE")
+                )
+            let key = "\(value.accountID.uuidString)|\(day)|\(value.amountMinor)|\(title)"
+            return seen.insert(key).inserted
+        }
+    }
+
+    private static func nextBoundary(
+        after date: Date, interval: ForecastInterval, calendar: Calendar
+    ) -> Date {
+        switch interval {
+        case .daily:
+            return calendar.date(byAdding: .day, value: 1, to: date) ?? date
+        case .weekly:
+            return calendar.dateInterval(of: .weekOfYear, for: date)?.end
+                ?? calendar.date(byAdding: .day, value: 7, to: date) ?? date
+        case .monthly:
+            return calendar.dateInterval(of: .month, for: date)?.end
+                ?? calendar.date(byAdding: .month, value: 1, to: date) ?? date
+        }
+    }
+}
+
 enum ScheduledOccurrenceDisposition: String, Codable, CaseIterable, Sendable {
     case modified
     case skipped
