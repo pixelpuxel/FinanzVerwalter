@@ -3866,6 +3866,11 @@ final class FinanzVerwalterTests: XCTestCase {
 
         let schedule = try context.store.loanSchedule(loanID: loan.id)
         XCTAssertEqual(schedule.count, 12)
+        XCTAssertEqual(schedule.first?.id, "\(loan.id.uuidString):1")
+        XCTAssertEqual(
+            schedule.map(\.id),
+            try context.store.loanSchedule(loanID: loan.id).map(\.id)
+        )
         XCTAssertEqual(schedule[0].openingBalanceMinor, 1_200_000)
         XCTAssertEqual(schedule[0].interestMinor, 6_000)
         XCTAssertEqual(schedule[0].feeMinor, 100)
@@ -3925,6 +3930,153 @@ final class FinanzVerwalterTests: XCTestCase {
                 calendar: calendar
             )
         )
+    }
+
+    func testLoanReportFiltersPlanPeriodAndKeepsCurrenciesSeparate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let disbursement = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 1, day: 1, hour: 12))
+        )
+        let firstDue = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 2, day: 1, hour: 12))
+        )
+        let euro = FinanceLoan(
+            id: UUID(), name: "Immobiliendarlehen", lender: "Hausbank",
+            principalMinor: 1_200_000, disbursementDate: disbursement,
+            firstPaymentDate: firstDue, fixedRateUntil: nil,
+            termMonths: 12, installmentMinor: 100_000, regularFeeMinor: 100,
+            dueDay: 1, linkedAccountID: nil, currency: "EUR", note: "",
+            isActive: true
+        )
+        let euroSchedule = try LoanAmortizationEngine.schedule(
+            loan: euro,
+            rates: [LoanInterestRate(
+                id: UUID(), loanID: euro.id, annualBasisPoints: 600,
+                effectiveFrom: disbursement, note: ""
+            )],
+            extraPayments: [LoanExtraPayment(
+                id: UUID(), loanID: euro.id,
+                paymentDate: calendar.date(byAdding: .month, value: 1, to: firstDue)!,
+                amountMinor: 50_000, note: ""
+            )],
+            calendar: calendar
+        )
+        let dollar = FinanceLoan(
+            id: UUID(), name: "USD-Darlehen", lender: "Bank",
+            principalMinor: 20_000, disbursementDate: disbursement,
+            firstPaymentDate: firstDue, fixedRateUntil: nil,
+            termMonths: 2, installmentMinor: 10_000, regularFeeMinor: 0,
+            dueDay: 1, linkedAccountID: nil, currency: "USD", note: "",
+            isActive: false
+        )
+        let dollarSchedule = try LoanAmortizationEngine.schedule(
+            loan: dollar,
+            rates: [LoanInterestRate(
+                id: UUID(), loanID: dollar.id, annualBasisPoints: 0,
+                effectiveFrom: disbursement, note: ""
+            )], extraPayments: [], calendar: calendar
+        )
+        let schedules = [euro.id: euroSchedule, dollar.id: dollarSchedule]
+
+        let active = LoanReportEngine.snapshot(
+            query: LoanReportQuery(), loans: [dollar, euro],
+            schedulesByLoanID: schedules
+        )
+        XCTAssertEqual(active.summaries.map(\.loanID), [euro.id])
+        XCTAssertEqual(active.rows.count, euroSchedule.count)
+        XCTAssertEqual(active.totals.map(\.currency), ["EUR"])
+        XCTAssertEqual(active.rows.first?.id, "\(euro.id.uuidString):1")
+
+        let period = LoanReportEngine.snapshot(
+            query: LoanReportQuery(
+                dateFrom: euroSchedule[1].dueDate,
+                dateThrough: euroSchedule[2].dueDate,
+                loanIDs: [euro.id]
+            ),
+            loans: [dollar, euro], schedulesByLoanID: schedules
+        )
+        let summary = try XCTUnwrap(period.summaries.first)
+        XCTAssertEqual(period.rows.map(\.sequence), [2, 3])
+        XCTAssertEqual(summary.openingBalanceMinor, euroSchedule[1].openingBalanceMinor)
+        XCTAssertEqual(summary.closingBalanceMinor, euroSchedule[2].closingBalanceMinor)
+        XCTAssertEqual(
+            summary.principalMinor + summary.extraPaymentMinor + summary.closingBalanceMinor,
+            summary.openingBalanceMinor
+        )
+        XCTAssertEqual(summary.paymentCount, 2)
+        XCTAssertEqual(summary.rowIDs, Set(period.rows.map(\.id)))
+        XCTAssertEqual(summary.interestMinor, euroSchedule[1].interestMinor + euroSchedule[2].interestMinor)
+        XCTAssertEqual(summary.feeMinor, 200)
+        XCTAssertEqual(summary.extraPaymentMinor, 50_000)
+
+        let inactiveDollar = LoanReportEngine.snapshot(
+            query: LoanReportQuery(currencies: ["USD"], includeInactiveLoans: true),
+            loans: [euro, dollar], schedulesByLoanID: schedules
+        )
+        XCTAssertEqual(inactiveDollar.summaries.map(\.loanID), [dollar.id])
+        XCTAssertEqual(inactiveDollar.totals.map(\.currency), ["USD"])
+        XCTAssertEqual(inactiveDollar.totals.first?.closingBalanceMinor, 0)
+    }
+
+    func testLoanReportCSVAndPDFAreDeterministicAndMultipage() throws {
+        let loanID = UUID(uuidString: "00000000-0000-0000-0000-000000000099")!
+        let start = Date(timeIntervalSince1970: 1_735_689_600)
+        let rows = (0..<80).map { index in
+            LoanReportRow(
+                id: "\(loanID.uuidString):\(index + 1)", loanID: loanID,
+                loanName: "Darlehen;Nord", lender: "Bank \"Mitte\"",
+                currency: "EUR", sequence: index + 1,
+                dueDate: start.addingTimeInterval(Double(index) * 86_400),
+                openingBalanceMinor: 1_000_000 - Int64(index) * 10_000,
+                installmentMinor: 10_500, principalMinor: 10_000,
+                interestMinor: 400, feeMinor: 100, extraPaymentMinor: 0,
+                closingBalanceMinor: 990_000 - Int64(index) * 10_000,
+                annualBasisPoints: 350
+            )
+        }
+        let summary = LoanReportSummary(
+            loanID: loanID, loanName: "Darlehen;Nord", lender: "Bank \"Mitte\"",
+            currency: "EUR", originalPrincipalMinor: 1_000_000,
+            openingBalanceMinor: 1_000_000,
+            installmentMinor: 840_000, principalMinor: 800_000,
+            interestMinor: 32_000, feeMinor: 8_000, extraPaymentMinor: 0,
+            closingBalanceMinor: 200_000, payoffDate: nil, fixedRateUntil: nil,
+            rowIDs: Set(rows.map(\.id))
+        )
+        let snapshot = LoanReportSnapshot(
+            dateFrom: nil, dateThrough: nil, summaries: [summary], rows: rows,
+            totals: [LoanReportCurrencyTotal(
+                currency: "EUR", openingBalanceMinor: 1_000_000,
+                paymentMinor: 840_000, principalMinor: 800_000,
+                interestMinor: 32_000, feeMinor: 8_000,
+                extraPaymentMinor: 0, closingBalanceMinor: 200_000
+            )]
+        )
+        let metadata = LoanReportExportMetadata(
+            title: "Kredit-, Zins- und Tilgungsbericht",
+            dateLabel: "gesamter Tilgungsplan", filterSummary: "alle Darlehen; EUR",
+            generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let csv = LoanReportCSVExporter.data(snapshot: snapshot, metadata: metadata)
+        let csvText = try XCTUnwrap(String(data: csv, encoding: .utf8))
+        XCTAssertTrue(csvText.contains("Planwerte; kein Ist-Zahlungsabgleich"))
+        XCTAssertTrue(csvText.contains("\"Darlehen;Nord\";\"Bank \"\"Mitte\"\"\""))
+        XCTAssertTrue(csvText.contains("10000,00;10000,00;8400,00;8000,00;320,00;80,00"))
+        XCTAssertEqual(csv, LoanReportCSVExporter.data(snapshot: snapshot, metadata: metadata))
+
+        let pdf = try ComparisonReportPDFExporter.loanData(
+            snapshot: snapshot, metadata: metadata, orientation: .landscape
+        )
+        let document = try XCTUnwrap(PDFDocument(data: pdf))
+        XCTAssertGreaterThan(document.pageCount, 1)
+        let text = (0..<document.pageCount).compactMap {
+            document.page(at: $0)?.string
+        }.joined(separator: "\n")
+        XCTAssertTrue(text.contains("Kredit-, Zins- und Tilgungsbericht"))
+        XCTAssertTrue(text.contains("Planwerte"))
+        XCTAssertTrue(text.contains("Darlehen;Nord"))
+        XCTAssertTrue(text.contains("Restschuld"))
     }
 
     func testContractsCalculateDeadlinesAndInventoryPersistsInsuranceValues() throws {

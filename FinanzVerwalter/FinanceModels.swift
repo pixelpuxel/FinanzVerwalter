@@ -1620,7 +1620,7 @@ struct LoanExtraPayment: Identifiable, Hashable, Sendable {
 }
 
 struct LoanScheduleEntry: Identifiable, Hashable, Sendable {
-    let id: UUID
+    let id: String
     let sequence: Int
     let dueDate: Date
     let openingBalanceMinor: Int64
@@ -1689,7 +1689,8 @@ enum LoanAmortizationEngine {
             let closing = balance - regularPrincipal - extra
             result.append(
                 LoanScheduleEntry(
-                    id: UUID(), sequence: offset + 1, dueDate: dueDate,
+                    id: "\(loan.id.uuidString):\(offset + 1)",
+                    sequence: offset + 1, dueDate: dueDate,
                     openingBalanceMinor: balance,
                     installmentMinor: regularPrincipal + interest + loan.regularFeeMinor,
                     principalMinor: regularPrincipal, interestMinor: interest,

@@ -231,6 +231,171 @@ enum VATReportEngine {
     }
 }
 
+struct LoanReportQuery: Equatable, Sendable {
+    var dateFrom: Date? = nil
+    var dateThrough: Date? = nil
+    var loanIDs = Set<UUID>()
+    var currencies = Set<String>()
+    var includeInactiveLoans = false
+}
+
+struct LoanReportRow: Identifiable, Equatable, Sendable {
+    let id: String
+    let loanID: UUID
+    let loanName: String
+    let lender: String
+    let currency: String
+    let sequence: Int
+    let dueDate: Date
+    let openingBalanceMinor: Int64
+    let installmentMinor: Int64
+    let principalMinor: Int64
+    let interestMinor: Int64
+    let feeMinor: Int64
+    let extraPaymentMinor: Int64
+    let closingBalanceMinor: Int64
+    let annualBasisPoints: Int
+}
+
+struct LoanReportSummary: Identifiable, Equatable, Sendable {
+    var id: UUID { loanID }
+    let loanID: UUID
+    let loanName: String
+    let lender: String
+    let currency: String
+    let originalPrincipalMinor: Int64
+    let openingBalanceMinor: Int64
+    let installmentMinor: Int64
+    let principalMinor: Int64
+    let interestMinor: Int64
+    let feeMinor: Int64
+    let extraPaymentMinor: Int64
+    let closingBalanceMinor: Int64
+    let payoffDate: Date?
+    let fixedRateUntil: Date?
+    let rowIDs: Set<String>
+
+    var paymentMinor: Int64 { installmentMinor + extraPaymentMinor }
+    var borrowingCostMinor: Int64 { interestMinor + feeMinor }
+    var paymentCount: Int { rowIDs.count }
+}
+
+struct LoanReportCurrencyTotal: Identifiable, Equatable, Sendable {
+    var id: String { currency }
+    let currency: String
+    let openingBalanceMinor: Int64
+    let paymentMinor: Int64
+    let principalMinor: Int64
+    let interestMinor: Int64
+    let feeMinor: Int64
+    let extraPaymentMinor: Int64
+    let closingBalanceMinor: Int64
+}
+
+struct LoanReportSnapshot: Equatable, Sendable {
+    let dateFrom: Date?
+    let dateThrough: Date?
+    let summaries: [LoanReportSummary]
+    let rows: [LoanReportRow]
+    let totals: [LoanReportCurrencyTotal]
+
+    func rows(forLoanID id: UUID?) -> [LoanReportRow] {
+        guard let id else { return [] }
+        return rows.filter { $0.loanID == id }
+    }
+}
+
+enum LoanReportEngine {
+    static func snapshot(
+        query: LoanReportQuery,
+        loans: [FinanceLoan],
+        schedulesByLoanID: [UUID: [LoanScheduleEntry]]
+    ) -> LoanReportSnapshot {
+        let start = query.dateFrom.map { date in
+            query.dateThrough.map { min(date, $0) } ?? date
+        }
+        let end = query.dateThrough.map { date in
+            query.dateFrom.map { max(date, $0) } ?? date
+        }
+        let currencies = Set(query.currencies.map { $0.uppercased() })
+        let selectedLoans = loans.filter { loan in
+            (query.includeInactiveLoans || loan.isActive)
+                && (query.loanIDs.isEmpty || query.loanIDs.contains(loan.id))
+                && (currencies.isEmpty || currencies.contains(loan.currency.uppercased()))
+        }.sorted {
+            let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return order == .orderedSame
+                ? $0.id.uuidString < $1.id.uuidString : order == .orderedAscending
+        }
+
+        var rows: [LoanReportRow] = []
+        var summaries: [LoanReportSummary] = []
+        for loan in selectedLoans {
+            let fullSchedule = schedulesByLoanID[loan.id, default: []].sorted {
+                $0.sequence == $1.sequence
+                    ? $0.id < $1.id : $0.sequence < $1.sequence
+            }
+            let selected = fullSchedule.filter { entry in
+                (start.map { entry.dueDate >= $0 } ?? true)
+                    && (end.map { entry.dueDate <= $0 } ?? true)
+            }
+            guard let first = selected.first, let last = selected.last else { continue }
+            let loanRows = selected.map { entry in
+                LoanReportRow(
+                    id: entry.id, loanID: loan.id, loanName: loan.name,
+                    lender: loan.lender, currency: loan.currency.uppercased(),
+                    sequence: entry.sequence, dueDate: entry.dueDate,
+                    openingBalanceMinor: entry.openingBalanceMinor,
+                    installmentMinor: entry.installmentMinor,
+                    principalMinor: entry.principalMinor,
+                    interestMinor: entry.interestMinor,
+                    feeMinor: entry.feeMinor,
+                    extraPaymentMinor: entry.extraPaymentMinor,
+                    closingBalanceMinor: entry.closingBalanceMinor,
+                    annualBasisPoints: entry.annualBasisPoints
+                )
+            }
+            rows.append(contentsOf: loanRows)
+            summaries.append(
+                LoanReportSummary(
+                    loanID: loan.id, loanName: loan.name, lender: loan.lender,
+                    currency: loan.currency.uppercased(),
+                    originalPrincipalMinor: loan.principalMinor,
+                    openingBalanceMinor: first.openingBalanceMinor,
+                    installmentMinor: selected.reduce(0) { $0 + $1.installmentMinor },
+                    principalMinor: selected.reduce(0) { $0 + $1.principalMinor },
+                    interestMinor: selected.reduce(0) { $0 + $1.interestMinor },
+                    feeMinor: selected.reduce(0) { $0 + $1.feeMinor },
+                    extraPaymentMinor: selected.reduce(0) { $0 + $1.extraPaymentMinor },
+                    closingBalanceMinor: last.closingBalanceMinor,
+                    payoffDate: fullSchedule.last.flatMap {
+                        $0.closingBalanceMinor == 0 ? $0.dueDate : nil
+                    },
+                    fixedRateUntil: loan.fixedRateUntil,
+                    rowIDs: Set(loanRows.map(\.id))
+                )
+            )
+        }
+        let totals = Dictionary(grouping: summaries, by: \.currency).map {
+            currency, values in
+            LoanReportCurrencyTotal(
+                currency: currency,
+                openingBalanceMinor: values.reduce(0) { $0 + $1.openingBalanceMinor },
+                paymentMinor: values.reduce(0) { $0 + $1.paymentMinor },
+                principalMinor: values.reduce(0) { $0 + $1.principalMinor },
+                interestMinor: values.reduce(0) { $0 + $1.interestMinor },
+                feeMinor: values.reduce(0) { $0 + $1.feeMinor },
+                extraPaymentMinor: values.reduce(0) { $0 + $1.extraPaymentMinor },
+                closingBalanceMinor: values.reduce(0) { $0 + $1.closingBalanceMinor }
+            )
+        }.sorted { $0.currency < $1.currency }
+        return LoanReportSnapshot(
+            dateFrom: start, dateThrough: end,
+            summaries: summaries, rows: rows, totals: totals
+        )
+    }
+}
+
 enum PeriodComparisonMetric: String, CaseIterable, Identifiable, Sendable {
     case income
     case expense
@@ -795,6 +960,110 @@ struct VATReportExportMetadata: Equatable, Sendable {
     let generatedAt: Date
 }
 
+struct LoanReportExportMetadata: Equatable, Sendable {
+    let title: String
+    let dateLabel: String
+    let filterSummary: String
+    let generatedAt: Date
+}
+
+enum LoanReportCSVExporter {
+    static func data(
+        snapshot: LoanReportSnapshot,
+        metadata: LoanReportExportMetadata
+    ) -> Data {
+        var rows = [
+            ["Bericht", metadata.title],
+            ["Zeitraum", metadata.dateLabel],
+            ["Filter", metadata.filterSummary],
+            ["Erstellt", ISO8601DateFormatter().string(from: metadata.generatedAt)],
+            ["Datenart", "Planwerte; kein Ist-Zahlungsabgleich"],
+            [],
+            ["Darlehen", "Kreditgeber", "Ursprung", "Anfangssaldo", "Zahlungen",
+             "Tilgung", "Zins", "Gebühren", "Sondertilgung", "Restschuld",
+             "Schuldenfrei", "Währung", "Raten"]
+        ]
+        rows.append(contentsOf: snapshot.summaries.map { summary in
+            [summary.loanName, summary.lender,
+             amount(summary.originalPrincipalMinor, summary.currency),
+             amount(summary.openingBalanceMinor, summary.currency),
+             amount(summary.paymentMinor, summary.currency),
+             amount(summary.principalMinor, summary.currency),
+             amount(summary.interestMinor, summary.currency),
+             amount(summary.feeMinor, summary.currency),
+             amount(summary.extraPaymentMinor, summary.currency),
+             amount(summary.closingBalanceMinor, summary.currency),
+             summary.payoffDate.map(date) ?? "Ballonrest",
+             summary.currency, String(summary.paymentCount)]
+        })
+        rows.append([])
+        rows.append(["Währungssummen", "", "", "Anfangssaldo", "Zahlungen",
+                     "Tilgung", "Zins", "Gebühren", "Sondertilgung", "Restschuld",
+                     "", "Währung", ""])
+        rows.append(contentsOf: snapshot.totals.map { total in
+            ["Gesamt", "", "", amount(total.openingBalanceMinor, total.currency),
+             amount(total.paymentMinor, total.currency),
+             amount(total.principalMinor, total.currency),
+             amount(total.interestMinor, total.currency),
+             amount(total.feeMinor, total.currency),
+             amount(total.extraPaymentMinor, total.currency),
+             amount(total.closingBalanceMinor, total.currency), "", total.currency, ""]
+        })
+        rows.append([])
+        rows.append(["Tilgungsplan"])
+        rows.append(["Darlehen", "Nr.", "Fälligkeit", "Sollzins", "Anfangssaldo",
+                     "Rate", "Tilgung", "Zins", "Gebühr", "Sondertilgung",
+                     "Restschuld", "Währung"])
+        rows.append(contentsOf: snapshot.rows.map { row in
+            [row.loanName, String(row.sequence), date(row.dueDate),
+             rate(row.annualBasisPoints), amount(row.openingBalanceMinor, row.currency),
+             amount(row.installmentMinor, row.currency),
+             amount(row.principalMinor, row.currency),
+             amount(row.interestMinor, row.currency), amount(row.feeMinor, row.currency),
+             amount(row.extraPaymentMinor, row.currency),
+             amount(row.closingBalanceMinor, row.currency), row.currency]
+        })
+        let text = rows.map { $0.map(csv).joined(separator: ";") }
+            .joined(separator: "\r\n") + "\r\n"
+        return Data(text.utf8)
+    }
+
+    private static func csv(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "\"", with: "\"\"")
+        return escaped.contains(";") || escaped.contains("\"")
+            || escaped.contains("\n") || escaped.contains("\r")
+            ? "\"\(escaped)\"" : escaped
+    }
+
+    private static func amount(_ minor: Int64, _ currency: String) -> String {
+        let factor = UInt64(Money.minorUnitFactor(for: currency))
+        let magnitude = minor.magnitude
+        let sign = minor < 0 ? "-" : ""
+        guard factor > 1 else { return "\(sign)\(magnitude)" }
+        var digits = 0
+        var divisor = factor
+        while divisor > 1 { digits += 1; divisor /= 10 }
+        return "\(sign)\(magnitude / factor),"
+            + String(format: "%0*llu", digits, magnitude % factor)
+    }
+
+    private static func rate(_ basisPoints: Int) -> String {
+        let whole = basisPoints / 100
+        let remainder = abs(basisPoints % 100)
+        return remainder == 0
+            ? "\(whole) %"
+            : "\(whole),\(String(format: "%02d", remainder)) %"
+    }
+
+    private static func date(_ value: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter.string(from: value)
+    }
+}
+
 enum VATReportCSVExporter {
     static func data(
         snapshot: VATReportSnapshot,
@@ -978,6 +1247,40 @@ enum ComparisonReportCSVExporter {
 }
 
 enum ComparisonReportPDFExporter {
+    static func loanData(
+        snapshot: LoanReportSnapshot,
+        metadata: LoanReportExportMetadata,
+        orientation: ReportPDFOrientation = .landscape
+    ) throws -> Data {
+        let rows = snapshot.rows.map { row in
+            [row.loanName, date(row.dueDate), rate(row.annualBasisPoints),
+             money(row.openingBalanceMinor, row.currency),
+             money(row.installmentMinor, row.currency),
+             money(row.principalMinor, row.currency),
+             money(row.interestMinor + row.feeMinor, row.currency),
+             money(row.extraPaymentMinor, row.currency),
+             money(row.closingBalanceMinor, row.currency), row.currency]
+        } + snapshot.totals.map { total in
+            ["Gesamt", "", "", money(total.openingBalanceMinor, total.currency),
+             money(total.paymentMinor - total.extraPaymentMinor, total.currency),
+             money(total.principalMinor, total.currency),
+             money(total.interestMinor + total.feeMinor, total.currency),
+             money(total.extraPaymentMinor, total.currency),
+             money(total.closingBalanceMinor, total.currency), total.currency]
+        }
+        return try data(
+            rows: rows,
+            headers: ["Darlehen", "Fälligkeit", "Sollzins", "Anfang", "Rate",
+                      "Tilgung", "Zins+Geb.", "Sondertilg.", "Restschuld", "Währ."],
+            metadata: ComparisonReportExportMetadata(
+                title: metadata.title, currentLabel: metadata.dateLabel,
+                referenceLabel: metadata.filterSummary, generatedAt: metadata.generatedAt
+            ),
+            orientation: orientation,
+            subtitle: "Planwerte · \(metadata.dateLabel) · \(metadata.filterSummary)"
+        )
+    }
+
     static func vatData(
         snapshot: VATReportSnapshot,
         metadata: VATReportExportMetadata,
@@ -1115,6 +1418,14 @@ enum ComparisonReportPDFExporter {
         return remainder == 0
             ? "\(whole) %"
             : "\(whole),\(String(format: "%02d", remainder)) %"
+    }
+
+    private static func date(_ value: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateStyle = .short
+        return formatter.string(from: value)
     }
 }
 

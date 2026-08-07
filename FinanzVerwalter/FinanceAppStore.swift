@@ -399,6 +399,15 @@ final class FinanceAppStore: ObservableObject {
         )
     }
 
+    func loanReport(_ query: LoanReportQuery) -> LoanReportSnapshot {
+        LoanReportEngine.snapshot(
+            query: query, loans: loans,
+            schedulesByLoanID: Dictionary(uniqueKeysWithValues: loans.map {
+                ($0.id, loanSchedule(loanID: $0.id))
+            })
+        )
+    }
+
     func periodComparisonReport(
         _ query: PeriodComparisonQuery
     ) -> PeriodComparisonSnapshot {

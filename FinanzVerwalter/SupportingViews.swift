@@ -1404,6 +1404,7 @@ struct ReportsView: View {
     @State private var showTemplateSave = false
     @State private var showAccountBalanceReport = false
     @State private var showVATReport = false
+    @State private var showLoanReport = false
     @State private var showPeriodComparisonReport = false
     @State private var showBudgetReport = false
     @State private var templateName = ""
@@ -1536,6 +1537,11 @@ struct ReportsView: View {
                             showVATReport = true
                         } label: {
                             Label("Umsatzsteuerbericht …", systemImage: "percent")
+                        }
+                        Button {
+                            showLoanReport = true
+                        } label: {
+                            Label("Kredit-, Zins- und Tilgungsbericht …", systemImage: "building.columns")
                         }
                         Button {
                             showPeriodComparisonReport = true
@@ -1821,6 +1827,10 @@ struct ReportsView: View {
         }
         .sheet(isPresented: $showVATReport) {
             VATReportView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showLoanReport) {
+            LoanReportView()
                 .environmentObject(store)
         }
         .sheet(isPresented: $showPeriodComparisonReport) {
@@ -3175,6 +3185,384 @@ private struct BudgetComparisonReportView: View {
         let magnitude = basisPoints.magnitude
         let sign = basisPoints < 0 ? "−" : ""
         return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100)) %"
+    }
+}
+
+private struct LoanReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var limitPeriod = false
+    @State private var dateFrom: Date
+    @State private var dateThrough: Date
+    @State private var loanIDs = Set<UUID>()
+    @State private var currencies = Set<String>()
+    @State private var includeInactive = false
+    @State private var selectedLoanID: UUID?
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    init(now: Date = .now, calendar: Calendar = .current) {
+        let interval = calendar.dateInterval(of: .year, for: now)
+        _dateFrom = State(initialValue: interval?.start ?? now)
+        _dateThrough = State(
+            initialValue: interval?.end.addingTimeInterval(-0.001) ?? now
+        )
+    }
+
+    private var query: LoanReportQuery {
+        let calendar = Calendar.current
+        let first = min(dateFrom, dateThrough)
+        let last = max(dateFrom, dateThrough)
+        let start = calendar.startOfDay(for: first)
+        let end = calendar.date(
+            byAdding: .day, value: 1, to: calendar.startOfDay(for: last)
+        )?.addingTimeInterval(-0.001) ?? last
+        return LoanReportQuery(
+            dateFrom: limitPeriod ? start : nil,
+            dateThrough: limitPeriod ? end : nil,
+            loanIDs: loanIDs, currencies: currencies,
+            includeInactiveLoans: includeInactive
+        )
+    }
+
+    var body: some View {
+        let snapshot = store.loanReport(query)
+        let selectedRows = snapshot.rows(forLoanID: selectedLoanID)
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Kredit-, Zins- und Tilgungsbericht")
+                        .font(.title2.bold())
+                    Text("Planwerte mit Restschuldverlauf – kein Ist-Zahlungsabgleich")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(snapshot.summaries.count) Darlehen · \(snapshot.rows.count) Raten")
+                    .font(.headline)
+                Button("Schließen") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            HStack(spacing: 10) {
+                Toggle("Zeitraum", isOn: $limitPeriod)
+                    .toggleStyle(.switch)
+                DatePicker("Von", selection: $dateFrom, displayedComponents: .date)
+                    .disabled(!limitPeriod)
+                DatePicker("Bis", selection: $dateThrough, displayedComponents: .date)
+                    .disabled(!limitPeriod)
+                loanMenu
+                currencyMenu
+                Toggle("Inaktive Darlehen", isOn: $includeInactive)
+                Spacer()
+                Button("CSV exportieren …", systemImage: "tablecells") {
+                    csvDocument = ReportCSVDocument(
+                        data: LoanReportCSVExporter.data(snapshot: snapshot, metadata: metadata)
+                    )
+                    showCSVExporter = true
+                }
+                Menu {
+                    Picker("Papierausrichtung", selection: $orientation) {
+                        ForEach(ReportPDFOrientation.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    Divider()
+                    Button("Drucken …", systemImage: "printer.fill") {
+                        printReport(snapshot)
+                    }
+                    Button("PDF exportieren …", systemImage: "doc.richtext") {
+                        exportPDF(snapshot)
+                    }
+                } label: {
+                    Label("PDF · \(orientation.title)", systemImage: "printer")
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            VSplitView {
+                ScrollView(.horizontal) {
+                    Table(snapshot.summaries, selection: $selectedLoanID) {
+                        TableColumn("Darlehen") { summary in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(summary.loanName).fontWeight(.semibold).lineLimit(1)
+                                Text("\(summary.lender) · \(summary.paymentCount) Raten")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }.width(190)
+                        TableColumn("Anfangssaldo") {
+                            loanMoney($0.openingBalanceMinor, $0.currency)
+                        }.width(125)
+                        TableColumn("Zahlungen") {
+                            loanMoney($0.paymentMinor, $0.currency)
+                        }.width(115)
+                        TableColumn("Tilgung") {
+                            loanMoney($0.principalMinor, $0.currency)
+                        }.width(110)
+                        TableColumn("Zins") {
+                            loanMoney($0.interestMinor, $0.currency)
+                        }.width(105)
+                        TableColumn("Gebühren") {
+                            loanMoney($0.feeMinor, $0.currency)
+                        }.width(95)
+                        TableColumn("Sondertilgung") {
+                            loanMoney($0.extraPaymentMinor, $0.currency)
+                        }.width(115)
+                        TableColumn("Restschuld") {
+                            loanMoney($0.closingBalanceMinor, $0.currency)
+                        }.width(120)
+                        TableColumn("Schuldenfrei") { summary in
+                            Text(summary.payoffDate.map(reportDate) ?? "Ballonrest")
+                        }.width(105)
+                        TableColumn("Währung") { Text($0.currency) }.width(70)
+                    }
+                    .frame(width: 1_220, height: 245)
+                }
+                .overlay {
+                    if snapshot.summaries.isEmpty {
+                        ContentUnavailableView(
+                            "Keine Kreditplanwerte", systemImage: "building.columns",
+                            description: Text(
+                                "Lege ein Darlehen mit wirksamem Zinssatz an oder passe die Berichtsfilter an."
+                            )
+                        )
+                    }
+                }
+
+                VStack(spacing: 0) {
+                    if !selectedRows.isEmpty {
+                        ScrollView(.horizontal) {
+                            Chart(selectedRows) { row in
+                                LineMark(
+                                    x: .value("Fälligkeit", row.dueDate),
+                                    y: .value("Restschuld", chartAmount(row.closingBalanceMinor,
+                                                                         row.currency))
+                                )
+                                .interpolationMethod(.linear)
+                                .foregroundStyle(Color.accentColor)
+                                PointMark(
+                                    x: .value("Fälligkeit", row.dueDate),
+                                    y: .value("Restschuld", chartAmount(row.closingBalanceMinor,
+                                                                         row.currency))
+                                )
+                                .foregroundStyle(Color.accentColor)
+                                .accessibilityLabel("Rate \(row.sequence), \(reportDate(row.dueDate))")
+                                .accessibilityValue(
+                                    Money(minorUnits: row.closingBalanceMinor,
+                                          currency: row.currency).formatted
+                                )
+                            }
+                            .chartYAxisLabel("Plan-Restschuld")
+                            .frame(
+                                width: max(760, CGFloat(selectedRows.count * 46)),
+                                height: 180
+                            )
+                            .padding(.horizontal, 14)
+                            .padding(.top, 8)
+                        }
+                        Divider()
+                    }
+                    Table(selectedRows) {
+                        TableColumn("Nr.") { Text("\($0.sequence)") }.width(45)
+                        TableColumn("Fälligkeit") { Text(reportDate($0.dueDate)) }.width(90)
+                        TableColumn("Sollzins") { Text(rate($0.annualBasisPoints)) }.width(75)
+                        TableColumn("Anfangssaldo") {
+                            loanMoney($0.openingBalanceMinor, $0.currency)
+                        }.width(115)
+                        TableColumn("Rate") {
+                            loanMoney($0.installmentMinor, $0.currency)
+                        }.width(105)
+                        TableColumn("Tilgung") {
+                            loanMoney($0.principalMinor, $0.currency)
+                        }.width(105)
+                        TableColumn("Zins") {
+                            loanMoney($0.interestMinor, $0.currency)
+                        }.width(95)
+                        TableColumn("Gebühr") {
+                            loanMoney($0.feeMinor, $0.currency)
+                        }.width(85)
+                        TableColumn("Sondertilgung") {
+                            loanMoney($0.extraPaymentMinor, $0.currency)
+                        }.width(110)
+                        TableColumn("Restschuld") {
+                            loanMoney($0.closingBalanceMinor, $0.currency)
+                        }.width(115)
+                    }
+                    .frame(minHeight: 220)
+                    .overlay {
+                        if selectedLoanID == nil && !snapshot.summaries.isEmpty {
+                            ContentUnavailableView(
+                                "Darlehen auswählen", systemImage: "arrow.up",
+                                description: Text("Tilgungsplan und Restschuldverlauf erscheinen hier.")
+                            )
+                        }
+                    }
+                }
+            }
+            Divider()
+            ScrollView(.horizontal) {
+                HStack(spacing: 18) {
+                    Text("Plan-Summen").fontWeight(.semibold)
+                    ForEach(snapshot.totals) { total in
+                        Text(
+                            "\(total.currency): Tilgung "
+                                + Money(minorUnits: total.principalMinor,
+                                        currency: total.currency).formatted
+                                + " · Zins/Gebühr "
+                                + Money(minorUnits: total.interestMinor + total.feeMinor,
+                                        currency: total.currency).formatted
+                                + " · Restschuld "
+                                + Money(minorUnits: total.closingBalanceMinor,
+                                        currency: total.currency).formatted
+                        )
+                        .monospacedDigit()
+                    }
+                    if snapshot.totals.count > 1 {
+                        Label("Keine Addition ohne FX-Kurs", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            }
+        }
+        .frame(minWidth: 1_260, minHeight: 760)
+        .onAppear {
+            if selectedLoanID == nil { selectedLoanID = snapshot.summaries.first?.loanID }
+        }
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: filename
+        ) { result in
+            switch result {
+            case .success: store.statusText = "Kreditbericht als CSV exportiert"
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: filename
+        ) { result in
+            switch result {
+            case .success: store.statusText = "Kreditbericht als PDF exportiert"
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var loanMenu: some View {
+        Menu {
+            Button("Alle Darlehen") { loanIDs.removeAll() }
+            ForEach(store.loans) { loan in
+                Toggle(loan.name, isOn: member(loan.id, in: $loanIDs))
+            }
+        } label: {
+            Label(loanIDs.isEmpty ? "Alle Darlehen" : "Darlehen (\(loanIDs.count))",
+                  systemImage: "building.columns")
+        }
+    }
+
+    private var currencyMenu: some View {
+        Menu {
+            Button("Alle Währungen") { currencies.removeAll() }
+            ForEach(Set(store.loans.map { $0.currency.uppercased() }).sorted(), id: \.self) {
+                currency in
+                Toggle(currency, isOn: member(currency, in: $currencies))
+            }
+        } label: {
+            Label(currencies.isEmpty ? "Alle Währungen" : "Währungen (\(currencies.count))",
+                  systemImage: "eurosign.arrow.circlepath")
+        }
+    }
+
+    private func member<Value: Hashable>(
+        _ value: Value, in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { included in
+                if included { selection.wrappedValue.insert(value) }
+                else { selection.wrappedValue.remove(value) }
+            }
+        )
+    }
+
+    private func loanMoney(_ minor: Int64, _ currency: String) -> some View {
+        Text(Money(minorUnits: minor, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+    }
+
+    private func chartAmount(_ minor: Int64, _ currency: String) -> Decimal {
+        Decimal(minor) / Decimal(Money.minorUnitFactor(for: currency))
+    }
+
+    private func rate(_ basisPoints: Int) -> String {
+        let whole = basisPoints / 100
+        let remainder = abs(basisPoints % 100)
+        return remainder == 0
+            ? "\(whole) %"
+            : "\(whole),\(String(format: "%02d", remainder)) %"
+    }
+
+    private func reportDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.dateStyle = .short
+        return formatter.string(from: date)
+    }
+
+    private var dateLabel: String {
+        limitPeriod
+            ? "\(reportDate(query.dateFrom ?? dateFrom))–\(reportDate(query.dateThrough ?? dateThrough))"
+            : "gesamter Tilgungsplan"
+    }
+
+    private var filterSummary: String {
+        let loans = loanIDs.isEmpty ? "alle Darlehen" : "\(loanIDs.count) Darlehen"
+        let currency = currencies.isEmpty ? "alle Währungen" : currencies.sorted().joined(separator: ", ")
+        return "\(loans); \(currency); \(includeInactive ? "inklusive inaktiv" : "nur aktiv")"
+    }
+
+    private var metadata: LoanReportExportMetadata {
+        LoanReportExportMetadata(
+            title: "Kredit-, Zins- und Tilgungsbericht",
+            dateLabel: dateLabel, filterSummary: filterSummary, generatedAt: .now
+        )
+    }
+
+    private func pdfData(_ snapshot: LoanReportSnapshot) throws -> Data {
+        try ComparisonReportPDFExporter.loanData(
+            snapshot: snapshot, metadata: metadata, orientation: orientation
+        )
+    }
+
+    private func printReport(_ snapshot: LoanReportSnapshot) {
+        do { try RegisterPrintService.printPDF(try pdfData(snapshot)) }
+        catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private func exportPDF(_ snapshot: LoanReportSnapshot) {
+        do {
+            pdfDocument = ReportPDFDocument(data: try pdfData(snapshot))
+            showPDFExporter = true
+        } catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private var filename: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return limitPeriod
+            ? "FinanzVerwalter-Kreditbericht-\(formatter.string(from: query.dateFrom ?? dateFrom))-bis-"
+                + formatter.string(from: query.dateThrough ?? dateThrough)
+            : "FinanzVerwalter-Kreditbericht-Gesamtplan"
     }
 }
 
