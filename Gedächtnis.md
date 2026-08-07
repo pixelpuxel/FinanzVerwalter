@@ -2577,3 +2577,44 @@ Rechtsberatung.
   `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
   deshalb fehlenden Screenshot. Der exakte Zielzählerstand vor dem Versand
   beträgt 15.906.820 Tokens.
+
+## 07.08.2026 – Kredit-, Zins- und Tilgungsbericht als Planbericht
+
+- `LoanReportEngine` erzeugt aus Darlehensstammdaten, versionierten Zinssätzen,
+  Gebühren und Sondertilgungen einen unveränderlichen Plan-Snapshot. Zeitraum,
+  Darlehen, Währungen und inaktive Darlehen sind filterbar; verschiedene
+  Währungen werden niemals addiert. Planzeilen besitzen stabile IDs aus
+  Darlehens-UUID und Ratennummer.
+- Der Eintrag `Kredit-, Zins- und Tilgungsbericht …` im Menü
+  `Standardberichte` öffnet eine breite Darlehensübersicht. Der Drill-down
+  zeigt den vollständigen Ratenplan und eine Restschuldlinie. CSV,
+  mehrseitiges A4-PDF und Systemdruck verwenden denselben Snapshot. UI und
+  Exporte kennzeichnen ausdrücklich `Planwerte – kein Ist-Zahlungsabgleich`;
+  automatische Ratensplits, Ist-Matching und Szenarien bleiben offen.
+- Zwei neue Tests prüfen Periodenfilter, Zins, Gebühr, Sondertilgung,
+  Restschuldinvariante, stabile IDs, EUR/USD-Trennung, deterministisches CSV
+  und ein semantisch lesbares mehrseitiges PDF. Der vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-LoanReport-Full-20260807-1414.xcresult` enthält 121
+  Tests: 120 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig
+  übersprungen, 0 Fehler und 0 erwartete Fehler. Gezielte Tests,
+  `git diff --check`, Debug- und optimierter Release-Build sind ebenfalls grün.
+- Der streng signaturgeprüfte arm64-Release liegt unter
+  `build/DerivedData-LoanReport-Release`. Sein ausführbarer Code hat SHA-256
+  `ef0dd2f0f8e41a7cdc4b0a7d78fd8a1da75829a804928d627434068b74473c18`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt auf
+  die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-kreditbericht-20260807-1419.app` und
+  `build/FinanzVerwalter-user-vor-kreditbericht-20260807-1419.app`.
+- Der echte Start läuft als Prozess 70913 direkt aus `/Applications`.
+  Datenintegrität `ok`, Schema 32, 97 Konten, 2.170 Buchungen, 782 Kategorien
+  und eine Berichtsvorlage blieben unverändert. Der Bestand enthält 0
+  Darlehen, Zinssätze, Sondertilgungen und Zahlungszuordnungen; deshalb zeigt
+  der Bericht dort korrekt keine erfundenen Kreditdaten. Die macOS-Sitzung ist
+  weiterhin nachweislich gesperrt, sodass kein fingierter Screenshot erzeugt
+  wurde. Der exakte Zielzählerstand vor dieser Dokumentation beträgt
+  16.106.564 Tokens.
+- Implementierung und Tests wurden als Commit `392d80d`, die reproduzierbare
+  Dokumentation als Commit `5b8fb30` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 enthält den
+  121-Test-Nachweis, Release-Hash und die weiterhin offenen Masterpunkte.
