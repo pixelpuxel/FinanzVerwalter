@@ -2257,3 +2257,9 @@ Rechtsberatung.
   weiterhin gesperrt und kann nicht automatisch entsperrt werden; deshalb
   konnte der neue Schalter noch nicht sichtbar geklickt und kein wahrer neuer
   Screenshot aufgenommen werden.
+- Der Implementierungsstand wurde mit Commit `d9ca5c9`
+  (`Konfliktgeschütztes Buchungs-Undo ergänzen`) auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht.
+- Telegram-Nachricht 1003 dokumentiert den Zwischenstand im `/quicken`-Thread
+  894 mit dem exakten Tokenstand 14.155.197. Sie benennt transparent, dass
+  wegen der gesperrten Sitzung kein neuer Screenshot angehängt werden konnte.
