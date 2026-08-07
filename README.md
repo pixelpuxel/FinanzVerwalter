@@ -391,6 +391,10 @@ Momentaufnahme kann entweder als PDF gespeichert oder direkt über den
 macOS-Systemdruckdialog ausgegeben werden. Ein druckoptimierter,
 deterministischer HTML-Export enthält dieselben Metadaten, Gruppen,
 Zwischen-/Gesamtsummen und optionalen Buchungsdetails wie die Oberfläche.
+Der XLSX-Export erzeugt ohne zusätzliche Laufzeitabhängigkeit ein echtes
+Open-XML-Arbeitsblatt mit numerischen, währungsabhängig formatierten Beträgen.
+`Kopieren` legt denselben Bericht gleichzeitig als tabulatorgetrennte Tabelle
+und als maskiertes HTML in die macOS-Zwischenablage.
 
 Der Standardbericht `Kontosalden und Nettovermögen` besitzt eine eigene
 Stichtagsberechnung: Eröffnungssaldo und alle nicht stornierten Buchungen bis

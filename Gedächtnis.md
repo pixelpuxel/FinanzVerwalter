@@ -2155,3 +2155,50 @@ Rechtsberatung.
   geprüften Zwischenstand und exakt 13.589.705 Tokens veröffentlicht. Wegen
   der bestätigten Bildschirmsperre wurde ausdrücklich kein neuer Screenshot
   vorgetäuscht.
+
+## 2026-08-07 – Echtes XLSX und zweiformatige Zwischenablage
+
+- Die buchungsbasierte Berichtswerkstatt exportiert nun ein echtes
+  SpreadsheetML-XLSX mit Metadaten, Gruppen, Zwischensummen, optionalen
+  Buchungsdetails und Gesamtsummen aus demselben unveränderlichen Snapshot wie
+  Bildschirm, CSV, PDF, Druck und HTML.
+- Ein eigenständiger deterministischer ZIP-Writer erzeugt acht alphabetisch
+  geordnete Open-XML-Bestandteile mit UTF-8-Pfaden, festen Zeitfeldern, Store-
+  Kompression, CRC-32 und Zentralverzeichnis. Identische Eingaben sind
+  byteidentisch; der Golden-SHA-256 lautet
+  `c96f21d0d9e524b3418d1bd37aa03e5ec8c93cb3aca95ccaad8bf2ccf98186d6`.
+- Geldzellen bleiben echte numerische Dezimalwerte und besitzen
+  währungsabhängige Formate für null bis vier Nachkommastellen. Importierte
+  Texte sind maskierte Inline-Strings, ungültige XML-Steuerzeichen werden
+  entfernt und ein führendes `=` wird niemals als Formel interpretiert.
+- Der explizite Befehl `Kopieren` schreibt den Bericht gleichzeitig als
+  tabulatorgetrennten UTF-8-Text und als maskiertes HTML in die allgemeine
+  macOS-Zwischenablage. Beide Repräsentationen verwenden denselben Snapshot.
+- Der gezielte XLSX-Test prüft Paketdeterminismus, Golden-Hash, vollständige
+  ZIP-CRC, XML-Wohlgeformtheit, EUR-/JPY-Zahlen, Stile, Escaping und
+  Formelinjektionsschutz. Ein echter lokaler LibreOffice-Rundlauf öffnete das
+  Paket, konvertierte es erfolgreich in CSV und erhielt `-1234,56` als
+  locale-gerechte Zahl. Der Clipboard-Test prüft TSV und HTML gemeinsam.
+- Der vollständige Result-Bundle liegt unter
+  `/tmp/FinanzVerwalter-XLSX-full-1.xcresult`: 101 Tests, 100 bestanden, der
+  private opt-in-QIF-Test ohne Pfad planmäßig übersprungen, 0 Fehler und 0
+  erwartete Fehler.
+- Der optimierte arm64-Release unter `build/DerivedData-XLSX-Release` ist
+  streng signaturgeprüft. Sein ausführbarer Code hat SHA-256
+  `e0320204717ac6b198ab316a56cd4902b18e35238447dcd9d48289bcbcb62d9b`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert. Die Vorgänger liegen
+  reversibel unter `build/FinanzVerwalter-vor-xlsx-20260807-114408.app` und
+  `build/FinanzVerwalter-user-vor-xlsx-20260807-114408.app`; der
+  Schreibtisch-Link zeigt weiterhin auf die Systeminstallation. Der vor der
+  finalen Dateityp-Korrektur kurz installierte Zwischenstand liegt zusätzlich
+  unter `build/FinanzVerwalter-vor-xlsx-dateityp-20260807-114808.app` und der
+  entsprechenden `user`-Kopie.
+- Die installierte App läuft als Prozess 52961. Nach dem echten Start blieb
+  die Produktivdatei bytegleich bei SHA-256
+  `e76a7733b0729bebcd85437f0bad425ecc67326e7e7df738161da18f9701e746`,
+  Schema 30 und Integrität `ok`; sie enthält unverändert 97 Konten, 2.170
+  Buchungen und 782 Kategorien.
+- Die macOS-Sitzung war weiterhin gesperrt und nicht automatisch entsperrbar.
+  Deshalb wurde kein Screenshot vorgetäuscht. Der dokumentierte Tokenstand vor
+  der Veröffentlichung beträgt exakt 13.816.237 Tokens.

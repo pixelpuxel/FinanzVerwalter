@@ -984,6 +984,415 @@ enum TransactionReportHTMLExporter {
     private static let isoDateTimeFormatter = ISO8601DateFormatter()
 }
 
+struct ReportClipboardPayload: Equatable, Sendable {
+    let plainText: String
+    let html: Data
+}
+
+enum TransactionReportClipboardExporter {
+    static func payload(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata
+    ) throws -> ReportClipboardPayload {
+        let textData = try TransactionReportCSVExporter.data(
+            snapshot: snapshot,
+            metadata: metadata,
+            options: ReportCSVOptions(separator: .tab, encoding: .utf8)
+        )
+        guard let plainText = String(data: textData, encoding: .utf8) else {
+            throw FinanceError.database("Der Bericht konnte nicht als Text erzeugt werden.")
+        }
+        return ReportClipboardPayload(
+            plainText: plainText,
+            html: TransactionReportHTMLExporter.data(
+                snapshot: snapshot,
+                metadata: metadata
+            )
+        )
+    }
+}
+
+enum TransactionReportXLSXExporter {
+    static func data(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata
+    ) -> Data {
+        DeterministicZIPWriter.archive(
+            files: [
+                ("[Content_Types].xml", Data(contentTypesXML.utf8)),
+                ("_rels/.rels", Data(rootRelationshipsXML.utf8)),
+                ("docProps/app.xml", Data(appPropertiesXML.utf8)),
+                ("docProps/core.xml", Data(corePropertiesXML(metadata: metadata).utf8)),
+                ("xl/_rels/workbook.xml.rels", Data(workbookRelationshipsXML.utf8)),
+                ("xl/styles.xml", Data(stylesXML.utf8)),
+                ("xl/workbook.xml", Data(workbookXML.utf8)),
+                ("xl/worksheets/sheet1.xml", Data(worksheetXML(
+                    snapshot: snapshot,
+                    metadata: metadata
+                ).utf8))
+            ]
+        )
+    }
+
+    private enum RowKind {
+        case normal
+        case header
+        case subtotal
+        case grandTotal
+        case metadataLabel
+    }
+
+    private enum CellValue {
+        case text(String)
+        case integer(Int)
+        case amount(Int64, currency: String)
+    }
+
+    private struct SheetRow {
+        var cells: [CellValue]
+        var kind: RowKind = .normal
+    }
+
+    private static func worksheetXML(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata
+    ) -> String {
+        var rows = [
+            SheetRow(cells: [.text("Bericht"), .text(metadata.title)], kind: .metadataLabel),
+            SheetRow(cells: [.text("Zeitraum"), .text(metadata.dateLabel)], kind: .metadataLabel),
+            SheetRow(cells: [.text("Filter"), .text(metadata.filterSummary)], kind: .metadataLabel),
+            SheetRow(cells: [.text("Erstellt"), .text(isoDateTime(metadata.generatedAt))], kind: .metadataLabel),
+            SheetRow(cells: [.text("Basiswährung"), .text(metadata.baseCurrency)], kind: .metadataLabel)
+        ]
+
+        if !snapshot.groups.isEmpty {
+            rows.append(SheetRow(cells: []))
+            rows.append(SheetRow(cells: [.text("Gruppenübersicht")], kind: .metadataLabel))
+            rows.append(SheetRow(
+                cells: ["Typ", "Gruppe", "Anzahl", "Einnahmen", "Ausgaben", "Saldo", "Währung"]
+                    .map(CellValue.text),
+                kind: .header
+            ))
+            rows.append(contentsOf: snapshot.groups.map { group in
+                SheetRow(
+                    cells: [
+                        .text(group.level == .subtotal ? "Zwischensumme" : "Gruppe"),
+                        .text(group.label),
+                        .integer(group.bookingCount),
+                        .amount(group.incomeMinor, currency: group.currency),
+                        .amount(group.expenseMinor, currency: group.currency),
+                        .amount(group.netMinor, currency: group.currency),
+                        .text(group.currency)
+                    ],
+                    kind: group.level == .subtotal ? .subtotal : .normal
+                )
+            })
+        }
+
+        if snapshot.presentation.includeDetailRows {
+            rows.append(SheetRow(cells: []))
+            rows.append(SheetRow(
+                cells: [.text("Buchungen und Splitpositionen")],
+                kind: .metadataLabel
+            ))
+            rows.append(SheetRow(
+                cells: [
+                    "Datum", "Konto", "Empfänger", "Verwendungszweck", "Kategorie",
+                    "Status", "Betrag", "Währung", "Split"
+                ].map(CellValue.text),
+                kind: .header
+            ))
+            rows.append(contentsOf: snapshot.facts.map { fact in
+                SheetRow(cells: [
+                    .text(isoDate(fact.bookingDate)),
+                    .text(fact.accountName),
+                    .text(fact.payee),
+                    .text(fact.purpose),
+                    .text(fact.categoryPath),
+                    .text(fact.status.title),
+                    .amount(fact.amountMinor, currency: fact.currency),
+                    .text(fact.currency),
+                    .text(fact.splitID == nil ? "Nein" : "Ja")
+                ])
+            })
+        }
+
+        if snapshot.presentation.includeGrandTotals {
+            rows.append(SheetRow(cells: []))
+            rows.append(SheetRow(cells: [.text("Gesamtsummen")], kind: .metadataLabel))
+            rows.append(SheetRow(
+                cells: ["Währung", "Einnahmen", "Ausgaben", "Saldo"].map(CellValue.text),
+                kind: .header
+            ))
+            rows.append(contentsOf: snapshot.totals.map { total in
+                SheetRow(
+                    cells: [
+                        .text(total.currency),
+                        .amount(total.incomeMinor, currency: total.currency),
+                        .amount(total.expenseMinor, currency: total.currency),
+                        .amount(total.netMinor, currency: total.currency)
+                    ],
+                    kind: .grandTotal
+                )
+            })
+        }
+
+        let serializedRows = rows.enumerated().map { rowOffset, row in
+            let rowNumber = rowOffset + 1
+            let cells = row.cells.enumerated().map { columnOffset, value in
+                cellXML(
+                    value,
+                    reference: "\(columnName(columnOffset + 1))\(rowNumber)",
+                    kind: row.kind
+                )
+            }.joined()
+            return "<row r=\"\(rowNumber)\">\(cells)</row>"
+        }.joined(separator: "\n")
+
+        return """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="18" customWidth="1"/><col min="2" max="2" width="32" customWidth="1"/><col min="3" max="3" width="24" customWidth="1"/><col min="4" max="5" width="36" customWidth="1"/><col min="6" max="9" width="18" customWidth="1"/></cols><sheetData>
+        \(serializedRows)
+        </sheetData><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>
+        """ + "\n"
+    }
+
+    private static func cellXML(
+        _ value: CellValue,
+        reference: String,
+        kind: RowKind
+    ) -> String {
+        switch value {
+        case .text(let value):
+            let style = textStyle(kind)
+            return "<c r=\"\(reference)\" s=\"\(style)\" t=\"inlineStr\"><is><t xml:space=\"preserve\">\(xmlText(value))</t></is></c>"
+        case .integer(let value):
+            let style = kind == .subtotal ? 2 : kind == .grandTotal ? 3 : 4
+            return "<c r=\"\(reference)\" s=\"\(style)\"><v>\(value)</v></c>"
+        case .amount(let minorUnits, let currency):
+            let digits = Money.fractionDigits(for: currency)
+            let style: Int
+            switch kind {
+            case .subtotal: style = 10 + digits
+            case .grandTotal: style = 15 + digits
+            default: style = 5 + digits
+            }
+            return "<c r=\"\(reference)\" s=\"\(style)\"><v>\(decimalAmount(minorUnits, currency: currency))</v></c>"
+        }
+    }
+
+    private static func textStyle(_ kind: RowKind) -> Int {
+        switch kind {
+        case .header: 1
+        case .subtotal: 2
+        case .grandTotal: 3
+        case .metadataLabel: 20
+        case .normal: 0
+        }
+    }
+
+    private static func decimalAmount(_ minorUnits: Int64, currency: String) -> String {
+        let digits = Money.fractionDigits(for: currency)
+        let factor = UInt64(Money.minorUnitFactor(for: currency))
+        let magnitude = minorUnits.magnitude
+        let units = magnitude / factor
+        guard digits > 0 else { return "\(minorUnits < 0 ? "-" : "")\(units)" }
+        let fraction = String(magnitude % factor).leftPadded(to: digits, with: "0")
+        return "\(minorUnits < 0 ? "-" : "")\(units).\(fraction)"
+    }
+
+    private static func columnName(_ index: Int) -> String {
+        var value = index
+        var result = ""
+        while value > 0 {
+            value -= 1
+            result = String(UnicodeScalar(65 + value % 26)!) + result
+            value /= 26
+        }
+        return result
+    }
+
+    private static func xmlText(_ value: String) -> String {
+        let valid = String(value.prefix(32_767).unicodeScalars.filter { scalar in
+            scalar.value == 0x09 || scalar.value == 0x0A || scalar.value == 0x0D
+                || scalar.value >= 0x20
+        })
+        return valid
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
+    private static func isoDate(_ date: Date) -> String {
+        dateFormatter.string(from: date)
+    }
+
+    private static func isoDateTime(_ date: Date) -> String {
+        isoDateTimeFormatter.string(from: date)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let isoDateTimeFormatter = ISO8601DateFormatter()
+
+    private static func corePropertiesXML(metadata: ReportExportMetadata) -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>\(xmlText(metadata.title))</dc:title><dc:creator>FinanzVerwalter</dc:creator><cp:lastModifiedBy>FinanzVerwalter</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">\(isoDateTime(metadata.generatedAt))</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">\(isoDateTime(metadata.generatedAt))</dcterms:modified></cp:coreProperties>
+        """ + "\n"
+    }
+
+    private static let contentTypesXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>
+    """ + "\n"
+
+    private static let rootRelationshipsXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>
+    """ + "\n"
+
+    private static let appPropertiesXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>FinanzVerwalter</Application><AppVersion>1.0</AppVersion></Properties>
+    """ + "\n"
+
+    private static let workbookXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets><sheet name="Bericht" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="0" fullCalcOnLoad="1"/></workbook>
+    """ + "\n"
+
+    private static let workbookRelationshipsXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>
+    """ + "\n"
+
+    private static let stylesXML: String = {
+        let formats = (0...4).map { digits in
+            let zeros = digits == 0 ? "" : "." + String(repeating: "0", count: digits)
+            return "<numFmt numFmtId=\"\(164 + digits)\" formatCode=\"#,##0\(zeros);[Red]-#,##0\(zeros)\"/>"
+        }.joined()
+        func xf(_ numFmt: Int, _ font: Int, _ fill: Int) -> String {
+            "<xf numFmtId=\"\(numFmt)\" fontId=\"\(font)\" fillId=\"\(fill)\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"top\" wrapText=\"1\"/></xf>"
+        }
+        var xfs = [
+            xf(0, 0, 0),
+            xf(0, 1, 2),
+            xf(0, 2, 3),
+            xf(0, 1, 2),
+            xf(1, 0, 0)
+        ]
+        for fillFont in [(0, 0), (2, 3), (1, 2)] {
+            for digits in 0...4 {
+                xfs.append(xf(164 + digits, fillFont.0, fillFont.1))
+            }
+        }
+        xfs.append(xf(0, 2, 0))
+        return """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="5">\(formats)</numFmts><fonts count="3"><font><sz val="10"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Aptos"/></font><font><b/><color rgb="FF17211B"/><sz val="10"/><name val="Aptos"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF146136"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE6F2EB"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFCFD8D2"/></left><right style="thin"><color rgb="FFCFD8D2"/></right><top style="thin"><color rgb="FFCFD8D2"/></top><bottom style="thin"><color rgb="FFCFD8D2"/></bottom></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="21">\(xfs.joined())</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>
+        """ + "\n"
+    }()
+}
+
+private enum DeterministicZIPWriter {
+    private struct Entry {
+        let name: Data
+        let payload: Data
+        let crc32: UInt32
+        let offset: UInt32
+    }
+
+    static func archive(files: [(String, Data)]) -> Data {
+        var result = Data()
+        var entries: [Entry] = []
+        for (path, payload) in files.sorted(by: { $0.0 < $1.0 }) {
+            let name = Data(path.utf8)
+            let entry = Entry(
+                name: name,
+                payload: payload,
+                crc32: crc32(payload),
+                offset: UInt32(result.count)
+            )
+            result.appendLittleEndian(UInt32(0x04034B50))
+            result.appendLittleEndian(UInt16(20))
+            result.appendLittleEndian(UInt16(0x0800))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0x0021))
+            result.appendLittleEndian(entry.crc32)
+            result.appendLittleEndian(UInt32(payload.count))
+            result.appendLittleEndian(UInt32(payload.count))
+            result.appendLittleEndian(UInt16(name.count))
+            result.appendLittleEndian(UInt16(0))
+            result.append(name)
+            result.append(payload)
+            entries.append(entry)
+        }
+
+        let centralOffset = UInt32(result.count)
+        for entry in entries {
+            result.appendLittleEndian(UInt32(0x02014B50))
+            result.appendLittleEndian(UInt16(20))
+            result.appendLittleEndian(UInt16(20))
+            result.appendLittleEndian(UInt16(0x0800))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0x0021))
+            result.appendLittleEndian(entry.crc32)
+            result.appendLittleEndian(UInt32(entry.payload.count))
+            result.appendLittleEndian(UInt32(entry.payload.count))
+            result.appendLittleEndian(UInt16(entry.name.count))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt16(0))
+            result.appendLittleEndian(UInt32(0))
+            result.appendLittleEndian(entry.offset)
+            result.append(entry.name)
+        }
+        let centralSize = UInt32(result.count) - centralOffset
+        result.appendLittleEndian(UInt32(0x06054B50))
+        result.appendLittleEndian(UInt16(0))
+        result.appendLittleEndian(UInt16(0))
+        result.appendLittleEndian(UInt16(entries.count))
+        result.appendLittleEndian(UInt16(entries.count))
+        result.appendLittleEndian(centralSize)
+        result.appendLittleEndian(centralOffset)
+        result.appendLittleEndian(UInt16(0))
+        return result
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        var crc = UInt32.max
+        for byte in data {
+            crc ^= UInt32(byte)
+            for _ in 0..<8 {
+                crc = (crc >> 1) ^ (crc & 1 == 1 ? 0xEDB88320 : 0)
+            }
+        }
+        return crc ^ UInt32.max
+    }
+}
+
+private extension Data {
+    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
+        var littleEndian = value.littleEndian
+        Swift.withUnsafeBytes(of: &littleEndian) { bytes in
+            append(contentsOf: bytes)
+        }
+    }
+}
+
 private extension String {
     func leftPadded(to length: Int, with character: Character) -> String {
         guard count < length else { return self }

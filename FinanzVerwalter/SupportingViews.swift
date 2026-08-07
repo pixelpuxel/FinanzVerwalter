@@ -1,3 +1,4 @@
+import AppKit
 import Charts
 import SwiftUI
 import UniformTypeIdentifiers
@@ -1129,6 +1130,8 @@ struct ReportsView: View {
     @State private var showPDFExporter = false
     @State private var htmlDocument = ReportHTMLDocument(data: Data())
     @State private var showHTMLExporter = false
+    @State private var xlsxDocument = ReportXLSXDocument(data: Data())
+    @State private var showXLSXExporter = false
     @State private var constrainedTransactionIDs: Set<UUID>?
     @State private var exactPayee: String?
     @State private var includeForecast = false
@@ -1292,6 +1295,12 @@ struct ReportsView: View {
                     }
                     Button("HTML exportieren …", systemImage: "chevron.left.forwardslash.chevron.right") {
                         prepareHTMLExport(snapshot)
+                    }
+                    Button("XLSX exportieren …", systemImage: "tablecells.badge.ellipsis") {
+                        prepareXLSXExport(snapshot)
+                    }
+                    Button("Kopieren", systemImage: "doc.on.doc") {
+                        copyReport(snapshot)
                     }
                     Menu {
                         Picker("Papierausrichtung", selection: $pdfOrientation) {
@@ -1541,6 +1550,19 @@ struct ReportsView: View {
             switch result {
             case .success:
                 store.statusText = "Bericht als HTML exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
+            isPresented: $showXLSXExporter,
+            document: xlsxDocument,
+            contentType: .finanzVerwalterXLSX,
+            defaultFilename: exportFilename
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Bericht als XLSX exportiert"
             case .failure(let error):
                 store.errorMessage = error.localizedDescription
             }
@@ -2015,6 +2037,32 @@ struct ReportsView: View {
             )
         )
         showHTMLExporter = true
+    }
+
+    private func prepareXLSXExport(_ snapshot: TransactionReportSnapshot) {
+        xlsxDocument = ReportXLSXDocument(
+            data: TransactionReportXLSXExporter.data(
+                snapshot: snapshot,
+                metadata: reportExportMetadata
+            )
+        )
+        showXLSXExporter = true
+    }
+
+    private func copyReport(_ snapshot: TransactionReportSnapshot) {
+        do {
+            let payload = try TransactionReportClipboardExporter.payload(
+                snapshot: snapshot,
+                metadata: reportExportMetadata
+            )
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(payload.plainText, forType: .string)
+            pasteboard.setData(payload.html, forType: .html)
+            store.statusText = "Bericht als Tabelle und HTML kopiert"
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
     }
 
     private func printReport(_ snapshot: TransactionReportSnapshot) {
@@ -2992,6 +3040,31 @@ private struct ReportPDFDocument: FileDocument {
 
 private struct ReportHTMLDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.html] }
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private extension UTType {
+    static let finanzVerwalterXLSX = UTType(filenameExtension: "xlsx")
+        ?? UTType(
+            importedAs: "org.openxmlformats.spreadsheetml.sheet",
+            conformingTo: .zip
+        )
+}
+
+private struct ReportXLSXDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.finanzVerwalterXLSX] }
     let data: Data
 
     init(data: Data) {

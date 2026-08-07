@@ -5755,6 +5755,220 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(summaryHTML.contains("Gruppenübersicht"))
     }
 
+    func testReportXLSXExportIsValidDeterministicNumericAndEscaped() throws {
+        let fact = TransactionReportFact(
+            id: "xlsx-fact",
+            transactionID: UUID(uuidString: "00000000-0000-0000-0000-000000000101")!,
+            splitID: nil,
+            bookingDate: Date(timeIntervalSince1970: 0),
+            accountID: UUID(uuidString: "00000000-0000-0000-0000-000000000102")!,
+            accountName: "Giro <Privat>",
+            payee: "=2+2 & Händler",
+            payeeID: nil,
+            purpose: "Zeile 1\u{0001} / \"Zeile 2\"",
+            detail: "",
+            categoryID: nil,
+            categoryPath: "Wohnen › Miete",
+            tagIDs: [],
+            tagPaths: [],
+            status: .booked,
+            amountMinor: -123_456,
+            currency: "EUR",
+            isTransfer: false
+        )
+        let snapshot = TransactionReportSnapshot(
+            facts: [fact],
+            groups: [
+                TransactionReportGroup(
+                    id: "xlsx-subtotal",
+                    label: "Summe Wohnen & Haus",
+                    currency: "EUR",
+                    incomeMinor: 0,
+                    expenseMinor: 123_456,
+                    netMinor: -123_456,
+                    factIDs: [fact.id],
+                    primaryLabel: "Wohnen & Haus",
+                    secondaryLabel: "",
+                    level: .subtotal
+                )
+            ],
+            totals: [
+                TransactionReportCurrencyTotal(
+                    currency: "EUR",
+                    incomeMinor: 0,
+                    expenseMinor: 123_456,
+                    netMinor: -123_456
+                ),
+                TransactionReportCurrencyTotal(
+                    currency: "JPY",
+                    incomeMinor: 5_000,
+                    expenseMinor: 0,
+                    netMinor: 5_000
+                )
+            ]
+        )
+        let metadata = ReportExportMetadata(
+            title: "Miete <2025>",
+            dateLabel: "Gesamter Zeitraum",
+            filterSummary: "Empfänger & Kategorie",
+            baseCurrency: "EUR",
+            generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let first = TransactionReportXLSXExporter.data(
+            snapshot: snapshot,
+            metadata: metadata
+        )
+        let second = TransactionReportXLSXExporter.data(
+            snapshot: snapshot,
+            metadata: metadata
+        )
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.prefix(4), Data([0x50, 0x4B, 0x03, 0x04]))
+
+        let digest = SHA256.hash(data: first)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        XCTAssertEqual(
+            digest,
+            "c96f21d0d9e524b3418d1bd37aa03e5ec8c93cb3aca95ccaad8bf2ccf98186d6"
+        )
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FinanzVerwalter-XLSX-\(UUID().uuidString).xlsx")
+        try first.write(to: url, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let testArchive = Process()
+        testArchive.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        testArchive.arguments = ["-t", url.path]
+        testArchive.standardOutput = Pipe()
+        testArchive.standardError = Pipe()
+        try testArchive.run()
+        testArchive.waitUntilExit()
+        XCTAssertEqual(testArchive.terminationStatus, 0)
+
+        func archiveEntry(_ path: String) throws -> Data {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            process.arguments = ["-p", url.path, path]
+            process.standardOutput = output
+            process.standardError = Pipe()
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            return data
+        }
+
+        let sheetData = try archiveEntry("xl/worksheets/sheet1.xml")
+        _ = try XMLDocument(data: sheetData)
+        let sheet = try XCTUnwrap(String(data: sheetData, encoding: .utf8))
+        XCTAssertTrue(sheet.contains("Miete &lt;2025&gt;"))
+        XCTAssertTrue(sheet.contains("Giro &lt;Privat&gt;"))
+        XCTAssertTrue(sheet.contains("=2+2 &amp; Händler"))
+        XCTAssertFalse(sheet.contains("\u{0001}"))
+        XCTAssertFalse(sheet.contains("<f>"))
+        XCTAssertTrue(sheet.contains("<v>-1234.56</v>"))
+        XCTAssertTrue(sheet.contains("<v>5000</v>"))
+        XCTAssertTrue(sheet.contains("s=\"12\"><v>1234.56</v>"))
+        _ = try XMLDocument(data: archiveEntry("\\[Content_Types\\].xml"))
+        _ = try XMLDocument(data: archiveEntry("xl/styles.xml"))
+
+        let environment = ProcessInfo.processInfo.environment
+        let executablePaths = environment["PATH"]?
+            .split(separator: ":")
+            .map(String.init) ?? []
+        let configuredSoffice = environment["FINANZVERWALTER_SOFFICE_PATH"]
+            .map { URL(fileURLWithPath: $0) }
+        if let soffice = ([configuredSoffice].compactMap { $0 } + executablePaths
+            .map({ URL(fileURLWithPath: $0).appendingPathComponent("soffice") }))
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
+            let conversionDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FinanzVerwalter-XLSX-Office-\(UUID().uuidString)")
+            let profileDirectory = conversionDirectory.appendingPathComponent("profile")
+            try FileManager.default.createDirectory(
+                at: conversionDirectory,
+                withIntermediateDirectories: true
+            )
+            defer { try? FileManager.default.removeItem(at: conversionDirectory) }
+            let office = Process()
+            office.executableURL = soffice
+            office.arguments = [
+                "-env:UserInstallation=\(profileDirectory.absoluteString)",
+                "--headless", "--convert-to", "csv", "--outdir",
+                conversionDirectory.path, url.path
+            ]
+            office.standardOutput = Pipe()
+            office.standardError = Pipe()
+            try office.run()
+            office.waitUntilExit()
+            XCTAssertEqual(office.terminationStatus, 0)
+            let converted = conversionDirectory
+                .appendingPathComponent(url.deletingPathExtension().lastPathComponent)
+                .appendingPathExtension("csv")
+            let convertedText = try String(contentsOf: converted, encoding: .utf8)
+            XCTAssertTrue(convertedText.contains("Miete <2025>"))
+            XCTAssertTrue(
+                convertedText.contains("-1234.56")
+                    || convertedText.contains("-1234,56")
+            )
+        }
+    }
+
+    func testReportClipboardUsesMatchingTabularAndHTMLRepresentations() throws {
+        let fact = TransactionReportFact(
+            id: "clipboard-fact",
+            transactionID: UUID(),
+            splitID: nil,
+            bookingDate: Date(timeIntervalSince1970: 0),
+            accountID: UUID(),
+            accountName: "Giro",
+            payee: "Händler & Sohn",
+            payeeID: nil,
+            purpose: "Rechnung\tmit Tab",
+            detail: "",
+            categoryID: nil,
+            categoryPath: "Haushalt › Lebensmittel",
+            tagIDs: [],
+            tagPaths: [],
+            status: .booked,
+            amountMinor: -1_234,
+            currency: "EUR",
+            isTransfer: false
+        )
+        let snapshot = TransactionReportSnapshot(
+            facts: [fact],
+            groups: [],
+            totals: [
+                TransactionReportCurrencyTotal(
+                    currency: "EUR",
+                    incomeMinor: 0,
+                    expenseMinor: 1_234,
+                    netMinor: -1_234
+                )
+            ]
+        )
+        let metadata = ReportExportMetadata(
+            title: "Kopierbericht",
+            dateLabel: "Gesamter Zeitraum",
+            filterSummary: "alle Konten",
+            baseCurrency: "EUR",
+            generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let payload = try TransactionReportClipboardExporter.payload(
+            snapshot: snapshot,
+            metadata: metadata
+        )
+        XCTAssertTrue(payload.plainText.contains("Datum\tKonto\tEmpfänger"))
+        XCTAssertTrue(payload.plainText.contains("\"Rechnung\tmit Tab\""))
+        XCTAssertTrue(payload.plainText.contains("EUR\t0,00\t12,34\t-12,34"))
+        let html = try XCTUnwrap(String(data: payload.html, encoding: .utf8))
+        XCTAssertTrue(html.contains("Händler &amp; Sohn"))
+        XCTAssertTrue(html.contains("12,34"))
+        XCTAssertTrue(html.contains("Gesamtsummen"))
+    }
+
     func testReportPDFExportCreatesReadableMultipagePrintLayout() throws {
         let accountID = UUID()
         let facts = (0..<80).map { index in

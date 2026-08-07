@@ -224,6 +224,22 @@ UTF-8, semantisch, druckoptimiert, vollständig HTML-maskiert und durch einen
 bytegenauen SHA-256-Golden-Test reproduzierbar abgesichert. PDF erzeugt auch
 bei vollständig ausgeblendeten Tabellen ein gültiges Metadatenblatt.
 
+`TransactionReportXLSXExporter` erzeugt ohne externe Bibliothek ein valides,
+deterministisches Open-XML-ZIP-Paket mit genau einem Blatt `Bericht`.
+Metadaten, Gruppen, Details und Gesamtsummen stammen aus demselben Snapshot.
+Texte sind Inline-Strings, werden auf gültige XML-Zeichen begrenzt und niemals
+als Formel geschrieben. Geldzellen bleiben numerisch und erhalten ein
+Format für exakt null bis vier ISO-Nachkommastellen. Der interne ZIP-Writer
+verwendet feste Metadaten, UTF-8-Pfade, Store-Kompression, CRC-32,
+Zentralverzeichnis und stabile alphabetische Eintragsreihenfolge. Prüfe das
+Paket bytegenau per SHA-256, vollständig per `unzip -t`, semantisch per XML
+und optional durch echten LibreOffice-Import/CSV-Rundlauf.
+
+`TransactionReportClipboardExporter` liefert parallel tabulatorgetrennten
+UTF-8-Text und HTML aus demselben Snapshot. Der explizite UI-Befehl
+`Kopieren` leert die allgemeine macOS-Zwischenablage und schreibt beide Typen,
+ohne eine neue Berichtsauswertung auszulösen.
+
 Die gemeinsame Massenorganisation erhält eine Menge Buchungs-UUIDs, einen
 expliziten Schalter samt optionaler Zielkategorie sowie optional eine
 vollständig ersetzende Menge aktiver Klassen/Tags. Prüfe vor jeder Mutation,

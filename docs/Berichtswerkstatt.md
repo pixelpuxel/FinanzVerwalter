@@ -52,6 +52,14 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - HTML entsteht bytegenau reproduzierbar aus demselben Snapshot, enthält
   semantische Tabellen, vollständige Metadaten und Druck-CSS und maskiert alle
   importierten Texte. Ein SHA-256-Golden-Test sichert den Datenstrom ab.
+- XLSX entsteht als vollständiges Open-XML-ZIP-Paket mit Arbeitsblatt,
+  Metadaten, Formatvorlagen und exakten numerischen Geldzellen für null bis
+  vier Währungsnachkommastellen. Paket, CRC, XML, Formelinjektionsschutz,
+  SHA-256-Goldenwert und ein optionaler echter LibreOffice-Rundlauf sind
+  geprüft.
+- `Kopieren` schreibt tabulatorgetrennten UTF-8-Text und dieselbe maskierte
+  HTML-Darstellung gemeinsam in die Zwischenablage, sodass Tabellenprogramme
+  und Textziele jeweils die passende Repräsentation wählen können.
 - `Kontosalden und Nettovermögen` berechnet je Konto einen historischen
   Tagesabschluss aus Eröffnungssaldo und nicht stornierten Bewegungen seit dem
   Eröffnungsdatum. Konten, Gruppen, Währungen sowie versteckte, geschlossene
@@ -71,7 +79,7 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   mehrseitiges A4-PDF in Hoch-/Querformat und direkten Systemdruck aus
   derselben Momentaufnahme.
 
-Noch offen sind weitere Diagramme sowie XLSX und Zwischenablage.
+Noch offen sind weitere fachliche Standardberichte und Diagramme.
 
 ## Verifizierte Referenzfunktionen
 
@@ -177,5 +185,4 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 ## Umsetzungsreihenfolge
 
 1. weitere Standardberichte und Diagrammtypen
-2. Zwischenablage
-3. XLSX samt Golden-Test
+2. gespeicherte Spaltenauswahl je Berichtsvorlage
