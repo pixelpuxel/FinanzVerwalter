@@ -3781,3 +3781,51 @@ Rechtsberatung.
 - Telegram-Nachricht 1113 meldet den Stand im `/quicken`-Thread 894. Wegen der
   weiterhin gesperrten macOS-Sitzung wurde transparent kein Screenshot
   behauptet. Exakter Zielzählerstand der Nachricht: 22.435.371 Tokens.
+
+## 08.08.2026 – Mehrere strikt getrennte Finanzdateien
+
+- Das Ablage-Menü kann mit `⇧⌘N` eine neue `.qdata`-Finanzdatei erzeugen, mit
+  `⌘O` eine vorhandene öffnen und höchstens zehn zuletzt verwendete Dateien
+  anbieten. Die letzte erfolgreiche Auswahl wird beim nächsten normalen Start
+  wiederverwendet; Demo- und Teststarts verändern diese Präferenz nicht.
+- Jeder Wechsel erzeugt vorher auch bei abgeschalteter regulärer
+  Autosicherung zwingend ein geprüftes SQLite-Online-Backup. Danach werden
+  Kontoauswahl und Suche verworfen, der neue Bestand vollständig geladen,
+  offene Editoren geschlossen und erst anschließend die alte Verbindung
+  geschlossen. Schlägt der Kandidat fehl, bleibt die vorige Finanzdatei mit
+  ihren Daten aktiv.
+- Öffnen akzeptiert nur reguläre, direkte `.qdata`-Dateien. Neuanlegen
+  verweigert vorhandene Ziele, symbolische Elternordner, falsche Endungen und
+  leere, überlange oder steuerzeichenhaltige Namen. Die MRU-Liste blendet
+  fehlende Dateien und Symlinks aus. Der Statusbereich zeigt den Dateinamen
+  und als Hilfetext den vollständigen Pfad.
+- Die gezielten Mehrdateitests unter
+  `build/TestResults/MultiFile-targeted-20260807-2352.xcresult` bestanden mit
+  2 von 2 Tests. Sie prüfen echte getrennte SQLite-Dateien, Wechsel in beide
+  Richtungen, Dateikopf, Sicherungen, MRU-Reihenfolge sowie Fehler-Rollback.
+- Die finale vollständige Regression unter
+  `build/TestResults/MultiFile-final-full-20260807-2359.xcresult` umfasst 162
+  Tests: 160 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler.
+- Der finale native arm64-Release unter
+  `build/DerivedData-MultiFile-Product` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `d228e101d306a6ec701a2f0796f0dd058686e5577b222774d271508ffe13f0ce`.
+- Die unmittelbar vorherige Installation liegt wiederherstellbar unter
+  `build/InstallBackups/20260808-0002-pre-final-hardening/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0002-pre-final-hardening/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich, der Schreibtisch-Link
+  zeigt auf `/Applications`, und Prozess 59976 läuft daraus. Die zuletzt
+  verwendete Datei ist die vorhandene Standarddatei. Produktivdatei und
+  Sicherung melden Integrität `ok`, Schema 39 und unverändert 97 Konten,
+  2.170 Buchungen, 782 Kategorien sowie 0 Überweisungen, Lastschriften und
+  Sammler.
+- Implementierung, Tests, ADR und Reproduktionsdokumentation wurden als
+  Commit `9f02b9c` auf `origin/agent/qif-mehrkontenimport` veröffentlicht.
+  GitHub Draft-PR #1 zeigte denselben Head und war mergebar.
+- Telegram-Nachricht 1117 meldet denselben Stand im `/quicken`-Thread 894.
+  Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein
+  Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
+  22.712.877 Tokens.
