@@ -1958,3 +1958,35 @@ bleiben, Wechsel in beide Richtungen, Dateikopf, MRU-Reihenfolge und erzwungene
 Sicherung funktionieren. Teste außerdem beschädigte Datei, Symlink, falsche
 Endung, vorhandenes Neuziel und ungültigen Namen; bei allen Fehlern muss der
 ursprüngliche Datenbestand aktiv und unverändert bleiben.
+
+# Schließen, geprüfte Dateikopie und Archivsnapshot
+
+Ergänze im Ablage-Menü bestätigtes `Finanzdatei schließen`, `Kopie der
+Finanzdatei erstellen …` und `Finanzdatei archivieren …`. Schließen muss
+zuerst unabhängig von der normalen Sicherungseinstellung eine geprüfte
+SQLite-Online-Sicherung erzeugen. Nur bei Erfolg schließt es die Verbindung,
+bricht den Hintergrundindex ab und leert ausnahmslos alle publizierten
+Finanzdaten, Auswahl, Suche und Index. Danach müssen Öffnen und Neuanlegen
+ohne App-Neustart funktionieren.
+
+Eine Kopie ist eine vollständige eigenständige `.qdata`-Datei mit Modus 0600.
+Ein Archiv ist derselbe konsistente SQLite-Snapshot mit Endung `.qarchive`
+und Modus 0400; es wird nicht über den normalen Öffnen-Befehl bearbeitbar
+gemacht. Beide Operationen akzeptieren nur ein noch nicht vorhandenes Ziel in
+einem regulären, nicht symbolischen Zielordner und niemals die aktive Datei.
+
+Erzeuge zunächst eine zufällig benannte versteckte Staging-Datei im
+Zielordner. Verwende SQLite Online Backup, schließe WAL/SHM ab und fordere
+`PRAGMA integrity_check=ok`. Berechne Größe und SHA-256 streamend, setze die
+Dateirechte und verschiebe erst dann atomar an das endgültige Ziel. Berechne
+Größe und SHA-256 dort erneut; bei Abweichung entferne das inkonsistente
+Ergebnis. Vorhandene Ziele werden auch nach einer Dateidialog-Bestätigung nie
+ersetzt.
+
+Teste Inhalt und Integrität der Kopie, 0600, Archivvalidierung, 0400,
+identischen SHA-256, vorhandenes Ziel, Selbstziel, falsche Endung,
+Symlink-Zielordner und das Fehlen von Staging-Resten. Teste beim Schließen die
+Sicherung, vollständige Zustandsleerung, Wiederöffnen und Neuanlegen in der
+zuvor dateilosen Sitzung. Verändere nach dem Archivieren den Arbeitsbestand,
+stelle das Archiv über den validierenden Sicherungsdialog wieder her und prüfe
+Inhalt, aktive Zieldatei sowie Integrität des rückgesicherten Bestands.

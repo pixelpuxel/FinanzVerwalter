@@ -3829,3 +3829,36 @@ Rechtsberatung.
   Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein
   Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
   22.712.877 Tokens.
+
+## 08.08.2026 – Schließen, atomare Kopie und Archivsnapshot
+
+- Das Ablage-Menü kann die aktive Finanzdatei nach Bestätigung schließen,
+  eine unabhängige `.qdata`-Arbeitskopie oder einen schreibgeschützten
+  `.qarchive`-Archivstand erzeugen. Schließen erzwingt vorab eine validierte
+  Online-Sicherung und leert danach Finanzdaten, Auswahl, Suche und den
+  Buchungsindex; Öffnen und Neuanlegen funktionieren ohne Neustart weiter.
+- Kopie und Archiv entstehen per SQLite Online Backup zunächst unter einem
+  zufälligen versteckten Namen im direkten Zielordner. Vor und nach der
+  atomaren Verschiebung werden Integrität, Größe und SHA-256 geprüft.
+  Vorhandene Ziele, die aktive Datei, falsche Endungen und symbolische
+  Zielordner werden abgewiesen. Kopien erhalten Modus 0600, Archive Modus
+  0400; der Status zeigt den Dateinamen und einen SHA-256-Kurzabdruck.
+- Der Archivtest verändert nach dem Snapshot den Arbeitsbestand, stellt dann
+  das Archiv über den normalen validierenden Restore-Pfad wieder her und
+  prüft Bestand, aktive Zieldatei und Integrität. Der finale vollständige Lauf
+  unter `build/TestResults/FileLifecycle-full-final-20260808-0013.xcresult`
+  umfasst 164 Tests: 162 bestanden, 2 ausdrücklich opt-in übersprungen,
+  0 Fehler und 0 erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-FileLifecycle-Product` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `0f645d58ef5c4af9854f6d8244d54fa600b1b34a799a4d6f04ddc48b86930063`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0018-file-lifecycle/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0018-file-lifecycle/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich, der Schreibtisch-Link
+  zeigt auf `/Applications`, und Prozess 61743 läuft daraus. Die
+  Produktivdatei meldet Integrität `ok`, keine Fremdschlüsselverletzung,
+  Schema 39 und unverändert 97 Konten, 2.170 Buchungen und 782 Kategorien.

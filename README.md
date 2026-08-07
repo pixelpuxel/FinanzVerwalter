@@ -59,6 +59,14 @@ merkt höchstens zehn vorhandene Dateien; beim nächsten normalen Start wird die
 zuletzt verwendete reguläre Datei geöffnet. Symlinks, falsche Dateiendungen,
 beschädigte Dateien und vorhandene Ziele beim Neuanlegen werden abgewiesen.
 
+Weitere Ablagebefehle schließen die aktive Datei erst nach einer erzwungenen
+Sicherung, erstellen eine unabhängige geprüfte Kopie mit privaten
+Dateirechten (`0600`) oder schreiben einen archivierten SQLite-Snapshot mit
+Endung `.qarchive`, SHA-256-Nachweis und Schreibschutz (`0400`). Kopie und
+Archiv entstehen zunächst als zufällig benannte Zwischenkopie im Zielordner;
+erst nach Integritäts-, Größen- und Hashprüfung werden sie atomar an den
+endgültigen Namen verschoben. Vorhandene Ziele werden niemals überschrieben.
+
 Der opt-in-Leistungstest erweitert denselben Datensatz auf 100.000 Buchungen.
 Lege dafür ausschließlich für den Test die Datei
 `/tmp/finanzverwalter-run-large-performance-tests` an und starte gezielt

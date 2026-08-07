@@ -118,6 +118,110 @@ enum FinanceFilePreferences {
     }
 }
 
+struct FinanceFileSnapshot: Equatable, Sendable {
+    let url: URL
+    let byteCount: Int64
+    let sha256: String
+}
+
+enum FinanceFileSnapshotKind: Sendable {
+    case copy
+    case archive
+
+    var requiredExtension: String {
+        switch self {
+        case .copy: "qdata"
+        case .archive: "qarchive"
+        }
+    }
+
+    var permissions: Int {
+        switch self {
+        case .copy: 0o600
+        case .archive: 0o400
+        }
+    }
+}
+
+enum FinanceFileSnapshotManager {
+    static func create(
+        repository: SQLiteFinanceStore,
+        at rawTarget: URL,
+        kind: FinanceFileSnapshotKind,
+        fileManager: FileManager = .default
+    ) throws -> FinanceFileSnapshot {
+        let target = rawTarget.standardizedFileURL
+        guard target.pathExtension.lowercased() == kind.requiredExtension else {
+            throw FinanceError.database(
+                "Das Ziel muss die Endung .\(kind.requiredExtension) besitzen."
+            )
+        }
+        guard target.path != repository.fileURL.standardizedFileURL.path else {
+            throw FinanceError.database(
+                "Die aktive Finanzdatei darf nicht als eigenes Ziel verwendet werden."
+            )
+        }
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw FinanceError.database("Am gewählten Ziel existiert bereits eine Datei.")
+        }
+        let parent = target.deletingLastPathComponent()
+        let parentValues = try parent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard parentValues.isDirectory == true,
+              parentValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Der Zielordner ist kein regulärer, direkter Ordner."
+            )
+        }
+        let staged = parent.appendingPathComponent(
+            ".finanzverwalter-\(UUID().uuidString).tmp"
+        )
+        defer { try? fileManager.removeItem(at: staged) }
+        try repository.backup(to: staged)
+        try SQLiteFinanceStore.validateBackup(at: staged)
+        try fileManager.setAttributes(
+            [.posixPermissions: kind.permissions], ofItemAtPath: staged.path
+        )
+        let stagedSnapshot = try snapshot(for: staged, fileManager: fileManager)
+        try fileManager.moveItem(at: staged, to: target)
+        let finalSnapshot = try snapshot(for: target, fileManager: fileManager)
+        guard stagedSnapshot.byteCount == finalSnapshot.byteCount,
+              stagedSnapshot.sha256 == finalSnapshot.sha256 else {
+            try? fileManager.removeItem(at: target)
+            throw FinanceError.database(
+                "Die fertige Datei stimmt nicht mit der geprüften Zwischenkopie überein."
+            )
+        }
+        return finalSnapshot
+    }
+
+    static func snapshot(
+        for url: URL,
+        fileManager: FileManager = .default
+    ) throws -> FinanceFileSnapshot {
+        let values = try url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw FinanceError.database("Die erzeugte Datei ist keine reguläre Datei.")
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var byteCount: Int64 = 0
+        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+            hasher.update(data: data)
+            byteCount += Int64(data.count)
+        }
+        guard byteCount == Int64(values.fileSize ?? -1) else {
+            throw FinanceError.database("Die Dateigröße änderte sich während der Prüfung.")
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return FinanceFileSnapshot(url: url, byteCount: byteCount, sha256: digest)
+    }
+}
+
 enum AutomaticBackupManager {
     static let filePrefix = "FinanzVerwalter-Autosicherung-"
 
@@ -500,15 +604,57 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func createFinanceFileCopy(at url: URL) -> FinanceFileSnapshot? {
+        guard let repository else { return nil }
+        do {
+            let snapshot = try FinanceFileSnapshotManager.create(
+                repository: repository, at: url, kind: .copy
+            )
+            errorMessage = nil
+            statusText = "Geprüfte Kopie erstellt: \(snapshot.url.lastPathComponent) · SHA-256 \(snapshot.sha256.prefix(12))…"
+            return snapshot
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func archiveFinanceFile(at url: URL) -> FinanceFileSnapshot? {
+        guard let repository else { return nil }
+        do {
+            let snapshot = try FinanceFileSnapshotManager.create(
+                repository: repository, at: url, kind: .archive
+            )
+            errorMessage = nil
+            statusText = "Schreibgeschütztes Archiv erstellt: \(snapshot.url.lastPathComponent) · SHA-256 \(snapshot.sha256.prefix(12))…"
+            return snapshot
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func closeFinanceFile() -> Bool {
+        guard let repository else { return true }
+        guard createAutomaticBackup(force: true) != nil else { return false }
+        repository.close()
+        self.repository = nil
+        clearLoadedState()
+        errorMessage = nil
+        statusText = "Keine Finanzdatei geöffnet"
+        NotificationCenter.default.post(name: .financeFileDidChange, object: nil)
+        return true
+    }
+
     private func switchFinanceFile(
         to candidate: SQLiteFinanceStore,
         successText: String
     ) -> Bool {
-        guard let previous = repository else {
-            candidate.close()
-            return false
-        }
-        guard createAutomaticBackup(force: true) != nil else {
+        let previous = repository
+        if previous != nil, createAutomaticBackup(force: true) == nil {
             candidate.close()
             return false
         }
@@ -517,7 +663,7 @@ final class FinanceAppStore: ObservableObject {
         searchText = ""
         do {
             try load()
-            previous.close()
+            previous?.close()
             recentFinanceFileURLs = FinanceFilePreferences.record(
                 candidate.fileURL, in: preferences
             )
@@ -528,10 +674,69 @@ final class FinanceAppStore: ObservableObject {
         } catch {
             repository = previous
             candidate.close()
-            try? load()
+            if previous != nil {
+                try? load()
+            } else {
+                clearLoadedState()
+            }
             present(error)
             return false
         }
+    }
+
+    private func clearLoadedState() {
+        registerSearchIndexTask?.cancel()
+        registerSearchIndexGeneration = UUID()
+        fileInfo = nil
+        accounts = []
+        accountGroups = []
+        categories = []
+        vatCodes = []
+        transactions = []
+        balances = [:]
+        reportRows = []
+        reportTemplates = []
+        transactionTemplates = []
+        categorizationRules = []
+        latestRuleUndo = nil
+        latestTransactionUndo = nil
+        bankingConnections = []
+        bankingMappings = []
+        bankingSyncRuns = []
+        bankingRemoteOrders = []
+        bankingProgressText = ""
+        scheduledTransactions = []
+        scheduledTransactionExceptions = []
+        scheduledTransactionRevisions = []
+        forecastScenarios = []
+        forecastScenarioEntries = []
+        budgets = []
+        paymentOrders = []
+        directDebitOrders = []
+        paymentBatches = []
+        paymentStatusReports = []
+        paymentInstructionImports = []
+        standingOrders = []
+        payees = []
+        payeeBankAccounts = []
+        sepaMandates = []
+        tags = []
+        securities = []
+        assetClasses = []
+        portfolioPositions = []
+        securityTrades = []
+        loans = []
+        loanPaymentMatches = []
+        propertyAssetPositions = []
+        contracts = []
+        inventoryItems = []
+        taxPeople = []
+        taxAllowanceRules = []
+        taxAllowanceOrders = []
+        taxAllowanceUsages = []
+        selectedAccountID = nil
+        searchText = ""
+        registerSearchIndex = .empty
     }
 
     var selectedAccount: FinanceAccount? {

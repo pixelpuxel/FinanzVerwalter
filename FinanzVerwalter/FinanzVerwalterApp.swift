@@ -102,6 +102,20 @@ struct FinanzVerwalterApp: App {
                         }
                     }
                 }
+                Divider()
+                Button("Kopie der Finanzdatei erstellen …") {
+                    createFinanceFileCopy()
+                }
+                .disabled(store.currentFinanceFileURL == nil)
+                Button("Finanzdatei archivieren …") {
+                    archiveFinanceFile()
+                }
+                .disabled(store.currentFinanceFileURL == nil)
+                Divider()
+                Button("Finanzdatei schließen") {
+                    closeFinanceFile()
+                }
+                .disabled(store.currentFinanceFileURL == nil)
             }
             CommandMenu("Finanzen") {
                 Button("Suchen") {
@@ -200,6 +214,52 @@ struct FinanzVerwalterApp: App {
         let displayName = url.deletingPathExtension().lastPathComponent
         prepareForFinanceFileChange()
         _ = store.createFinanceFile(at: url, name: displayName)
+    }
+
+    private func createFinanceFileCopy() {
+        guard let source = store.currentFinanceFileURL else { return }
+        let panel = NSSavePanel()
+        panel.title = "Kopie der Finanzdatei erstellen"
+        panel.prompt = "Kopie erstellen"
+        panel.allowedContentTypes = [financeFileType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue =
+            "\(source.deletingPathExtension().lastPathComponent) Kopie.qdata"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "qdata" {
+            url.appendPathExtension("qdata")
+        }
+        _ = store.createFinanceFileCopy(at: url)
+    }
+
+    private func archiveFinanceFile() {
+        guard let source = store.currentFinanceFileURL else { return }
+        let archiveType = UTType(filenameExtension: "qarchive") ?? .data
+        let panel = NSSavePanel()
+        panel.title = "Finanzdatei archivieren"
+        panel.prompt = "Archivieren"
+        panel.allowedContentTypes = [archiveType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue =
+            "\(source.deletingPathExtension().lastPathComponent) Archiv.qarchive"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "qarchive" {
+            url.appendPathExtension("qarchive")
+        }
+        _ = store.archiveFinanceFile(at: url)
+    }
+
+    private func closeFinanceFile() {
+        let alert = NSAlert()
+        alert.messageText = "Finanzdatei schließen?"
+        alert.informativeText =
+            "Vor dem Schließen wird automatisch eine geprüfte Sicherung erstellt."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Schließen")
+        alert.addButton(withTitle: "Abbrechen")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        prepareForFinanceFileChange()
+        _ = store.closeFinanceFile()
     }
 }
 

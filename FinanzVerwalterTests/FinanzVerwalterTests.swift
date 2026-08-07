@@ -11436,6 +11436,152 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(app.currentFinanceFileURL?.path, originalURL.path)
         XCTAssertEqual(app.accounts.map(\.name), ["Bleibt erhalten"])
     }
+
+    @MainActor
+    func testFinanceFileCopyAndArchiveAreAtomicValidatedAndPermissioned() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-file-snapshots-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("Quelle.qdata")
+        let repository = try SQLiteFinanceStore(fileURL: sourceURL)
+        let account = FinanceAccount(
+            id: UUID(), name: "Quellkonto", institution: "Bank", type: .checking,
+            currency: "EUR", openingBalanceMinor: 12_345,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try repository.saveAccount(account)
+        let app = FinanceAppStore(repository: repository)
+
+        let copyURL = directory.appendingPathComponent("Geprüfte Kopie.qdata")
+        let copy = try XCTUnwrap(app.createFinanceFileCopy(at: copyURL))
+        XCTAssertEqual(copy.url.path, copyURL.path)
+        XCTAssertGreaterThan(copy.byteCount, 0)
+        XCTAssertEqual(copy.sha256.count, 64)
+        XCTAssertEqual(
+            copy,
+            try FinanceFileSnapshotManager.snapshot(for: copyURL)
+        )
+        let copyAttributes = try FileManager.default.attributesOfItem(
+            atPath: copyURL.path
+        )
+        let copyPermissions = try XCTUnwrap(
+            copyAttributes[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(copyPermissions, 0o600)
+        let copiedRepository = try SQLiteFinanceStore(fileURL: copyURL)
+        XCTAssertEqual(try copiedRepository.accounts().map(\.id), [account.id])
+        XCTAssertTrue(try copiedRepository.integrityCheck())
+        copiedRepository.close()
+
+        let archiveURL = directory.appendingPathComponent("Stand 2026.qarchive")
+        let archive = try XCTUnwrap(app.archiveFinanceFile(at: archiveURL))
+        XCTAssertEqual(archive.url.path, archiveURL.path)
+        XCTAssertEqual(archive.sha256.count, 64)
+        XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: archiveURL))
+        let archiveAttributes = try FileManager.default.attributesOfItem(
+            atPath: archiveURL.path
+        )
+        let archivePermissions = try XCTUnwrap(
+            archiveAttributes[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(archivePermissions, 0o400)
+
+        XCTAssertTrue(app.saveAccount(
+            name: "Nach dem Archiv", institution: "Bank",
+            type: .savings, openingBalance: "1,00"
+        ))
+        XCTAssertEqual(app.accounts.count, 2)
+        XCTAssertTrue(app.restoreBackup(from: archiveURL))
+        XCTAssertEqual(app.accounts.map(\.id), [account.id])
+        XCTAssertEqual(app.currentFinanceFileURL?.path, sourceURL.path)
+        app.checkIntegrity()
+        XCTAssertEqual(app.statusText, "Datenbank-Integritätsprüfung: OK")
+
+        XCTAssertNil(app.createFinanceFileCopy(at: copyURL))
+        XCTAssertNil(app.createFinanceFileCopy(at: sourceURL))
+        XCTAssertNil(app.archiveFinanceFile(
+            at: directory.appendingPathComponent("Falsche Endung.qdata")
+        ))
+        let realDirectory = directory.appendingPathComponent("Echt", isDirectory: true)
+        let linkedDirectory = directory.appendingPathComponent("Link", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: realDirectory, withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedDirectory, withDestinationURL: realDirectory
+        )
+        XCTAssertNil(app.createFinanceFileCopy(
+            at: linkedDirectory.appendingPathComponent("Unsicher.qdata")
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: realDirectory.appendingPathComponent("Unsicher.qdata").path
+        ))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains { $0.hasPrefix(".finanzverwalter-") }
+        )
+        XCTAssertEqual(app.accounts.map(\.id), [account.id])
+    }
+
+    @MainActor
+    func testFinanceFileCloseClearsAllStateBacksUpAndAllowsReopeningOrCreating() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-file-close-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suiteName = "FinanzVerwalterTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        let sourceURL = directory.appendingPathComponent("Geöffnet.qdata")
+        let app = FinanceAppStore(
+            repository: try SQLiteFinanceStore(fileURL: sourceURL),
+            preferences: preferences
+        )
+        XCTAssertTrue(app.saveAccount(
+            name: "Wieder da", institution: "Bank",
+            type: .checking, openingBalance: "33,00"
+        ))
+        XCTAssertTrue(app.saveCategory(name: "Testkategorie", kind: .expense))
+        XCTAssertFalse(app.accounts.isEmpty)
+        XCTAssertFalse(app.categories.isEmpty)
+
+        XCTAssertTrue(app.closeFinanceFile())
+        XCTAssertNil(app.currentFinanceFileURL)
+        XCTAssertNil(app.fileInfo)
+        XCTAssertTrue(app.accounts.isEmpty)
+        XCTAssertTrue(app.categories.isEmpty)
+        XCTAssertTrue(app.transactions.isEmpty)
+        XCTAssertTrue(app.balances.isEmpty)
+        XCTAssertNil(app.selectedAccountID)
+        XCTAssertEqual(app.registerSearchIndex, .empty)
+        XCTAssertEqual(app.statusText, "Keine Finanzdatei geöffnet")
+        XCTAssertFalse(
+            try AutomaticBackupManager.backups(
+                in: AutomaticBackupManager.defaultDirectory(for: sourceURL)
+            ).isEmpty
+        )
+
+        XCTAssertTrue(app.openFinanceFile(at: sourceURL))
+        XCTAssertEqual(app.accounts.map(\.name), ["Wieder da"])
+        XCTAssertTrue(app.categories.contains { $0.name == "Testkategorie" })
+        XCTAssertTrue(app.closeFinanceFile())
+        let newURL = directory.appendingPathComponent("Neu nach Schließen.qdata")
+        XCTAssertTrue(app.createFinanceFile(at: newURL, name: "Neu nach Schließen"))
+        XCTAssertEqual(app.currentFinanceFileURL?.path, newURL.path)
+        XCTAssertEqual(app.fileInfo?.name, "Neu nach Schließen")
+        XCTAssertTrue(app.accounts.isEmpty)
+    }
 }
 
 private extension Digest {
