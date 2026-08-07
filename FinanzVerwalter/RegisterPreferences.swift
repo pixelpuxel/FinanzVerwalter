@@ -11,6 +11,8 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
     case tags
     case account
     case amount
+    case debit
+    case credit
     case balance
 
     var id: Self { self }
@@ -27,6 +29,8 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
         case .tags: "Klasse/Tags"
         case .account: "Konto"
         case .amount: "Betrag"
+        case .debit: "Soll"
+        case .credit: "Haben"
         case .balance: "Saldo"
         }
     }
@@ -41,7 +45,7 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
         case .category: 150
         case .tags: 110
         case .account: 100
-        case .amount, .balance: 105
+        case .amount, .debit, .credit, .balance: 105
         }
     }
 
@@ -56,11 +60,63 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
         case .tags: 150
         case .account: 140
         case .amount: 120
+        case .debit, .credit: 112
         case .balance: 125
         }
     }
 
-    static let defaultSet = Set(allCases)
+    static let configurableCases = allCases.filter {
+        $0 != .debit && $0 != .credit
+    }
+    static let defaultSet = Set(configurableCases)
+}
+
+enum RegisterAmountColumnMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case amount
+    case debitCredit
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .amount: "Betrag"
+        case .debitCredit: "Soll / Haben"
+        }
+    }
+}
+
+enum RegisterColumnLayout {
+    static func columns(
+        visible: Set<RegisterColumn>,
+        amountMode: RegisterAmountColumnMode
+    ) -> [RegisterColumn] {
+        RegisterColumn.configurableCases.flatMap { column -> [RegisterColumn] in
+            guard visible.contains(column) else { return [] }
+            guard column == .amount, amountMode == .debitCredit else {
+                return [column]
+            }
+            return [.debit, .credit]
+        }
+    }
+}
+
+enum RegisterAmountPresentation {
+    static func minorUnits(
+        for column: RegisterColumn,
+        amountMinor: Int64
+    ) -> Int64? {
+        switch column {
+        case .amount:
+            amountMinor
+        case .debit:
+            amountMinor < 0
+                ? (amountMinor == Int64.min ? Int64.max : -amountMinor)
+                : nil
+        case .credit:
+            amountMinor > 0 ? amountMinor : nil
+        default:
+            nil
+        }
+    }
 }
 
 enum RegisterAccessibility {
@@ -203,6 +259,24 @@ enum RegisterSorter {
             compare(labels[left.id]?.account ?? "", labels[right.id]?.account ?? "")
         case .amount:
             compare(left.amountMinor, right.amountMinor)
+        case .debit:
+            compare(
+                RegisterAmountPresentation.minorUnits(
+                    for: .debit, amountMinor: left.amountMinor
+                ) ?? 0,
+                RegisterAmountPresentation.minorUnits(
+                    for: .debit, amountMinor: right.amountMinor
+                ) ?? 0
+            )
+        case .credit:
+            compare(
+                RegisterAmountPresentation.minorUnits(
+                    for: .credit, amountMinor: left.amountMinor
+                ) ?? 0,
+                RegisterAmountPresentation.minorUnits(
+                    for: .credit, amountMinor: right.amountMinor
+                ) ?? 0
+            )
         case .balance:
             compare(
                 runningBalances[left.id] ?? 0,
@@ -396,6 +470,7 @@ struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var visibleColumns: Set<RegisterColumn>
     var sortColumnRawValue: String? = nil
     var sortAscending: Bool? = nil
+    var amountColumnModeRawValue: String? = nil
 }
 
 struct SavedCombinedRegisterView: Identifiable, Codable, Equatable, Sendable {
@@ -411,6 +486,7 @@ struct SavedCombinedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var includeForecast: Bool
     var rowModeRawValue: String
     var visibleColumns: Set<RegisterColumn>
+    var amountColumnModeRawValue: String? = nil
 }
 
 enum RegisterPreferencesCodec {
@@ -445,7 +521,7 @@ enum RegisterPreferencesCodec {
                 RegisterColumn(rawValue: String($0))
             }
         )
-        return decoded.isEmpty ? RegisterColumn.defaultSet : decoded
+        return normalized(decoded)
     }
 
     static func addingBalanceColumn(to value: String) -> String {
@@ -529,6 +605,7 @@ enum RegisterPreferencesCodec {
     private static func normalized(
         _ columns: Set<RegisterColumn>
     ) -> Set<RegisterColumn> {
-        columns.isEmpty ? RegisterColumn.defaultSet : columns
+        let supported = columns.intersection(Set(RegisterColumn.configurableCases))
+        return supported.isEmpty ? RegisterColumn.defaultSet : supported
     }
 }

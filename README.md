@@ -383,6 +383,12 @@ Der angezeigte Saldo bleibt immer der historisch-chronologische Saldo genau
 dieser Buchung und wird durch eine andere Zeilenreihenfolge nicht verfälscht.
 Der native macOS-Tabellenkopf zeigt die aktive Richtung und stellt dieselbe
 Sortieraktion über Tastatur und VoiceOver bereit.
+Ein weiteres Ansichtsmenü schaltet die einzelne Spalte `Betrag` auf zwei
+getrennte Spalten `Soll` und `Haben` um. Negative Bewegungen erscheinen ohne
+Minuszeichen als positiver Betrag unter Soll, positive unter Haben und Null
+bleibt in beiden Spalten leer. Einzel-, Zweit- und Sammelkontoblatt sowie
+Sortierung, gespeicherte Ansichten, PDF, Druck und CSV verwenden denselben
+Modus; die zugrunde liegende vorzeichenbehaftete Buchung wird nie verändert.
 Beim ersten Start nach dem Saldo-Update wird die Spalte
 einmalig auch in vorhandene Spalteneinstellungen und benannte Ansichten
 aufgenommen; anschließend bleibt sie wie jede andere Spalte frei schaltbar.

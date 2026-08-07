@@ -7714,7 +7714,8 @@ final class FinanzVerwalterTests: XCTestCase {
             rowModeRawValue: "twoLines",
             visibleColumns: columns,
             sortColumnRawValue: RegisterColumn.category.rawValue,
-            sortAscending: false
+            sortAscending: false,
+            amountColumnModeRawValue: RegisterAmountColumnMode.debitCredit.rawValue
         )
         let encodedViews = try RegisterPreferencesCodec.encodeViews([view])
         let restored = try XCTUnwrap(
@@ -7730,14 +7731,93 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(restored.visibleColumns, columns)
         XCTAssertEqual(restored.sortColumnRawValue, RegisterColumn.category.rawValue)
         XCTAssertEqual(restored.sortAscending, false)
+        XCTAssertEqual(
+            restored.amountColumnModeRawValue,
+            RegisterAmountColumnMode.debitCredit.rawValue
+        )
         XCTAssertNil(
             RegisterPreferencesCodec.decodeViews(oldViews).first?.sortColumnRawValue
         )
         XCTAssertNil(
             RegisterPreferencesCodec.decodeViews(oldViews).first?.sortAscending
         )
+        XCTAssertNil(
+            RegisterPreferencesCodec.decodeViews(oldViews).first?
+                .amountColumnModeRawValue
+        )
         XCTAssertTrue(
             RegisterPreferencesCodec.decodeViews("{nicht-json").isEmpty
+        )
+    }
+
+    func testRegisterAmountColumnLayoutSeparatesDebitAndCreditLosslessly() {
+        let visible: Set<RegisterColumn> = [.date, .amount, .balance]
+        XCTAssertEqual(
+            RegisterColumnLayout.columns(
+                visible: visible,
+                amountMode: .amount
+            ),
+            [.date, .amount, .balance]
+        )
+        XCTAssertEqual(
+            RegisterColumnLayout.columns(
+                visible: visible,
+                amountMode: .debitCredit
+            ),
+            [.date, .debit, .credit, .balance]
+        )
+        XCTAssertEqual(
+            RegisterColumnLayout.columns(
+                visible: [.date, .balance],
+                amountMode: .debitCredit
+            ),
+            [.date, .balance]
+        )
+
+        XCTAssertEqual(
+            RegisterAmountPresentation.minorUnits(
+                for: .amount,
+                amountMinor: -12_345
+            ),
+            -12_345
+        )
+        XCTAssertEqual(
+            RegisterAmountPresentation.minorUnits(
+                for: .debit,
+                amountMinor: -12_345
+            ),
+            12_345
+        )
+        XCTAssertNil(
+            RegisterAmountPresentation.minorUnits(
+                for: .credit,
+                amountMinor: -12_345
+            )
+        )
+        XCTAssertEqual(
+            RegisterAmountPresentation.minorUnits(
+                for: .credit,
+                amountMinor: 12_345
+            ),
+            12_345
+        )
+        XCTAssertNil(
+            RegisterAmountPresentation.minorUnits(
+                for: .debit,
+                amountMinor: 12_345
+            )
+        )
+        XCTAssertNil(
+            RegisterAmountPresentation.minorUnits(
+                for: .debit,
+                amountMinor: 0
+            )
+        )
+        XCTAssertNil(
+            RegisterAmountPresentation.minorUnits(
+                for: .credit,
+                amountMinor: 0
+            )
         )
     }
 

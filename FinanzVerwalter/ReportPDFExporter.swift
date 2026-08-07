@@ -288,7 +288,7 @@ private struct RegisterPDFRenderer {
                 fontSize: 7.5,
                 bold: true,
                 color: CGColor(gray: 1, alpha: 1),
-                rightAligned: column == .amount || column == .balance
+                rightAligned: [.amount, .debit, .credit, .balance].contains(column)
             )
         }
     }
@@ -313,7 +313,7 @@ private struct RegisterPDFRenderer {
                 fontSize: 7.2,
                 bold: false,
                 color: dark,
-                rightAligned: column == .amount || column == .balance
+                rightAligned: [.amount, .debit, .credit, .balance].contains(column)
             )
         }
     }

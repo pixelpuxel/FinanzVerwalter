@@ -48,6 +48,8 @@ struct RegisterView: View {
     private var secondaryAccountIDRaw = ""
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
+    @AppStorage("registerAmountColumnModeV1")
+    private var amountColumnModeRaw = RegisterAmountColumnMode.amount.rawValue
     @AppStorage("registerVisibleColumnsIncludesBalanceV4")
     private var visibleColumnsIncludesBalance = false
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
@@ -70,6 +72,22 @@ struct RegisterView: View {
         get { RegisterPreferencesCodec.decodeColumns(visibleColumnsRaw) }
         nonmutating set {
             visibleColumnsRaw = RegisterPreferencesCodec.encodeColumns(newValue)
+        }
+    }
+
+    private var amountColumnMode: RegisterAmountColumnMode {
+        get {
+            RegisterAmountColumnMode(rawValue: amountColumnModeRaw) ?? .amount
+        }
+        nonmutating set {
+            amountColumnModeRaw = newValue.rawValue
+            let current = RegisterColumn(rawValue: sortColumnRaw) ?? .date
+            if newValue == .debitCredit, current == .amount {
+                sortColumnRaw = RegisterColumn.debit.rawValue
+            } else if newValue == .amount,
+                      current == .debit || current == .credit {
+                sortColumnRaw = RegisterColumn.amount.rawValue
+            }
         }
     }
 
@@ -240,6 +258,30 @@ struct RegisterView: View {
                 .accessibilityIdentifier("register.rowMode")
                 Menu {
                     Picker(
+                        "Betragsspalten",
+                        selection: Binding(
+                            get: { amountColumnMode },
+                            set: {
+                                amountColumnMode = $0
+                                selectedSavedViewID = nil
+                            }
+                        )
+                    ) {
+                        ForEach(RegisterAmountColumnMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                } label: {
+                    Label(
+                        amountColumnMode.title,
+                        systemImage: amountColumnMode == .amount
+                            ? "eurosign" : "rectangle.split.2x1"
+                    )
+                }
+                .help("Eine Betragsspalte oder getrennte Soll-/Haben-Spalten")
+                .accessibilityIdentifier("register.amountColumnMode")
+                Menu {
+                    Picker(
                         "Sortieren nach",
                         selection: Binding(
                             get: {
@@ -251,7 +293,12 @@ struct RegisterView: View {
                             }
                         )
                     ) {
-                        ForEach(RegisterColumn.allCases) { column in
+                        ForEach(
+                            RegisterColumnLayout.columns(
+                                visible: Set(RegisterColumn.configurableCases),
+                                amountMode: amountColumnMode
+                            )
+                        ) { column in
                             Text(column.title).tag(column)
                         }
                     }
@@ -552,8 +599,8 @@ struct RegisterView: View {
                 Text("Kontoblatt-Ansicht speichern")
                     .font(.title2.bold())
                 Text(
-                    "Gespeichert werden Konto, Filter, Zeitraum, Zeilenmodus "
-                        + "Sortierung und die sichtbaren Spalten."
+                    "Gespeichert werden Konto, Filter, Zeitraum, Zeilenmodus, "
+                        + "Betragsdarstellung, Sortierung und sichtbare Spalten."
                 )
                 .foregroundStyle(.secondary)
                 TextField("Name der Ansicht", text: $savedViewName)
@@ -1047,7 +1094,10 @@ struct RegisterView: View {
     }
 
     private var orderedVisibleColumns: [RegisterColumn] {
-        RegisterColumn.allCases.filter(visibleColumns.contains)
+        RegisterColumnLayout.columns(
+            visible: visibleColumns,
+            amountMode: amountColumnMode
+        )
     }
 
     private var registerSortState: RegisterSortState {
@@ -1223,16 +1273,22 @@ struct RegisterView: View {
         case .account:
             Text(store.accountName(value.accountID))
                 .frame(height: rowMode.rowHeight, alignment: .leading)
-        case .amount:
+        case .amount, .debit, .credit:
+            let presentedAmount = RegisterAmountPresentation.minorUnits(
+                for: column,
+                amountMinor: value.amountMinor
+            )
             Text(
-                Money(
-                    minorUnits: value.amountMinor,
-                    currency: value.currency
-                ).formatted
+                presentedAmount.map {
+                    Money(minorUnits: $0, currency: value.currency).formatted
+                } ?? ""
             )
             .frame(maxWidth: .infinity, alignment: .trailing)
             .monospacedDigit()
-            .foregroundStyle(value.amountMinor < 0 ? .primary : Color.green)
+            .foregroundStyle(
+                column == .credit || (column == .amount && value.amountMinor > 0)
+                    ? Color.green : .primary
+            )
             .frame(height: rowMode.rowHeight)
         case .balance:
             Text(
@@ -1277,7 +1333,7 @@ struct RegisterView: View {
             .disabled(selectedSavedViewID == nil)
             Divider()
             Menu("Sichtbare Spalten", systemImage: "rectangle.split.3x1") {
-                ForEach(RegisterColumn.allCases) { column in
+                ForEach(RegisterColumn.configurableCases) { column in
                     Toggle(
                         column.title,
                         isOn: Binding(
@@ -1480,9 +1536,13 @@ struct RegisterView: View {
             return tags.isEmpty ? "–" : tags
         case .account:
             return store.accountName(value.accountID)
-        case .amount:
+        case .amount, .debit, .credit:
+            guard let presentedAmount = RegisterAmountPresentation.minorUnits(
+                for: column,
+                amountMinor: value.amountMinor
+            ) else { return "" }
             return Money(
-                minorUnits: value.amountMinor,
+                minorUnits: presentedAmount,
                 currency: value.currency
             ).formatted
         case .balance:
@@ -1551,7 +1611,8 @@ struct RegisterView: View {
             rowModeRawValue: rowMode.rawValue,
             visibleColumns: visibleColumns,
             sortColumnRawValue: sortColumnRaw,
-            sortAscending: sortAscending
+            sortAscending: sortAscending,
+            amountColumnModeRawValue: amountColumnMode.rawValue
         )
         var values = savedViews.filter { $0.id != id }
         values.append(view)
@@ -1591,10 +1652,20 @@ struct RegisterView: View {
         customEnd = view.customEnd
         rowMode = RegisterRowMode(rawValue: view.rowModeRawValue) ?? .single
         visibleColumns = view.visibleColumns
+        amountColumnMode = RegisterAmountColumnMode(
+            rawValue: view.amountColumnModeRawValue ?? ""
+        ) ?? .amount
         sortColumnRaw = RegisterColumn(
             rawValue: view.sortColumnRawValue ?? ""
         )?.rawValue ?? RegisterColumn.date.rawValue
         sortAscending = view.sortAscending ?? true
+        if amountColumnMode == .debitCredit, sortColumnRaw == RegisterColumn.amount.rawValue {
+            sortColumnRaw = RegisterColumn.debit.rawValue
+        } else if amountColumnMode == .amount,
+                  sortColumnRaw == RegisterColumn.debit.rawValue
+                    || sortColumnRaw == RegisterColumn.credit.rawValue {
+            sortColumnRaw = RegisterColumn.amount.rawValue
+        }
         selectedSavedViewID = view.id
         selection.removeAll()
     }
@@ -1891,6 +1962,51 @@ private enum RegisterRowMode: String, CaseIterable, Identifiable {
 
     var rowHeight: CGFloat {
         self == .twoLines ? 38 : 20
+    }
+}
+
+private struct RegisterAmountCell: View {
+    let transaction: FinanceTransaction
+    let column: RegisterColumn
+    let rowMode: RegisterRowMode
+
+    var body: some View {
+        let presented = RegisterAmountPresentation.minorUnits(
+            for: column,
+            amountMinor: transaction.amountMinor
+        )
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(
+                presented.map {
+                    Money(
+                        minorUnits: $0,
+                        currency: transaction.currency
+                    ).formatted
+                } ?? ""
+            )
+            if rowMode == .twoLines,
+               let original = transaction.originalAmountMinor,
+               let presentedOriginal = RegisterAmountPresentation.minorUnits(
+                for: column,
+                amountMinor: original
+               ) {
+                Text(
+                    "Orig. " + Money(
+                        minorUnits: presentedOriginal,
+                        currency: transaction.originalCurrency
+                    ).formatted
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+        }
+        .monospacedDigit()
+        .frame(
+            maxWidth: .infinity,
+            minHeight: rowMode.rowHeight,
+            alignment: .trailing
+        )
     }
 }
 
@@ -2990,9 +3106,15 @@ private struct SecondaryRegisterPane: View {
     @State private var customEnd = Date.now
     @AppStorage("registerRowMode")
     private var rowModeRaw = RegisterRowMode.single.rawValue
+    @AppStorage("registerAmountColumnModeV1")
+    private var amountColumnModeRaw = RegisterAmountColumnMode.amount.rawValue
 
     private var rowMode: RegisterRowMode {
         RegisterRowMode(rawValue: rowModeRaw) ?? .single
+    }
+
+    private var amountColumnMode: RegisterAmountColumnMode {
+        RegisterAmountColumnMode(rawValue: amountColumnModeRaw) ?? .amount
     }
 
     private var availableAccounts: [FinanceAccount] {
@@ -3129,35 +3251,33 @@ private struct SecondaryRegisterPane: View {
                         .frame(height: rowMode.rowHeight, alignment: .leading)
                 }
                 .width(min: 100, ideal: 145)
-                TableColumn("Betrag") { transaction in
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(
-                            Money(
-                                minorUnits: transaction.amountMinor,
-                                currency: transaction.currency
-                            ).formatted
+                if amountColumnMode == .amount {
+                    TableColumn("Betrag") { transaction in
+                        RegisterAmountCell(
+                            transaction: transaction,
+                            column: .amount,
+                            rowMode: rowMode
                         )
-                        if rowMode == .twoLines,
-                           let original = transaction.originalAmountMinor {
-                            Text(
-                                "Orig. " + Money(
-                                    minorUnits: original,
-                                    currency: transaction.originalCurrency
-                                ).formatted
-                            )
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        }
                     }
-                    .monospacedDigit()
-                    .frame(
-                        maxWidth: .infinity,
-                        minHeight: rowMode.rowHeight,
-                        alignment: .trailing
-                    )
+                    .width(min: 90, ideal: 120)
+                } else {
+                    TableColumn("Soll") { transaction in
+                        RegisterAmountCell(
+                            transaction: transaction,
+                            column: .debit,
+                            rowMode: rowMode
+                        )
+                    }
+                    .width(min: 85, ideal: 105)
+                    TableColumn("Haben") { transaction in
+                        RegisterAmountCell(
+                            transaction: transaction,
+                            column: .credit,
+                            rowMode: rowMode
+                        )
+                    }
+                    .width(min: 85, ideal: 105)
                 }
-                .width(min: 90, ideal: 120)
                 TableColumn("Saldo") { transaction in
                     Text(
                         Money(
@@ -3552,9 +3672,15 @@ private struct SecondaryCombinedRegisterPane: View {
     private var includeForecast = true
     @AppStorage("registerRowMode")
     private var rowModeRaw = RegisterRowMode.single.rawValue
+    @AppStorage("registerAmountColumnModeV1")
+    private var amountColumnModeRaw = RegisterAmountColumnMode.amount.rawValue
 
     private var rowMode: RegisterRowMode {
         RegisterRowMode(rawValue: rowModeRaw) ?? .single
+    }
+
+    private var amountColumnMode: RegisterAmountColumnMode {
+        RegisterAmountColumnMode(rawValue: amountColumnModeRaw) ?? .amount
     }
 
     private var includedAccountIDs: Set<UUID> {
@@ -3708,35 +3834,33 @@ private struct SecondaryCombinedRegisterPane: View {
                         .frame(height: rowMode.rowHeight, alignment: .leading)
                 }
                 .width(min: 100, ideal: 140)
-                TableColumn("Betrag") { transaction in
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(
-                            Money(
-                                minorUnits: transaction.amountMinor,
-                                currency: transaction.currency
-                            ).formatted
+                if amountColumnMode == .amount {
+                    TableColumn("Betrag") { transaction in
+                        RegisterAmountCell(
+                            transaction: transaction,
+                            column: .amount,
+                            rowMode: rowMode
                         )
-                        if rowMode == .twoLines,
-                           let original = transaction.originalAmountMinor {
-                            Text(
-                                "Orig. " + Money(
-                                    minorUnits: original,
-                                    currency: transaction.originalCurrency
-                                ).formatted
-                            )
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        }
                     }
-                    .monospacedDigit()
-                    .frame(
-                        maxWidth: .infinity,
-                        minHeight: rowMode.rowHeight,
-                        alignment: .trailing
-                    )
+                    .width(min: 90, ideal: 120)
+                } else {
+                    TableColumn("Soll") { transaction in
+                        RegisterAmountCell(
+                            transaction: transaction,
+                            column: .debit,
+                            rowMode: rowMode
+                        )
+                    }
+                    .width(min: 85, ideal: 105)
+                    TableColumn("Haben") { transaction in
+                        RegisterAmountCell(
+                            transaction: transaction,
+                            column: .credit,
+                            rowMode: rowMode
+                        )
+                    }
+                    .width(min: 85, ideal: 105)
                 }
-                .width(min: 90, ideal: 120)
                 TableColumn("Saldo") { transaction in
                     Text(
                         Money(
@@ -3970,6 +4094,8 @@ struct CombinedRegisterView: View {
     @State private var selectedSavedViewID: UUID?
     @AppStorage("registerRowMode") private var rowModeRaw = RegisterRowMode.single.rawValue
     @AppStorage("registerVisibleColumnsV1") private var visibleColumnsRaw = ""
+    @AppStorage("registerAmountColumnModeV1")
+    private var amountColumnModeRaw = RegisterAmountColumnMode.amount.rawValue
     @AppStorage("combinedRegisterAccountIDsV1")
     private var includedAccountIDsRaw = ""
     @AppStorage("savedCombinedRegisterViewsV1")
@@ -3987,6 +4113,13 @@ struct CombinedRegisterView: View {
         nonmutating set {
             visibleColumnsRaw = RegisterPreferencesCodec.encodeColumns(newValue)
         }
+    }
+
+    private var amountColumnMode: RegisterAmountColumnMode {
+        get {
+            RegisterAmountColumnMode(rawValue: amountColumnModeRaw) ?? .amount
+        }
+        nonmutating set { amountColumnModeRaw = newValue.rawValue }
     }
 
     private var includedAccountIDs: Set<UUID> {
@@ -4065,6 +4198,21 @@ struct CombinedRegisterView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 175)
+                Menu {
+                    Picker("Betragsspalten", selection: $amountColumnModeRaw) {
+                        ForEach(RegisterAmountColumnMode.allCases) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
+                } label: {
+                    Label(
+                        amountColumnMode.title,
+                        systemImage: amountColumnMode == .amount
+                            ? "eurosign" : "rectangle.split.2x1"
+                    )
+                }
+                .help("Eine Betragsspalte oder getrennte Soll-/Haben-Spalten")
+                .accessibilityIdentifier("combinedRegister.amountColumnMode")
                 combinedViewMenu
                 registerColumnMenu
                 VStack(alignment: .trailing) {
@@ -4242,7 +4390,7 @@ struct CombinedRegisterView: View {
                     .font(.title2.bold())
                 Text(
                     "Gespeichert werden Kontenauswahl, Filter, Zukunft, "
-                        + "Zeilenmodus und sichtbare Spalten."
+                        + "Zeilenmodus, Betragsdarstellung und sichtbare Spalten."
                 )
                 .foregroundStyle(.secondary)
                 TextField("Name der Ansicht", text: $savedViewName)
@@ -4367,7 +4515,8 @@ struct CombinedRegisterView: View {
             customEnd: customEnd,
             includeForecast: includeForecast,
             rowModeRawValue: rowMode.rawValue,
-            visibleColumns: visibleColumns
+            visibleColumns: visibleColumns,
+            amountColumnModeRawValue: amountColumnMode.rawValue
         )
         var values = savedViews.filter { $0.id != id }
         values.append(view)
@@ -4407,6 +4556,9 @@ struct CombinedRegisterView: View {
             rawValue: view.rowModeRawValue
         ) ?? .single
         visibleColumns = view.visibleColumns
+        amountColumnMode = RegisterAmountColumnMode(
+            rawValue: view.amountColumnModeRawValue ?? ""
+        ) ?? .amount
         selectedSavedViewID = view.id
         store.statusText = "Sammelkontoblatt-Ansicht „\(view.name)“ geladen"
     }
@@ -4658,7 +4810,10 @@ struct CombinedRegisterView: View {
     }
 
     private var orderedVisibleColumns: [RegisterColumn] {
-        RegisterColumn.allCases.filter(visibleColumns.contains)
+        RegisterColumnLayout.columns(
+            visible: visibleColumns,
+            amountMode: amountColumnMode
+        )
     }
 
     @ViewBuilder
@@ -4734,12 +4889,15 @@ struct CombinedRegisterView: View {
         case .account:
             Text(store.accountName(value.accountID))
                 .frame(height: rowMode.rowHeight, alignment: .leading)
-        case .amount:
+        case .amount, .debit, .credit:
+            let presentedAmount = RegisterAmountPresentation.minorUnits(
+                for: column,
+                amountMinor: value.amountMinor
+            )
             Text(
-                Money(
-                    minorUnits: value.amountMinor,
-                    currency: value.currency
-                ).formatted
+                presentedAmount.map {
+                    Money(minorUnits: $0, currency: value.currency).formatted
+                } ?? ""
             )
             .frame(maxWidth: .infinity, alignment: .trailing)
             .monospacedDigit()
@@ -4792,9 +4950,13 @@ struct CombinedRegisterView: View {
             return tags.isEmpty ? "–" : tags
         case .account:
             return store.accountName(value.accountID)
-        case .amount:
+        case .amount, .debit, .credit:
+            guard let presentedAmount = RegisterAmountPresentation.minorUnits(
+                for: column,
+                amountMinor: value.amountMinor
+            ) else { return "" }
             return Money(
-                minorUnits: value.amountMinor,
+                minorUnits: presentedAmount,
                 currency: value.currency
             ).formatted
         case .balance:
@@ -4807,7 +4969,7 @@ struct CombinedRegisterView: View {
 
     private var registerColumnMenu: some View {
         Menu {
-            ForEach(RegisterColumn.allCases) { column in
+            ForEach(RegisterColumn.configurableCases) { column in
                 Toggle(
                     column.title,
                     isOn: Binding(

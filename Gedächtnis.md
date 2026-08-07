@@ -3393,3 +3393,49 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 20.467.184 Tokens; Zählerstand nach
   überprüfter Zustellung: 20.469.252 Tokens.
+
+## 07.08.2026 – umschaltbare Betrag- oder Soll-/Haben-Spalten
+
+- Einzel- und Sammelkontoblatt besitzen nun ein persistentes Menü für die
+  fachlich alternative Darstellung `Betrag` oder `Soll / Haben`. Im
+  getrennten Modus ersetzt das Paar die logische Betragsspalte an derselben
+  Position; die unabhängige Spaltenkonfiguration speichert weiterhin nur
+  `Betrag` und kann dadurch keine widersprüchliche Kombination erzeugen.
+- Negative Buchungen erscheinen ohne Minuszeichen ausschließlich unter
+  `Soll`, positive ausschließlich unter `Haben`, Null bleibt in beiden
+  Spalten leer. `RegisterAmountPresentation` behandelt auch den kleinsten
+  darstellbaren Ganzzahlwert ohne Überlauf. Der gespeicherte signierte Betrag
+  wird weder migriert noch verändert.
+- Einzel-, zweites und Sammelkontoblatt verwenden dieselbe Spaltenableitung.
+  Native Kopf- und Menüsortierung, Accessibility-Zelltexte, benannte Einzel-
+  und Sammelansichten sowie PDF, Systemdruck und CSV folgen derselben
+  sichtbaren Spaltenfolge. Alte Ansichten ohne das neue optionale Feld öffnen
+  rückwärtskompatibel mit der einzelnen Betragsspalte.
+- Der gezielte Lauf unter
+  `build/TestResults/DebitCredit-targeted-20260807-2100.xcresult` prüft
+  insbesondere die verlustfreie Aufteilung, Layoutableitung, Ansichten-
+  kompatibilität und Sortierung. Die vollständige Regression unter
+  `build/TestResults/DebitCredit-full-20260807-2103.xcresult` umfasst 153
+  Tests: 152 bestanden, 1 privater opt-in-Real-QIF-Test ohne temporären Pfad
+  erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0 erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-DebitCredit-Release` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `0b923cc5efed83bb980d4d2cd52e5fe72732cad50eec294724ad4e656a65e352`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link zeigt weiterhin auf `/Applications/FinanzVerwalter.app`.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2049-debit-credit/`. Eine mit SQLite
+  konsistent erzeugte und danach geprüfte Produktionssicherung liegt unter
+  `build/ProductionBackups/20260807-2049-debit-credit/Meine Finanzen.qdata`.
+  Nach dem Austausch läuft Prozess 37052 direkt aus `/Applications`.
+  Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien; die
+  Produktivdatei enthält weiterhin 0 Serienbuchungen. Die private echte
+  QIF-Datei wurde weder kopiert noch in Git aufgenommen.
+- Die Computersteuerung bestätigte nach dem Start der neuen Installation
+  erneut, dass die macOS-Sitzung gesperrt ist. Sie konnte deshalb weder den
+  Umschalter noch die Spalten sichtbar prüfen oder fotografieren; die Sperre
+  wurde nicht umgangen. Exakter kumulativer Zielzählerstand nach Build, Test,
+  Installation, Produktivprüfung und diesem Prüfversuch: 20.622.297 Tokens.

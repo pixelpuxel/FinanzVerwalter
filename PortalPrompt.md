@@ -137,6 +137,16 @@ nativen macOS-Tabellenköpfe: Ein Klick wählt die Spalte aufsteigend, der
 nächste Klick kehrt die Richtung um. Menü, Tabellenkopfpfeil und persistierter
 Zustand müssen stets dieselbe Spalte und Richtung zeigen.
 
+Biete für die fachliche Betragsspalte einen persistenten Ansichtsmodus
+`Betrag` oder `Soll / Haben`. Im getrennten Modus ersetzt genau das Paar
+`Soll`, `Haben` die eine Betragsspalte an derselben Position. Zeige negative
+Buchungen als positiven Absolutbetrag ausschließlich unter Soll, positive
+ausschließlich unter Haben und Null in beiden leer; verändere den gespeicherten
+vorzeichenbehafteten Betrag nicht. Sortierung, Accessibility, Einzel-, Zweit-
+und Sammelkontoblatt, benannte Ansichten sowie PDF, Druck und CSV müssen exakt
+dieselbe Spaltenfolge verwenden. Speichere den Modus in Ansichten optional;
+alte Ansichten ohne Feld öffnen weiterhin die einzelne Betragsspalte.
+
 Für die direkte Ausgabe von Einzel- und Sammelkontoblättern gilt
 reproduzierbar: Erzeuge genau einen unveränderlichen `RegisterPrintSnapshot`
 aus der aktuellen Sichtmenge, der gewählten Spaltenreihenfolge, den
@@ -168,14 +178,15 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 152 XCTest-Fälle: 151 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 153 XCTest-Fälle: 152 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
 unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
 Die installierte ausführbare Datei besitzt SHA-256
-`f84a9444c7907af54dfef7542ef2046b1d96cff7311c151641697dc2a94baea2`.
-Details und Screenshots stehen in `Gedächtnis.md`.
+`0b923cc5efed83bb980d4d2cd52e5fe72732cad50eec294724ad4e656a65e352`.
+Details und der ehrliche Nachweis der wegen der gesperrten macOS-Sitzung noch
+ausstehenden sichtbaren Abnahme stehen in `Gedächtnis.md`.
 
 Migration 11 ergänzt `account_groups` und erweitert `accounts` um Kurzname,
 Beschreibung, Gruppe, IBAN, BIC, maskierte Kontonummer, Inhaber,
