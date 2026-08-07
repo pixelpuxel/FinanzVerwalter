@@ -3775,3 +3775,9 @@ Rechtsberatung.
   keine Fremdschlüsselverletzung, Schema 39, alle fünf neuen Kontospalten und
   unverändert 97 Konten, 2.170 Buchungen, 782 Kategorien sowie 0
   Überweisungen, Lastschriften und Sammler.
+- Implementierung, Migration, Tests, ADR und Dokumentation wurden als Commit
+  `891b003` veröffentlicht. GitHub Draft-PR #1 zeigte denselben Head und war
+  mergebar.
+- Telegram-Nachricht 1113 meldet den Stand im `/quicken`-Thread 894. Wegen der
+  weiterhin gesperrten macOS-Sitzung wurde transparent kein Screenshot
+  behauptet. Exakter Zielzählerstand der Nachricht: 22.435.371 Tokens.
