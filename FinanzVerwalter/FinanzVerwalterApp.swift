@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum AppearanceMode: String, CaseIterable, Identifiable {
@@ -48,6 +49,13 @@ struct FinanzVerwalterApp: App {
                     AppearanceMode(rawValue: appearanceMode)?.colorScheme ?? .light
                 )
                 .frame(minWidth: 960, minHeight: 640)
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: NSApplication.willTerminateNotification
+                    )
+                ) { _ in
+                    _ = store.createAutomaticBackup()
+                }
         }
         .defaultSize(width: 1380, height: 860)
         .commands {

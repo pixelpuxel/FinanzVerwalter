@@ -3,6 +3,7 @@ import Foundation
 import SQLite3
 
 final class SQLiteFinanceStore {
+    static let currentSchemaVersion = 29
     private var database: OpaquePointer?
     private var transactionDepth = 0
     let fileURL: URL
@@ -24,6 +25,15 @@ final class SQLiteFinanceStore {
         try execute("PRAGMA foreign_keys = ON")
         try execute("PRAGMA journal_mode = WAL")
         try execute("PRAGMA synchronous = FULL")
+        let existingVersion = try scalarInt("PRAGMA user_version")
+        guard existingVersion <= Self.currentSchemaVersion else {
+            throw FinanceError.database(
+                "Die Finanzdatei verwendet Schema \(existingVersion); diese App unterstützt höchstens Schema \(Self.currentSchemaVersion)."
+            )
+        }
+        if existingVersion > 0 && existingVersion < Self.currentSchemaVersion {
+            try createPreMigrationBackup(schemaVersion: existingVersion)
+        }
         try migrate()
     }
 
@@ -47,7 +57,13 @@ final class SQLiteFinanceStore {
 
     static func validateBackup(at url: URL) throws {
         var checkDatabase: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &checkDatabase, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        let immutableURI = url.absoluteString + (url.query == nil ? "?immutable=1" : "&immutable=1")
+        guard sqlite3_open_v2(
+            immutableURI,
+            &checkDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+            nil
+        ) == SQLITE_OK else {
             throw FinanceError.invalidBackup
         }
         defer { sqlite3_close(checkDatabase) }
@@ -72,6 +88,25 @@ final class SQLiteFinanceStore {
         guard sqlite3_step(statement) == SQLITE_ROW, Self.text(statement, 0) == "ok" else {
             throw FinanceError.invalidBackup
         }
+    }
+
+    private func createPreMigrationBackup(schemaVersion: Int) throws {
+        let directory = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("Sicherungen", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let target = directory.appendingPathComponent(
+            "FinanzVerwalter-vor-Migration-v\(schemaVersion)-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).qbackup"
+        )
+        try backup(to: target)
+        try Self.validateBackup(at: target)
     }
 
     private func migrate() throws {
@@ -7302,25 +7337,63 @@ final class SQLiteFinanceStore {
     }
 
     func backup(to target: URL) throws {
+        let sourcePath = fileURL.standardizedFileURL.path
+        let targetPath = target.standardizedFileURL.path
+        guard sourcePath != targetPath else {
+            throw FinanceError.database("Die Finanzdatei kann nicht als eigene Sicherung überschrieben werden.")
+        }
+        guard !FileManager.default.fileExists(atPath: targetPath) else {
+            throw FinanceError.database("Am Sicherungsziel existiert bereits eine Datei.")
+        }
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         var targetDatabase: OpaquePointer?
         guard sqlite3_open(target.path, &targetDatabase) == SQLITE_OK else {
             throw FinanceError.database("Sicherungsdatei konnte nicht angelegt werden.")
         }
-        defer { sqlite3_close(targetDatabase) }
+        defer {
+            if let targetDatabase { sqlite3_close(targetDatabase) }
+        }
         guard let backup = sqlite3_backup_init(targetDatabase, "main", database, "main") else {
             throw FinanceError.database("Sicherung konnte nicht gestartet werden.")
         }
-        defer { sqlite3_backup_finish(backup) }
-        guard sqlite3_backup_step(backup, -1) == SQLITE_DONE else {
+        let stepResult = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        guard stepResult == SQLITE_DONE, finishResult == SQLITE_OK else {
             throw FinanceError.database("Sicherung konnte nicht abgeschlossen werden.")
+        }
+        guard sqlite3_exec(
+            targetDatabase,
+            "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database("Die Sicherung konnte nicht als eigenständige Datei abgeschlossen werden.")
         }
         var check: OpaquePointer?
         guard sqlite3_prepare_v2(targetDatabase, "PRAGMA integrity_check", -1, &check, nil) == SQLITE_OK else {
             throw FinanceError.invalidBackup
         }
-        defer { sqlite3_finalize(check) }
+        defer {
+            if let check { sqlite3_finalize(check) }
+        }
         guard sqlite3_step(check) == SQLITE_ROW, Self.text(check, 0) == "ok" else {
             throw FinanceError.invalidBackup
+        }
+        sqlite3_finalize(check)
+        check = nil
+        guard sqlite3_close(targetDatabase) == SQLITE_OK else {
+            throw FinanceError.database("Die Sicherungsdatei konnte nicht geschlossen werden.")
+        }
+        targetDatabase = nil
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: target.path + suffix)
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                try FileManager.default.removeItem(at: sidecar)
+            }
         }
     }
 

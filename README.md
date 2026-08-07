@@ -399,6 +399,28 @@ Schritt bearbeiten. Budgets können umbenannt, vollständig in ein anderes
 Geschäftsjahr kopiert, als Folgejahr abgeleitet oder samt ihrer Planzeilen
 gelöscht werden; vorhandene Buchungen bleiben beim Löschen unangetastet.
 
+## Datensicherung und Wiederherstellung
+
+`Import/Export` erstellt manuelle vollständige SQLite-Sicherungen und prüft
+sie vor der Ausgabe. Ein Restore akzeptiert nur eine eigenständig lesbare
+Datei mit gültigem Finanzdateikopf und `integrity_check = ok`; vor dem
+Austausch entsteht zusätzlich eine Sicherheitskopie der aktuellen Datei.
+
+Automatische Sicherungen sind standardmäßig aktiviert. Beim Start und
+Beenden wird nur dann eine neue `.qbackup`-Datei im lokalen Unterordner
+`Sicherungen` angelegt, wenn sich die Finanzdatei geändert hat und der
+konfigurierbare Mindestabstand abgelaufen ist. Unter `Einstellungen >
+Automatische Datensicherung` lassen sich Zeitabstand, Höchstzahl und maximales
+Alter festlegen oder sofort eine geprüfte Sicherung erzeugen. Standard sind
+24 Stunden, 14 Dateien und 90 Tage.
+
+Jede Sicherung wird aus SQLite-WAL vollständig in eine allein nutzbare Datei
+checkpointed, unveränderlich geprüft und erst danach freigegeben. Vor einer
+Schema-Migration entsteht unabhängig von der Rotation eine eigene Sicherung;
+Dateien mit einem neueren unbekannten Schema werden unverändert abgewiesen.
+Verschlüsselung, externe Sicherungsziele und mehrere frei wählbare
+Finanzdateien sind noch nicht implementiert.
+
 ## Zahlungsverkehr
 
 Der Zahlungsverkehr ist ausdrücklich ein lokaler Simulator ohne echte

@@ -3356,6 +3356,14 @@ private struct BackupDocument: FileDocument {
 struct SettingsView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.light.rawValue
+    @AppStorage(AutomaticBackupPreferences.enabledKey)
+    private var automaticBackupEnabled = true
+    @AppStorage(AutomaticBackupPreferences.intervalHoursKey)
+    private var automaticBackupIntervalHours = 24
+    @AppStorage(AutomaticBackupPreferences.maximumCountKey)
+    private var automaticBackupMaximumCount = 14
+    @AppStorage(AutomaticBackupPreferences.maximumAgeDaysKey)
+    private var automaticBackupMaximumAgeDays = 90
     @State private var categoryName = ""
     @State private var categoryKind: CategoryKind = .expense
     @State private var editedPayee: FinancePayee?
@@ -3381,6 +3389,54 @@ struct SettingsView: View {
                 LabeledContent("Basiswährung", value: store.fileInfo?.baseCurrency ?? "—")
                 LabeledContent("Locale", value: store.fileInfo?.locale ?? "—")
                 LabeledContent("Zeitzone", value: store.fileInfo?.timeZone ?? "—")
+            }
+            Section("Automatische Datensicherung") {
+                Toggle("Automatische Sicherungen aktivieren", isOn: $automaticBackupEnabled)
+                Picker("Mindestabstand", selection: $automaticBackupIntervalHours) {
+                    Text("1 Stunde").tag(1)
+                    Text("6 Stunden").tag(6)
+                    Text("12 Stunden").tag(12)
+                    Text("Täglich").tag(24)
+                    Text("Alle 3 Tage").tag(72)
+                    Text("Wöchentlich").tag(168)
+                }
+                .disabled(!automaticBackupEnabled)
+                Stepper(
+                    "Höchstens \(automaticBackupMaximumCount) Sicherungen",
+                    value: $automaticBackupMaximumCount,
+                    in: 1...100
+                )
+                .disabled(!automaticBackupEnabled)
+                Stepper(
+                    "Aufbewahrung höchstens \(automaticBackupMaximumAgeDays) Tage",
+                    value: $automaticBackupMaximumAgeDays,
+                    in: 1...3_650
+                )
+                .disabled(!automaticBackupEnabled)
+                LabeledContent("Status", value: store.automaticBackupStatusText)
+                if let directory = store.automaticBackupDirectory {
+                    LabeledContent("Ordner") {
+                        Text(directory.path(percentEncoded: false))
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                    }
+                }
+                Button("Jetzt geprüfte Autosicherung erstellen") {
+                    _ = store.createAutomaticBackup(
+                        force: true,
+                        policy: AutomaticBackupPolicy(
+                            isEnabled: automaticBackupEnabled,
+                            minimumIntervalHours: automaticBackupIntervalHours,
+                            maximumBackupCount: automaticBackupMaximumCount,
+                            maximumAgeDays: automaticBackupMaximumAgeDays
+                        )
+                    )
+                }
+                Text(
+                    "Beim Start und Beenden wird nur gesichert, wenn die Finanzdatei seit der letzten Sicherung geändert wurde und der Mindestabstand abgelaufen ist. Vor jeder Schema-Migration entsteht unabhängig davon eine eigene geprüfte Sicherung."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Section("Kategorien") {
                 HStack {

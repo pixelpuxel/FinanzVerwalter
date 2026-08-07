@@ -122,14 +122,14 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 ## Aktueller verifizierter Meilenstein
 
 Migrationen 1 bis 29 sowie die in diesem Dokument beschriebenen lokalen
-Konto-, Buchungs-, Berichts-, Regel-, Banking- und Importkerne sind
-implementiert. Die jüngste vollständige isolierte Abnahme umfasst 82
-XCTest-Fälle: 81 bestanden, der private opt-in-Real-QIF-Test wurde ohne
-temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der private echte
-2025-QIF-Test bestand zusätzlich separat mit einer danach gelöschten
-temporären Kopie. Die Release-App ist lokal
-installiert; die jüngste visuelle Abnahme bleibt bei gesperrtem Mac offen.
-Details und frühere Screenshots stehen in `Gedächtnis.md`.
+Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
+Sicherungskerne sind implementiert. Die jüngste vollständige isolierte
+Abnahme umfasst 94 XCTest-Fälle: 93 bestanden, der private opt-in-Real-QIF-
+Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
+private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
+Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
+unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
+Details und Screenshots stehen in `Gedächtnis.md`.
 
 Migration 11 ergänzt `account_groups` und erweitert `accounts` um Kurzname,
 Beschreibung, Gruppe, IBAN, BIC, maskierte Kontonummer, Inhaber,
@@ -1236,3 +1236,34 @@ Teste atomaren Kontowechsel, Salden beider Konten, Erhalt der Split-IDs und
 Bankmetadaten, identisches Ziel, geschlossenes Ziel, Währungsabweichung,
 Abgleichschutz, Umbuchungsschutz, SQLite-Integrität sowie die bytegenaue
 deutsche TSV-Zeile mit eingebetteten Tabulatoren.
+
+# Reproduzierbare automatische Datensicherung
+
+Baue auf `sqlite3_backup` auf und gib eine Sicherung niemals frei, solange sie
+noch von einer WAL- oder SHM-Seitendatei abhängt. Schreibe zunächst in einen
+einmaligen versteckten Zielpfad, beende den Online-Backupvorgang, führe
+`wal_checkpoint(TRUNCATE)` aus, setze die Zieldatei auf `journal_mode=DELETE`,
+finalisiere alle Statements und schließe die Zielverbindung. Entferne
+verbliebene leere Seitendateien. Öffne die Sicherung anschließend read-only
+mit SQLite-URI `immutable=1`, prüfe Finanzdateikopf und `integrity_check = ok`
+und verschiebe sie erst danach atomar auf den endgültigen `.qbackup`-Namen.
+Vorhandene Ziele und die Quelldatei selbst dürfen nie überschrieben werden.
+
+Lege Autosicherungen standardmäßig im Ordner `Sicherungen` neben der
+Finanzdatei ab. Die Richtlinie umfasst Aktivstatus, Mindestabstand in Stunden,
+Höchstzahl und maximales Alter in Tagen; Standardwerte sind aktiv, 24 Stunden,
+14 Dateien und 90 Tage. Beim Start und Beenden wird nur gesichert, wenn der
+Mindestabstand abgelaufen ist und Hauptdatei, WAL oder SHM seit der neuesten
+Autosicherung geändert wurden. Eine sichtbare Aktion erzwingt unabhängig vom
+Zeitpunkt eine neue geprüfte Sicherung. Mengen- und Altersrotation dürfen nur
+Dateien mit dem eindeutigen Autosicherungspräfix löschen, niemals manuelle
+oder Vor-Migrations-Sicherungen.
+
+Vor jeder Migration eines vorhandenen Schemas kleiner als der aktuellen
+Schemafassung entsteht unabhängig von der Autosicherungsrichtlinie eine
+eigene geprüfte Vor-Migrations-Sicherung. Eine Datei mit höherer unbekannter
+Schemaversion wird mit verständlicher Meldung geöffnet abgewiesen und nicht
+verändert. Teste Zeitprüfung, Änderungsprüfung, deaktivierte und erzwungene
+Sicherung, Mengen- und Altersrotation, eigenständige Lesbarkeit ohne
+Seitendateien, Quell-/Zielschutz, Alt-Schema-Sicherung, Zukunftsschema-
+Ablehnung, Restore-Regression und Datenbankintegrität.

@@ -1,6 +1,6 @@
 # Anforderungsmatrix FinanzVerwalter
 
-Stand: 31.07.2026
+Stand: 07.08.2026
 
 Diese Matrix ist die überprüfbare Soll-Ist-Sicht zur externen Masterdatei.
 `Erfüllt` bedeutet, dass Domänenlogik, Persistenz, Oberfläche und Tests für
@@ -21,7 +21,7 @@ fertigen Funktionsbereich.
 | P0 | Kontoabgleich | Erfüllt für lokalen Kern | Anfangs-/Endsaldo, Auszugsdatum, explizite Buchungsauswahl, markierte Summe, Differenz, doppelt bestätigte Ausgleichsbuchung, Buchungsschutz, unveränderliche Positionshistorie und Rücknahme des jüngsten aktiven Abgleichs mit Audit vorhanden |
 | P0 | Sammelkontoblatt | Erfüllt für lokalen Kern | Frei kombinierbare offene Konten, chronologische reale und regelmäßige Zukunft bis 365 Tage, echte kontenweise Salden, blaue Heute-/Zukunftsgrenze, unabhängige Status-/Kategorie-/Zeitraum-/Textfilter, Warnung bei gefilterter Bewegungssumme, währungsgetrennte Summen, benannte Kombinationen, geschützte Mehrfachkategorisierung, Systemdruck/PDF, zwei gleichzeitig geteilte Sammelansichten und direkte Berichtsaufrufe für Sichtmenge, Empfänger, Kategorie oder Klasse/Tag vorhanden |
 | P0 | Berichte, Druck und Export | Teilweise | Live-Querymodell mit allen P0-Filtern, Splitauflösung ohne Doppelzählung, zwei frei kombinierbaren Gruppierungsdimensionen, währungsgetrennten Gruppen, Drill-down, rückwärtskompatiblen versionierten Vorlagen und sechs editierbaren buchungsbasierten Standardberichten vorhanden; historische Kontosalden/Nettovermögen, Zeitvergleich als Summe oder Monatsdurchschnitt und Budget-Plan/Ist/Abweichung für Geschäftsjahr oder Monat besitzen eigene geprüfte Snapshot-Engines, Drill-down, CSV, mehrseitige A4-PDFs in Hoch-/Querformat und direkten Systemdruck; frei konfigurierbare Zwischensummen sowie XLSX/HTML fehlen |
-| P0 | Backup und Restore | Teilweise | Atomare SQLite-Sicherung, Validierung, Sicherheitskopie vor Restore; Rotation, Autosicherung, Verschlüsselung, Dateiwechsel und Reparaturkopie fehlen |
+| P0 | Backup und Restore | Erfüllt für lokalen Einzeldatei-Kern | Manuelle und automatische SQLite-Online-Sicherungen; eigenständiger WAL-Checkpoint; unveränderliche Validierung; Änderungs-/Zeitprüfung; konfigurierbare Mengen-/Altersrotation; erzwungene Sicherung; geprüfte Vor-Migrations-Kopie; Zukunftsschema-Schutz; Sicherheitskopie vor Restore; Verschlüsselung, externe Ziele, Dateiwechsel und Reparaturkopie fehlen |
 | P1 | Banking-Adaptervertrag und Read-only-Abruf | Erfüllt für Simulator-Kern | Getrennter Read-only-Adaptervertrag, deterministischer Simulator für Konten, Salden, gebuchte/vorgemerkte Umsätze, Daueraufträge und Terminüberweisungen, explizite Kontenzuordnung, Regel-/Matching-Vorschau, Abbruchschutz, Rohhash, Diagnose, Abrufhistorie und atomarer Commit; echte FinTS-/PSD2-Verbindungen, SCA-Dialoge, Depots und Kurse fehlen und bleiben sichtbar deaktiviert |
 | P1 | Zahlungsverkehr | Teilweise | SEPA-/Echtzeit-/Terminauftrag, unveränderliche Stammdatenschnappschüsse, SEPA-Core-Lastschrift, atomare Sammler, SCA-Simulation, Idempotenz, versionierte pain.001.001.09-/pain.008.001.08-Exporte und sichere Importe mit exakter Konto-/Empfänger-/Bank-/Mandatszuordnung, selektiver doppelter Bestätigung, reinen Entwürfen, Sammlerrekonstruktion und persistenter Historie; sicherer pain.002.001.10-Statusimport; lokale Daueraufträge; offline EPC069-12-v3.1-QR-Bildscan mit strengem Parser, sichtbarer Editorprüfung, optionalem persistentem SEPA-Zweckcode und pain.001-Rundlauf; versionierte TARGET-Euro-/Wochentagsprofile mit persistenter Historienversion, Feiertagsverschiebung und 24/7-Ausnahme für Echtzeitüberweisungen; echte Bankanbindung fehlt |
 | P1 | Kalender und Prognose | Teilweise | Regelmäßige Vorgänge, Monatsende, versionierte TARGET-Schließtage und 30/90/180/365-Tage-Prognose; Wochenansicht, Einzel-/Serienausnahmen, Drag-and-drop und Szenarien fehlen |
@@ -42,9 +42,10 @@ fertigen Funktionsbereich.
 
 ## Aktuelle Reihenfolge
 
-1. Vollständige Kontoblatt-Tastatur-/Accessibility-/UI-Abnahme nach dem
-   manuellen Entsperren des Macs.
-2. Den vorhandenen pain.001-/pain.008-/pain.002-, EPC-QR- und
-   Bankkalenderkern mit weiteren synthetischen Bankvarianten härten.
-3. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,
+1. Fremdwährungsbuchungen und währungskorrekte Umbuchungen als nächsten
+   vollständigen Konten-/Kontoblatt-Slice umsetzen.
+2. Vollständige Kontoblatt- und neue Sicherungseinstellungen per Tastatur,
+   Accessibility und sichtbarer UI nach manuellem Entsperren abnehmen.
+3. Berichts-Zwischensummen und offene XLSX-/HTML-Ausgaben ergänzen.
+4. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,
    SCA-, Datenschutz- und Sicherheitsarchitektur.

@@ -1257,6 +1257,127 @@ final class FinanzVerwalterTests: XCTestCase {
         let backup = try SQLiteFinanceStore(fileURL: backupURL)
         XCTAssertTrue(try backup.integrityCheck())
         XCTAssertEqual(try backup.financeFileInfo().name, "Meine Finanzen")
+        XCTAssertThrowsError(try context.store.backup(to: backupURL))
+        XCTAssertThrowsError(try context.store.backup(to: context.store.fileURL))
+    }
+
+    func testAutomaticBackupHonorsChangesIntervalsValidationAndRotation() throws {
+        let context = try TestDatabase()
+        let directory = context.directory.appendingPathComponent("Autosicherungen")
+        let start = Date(timeIntervalSince1970: 1_767_225_600)
+        let policy = AutomaticBackupPolicy(
+            isEnabled: true,
+            minimumIntervalHours: 24,
+            maximumBackupCount: 2,
+            maximumAgeDays: 30
+        )
+
+        let first = try AutomaticBackupManager.perform(
+            repository: context.store,
+            directory: directory,
+            policy: policy,
+            now: start,
+            sourceModifiedAt: start.addingTimeInterval(-60)
+        )
+        guard case let .created(firstURL, firstRemoved) = first else {
+            return XCTFail("Erste Autosicherung wurde nicht erstellt: \(first)")
+        }
+        XCTAssertEqual(firstRemoved, 0)
+        XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: firstURL))
+
+        XCTAssertEqual(
+            try AutomaticBackupManager.perform(
+                repository: context.store,
+                directory: directory,
+                policy: policy,
+                now: start.addingTimeInterval(3_600),
+                sourceModifiedAt: start.addingTimeInterval(1_800)
+            ),
+            .notDue
+        )
+        XCTAssertEqual(
+            try AutomaticBackupManager.perform(
+                repository: context.store,
+                directory: directory,
+                policy: policy,
+                now: start.addingTimeInterval(25 * 3_600),
+                sourceModifiedAt: start.addingTimeInterval(-60)
+            ),
+            .unchanged
+        )
+
+        let secondTime = start.addingTimeInterval(26 * 3_600)
+        let second = try AutomaticBackupManager.perform(
+            repository: context.store,
+            directory: directory,
+            policy: policy,
+            now: secondTime,
+            sourceModifiedAt: secondTime
+        )
+        guard case let .created(secondURL, secondRemoved) = second else {
+            return XCTFail("Geänderte Datei wurde nicht gesichert: \(second)")
+        }
+        XCTAssertEqual(secondRemoved, 0)
+        XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: secondURL))
+
+        let thirdTime = start.addingTimeInterval(27 * 3_600)
+        let third = try AutomaticBackupManager.perform(
+            repository: context.store,
+            directory: directory,
+            policy: policy,
+            now: thirdTime,
+            force: true,
+            sourceModifiedAt: thirdTime
+        )
+        guard case let .created(thirdURL, thirdRemoved) = third else {
+            return XCTFail("Erzwungene Sicherung wurde nicht erstellt: \(third)")
+        }
+        XCTAssertEqual(thirdRemoved, 1)
+        let retained = try AutomaticBackupManager.backups(in: directory)
+        XCTAssertEqual(retained.count, 2)
+        XCTAssertEqual(
+            retained.first?.url.standardizedFileURL,
+            thirdURL.standardizedFileURL
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        for backup in retained {
+            XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: backup.url))
+        }
+
+        let agedTime = start.addingTimeInterval(60 * 86_400)
+        let aged = try AutomaticBackupManager.perform(
+            repository: context.store,
+            directory: directory,
+            policy: AutomaticBackupPolicy(
+                isEnabled: true,
+                minimumIntervalHours: 24,
+                maximumBackupCount: 10,
+                maximumAgeDays: 30
+            ),
+            now: agedTime,
+            force: true,
+            sourceModifiedAt: agedTime
+        )
+        guard case let .created(agedURL, agedRemoved) = aged else {
+            return XCTFail("Altersrotation wurde nicht ausgeführt: \(aged)")
+        }
+        XCTAssertEqual(agedRemoved, 2)
+        let afterAgeRotation = try AutomaticBackupManager.backups(in: directory)
+        XCTAssertEqual(afterAgeRotation.map { $0.url.standardizedFileURL }, [
+            agedURL.standardizedFileURL
+        ])
+        XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: agedURL))
+
+        XCTAssertEqual(
+            try AutomaticBackupManager.perform(
+                repository: context.store,
+                directory: directory,
+                policy: AutomaticBackupPolicy(isEnabled: false),
+                now: agedTime.addingTimeInterval(3_600),
+                sourceModifiedAt: agedTime.addingTimeInterval(3_600)
+            ),
+            .disabled
+        )
     }
 
     func testQIFImportPreservesCategoriesAndExactSplits() throws {
@@ -3971,6 +4092,58 @@ final class FinanzVerwalterTests: XCTestCase {
             "Bankkonten"
         )
         XCTAssertTrue(try migrated.integrityCheck())
+        let migrationFiles = try FileManager.default.contentsOfDirectory(
+            at: directory.appendingPathComponent("Sicherungen"),
+            includingPropertiesForKeys: nil
+        )
+        let migrationBackups = migrationFiles.filter {
+            $0.lastPathComponent.hasPrefix("FinanzVerwalter-vor-Migration-v10-")
+                && $0.pathExtension == "qbackup"
+        }
+        XCTAssertEqual(migrationBackups.count, 1)
+        XCTAssertFalse(migrationFiles.contains {
+            $0.lastPathComponent.hasSuffix("-wal") || $0.lastPathComponent.hasSuffix("-shm")
+        })
+        XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: migrationBackups[0]))
+    }
+
+    func testFutureDatabaseSchemaIsRejectedWithoutMutation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-future-schema-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("future.qdata")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(database, "PRAGMA user_version=30", nil, nil, nil),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+
+        XCTAssertThrowsError(try SQLiteFinanceStore(fileURL: url)) { error in
+            guard case let FinanceError.database(message) = error else {
+                return XCTFail("Unerwarteter Fehler: \(error)")
+            }
+            XCTAssertTrue(message.contains("Schema 30"))
+            XCTAssertTrue(message.contains("Schema 29"))
+        }
+        XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 30)
+        sqlite3_finalize(statement)
+        sqlite3_close(database)
     }
 
     func testMigration14To29PreservesLegacyReconciliationHistory() throws {

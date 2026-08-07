@@ -1,6 +1,164 @@
 import CryptoKit
 import Foundation
 
+struct AutomaticBackupPolicy: Equatable, Sendable {
+    var isEnabled: Bool = true
+    var minimumIntervalHours: Int = 24
+    var maximumBackupCount: Int = 14
+    var maximumAgeDays: Int = 90
+
+    var normalized: Self {
+        Self(
+            isEnabled: isEnabled,
+            minimumIntervalHours: max(1, minimumIntervalHours),
+            maximumBackupCount: max(1, maximumBackupCount),
+            maximumAgeDays: max(1, maximumAgeDays)
+        )
+    }
+}
+
+enum AutomaticBackupOutcome: Equatable, Sendable {
+    case disabled
+    case notDue
+    case unchanged
+    case created(url: URL, removedCount: Int)
+
+    var statusText: String {
+        switch self {
+        case .disabled: "Autosicherung ist ausgeschaltet"
+        case .notDue: "Autosicherung ist noch nicht fällig"
+        case .unchanged: "Keine Autosicherung nötig – Finanzdatei unverändert"
+        case let .created(url, removedCount):
+            removedCount == 0
+                ? "Autosicherung erstellt: \(url.lastPathComponent)"
+                : "Autosicherung erstellt, \(removedCount) alte Sicherungen entfernt"
+        }
+    }
+}
+
+enum AutomaticBackupPreferences {
+    static let enabledKey = "automaticBackupEnabled"
+    static let intervalHoursKey = "automaticBackupIntervalHours"
+    static let maximumCountKey = "automaticBackupMaximumCount"
+    static let maximumAgeDaysKey = "automaticBackupMaximumAgeDays"
+
+    static func load(from defaults: UserDefaults = .standard) -> AutomaticBackupPolicy {
+        let standard = AutomaticBackupPolicy()
+        return AutomaticBackupPolicy(
+            isEnabled: defaults.object(forKey: enabledKey) == nil
+                ? standard.isEnabled : defaults.bool(forKey: enabledKey),
+            minimumIntervalHours: defaults.object(forKey: intervalHoursKey) == nil
+                ? standard.minimumIntervalHours : defaults.integer(forKey: intervalHoursKey),
+            maximumBackupCount: defaults.object(forKey: maximumCountKey) == nil
+                ? standard.maximumBackupCount : defaults.integer(forKey: maximumCountKey),
+            maximumAgeDays: defaults.object(forKey: maximumAgeDaysKey) == nil
+                ? standard.maximumAgeDays : defaults.integer(forKey: maximumAgeDaysKey)
+        ).normalized
+    }
+}
+
+enum AutomaticBackupManager {
+    static let filePrefix = "FinanzVerwalter-Autosicherung-"
+
+    static func defaultDirectory(for financeFileURL: URL) -> URL {
+        financeFileURL.deletingLastPathComponent()
+            .appendingPathComponent("Sicherungen", isDirectory: true)
+    }
+
+    static func backups(
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) throws -> [(url: URL, modifiedAt: Date)] {
+        guard fileManager.fileExists(atPath: directory.path) else { return [] }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        return try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ).compactMap { url in
+            guard url.lastPathComponent.hasPrefix(filePrefix),
+                  url.pathExtension.lowercased() == "qbackup"
+            else { return nil }
+            let values = try url.resourceValues(forKeys: keys)
+            guard values.isRegularFile == true, let date = values.contentModificationDate else {
+                return nil
+            }
+            return (url, date)
+        }.sorted {
+            if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
+            return $0.url.lastPathComponent > $1.url.lastPathComponent
+        }
+    }
+
+    static func sourceModificationDate(
+        for financeFileURL: URL,
+        fileManager: FileManager = .default
+    ) -> Date? {
+        [financeFileURL.path, financeFileURL.path + "-wal", financeFileURL.path + "-shm"]
+            .compactMap { path -> Date? in
+                guard let attributes = try? fileManager.attributesOfItem(atPath: path) else {
+                    return nil
+                }
+                return attributes[.modificationDate] as? Date
+            }
+            .max()
+    }
+
+    static func perform(
+        repository: SQLiteFinanceStore,
+        directory: URL? = nil,
+        policy rawPolicy: AutomaticBackupPolicy,
+        now: Date = Date(),
+        force: Bool = false,
+        sourceModifiedAt explicitSourceDate: Date? = nil,
+        fileManager: FileManager = .default
+    ) throws -> AutomaticBackupOutcome {
+        let policy = rawPolicy.normalized
+        guard policy.isEnabled || force else { return .disabled }
+        let directory = directory ?? defaultDirectory(for: repository.fileURL)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let existing = try backups(in: directory, fileManager: fileManager)
+        if !force, let newest = existing.first {
+            let interval = TimeInterval(policy.minimumIntervalHours * 3_600)
+            guard now.timeIntervalSince(newest.modifiedAt) >= interval else {
+                return .notDue
+            }
+            let sourceDate = explicitSourceDate
+                ?? sourceModificationDate(for: repository.fileURL, fileManager: fileManager)
+            guard sourceDate == nil || sourceDate! > newest.modifiedAt else {
+                return .unchanged
+            }
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let name = "\(filePrefix)\(formatter.string(from: now))-\(UUID().uuidString.prefix(8)).qbackup"
+        let finalURL = directory.appendingPathComponent(name)
+        let stagedURL = directory.appendingPathComponent(".\(UUID().uuidString).qbackup.tmp")
+        defer { try? fileManager.removeItem(at: stagedURL) }
+        try repository.backup(to: stagedURL)
+        try SQLiteFinanceStore.validateBackup(at: stagedURL)
+        try fileManager.moveItem(at: stagedURL, to: finalURL)
+        try fileManager.setAttributes([.modificationDate: now], ofItemAtPath: finalURL.path)
+
+        let all = try backups(in: directory, fileManager: fileManager)
+        let ageLimit = now.addingTimeInterval(-TimeInterval(policy.maximumAgeDays * 86_400))
+        var removedCount = 0
+        for (index, backup) in all.enumerated() where
+            index >= policy.maximumBackupCount || backup.modifiedAt < ageLimit {
+            try fileManager.removeItem(at: backup.url)
+            removedCount += 1
+        }
+        return .created(url: finalURL, removedCount: removedCount)
+    }
+}
+
 struct PayeeSmartFillSuggestion: Identifiable, Equatable, Sendable {
     let payee: FinancePayee
     let matchedAlias: String?
@@ -114,10 +272,14 @@ final class FinanceAppStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var statusText = "Bereit"
     @Published var isBusy = false
+    @Published private(set) var automaticBackupStatusText = "Autosicherung noch nicht geprüft"
 
     private var repository: SQLiteFinanceStore?
 
     init(repository: SQLiteFinanceStore? = nil) {
+        let shouldRunAutomaticBackup = repository == nil
+            && !ProcessInfo.processInfo.arguments.contains("-demo")
+            && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
         do {
             if let repository {
                 self.repository = repository
@@ -140,6 +302,9 @@ final class FinanceAppStore: ObservableObject {
             if ProcessInfo.processInfo.arguments.contains("-demo"), accounts.isEmpty {
                 try seedDemo()
                 try load()
+            }
+            if shouldRunAutomaticBackup {
+                _ = createAutomaticBackup()
             }
         } catch {
             self.repository = nil
@@ -921,8 +1086,35 @@ final class FinanceAppStore: ObservableObject {
     func backupData() -> Data? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("finanzverwalter-\(UUID().uuidString).qbackup")
+        defer { try? FileManager.default.removeItem(at: url) }
         guard createBackup(at: url) else { return nil }
         return try? Data(contentsOf: url)
+    }
+
+    var automaticBackupDirectory: URL? {
+        repository.map { AutomaticBackupManager.defaultDirectory(for: $0.fileURL) }
+    }
+
+    @discardableResult
+    func createAutomaticBackup(
+        force: Bool = false,
+        policy: AutomaticBackupPolicy? = nil
+    ) -> AutomaticBackupOutcome? {
+        guard let repository else { return nil }
+        do {
+            let outcome = try AutomaticBackupManager.perform(
+                repository: repository,
+                policy: policy ?? AutomaticBackupPreferences.load(),
+                force: force
+            )
+            automaticBackupStatusText = outcome.statusText
+            if case .created = outcome { statusText = outcome.statusText }
+            return outcome
+        } catch {
+            present(error)
+            automaticBackupStatusText = "Autosicherung fehlgeschlagen: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     func restoreBackup(from source: URL) -> Bool {

@@ -1984,3 +1984,52 @@ Rechtsberatung.
   Projektthread 894 (`/quicken`) veröffentlicht. Sie enthält den exakten
   Messwert von 12.795.846 Tokens; Bot-Antwort, Chat- und Thread-ID wurden
   geprüft.
+
+## 2026-08-07 – Automatische, rotierte und migrationssichere Backups
+
+- Der Master-Prompt wurde erneut vollständig gegen die Anforderungsmatrix
+  gelesen. Als nächste lokale P0-Lücke wurde Backup/Restore priorisiert, weil
+  Rotation, automatische Ausführung und Vor-Migrations-Sicherung fehlten.
+- `AutomaticBackupManager` prüft beim Start und Beenden Mindestabstand und
+  tatsächliche Änderung von Hauptdatei, WAL oder SHM. Standard sind 24
+  Stunden, höchstens 14 Sicherungen und höchstens 90 Tage. Einstellungen und
+  eine erzwungene geprüfte Sicherung sind in der Oberfläche vorhanden.
+- Mengen- und Altersrotation erfassen ausschließlich Dateien mit dem
+  eindeutigen Autosicherungspräfix. Manuelle und Vor-Migrations-Sicherungen
+  werden nicht gelöscht. Ein vorhandenes Sicherungsziel sowie die Quelldatei
+  selbst sind gegen Überschreiben geschützt; temporäre manuelle Exporte
+  werden nach dem Einlesen entfernt.
+- Ein gezielter Test deckte einen realen WAL-Randfall auf: Eine während der
+  Erstellung gültige Sicherung konnte nach dem atomaren Verschieben ihre
+  Seitendatei verlieren. Der Writer beendet nun `sqlite3_backup`, checkpointed
+  WAL, wechselt das Ziel auf `journal_mode=DELETE`, finalisiert und schließt
+  vollständig, entfernt Seitendateien und validiert mit `immutable=1`.
+- Vor jeder Migration eines bekannten älteren Schemas entsteht eine eigene
+  geprüfte Sicherung. Ein Schema größer als die aktuelle Fassung 29 wird mit
+  verständlicher Meldung ohne Mutation abgewiesen. Migration 10→29 sowie die
+  bestehenden Migrationen 14→29 und 22→29 sind regressionsgeprüft.
+- Der finale Result-Bundle liegt unter
+  `/tmp/FinanzVerwalter-FullTests-AutomaticBackup-Final-20260807-1033.xcresult`:
+  94 Tests, 93 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig
+  übersprungen, 0 Fehler und 0 erwartete Fehler.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-AutomaticBackup-Release` ist streng signaturgeprüft. Sein
+  ausführbarer Code hat SHA-256
+  `151949d4db1858c66b9ded293c03b36eb2bcd2301c669c853e1bed217b623d9c`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; die Vorgänger liegen
+  reversibel unter `build/FinanzVerwalter-vor-autosicherung-20260807-1035.app`
+  und `build/FinanzVerwalter-user-vor-autosicherung-20260807-1035.app`.
+- Die installierte App läuft als Prozess 48863. Beim ersten Start erzeugte sie
+  die echte Sicherung
+  `Sicherungen/FinanzVerwalter-Autosicherung-20260807-083613-468-0D9A673D.qbackup`
+  mit SHA-256
+  `4e580a923fb8e93c18bbbdf9d325e8305a1f625a86b89fd8ca91c62479665e92`.
+  Sie ist ohne WAL/SHM eigenständig lesbar, Schema 29, Integrität `ok` und
+  enthält 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- Die Produktivdatei blieb bytegleich bei SHA-256
+  `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`
+  und meldet weiterhin Integrität `ok`. Die sichtbare Einstellungsabnahme war
+  wegen der erneut gesperrten macOS-Sitzung nicht möglich und wird nicht
+  vorgetäuscht; Prozess-, Release- und Echtdatensicherung sind unabhängig
+  davon nachgewiesen.
