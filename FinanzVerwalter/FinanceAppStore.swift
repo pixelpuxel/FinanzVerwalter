@@ -249,6 +249,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var bankingRemoteOrders: [BankingRemoteStandingOrder] = []
     @Published private(set) var bankingProgressText = ""
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
+    @Published private(set) var scheduledTransactionExceptions: [ScheduledTransactionException] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
@@ -1772,7 +1773,13 @@ final class FinanceAppStore: ObservableObject {
         )
         return scheduledTransactions
             .filter { includedAccounts.contains($0.accountID) }
-            .flatMap { $0.occurrences(until: end, excludingReferences: existingReferences) }
+            .flatMap {
+                $0.occurrences(
+                    until: end,
+                    excludingReferences: existingReferences,
+                    exceptions: scheduledTransactionExceptions
+                )
+            }
             .sorted {
                 if $0.bookingDate != $1.bookingDate { return $0.bookingDate < $1.bookingDate }
                 return $0.reference < $1.reference
@@ -1812,6 +1819,55 @@ final class FinanceAppStore: ObservableObject {
             try repository.saveScheduledTransaction(value)
             try load()
             statusText = "Regelmäßiger Vorgang „\(value.name)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func scheduledTransactionException(
+        forReference reference: String,
+        calendar: Calendar = .current
+    ) -> ScheduledTransactionException? {
+        guard let identity = ScheduledTransaction.occurrenceIdentity(from: reference) else {
+            return nil
+        }
+        return scheduledTransactionExceptions.first {
+            $0.scheduledTransactionID == identity.scheduledTransactionID
+                && calendar.isDate($0.originalDueDate, inSameDayAs: identity.originalDueDate)
+        }
+    }
+
+    func saveScheduledTransactionException(
+        _ value: ScheduledTransactionException
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveScheduledTransactionException(value)
+            try load()
+            statusText = value.disposition == .skipped
+                ? "Serienfälligkeit übersprungen"
+                : "Serienfälligkeit geändert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func resetScheduledTransactionException(
+        scheduledTransactionID: UUID,
+        originalDueDate: Date
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.deleteScheduledTransactionException(
+                scheduledTransactionID: scheduledTransactionID,
+                originalDueDate: originalDueDate
+            )
+            try load()
+            statusText = "Serienfälligkeit auf den Serienwert zurückgesetzt"
             return true
         } catch {
             present(error)
@@ -2720,6 +2776,7 @@ final class FinanceAppStore: ObservableObject {
             try repository.bankingRemoteOrders(connectionID: $0.id)
         }
         scheduledTransactions = try repository.scheduledTransactions()
+        scheduledTransactionExceptions = try repository.scheduledTransactionExceptions()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()
         directDebitOrders = try repository.directDebitOrders()

@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 32
+    static let currentSchemaVersion = 33
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -1738,6 +1738,36 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 32")
             }
         }
+        if version < 33 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_transaction_exceptions (
+                        id TEXT PRIMARY KEY,
+                        scheduled_transaction_id TEXT NOT NULL
+                            REFERENCES scheduled_transactions(id) ON DELETE CASCADE,
+                        original_due_date TEXT NOT NULL,
+                        effective_date TEXT NOT NULL,
+                        payee TEXT NOT NULL DEFAULT '',
+                        purpose TEXT NOT NULL DEFAULT '',
+                        category_id TEXT REFERENCES categories(id),
+                        amount_minor INTEGER NOT NULL,
+                        disposition TEXT NOT NULL
+                            CHECK(disposition IN ('modified','skipped')),
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(scheduled_transaction_id,original_due_date)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS scheduled_exceptions_effective ON scheduled_transaction_exceptions(effective_date,scheduled_transaction_id)"
+                )
+                try execute("PRAGMA user_version = 33")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2308,6 +2338,161 @@ final class SQLiteFinanceStore {
             )
             try audit(entity: "scheduled_transaction", id: value.id, action: "save", details: value.name)
         }
+    }
+
+    func scheduledTransactionExceptions() throws -> [ScheduledTransactionException] {
+        var values: [ScheduledTransactionException] = []
+        try query(
+            """
+            SELECT id,scheduled_transaction_id,original_due_date,effective_date,
+                   payee,purpose,category_id,amount_minor,disposition,note,
+                   created_at,updated_at
+            FROM scheduled_transaction_exceptions
+            ORDER BY original_due_date,scheduled_transaction_id,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let scheduledTransactionID = UUID(uuidString: Self.text(statement, 1)),
+                  let originalDueDate = Self.date(Self.text(statement, 2)),
+                  let effectiveDate = Self.date(Self.text(statement, 3)),
+                  let disposition = ScheduledOccurrenceDisposition(
+                    rawValue: Self.text(statement, 8)
+                  ),
+                  let createdAt = Self.timestampDate(Self.text(statement, 10)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 11))
+            else { return }
+            values.append(
+                ScheduledTransactionException(
+                    id: id, scheduledTransactionID: scheduledTransactionID,
+                    originalDueDate: originalDueDate, effectiveDate: effectiveDate,
+                    payee: Self.text(statement, 4), purpose: Self.text(statement, 5),
+                    categoryID: Self.optionalText(statement, 6).flatMap(UUID.init(uuidString:)),
+                    amountMinor: sqlite3_column_int64(statement, 7),
+                    disposition: disposition, note: Self.text(statement, 9),
+                    createdAt: createdAt, updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func saveScheduledTransactionException(
+        _ value: ScheduledTransactionException
+    ) throws {
+        guard let schedule = try scheduledTransactions().first(where: {
+            $0.id == value.scheduledTransactionID
+        }) else {
+            throw FinanceError.database("Der regelmäßige Vorgang existiert nicht mehr.")
+        }
+        guard isOccurrenceDate(value.originalDueDate, for: schedule) else {
+            throw FinanceError.database(
+                "Die ursprüngliche Fälligkeit gehört nicht zu diesem regelmäßigen Vorgang."
+            )
+        }
+        let originalDay = Self.day(value.originalDueDate)
+        var existingPairID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_exceptions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { existingPairID = UUID(uuidString: Self.text($0, 0)) }
+        var existingIDIdentity: (UUID, String)?
+        try query(
+            """
+            SELECT scheduled_transaction_id,original_due_date
+            FROM scheduled_transaction_exceptions WHERE id=?
+            """,
+            [.text(value.id.uuidString)]
+        ) {
+            if let scheduleID = UUID(uuidString: Self.text($0, 0)) {
+                existingIDIdentity = (scheduleID, Self.text($0, 1))
+            }
+        }
+        if let existingIDIdentity,
+           existingIDIdentity.0 != value.scheduledTransactionID
+            || existingIDIdentity.1 != originalDay {
+            throw FinanceError.database("Die Serienausnahme besitzt eine widersprüchliche Kennung.")
+        }
+        let storedID = existingPairID ?? value.id
+        let now = Self.timestamp(Date())
+        let createdAt = existingPairID == nil ? now : Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO scheduled_transaction_exceptions(
+                    id,scheduled_transaction_id,original_due_date,effective_date,
+                    payee,purpose,category_id,amount_minor,disposition,note,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    effective_date=excluded.effective_date,payee=excluded.payee,
+                    purpose=excluded.purpose,category_id=excluded.category_id,
+                    amount_minor=excluded.amount_minor,
+                    disposition=excluded.disposition,note=excluded.note,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(storedID.uuidString),
+                    .text(value.scheduledTransactionID.uuidString),
+                    .text(originalDay), .text(Self.day(value.effectiveDate)),
+                    .text(value.payee), .text(value.purpose),
+                    value.categoryID.map { .text($0.uuidString) } ?? .null,
+                    .integer(value.amountMinor), .text(value.disposition.rawValue),
+                    .text(value.note), .text(createdAt), .text(now)
+                ]
+            )
+            try audit(
+                entity: "scheduled_transaction_exception", id: storedID,
+                action: value.disposition.rawValue,
+                details: "\(schedule.name) · \(originalDay)"
+            )
+        }
+    }
+
+    func deleteScheduledTransactionException(
+        scheduledTransactionID: UUID,
+        originalDueDate: Date
+    ) throws {
+        let originalDay = Self.day(originalDueDate)
+        var exceptionID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_exceptions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { exceptionID = UUID(uuidString: Self.text($0, 0)) }
+        guard let exceptionID else { return }
+        try transaction {
+            try run(
+                "DELETE FROM scheduled_transaction_exceptions WHERE id=?",
+                [.text(exceptionID.uuidString)]
+            )
+            try audit(
+                entity: "scheduled_transaction_exception", id: exceptionID,
+                action: "delete", details: originalDay
+            )
+        }
+    }
+
+    private func isOccurrenceDate(
+        _ candidate: Date,
+        for schedule: ScheduledTransaction,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let candidateDay = Self.day(candidate)
+        var due = schedule.nextDueDate
+        var guardCount = 0
+        while Self.day(due) <= candidateDay,
+              due <= (schedule.endDate ?? candidate),
+              guardCount < 10_000 {
+            if Self.day(due) == candidateDay { return true }
+            due = schedule.frequency.next(after: due, calendar: calendar)
+            guardCount += 1
+        }
+        return false
     }
 
     func budgets() throws -> [FinanceBudget] {

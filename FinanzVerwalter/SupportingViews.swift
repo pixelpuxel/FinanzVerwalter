@@ -6428,10 +6428,27 @@ private struct RuleApplicationPreviewSheet: View {
 struct CalendarForecastView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var editedSchedule: ScheduledTransaction?
+    @State private var editedOccurrence: ScheduledOccurrenceEditRequest?
     @State private var forecastDays = 90
 
     private var occurrences: [FinanceTransaction] {
         store.forecastOccurrences(days: forecastDays)
+    }
+
+    private var visibleExceptions: [ScheduledTransactionException] {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        let end = calendar.date(byAdding: .day, value: forecastDays, to: Date()) ?? Date()
+        let includedSchedules = Set(store.scheduledTransactions.filter { schedule in
+            store.accounts.contains {
+                $0.id == schedule.accountID && $0.includeForecast && !$0.isClosed
+            }
+        }.map(\.id))
+        return store.scheduledTransactionExceptions.filter {
+            includedSchedules.contains($0.scheduledTransactionID)
+                && $0.originalDueDate >= start
+                && $0.originalDueDate <= end
+        }
     }
 
     var body: some View {
@@ -6530,41 +6547,89 @@ struct CalendarForecastView: View {
                     }
                     .padding(10)
                     Divider()
-                    if occurrences.isEmpty {
+                    if occurrences.isEmpty && visibleExceptions.isEmpty {
                         ContentUnavailableView(
                             "Keine Termine im Zeitraum",
                             systemImage: "calendar",
                             description: Text("Aktive regelmäßige Vorgänge erscheinen hier ohne Doppelzählung.")
                         )
                     } else {
-                        List(occurrences) { value in
-                            HStack(spacing: 12) {
-                                Text(value.bookingDate, format: .dateTime.day().month().year())
-                                    .frame(width: 92, alignment: .leading)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(value.payee.isEmpty ? value.purpose : value.payee)
-                                    Text("\(store.accountName(value.accountID)) · \(value.memo)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text(Money(minorUnits: value.amountMinor).formatted)
-                                        .monospacedDigit()
-                                        .foregroundStyle(value.amountMinor < 0 ? .red : .green)
-                                    Text(
-                                        Money(
-                                            minorUnits: store.projectedBalanceMinor(
-                                                accountID: value.accountID,
-                                                through: value.bookingDate
-                                            )
-                                        ).formatted
+                        List {
+                            Section("Erwartete Termine") {
+                                ForEach(occurrences) { value in
+                                    Button {
+                                        editedOccurrence = occurrenceRequest(for: value)
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Text(value.bookingDate, format: .dateTime.day().month().year())
+                                                .frame(width: 92, alignment: .leading)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                HStack(spacing: 6) {
+                                                    Text(value.payee.isEmpty ? value.purpose : value.payee)
+                                                    if store.scheduledTransactionException(
+                                                        forReference: value.reference
+                                                    ) != nil {
+                                                        Text("Geändert")
+                                                            .font(.caption2.bold())
+                                                            .padding(.horizontal, 5)
+                                                            .padding(.vertical, 2)
+                                                            .background(.blue.opacity(0.12), in: Capsule())
+                                                    }
+                                                }
+                                                Text("\(store.accountName(value.accountID)) · \(value.memo)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Spacer()
+                                            VStack(alignment: .trailing, spacing: 2) {
+                                                Text(Money(minorUnits: value.amountMinor).formatted)
+                                                    .monospacedDigit()
+                                                    .foregroundStyle(value.amountMinor < 0 ? .red : .green)
+                                                Text(
+                                                    Money(
+                                                        minorUnits: store.projectedBalanceMinor(
+                                                            accountID: value.accountID,
+                                                            through: value.bookingDate
+                                                        )
+                                                    ).formatted
+                                                )
+                                                .font(.caption.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(
+                                        "Serientermin \(value.payee.isEmpty ? value.purpose : value.payee), \(Money(minorUnits: value.amountMinor).formatted)"
                                     )
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
                                 }
                             }
-                            .accessibilityElement(children: .combine)
+                            if !visibleExceptions.isEmpty {
+                                Section("Serienausnahmen") {
+                                    ForEach(visibleExceptions) { exception in
+                                        Button {
+                                            editedOccurrence = occurrenceRequest(for: exception)
+                                        } label: {
+                                            HStack {
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(scheduleName(exception.scheduledTransactionID))
+                                                    Text(exception.originalDueDate, format: .dateTime.day().month().year())
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                                Spacer()
+                                                Text(exception.disposition.title)
+                                                    .foregroundStyle(
+                                                        exception.disposition == .skipped ? .orange : .blue
+                                                    )
+                                            }
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -6574,6 +6639,156 @@ struct CalendarForecastView: View {
         .sheet(item: $editedSchedule) { schedule in
             ScheduledTransactionEditor(value: schedule)
         }
+        .sheet(item: $editedOccurrence) { request in
+            ScheduledOccurrenceEditor(request: request)
+        }
+    }
+
+    private func occurrenceRequest(
+        for transaction: FinanceTransaction
+    ) -> ScheduledOccurrenceEditRequest? {
+        guard let identity = ScheduledTransaction.occurrenceIdentity(
+            from: transaction.reference
+        ), let schedule = store.scheduledTransactions.first(where: {
+            $0.id == identity.scheduledTransactionID
+        }) else { return nil }
+        return ScheduledOccurrenceEditRequest(
+            schedule: schedule, originalDueDate: identity.originalDueDate,
+            exception: store.scheduledTransactionException(forReference: transaction.reference)
+        )
+    }
+
+    private func occurrenceRequest(
+        for exception: ScheduledTransactionException
+    ) -> ScheduledOccurrenceEditRequest? {
+        guard let schedule = store.scheduledTransactions.first(where: {
+            $0.id == exception.scheduledTransactionID
+        }) else { return nil }
+        return ScheduledOccurrenceEditRequest(
+            schedule: schedule, originalDueDate: exception.originalDueDate,
+            exception: exception
+        )
+    }
+
+    private func scheduleName(_ id: UUID) -> String {
+        store.scheduledTransactions.first { $0.id == id }?.name ?? "Regelmäßiger Vorgang"
+    }
+}
+
+private struct ScheduledOccurrenceEditRequest: Identifiable {
+    var id: String {
+        "\(schedule.id.uuidString):\(Int(originalDueDate.timeIntervalSince1970))"
+    }
+    let schedule: ScheduledTransaction
+    let originalDueDate: Date
+    let exception: ScheduledTransactionException?
+}
+
+private struct ScheduledOccurrenceEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    let request: ScheduledOccurrenceEditRequest
+    @State private var effectiveDate: Date
+    @State private var payee: String
+    @State private var purpose: String
+    @State private var categoryID: UUID?
+    @State private var amountText: String
+    @State private var note: String
+
+    init(request: ScheduledOccurrenceEditRequest) {
+        self.request = request
+        let value = request.exception
+        _effectiveDate = State(initialValue: value?.effectiveDate ?? request.originalDueDate)
+        _payee = State(initialValue: value?.payee ?? request.schedule.payee)
+        _purpose = State(initialValue: value?.purpose ?? request.schedule.purpose)
+        _categoryID = State(initialValue: value.map { $0.categoryID } ?? request.schedule.categoryID)
+        _amountText = State(
+            initialValue: Money(
+                minorUnits: value?.amountMinor ?? request.schedule.amountMinor,
+                currency: request.schedule.currency
+            ).editingString
+        )
+        _note = State(initialValue: value?.note ?? "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Einzelne Fälligkeit bearbeiten").font(.title2.bold())
+                    Text(request.schedule.name).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Änderung speichern") { save(.modified) }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(14)
+            Divider()
+            Form {
+                Section("Fälligkeit") {
+                    LabeledContent("Ursprünglich") {
+                        Text(request.originalDueDate, format: .dateTime.day().month().year())
+                    }
+                    DatePicker(
+                        "Neues Datum", selection: $effectiveDate,
+                        displayedComponents: .date
+                    )
+                }
+                Section("Werte nur für diesen Termin") {
+                    TextField("Empfänger", text: $payee)
+                    TextField("Verwendungszweck", text: $purpose)
+                    Picker("Kategorie", selection: $categoryID) {
+                        Text("Nicht kategorisiert").tag(UUID?.none)
+                        ForEach(store.categoriesByPath.filter(\.isActive)) {
+                            Text(store.categoryPath($0.id)).tag(Optional($0.id))
+                        }
+                    }
+                    TextField("Betrag", text: $amountText)
+                        .multilineTextAlignment(.trailing)
+                    TextField("Begründung/Notiz", text: $note)
+                }
+                Section {
+                    Button("Diese Fälligkeit überspringen") { save(.skipped) }
+                        .foregroundStyle(.orange)
+                    if request.exception != nil {
+                        Button("Ausnahme zurücksetzen") { reset() }
+                    }
+                } footer: {
+                    Text("Die Serienvorlage und alle übrigen Fälligkeiten bleiben unverändert.")
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 620, height: 610)
+    }
+
+    private func save(_ disposition: ScheduledOccurrenceDisposition) {
+        do {
+            let amount = try Money(
+                parsing: amountText, currency: request.schedule.currency
+            ).minorUnits
+            let now = Date()
+            let exception = ScheduledTransactionException(
+                id: request.exception?.id ?? UUID(),
+                scheduledTransactionID: request.schedule.id,
+                originalDueDate: request.originalDueDate,
+                effectiveDate: effectiveDate, payee: payee, purpose: purpose,
+                categoryID: categoryID, amountMinor: amount,
+                disposition: disposition, note: note,
+                createdAt: request.exception?.createdAt ?? now, updatedAt: now
+            )
+            if store.saveScheduledTransactionException(exception) { dismiss() }
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reset() {
+        if store.resetScheduledTransactionException(
+            scheduledTransactionID: request.schedule.id,
+            originalDueDate: request.originalDueDate
+        ) { dismiss() }
     }
 }
 

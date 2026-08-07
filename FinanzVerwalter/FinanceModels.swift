@@ -889,6 +889,33 @@ enum ScheduledAction: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum ScheduledOccurrenceDisposition: String, Codable, CaseIterable, Sendable {
+    case modified
+    case skipped
+
+    var title: String {
+        switch self {
+        case .modified: "Geändert"
+        case .skipped: "Übersprungen"
+        }
+    }
+}
+
+struct ScheduledTransactionException: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var scheduledTransactionID: UUID
+    var originalDueDate: Date
+    var effectiveDate: Date
+    var payee: String
+    var purpose: String
+    var categoryID: UUID?
+    var amountMinor: Int64
+    var disposition: ScheduledOccurrenceDisposition
+    var note: String
+    var createdAt: Date
+    var updatedAt: Date
+}
+
 struct ScheduledTransaction: Identifiable, Hashable, Sendable {
     let id: UUID
     var name: String
@@ -908,28 +935,73 @@ struct ScheduledTransaction: Identifiable, Hashable, Sendable {
     func occurrences(
         until end: Date,
         excludingReferences: Set<String> = [],
+        exceptions: [ScheduledTransactionException] = [],
         calendar: Calendar = .current
     ) -> [FinanceTransaction] {
         guard isActive else { return [] }
+        let relevantExceptions = exceptions
+            .filter { $0.scheduledTransactionID == id }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        var exceptionByDay: [Int: ScheduledTransactionException] = [:]
+        for exception in relevantExceptions where exceptionByDay[Self.dayKey(exception.originalDueDate, calendar: calendar)] == nil {
+            exceptionByDay[Self.dayKey(exception.originalDueDate, calendar: calendar)] = exception
+        }
+        let generationEnd = relevantExceptions.reduce(end) {
+            max($0, $1.originalDueDate)
+        }
         var due = nextDueDate
         var values: [FinanceTransaction] = []
         var guardCount = 0
-        while due <= end, due <= (endDate ?? end), guardCount < 1_000 {
+        while due <= generationEnd, due <= (endDate ?? generationEnd), guardCount < 1_000 {
+            let exception = exceptionByDay[Self.dayKey(due, calendar: calendar)]
+            let effectiveDate = exception?.effectiveDate ?? due
+            let reference = occurrenceReference(for: due)
+            guardCount += 1
+            defer { due = frequency.next(after: due, calendar: calendar) }
+            guard exception?.disposition != .skipped,
+                  effectiveDate <= end,
+                  !excludingReferences.contains(reference)
+            else { continue }
             let value = FinanceTransaction(
-                    id: UUID(), accountID: accountID, bookingDate: due, valueDate: due,
-                    payee: payee, purpose: purpose, categoryID: categoryID,
-                    amountMinor: amountMinor, currency: currency, status: .expected,
+                    id: UUID(), accountID: accountID,
+                    bookingDate: effectiveDate, valueDate: effectiveDate,
+                    payee: exception?.payee ?? payee,
+                    purpose: exception?.purpose ?? purpose,
+                    categoryID: exception.map { $0.categoryID } ?? categoryID,
+                    amountMinor: exception?.amountMinor ?? amountMinor,
+                    currency: currency, status: .expected,
                     memo: "Regelmäßig: \(name)",
-                    reference: "schedule:\(id.uuidString):\(Int(due.timeIntervalSince1970))",
+                    reference: reference,
                     transferID: nil, importFingerprint: nil, splits: []
                 )
-            if !excludingReferences.contains(value.reference) {
-                values.append(value)
-            }
-            due = frequency.next(after: due, calendar: calendar)
-            guardCount += 1
+            values.append(value)
         }
-        return values
+        return values.sorted {
+            $0.bookingDate == $1.bookingDate
+                ? $0.reference < $1.reference : $0.bookingDate < $1.bookingDate
+        }
+    }
+
+    func occurrenceReference(for originalDueDate: Date) -> String {
+        "schedule:\(id.uuidString):\(Int(originalDueDate.timeIntervalSince1970))"
+    }
+
+    static func occurrenceIdentity(
+        from reference: String
+    ) -> (scheduledTransactionID: UUID, originalDueDate: Date)? {
+        let parts = reference.split(separator: ":", maxSplits: 2).map(String.init)
+        guard parts.count == 3, parts[0] == "schedule",
+              let id = UUID(uuidString: parts[1]),
+              let timestamp = TimeInterval(parts[2])
+        else { return nil }
+        return (id, Date(timeIntervalSince1970: timestamp))
+    }
+
+    private static func dayKey(_ date: Date, calendar: Calendar) -> Int {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return (components.year ?? 0) * 10_000
+            + (components.month ?? 0) * 100
+            + (components.day ?? 0)
     }
 }
 
