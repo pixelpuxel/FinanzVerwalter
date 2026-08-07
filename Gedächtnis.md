@@ -3862,3 +3862,10 @@ Rechtsberatung.
   zeigt auf `/Applications`, und Prozess 61743 läuft daraus. Die
   Produktivdatei meldet Integrität `ok`, keine Fremdschlüsselverletzung,
   Schema 39 und unverändert 97 Konten, 2.170 Buchungen und 782 Kategorien.
+- Implementierung, Tests, ADR und Reproduktionsdokumentation wurden als
+  Commit `32dcff4` auf `origin/agent/qif-mehrkontenimport` veröffentlicht.
+  GitHub Draft-PR #1 zeigte denselben Head und war mergebar.
+- Telegram-Nachricht 1121 meldet den geprüften Stand im `/quicken`-Thread
+  894. Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein
+  neuer Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem
+  Versand: 22.946.692 Tokens.
