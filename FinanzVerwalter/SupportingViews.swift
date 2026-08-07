@@ -1535,6 +1535,7 @@ struct ReportsView: View {
     @State private var showPeriodComparisonReport = false
     @State private var showBudgetReport = false
     @State private var showAssetRegisterReport = false
+    @State private var showTaxAllowanceReport = false
     @State private var templateName = ""
     @State private var csvSeparator: ReportCSVSeparator = .semicolon
     @State private var csvEncoding: ReportCSVEncoding = .utf8
@@ -1685,6 +1686,11 @@ struct ReportsView: View {
                             showAssetRegisterReport = true
                         } label: {
                             Label("Vertrags- und Inventarübersicht …", systemImage: "doc.text.magnifyingglass")
+                        }
+                        Button {
+                            showTaxAllowanceReport = true
+                        } label: {
+                            Label("Freistellungsaufträge …", systemImage: "eurosign.circle")
                         }
                     } label: {
                         Label("Standardberichte", systemImage: "chart.bar.doc.horizontal")
@@ -1976,6 +1982,10 @@ struct ReportsView: View {
         }
         .sheet(isPresented: $showAssetRegisterReport) {
             AssetRegisterReportView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showTaxAllowanceReport) {
+            TaxAllowancesView(showCloseButton: true)
                 .environmentObject(store)
         }
         .fileExporter(
@@ -13705,6 +13715,462 @@ private struct InventoryItemEditor: View {
         } catch {
             store.errorMessage = error.localizedDescription
         }
+    }
+}
+
+private func taxAllowanceInputString(_ minor: Int64) -> String {
+    let magnitude = minor.magnitude
+    return "\(magnitude / 100),\(String(format: "%02llu", magnitude % 100))"
+}
+
+struct TaxAllowancesView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let showCloseButton: Bool
+    @State private var taxYear = Calendar.current.component(.year, from: .now)
+    @State private var selectedPersonIDs = Set<UUID>()
+    @State private var institutionText = ""
+    @State private var includeInactive = false
+    @State private var selectedOrderID: UUID?
+    @State private var editingPerson: TaxPerson?
+    @State private var showPersonEditor = false
+    @State private var editingOrder: TaxAllowanceOrder?
+    @State private var showOrderEditor = false
+    @State private var usageAmount = ""
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+    @State private var orientation: ReportPDFOrientation = .landscape
+
+    init(showCloseButton: Bool = false) {
+        self.showCloseButton = showCloseButton
+    }
+
+    private var query: TaxAllowanceReportQuery {
+        TaxAllowanceReportQuery(
+            taxYear: taxYear, personIDs: selectedPersonIDs,
+            institutionText: institutionText, includeInactive: includeInactive
+        )
+    }
+
+    private var selectedOrder: TaxAllowanceOrder? {
+        store.taxAllowanceOrders.first { $0.id == selectedOrderID }
+    }
+
+    private var selectedUsage: TaxAllowanceUsage? {
+        guard let selectedOrderID else { return nil }
+        return store.taxAllowanceUsages.first {
+            $0.orderID == selectedOrderID && $0.taxYear == taxYear
+        }
+    }
+
+    var body: some View {
+        let snapshot = store.taxAllowanceReport(query)
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Freistellungsaufträge").font(.title2.bold())
+                    Text("Sparer-Pauschbetrag nach Personen und Instituten verteilen und Nutzung überwachen")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                allowanceValue("Verteilt", snapshot.allocatedMinor)
+                allowanceValue("Genutzt", snapshot.usedMinor)
+                allowanceValue("In Aufträgen frei", snapshot.unusedOrderMinor)
+                if showCloseButton {
+                    Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
+                }
+            }
+            .padding(14)
+            Divider()
+            HStack(spacing: 10) {
+                Stepper("Steuerjahr \(taxYear)", value: $taxYear, in: 2009...2200)
+                    .fixedSize()
+                Menu {
+                    Button("Alle Personen") { selectedPersonIDs.removeAll() }
+                    ForEach(store.taxPeople.filter(\.isActive)) { person in
+                        Toggle(person.displayName, isOn: allowanceMember(person.id, in: $selectedPersonIDs))
+                    }
+                } label: {
+                    Label(selectedPersonIDs.isEmpty ? "Alle Personen" : "Personen (\(selectedPersonIDs.count))",
+                          systemImage: "person.2")
+                }
+                TextField("Institut filtern", text: $institutionText)
+                    .textFieldStyle(.roundedBorder).frame(width: 190)
+                Toggle("Inaktive", isOn: $includeInactive)
+                Spacer()
+                Menu {
+                    Button("Neue Person …") { editingPerson = nil; showPersonEditor = true }
+                    if !store.taxPeople.isEmpty { Divider() }
+                    ForEach(store.taxPeople) { person in
+                        Button("\(person.displayName) bearbeiten …") {
+                            editingPerson = person; showPersonEditor = true
+                        }
+                    }
+                } label: { Label("Personen", systemImage: "person.crop.circle.badge.plus") }
+                Button("Auftrag", systemImage: "plus") {
+                    editingOrder = nil; showOrderEditor = true
+                }
+                .disabled(store.taxPeople.filter(\.isActive).isEmpty)
+                Button("Bearbeiten", systemImage: "pencil") {
+                    editingOrder = selectedOrder; showOrderEditor = selectedOrder != nil
+                }
+                .disabled(selectedOrder == nil)
+                Button("CSV", systemImage: "tablecells") {
+                    csvDocument = ReportCSVDocument(
+                        data: TaxAllowanceReportCSVExporter.data(snapshot: snapshot, generatedAt: .now)
+                    )
+                    showCSVExporter = true
+                }
+                Menu {
+                    Picker("Papierausrichtung", selection: $orientation) {
+                        ForEach(ReportPDFOrientation.allCases) { Text($0.title).tag($0) }
+                    }
+                    Divider()
+                    Button("Drucken …", systemImage: "printer.fill") { printReport(snapshot) }
+                    Button("PDF exportieren …", systemImage: "doc.richtext") { exportPDF(snapshot) }
+                } label: { Label("PDF · \(orientation.title)", systemImage: "printer") }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Divider()
+            HSplitView {
+                Table(snapshot.rows, selection: $selectedOrderID) {
+                    TableColumn("Institut") { Text($0.institution).lineLimit(1) }
+                        .width(min: 120, ideal: 160)
+                    TableColumn("Person/en") { Text($0.holderNames).lineLimit(1) }
+                        .width(min: 120, ideal: 160)
+                    TableColumn("Art") { Text($0.assessmentType.title).lineLimit(1) }
+                        .width(min: 110, ideal: 125)
+                    TableColumn("Auftrag") { allowanceMoney($0.allowanceMinor) }.width(105)
+                    TableColumn("Genutzt") { allowanceMoney($0.usedMinor) }.width(105)
+                    TableColumn("Rest") { allowanceMoney($0.remainingMinor) }.width(105)
+                    TableColumn("Gültigkeit") { Text($0.validity) }.width(95)
+                    TableColumn("Steuer-ID") { row in
+                        Label(row.taxIDComplete ? "Bestätigt" : "Prüfen",
+                              systemImage: row.taxIDComplete ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(row.taxIDComplete ? .green : .orange)
+                            .labelStyle(.iconOnly)
+                            .help(row.taxIDComplete ? "Steuer-ID bestätigt" : "Steuer-ID noch nicht bestätigt")
+                    }.width(65)
+                }
+                .overlay {
+                    if snapshot.rows.isEmpty {
+                        ContentUnavailableView(
+                            "Keine Freistellungsaufträge",
+                            systemImage: "eurosign.circle",
+                            description: Text("Lege zuerst eine Person und anschließend einen Auftrag an.")
+                        )
+                    }
+                }
+                .frame(minWidth: 780)
+                allowanceDetail(snapshot)
+                    .frame(minWidth: 310, idealWidth: 350, maxWidth: 430)
+            }
+            Divider()
+            ScrollView(.horizontal) {
+                HStack(spacing: 18) {
+                    Text("Gesetzliche Verteilung").fontWeight(.semibold)
+                    ForEach(snapshot.subjectTotals) { total in
+                        Text("\(total.holderNames): \(Money(minorUnits: total.allocatedMinor).formatted) von \(Money(minorUnits: total.legalLimitMinor).formatted) verteilt · \(Money(minorUnits: total.remainingAllocationMinor).formatted) offen")
+                            .monospacedDigit()
+                            .foregroundStyle(total.remainingAllocationMinor < 0 ? .red : .secondary)
+                    }
+                }
+                .font(.caption).padding(.horizontal, 14).padding(.vertical, 8)
+            }
+        }
+        .frame(minWidth: showCloseButton ? 1_140 : 980, minHeight: showCloseButton ? 700 : 600)
+        .sheet(isPresented: $showPersonEditor) { TaxPersonEditor(person: editingPerson) }
+        .sheet(isPresented: $showOrderEditor) { TaxAllowanceOrderEditor(order: editingOrder) }
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: allowanceFilename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: allowanceFilename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .onChange(of: selectedOrderID) { _, _ in loadUsage() }
+        .onChange(of: taxYear) { _, _ in loadUsage() }
+        .onAppear {
+            if selectedOrderID == nil { selectedOrderID = snapshot.rows.first?.id }
+            loadUsage()
+        }
+    }
+
+    @ViewBuilder
+    private func allowanceDetail(_ snapshot: TaxAllowanceReportSnapshot) -> some View {
+        if let order = selectedOrder,
+           let row = snapshot.rows.first(where: { $0.id == order.id }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(order.institution).font(.title3.bold())
+                    Text(row.holderNames).foregroundStyle(.secondary)
+                    Divider()
+                    allowanceDetailLine("Auftragsbetrag", row.allowanceMinor)
+                    allowanceDetailLine("Genutzt \(taxYear)", row.usedMinor)
+                    allowanceDetailLine("Verbleibend", row.remainingMinor)
+                    allowanceDetailLine("Gesetzliches Maximum", row.legalLimitMinor)
+                    Divider()
+                    Text("Jährliche Nutzung").font(.headline)
+                    TextField("Genutzter Betrag", text: $usageAmount)
+                    Button("Nutzung speichern", systemImage: "checkmark") { saveUsage(order) }
+                        .disabled(!order.applies(to: taxYear))
+                    Text("Kontenabdeckung").font(.headline)
+                    Text(row.accountNames).foregroundStyle(.secondary)
+                    Text("Die Kontenzuordnung dient ausschließlich der Übersicht. Der Auftrag gilt institutsweit und kann nicht auf einzelne Konten oder Depots desselben Instituts beschränkt werden.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !row.taxIDComplete {
+                        Label("Steuer-ID-Bestätigung fehlt", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    if !order.note.isEmpty { GroupBox("Notiz") { Text(order.note) } }
+                    Link("Amtliche Rechtsgrundlage: § 20 Abs. 9 EStG",
+                         destination: URL(string: "https://www.gesetze-im-internet.de/estg/__20.html")!)
+                    Text("Verwaltungshilfe – keine Steuerberatung.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(16)
+            }
+        } else {
+            ContentUnavailableView("Kein Auftrag ausgewählt", systemImage: "eurosign.circle")
+        }
+    }
+
+    private func allowanceValue(_ title: String, _ minor: Int64) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(Money(minorUnits: minor).formatted).font(.headline.monospacedDigit())
+        }
+        .padding(.horizontal, 8)
+    }
+
+    private func allowanceMoney(_ minor: Int64) -> some View {
+        Text(Money(minorUnits: minor).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing).monospacedDigit()
+    }
+
+    private func allowanceDetailLine(_ title: String, _ minor: Int64) -> some View {
+        HStack { Text(title); Spacer(); Text(Money(minorUnits: minor).formatted).monospacedDigit() }
+    }
+
+    private func allowanceMember<Value: Hashable>(
+        _ value: Value, in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { included in
+                if included { selection.wrappedValue.insert(value) }
+                else { selection.wrappedValue.remove(value) }
+            }
+        )
+    }
+
+    private func loadUsage() {
+        usageAmount = selectedUsage.map { taxAllowanceInputString($0.usedMinor) } ?? "0,00"
+    }
+
+    private func saveUsage(_ order: TaxAllowanceOrder) {
+        do {
+            let amount = try Money(parsing: usageAmount)
+            let value = TaxAllowanceUsage(
+                id: selectedUsage?.id ?? UUID(), orderID: order.id,
+                taxYear: taxYear, usedMinor: abs(amount.minorUnits)
+            )
+            if store.saveTaxAllowanceUsage(value) { loadUsage() }
+        } catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private func pdfData(_ snapshot: TaxAllowanceReportSnapshot) throws -> Data {
+        try ComparisonReportPDFExporter.taxAllowanceData(
+            snapshot: snapshot, generatedAt: .now, orientation: orientation
+        )
+    }
+
+    private func printReport(_ snapshot: TaxAllowanceReportSnapshot) {
+        do { try RegisterPrintService.printPDF(try pdfData(snapshot)) }
+        catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private func exportPDF(_ snapshot: TaxAllowanceReportSnapshot) {
+        do { pdfDocument = ReportPDFDocument(data: try pdfData(snapshot)); showPDFExporter = true }
+        catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private var allowanceFilename: String { "FinanzVerwalter-Freistellungsauftraege-\(taxYear)" }
+}
+
+private struct TaxPersonEditor: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let person: TaxPerson?
+    @State private var displayName: String
+    @State private var taxIDLastFour: String
+    @State private var taxIDConfirmed: Bool
+    @State private var isActive: Bool
+
+    init(person: TaxPerson?) {
+        self.person = person
+        _displayName = State(initialValue: person?.displayName ?? "")
+        _taxIDLastFour = State(initialValue: person?.taxIDLastFour ?? "")
+        _taxIDConfirmed = State(initialValue: person?.taxIDConfirmed ?? false)
+        _isActive = State(initialValue: person?.isActive ?? true)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            AssetEditorHeader(
+                title: person == nil ? "Steuerperson anlegen" : "Steuerperson bearbeiten",
+                saveDisabled: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                save: save
+            )
+            Form {
+                TextField("Name", text: $displayName)
+                TextField("Letzte 4 Ziffern der Steuer-ID", text: $taxIDLastFour)
+                Toggle("Steuer-ID beim Institut bestätigt", isOn: $taxIDConfirmed)
+                Toggle("Aktiv", isOn: $isActive)
+                Text("Aus Datenschutzgründen speichert FinanzVerwalter nur die letzten vier Ziffern und den Bestätigungsstatus, nicht die vollständige Steuer-ID.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 540, height: 330)
+    }
+
+    private func save() {
+        let value = TaxPerson(
+            id: person?.id ?? UUID(), displayName: displayName,
+            taxIDLastFour: taxIDLastFour, taxIDConfirmed: taxIDConfirmed, isActive: isActive
+        )
+        if store.saveTaxPerson(value) { dismiss() }
+    }
+}
+
+private struct TaxAllowanceOrderEditor: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    let order: TaxAllowanceOrder?
+    @State private var institution: String
+    @State private var assessmentType: TaxAssessmentType
+    @State private var primaryPersonID: UUID?
+    @State private var partnerPersonID: UUID?
+    @State private var amount: String
+    @State private var validFromYear: Int
+    @State private var hasEndYear: Bool
+    @State private var validThroughYear: Int
+    @State private var accountIDs: Set<UUID>
+    @State private var note: String
+    @State private var isActive: Bool
+
+    init(order: TaxAllowanceOrder?) {
+        let currentYear = Calendar.current.component(.year, from: .now)
+        self.order = order
+        _institution = State(initialValue: order?.institution ?? "")
+        _assessmentType = State(initialValue: order?.assessmentType ?? .individual)
+        _primaryPersonID = State(initialValue: order?.primaryPersonID)
+        _partnerPersonID = State(initialValue: order?.partnerPersonID)
+        _amount = State(initialValue: order.map { taxAllowanceInputString($0.allowanceMinor) } ?? "1.000,00")
+        _validFromYear = State(initialValue: order?.validFromYear ?? currentYear)
+        _hasEndYear = State(initialValue: order?.validThroughYear != nil)
+        _validThroughYear = State(initialValue: order?.validThroughYear ?? currentYear)
+        _accountIDs = State(initialValue: order?.accountIDs ?? [])
+        _note = State(initialValue: order?.note ?? "")
+        _isActive = State(initialValue: order?.isActive ?? true)
+    }
+
+    private var activePeople: [TaxPerson] { store.taxPeople.filter(\.isActive) }
+    private var matchingAccounts: [FinanceAccount] {
+        let key = institution.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.accounts.filter {
+            $0.institution.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .trimmingCharacters(in: .whitespacesAndNewlines) == key
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            AssetEditorHeader(
+                title: order == nil ? "Freistellungsauftrag anlegen" : "Freistellungsauftrag bearbeiten",
+                saveDisabled: institution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || primaryPersonID == nil,
+                save: save
+            )
+            Form {
+                TextField("Institut", text: $institution)
+                Picker("Art", selection: $assessmentType) {
+                    ForEach(TaxAssessmentType.allCases) { Text($0.title).tag($0) }
+                }
+                Picker("Person", selection: $primaryPersonID) {
+                    Text("Bitte wählen").tag(UUID?.none)
+                    ForEach(activePeople) { Text($0.displayName).tag(UUID?.some($0.id)) }
+                }
+                if assessmentType == .joint {
+                    Picker("Zweite Person", selection: $partnerPersonID) {
+                        Text("Bitte wählen").tag(UUID?.none)
+                        ForEach(activePeople.filter { $0.id != primaryPersonID }) {
+                            Text($0.displayName).tag(UUID?.some($0.id))
+                        }
+                    }
+                }
+                TextField("Freistellungsbetrag", text: $amount)
+                Stepper("Gültig ab \(validFromYear)", value: $validFromYear, in: 2009...2200)
+                Toggle("Zum Kalenderjahresende befristet", isOn: $hasEndYear)
+                if hasEndYear {
+                    Stepper("Gültig bis Ende \(validThroughYear)", value: $validThroughYear,
+                            in: validFromYear...2200)
+                }
+                Menu {
+                    Button("Keine Konten hinterlegen") { accountIDs.removeAll() }
+                    ForEach(matchingAccounts) { account in
+                        Toggle(account.name, isOn: orderAccountMember(account.id))
+                    }
+                } label: {
+                    Label(accountIDs.isEmpty ? "Kontenabdeckung: institutsweit" : "Kontenabdeckung (\(accountIDs.count))",
+                          systemImage: "building.columns")
+                }
+                Text("Die Auswahl dokumentiert vorhandene Konten. Sie begrenzt den Auftrag nicht; er gilt immer für das gesamte Institut.")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("Notiz", text: $note, axis: .vertical)
+                Toggle("Aktiv", isOn: $isActive)
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 620, height: 650)
+        .onChange(of: institution) { _, _ in
+            accountIDs.formIntersection(Set(matchingAccounts.map(\.id)))
+        }
+        .onChange(of: assessmentType) { _, type in
+            if type == .individual { partnerPersonID = nil }
+        }
+    }
+
+    private func orderAccountMember(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { accountIDs.contains(id) },
+            set: { included in
+                if included { accountIDs.insert(id) }
+                else { accountIDs.remove(id) }
+            }
+        )
+    }
+
+    private func save() {
+        do {
+            guard let primaryPersonID else { return }
+            let money = try Money(parsing: amount)
+            let value = TaxAllowanceOrder(
+                id: order?.id ?? UUID(), institution: institution,
+                assessmentType: assessmentType, primaryPersonID: primaryPersonID,
+                partnerPersonID: assessmentType == .joint ? partnerPersonID : nil,
+                allowanceMinor: abs(money.minorUnits), validFromYear: validFromYear,
+                validThroughYear: hasEndYear ? max(validFromYear, validThroughYear) : nil,
+                accountIDs: accountIDs, note: note, isActive: isActive
+            )
+            if store.saveTaxAllowanceOrder(value) { dismiss() }
+        } catch { store.errorMessage = error.localizedDescription }
     }
 }
 

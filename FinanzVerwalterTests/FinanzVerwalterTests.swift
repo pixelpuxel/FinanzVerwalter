@@ -4872,7 +4872,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=36", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=37", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -4881,8 +4881,8 @@ final class FinanzVerwalterTests: XCTestCase {
             guard case let FinanceError.database(message) = error else {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
+            XCTAssertTrue(message.contains("Schema 37"))
             XCTAssertTrue(message.contains("Schema 36"))
-            XCTAssertTrue(message.contains("Schema 35"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         var statement: OpaquePointer?
@@ -4891,7 +4891,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 36)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 37)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4941,7 +4941,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions(), [])
         XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 36)
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -4999,7 +4999,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions().map(\.id), [exception.id])
         XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 36)
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -5071,7 +5071,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 36)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -5193,7 +5193,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 36)
         sqlite3_finalize(statement)
     }
 
@@ -8687,7 +8687,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 36)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -8922,7 +8922,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.transactions().first?.id, value.id)
         XCTAssertEqual(try migrated.transactions().first?.amountMinor, -987)
         XCTAssertEqual(try migrated.attachments(entityType: .transaction, entityID: value.id), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 36)
         XCTAssertEqual(try sqliteScalar(url, "SELECT COUNT(*) FROM attachment_blobs"), 0)
         XCTAssertTrue(try migrated.integrityCheck())
     }
@@ -9456,7 +9456,7 @@ final class FinanzVerwalterTests: XCTestCase {
         try context.store.saveForecastScenarioEntry(entry)
         XCTAssertEqual(try context.store.forecastScenarios().first?.name, "Umzug Berlin")
         XCTAssertEqual(try context.store.forecastScenarioEntries().first?.amountMinor, -130_000)
-        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "PRAGMA user_version"), 35)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "PRAGMA user_version"), 36)
         XCTAssertEqual(try sqliteScalar(
             context.store.fileURL,
             "SELECT COUNT(*) FROM audit_events WHERE entity_type IN ('forecast_scenario','forecast_scenario_entry') AND action='save'"
@@ -9499,7 +9499,180 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.accounts().map(\.id), [account.id])
         XCTAssertTrue(try migrated.forecastScenarios().isEmpty)
         XCTAssertTrue(try migrated.forecastScenarioEntries().isEmpty)
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 35)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 36)
+        XCTAssertTrue(try migrated.integrityCheck())
+    }
+
+    @MainActor
+    func testTaxAllowancesPersistValidateLimitsUsageAccountsAuditAndReports() throws {
+        let context = try TestDatabase()
+        let bankA = FinanceAccount(
+            id: UUID(), name: "Tagesgeld", institution: "Bank; A", type: .savings,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        let bankB = FinanceAccount(
+            id: UUID(), name: "Depotkonto", institution: "Bank B", type: .investment,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(bankA)
+        try context.store.saveAccount(bankB)
+        let person = TaxPerson(
+            id: UUID(), displayName: "Ada Beispiel", taxIDLastFour: "1234",
+            taxIDConfirmed: true, isActive: true
+        )
+        let partner = TaxPerson(
+            id: UUID(), displayName: "Bert Beispiel", taxIDLastFour: "5678",
+            taxIDConfirmed: true, isActive: true
+        )
+        try context.store.saveTaxPerson(person)
+        try context.store.saveTaxPerson(partner)
+        XCTAssertEqual(try context.store.taxAllowanceRules().count, 4)
+        XCTAssertEqual(
+            TaxAllowanceRuleEngine.rule(
+                for: 2022, assessmentType: .individual,
+                rules: try context.store.taxAllowanceRules()
+            )?.allowanceMinor,
+            80_100
+        )
+        XCTAssertEqual(
+            TaxAllowanceRuleEngine.rule(
+                for: 2026, assessmentType: .joint,
+                rules: try context.store.taxAllowanceRules()
+            )?.allowanceMinor,
+            200_000
+        )
+        var first = TaxAllowanceOrder(
+            id: UUID(), institution: "Bank; A", assessmentType: .individual,
+            primaryPersonID: person.id, partnerPersonID: nil,
+            allowanceMinor: 70_000, validFromYear: 2026, validThroughYear: nil,
+            accountIDs: [bankA.id], note: "Hauptauftrag", isActive: true
+        )
+        try context.store.saveTaxAllowanceOrder(first)
+        let second = TaxAllowanceOrder(
+            id: UUID(), institution: "Bank B", assessmentType: .individual,
+            primaryPersonID: person.id, partnerPersonID: nil,
+            allowanceMinor: 30_000, validFromYear: 2026, validThroughYear: 2026,
+            accountIDs: [bankB.id], note: "", isActive: true
+        )
+        try context.store.saveTaxAllowanceOrder(second)
+        let usage = TaxAllowanceUsage(
+            id: UUID(), orderID: first.id, taxYear: 2026, usedMinor: 25_000
+        )
+        try context.store.saveTaxAllowanceUsage(usage)
+        XCTAssertThrowsError(try context.store.saveTaxAllowanceOrder(
+            TaxAllowanceOrder(
+                id: UUID(), institution: "Dritte Bank", assessmentType: .individual,
+                primaryPersonID: person.id, partnerPersonID: nil,
+                allowanceMinor: 1, validFromYear: 2026, validThroughYear: 2026,
+                accountIDs: [], note: "", isActive: true
+            )
+        ))
+        XCTAssertThrowsError(try context.store.saveTaxAllowanceOrder(
+            TaxAllowanceOrder(
+                id: UUID(), institution: "Bank; A", assessmentType: .individual,
+                primaryPersonID: person.id, partnerPersonID: nil,
+                allowanceMinor: 1_000, validFromYear: 2026, validThroughYear: 2026,
+                accountIDs: [bankB.id], note: "falsches Institut", isActive: true
+            )
+        ))
+        first.allowanceMinor = 20_000
+        XCTAssertThrowsError(try context.store.saveTaxAllowanceOrder(first))
+        XCTAssertThrowsError(try context.store.saveTaxAllowanceUsage(
+            TaxAllowanceUsage(
+                id: UUID(), orderID: first.id, taxYear: 2026, usedMinor: 70_001
+            )
+        ))
+        let joint = TaxAllowanceOrder(
+            id: UUID(), institution: "Gemeinschaftsbank", assessmentType: .joint,
+            primaryPersonID: person.id, partnerPersonID: partner.id,
+            allowanceMinor: 100_000, validFromYear: 2026, validThroughYear: nil,
+            accountIDs: [], note: "Gemeinsam", isActive: true
+        )
+        try context.store.saveTaxAllowanceOrder(joint)
+        XCTAssertThrowsError(try context.store.saveTaxAllowanceOrder(
+            TaxAllowanceOrder(
+                id: UUID(), institution: "Partnerbank", assessmentType: .individual,
+                primaryPersonID: partner.id, partnerPersonID: nil,
+                allowanceMinor: 1, validFromYear: 2026, validThroughYear: 2026,
+                accountIDs: [], note: "würde gemeinsamen Rahmen überschreiten", isActive: true
+            )
+        ))
+        let snapshot = TaxAllowanceRuleEngine.snapshot(
+            query: TaxAllowanceReportQuery(taxYear: 2026),
+            orders: try context.store.taxAllowanceOrders(),
+            usages: try context.store.taxAllowanceUsages(),
+            people: try context.store.taxPeople(), accounts: try context.store.accounts(),
+            rules: try context.store.taxAllowanceRules()
+        )
+        XCTAssertEqual(snapshot.rows.count, 3)
+        XCTAssertEqual(snapshot.allocatedMinor, 200_000)
+        XCTAssertEqual(snapshot.usedMinor, 25_000)
+        XCTAssertEqual(snapshot.subjectTotals.count, 1)
+        XCTAssertEqual(
+            snapshot.subjectTotals.first?.remainingAllocationMinor,
+            0
+        )
+        XCTAssertEqual(
+            snapshot.rows.first { $0.id == first.id }?.accountNames,
+            "Tagesgeld"
+        )
+        XCTAssertTrue(snapshot.rows.allSatisfy(\.taxIDComplete))
+        let csv = try XCTUnwrap(String(
+            data: TaxAllowanceReportCSVExporter.data(
+                snapshot: snapshot, generatedAt: Date(timeIntervalSince1970: 0)
+            ), encoding: .utf8
+        ))
+        XCTAssertTrue(csv.contains("\"Bank; A\""))
+        XCTAssertTrue(csv.contains("250,00"))
+        let pdf = try ComparisonReportPDFExporter.taxAllowanceData(
+            snapshot: snapshot, generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let document = try XCTUnwrap(PDFDocument(data: pdf))
+        let pdfText = (0..<document.pageCount).compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+        XCTAssertTrue(pdfText.contains("Freistellungsaufträge"))
+        XCTAssertTrue(pdfText.contains("Ada Beispiel"))
+        XCTAssertEqual(try sqliteScalar(
+            context.store.fileURL,
+            "SELECT COUNT(*) FROM audit_events WHERE entity_type IN ('tax_person','tax_allowance_order','tax_allowance_usage')"
+        ), 6)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testMigration35To36AddsTaxAllowanceRulesWithoutChangingAccounts() throws {
+        let context = try TestDatabase()
+        let url = context.store.fileURL
+        let account = FinanceAccount(
+            id: UUID(), name: "Bestandskonto", institution: "Bank", type: .checking,
+            currency: "EUR", openingBalanceMinor: 12_300,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        context.store.close()
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(
+            database,
+            """
+            DROP TABLE tax_allowance_usages;
+            DROP TABLE tax_allowance_order_accounts;
+            DROP TABLE tax_allowance_orders;
+            DROP TABLE tax_allowance_rules;
+            DROP TABLE tax_people;
+            PRAGMA user_version=35;
+            """,
+            nil, nil, nil
+        ), SQLITE_OK)
+        sqlite3_close(database)
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        XCTAssertEqual(try migrated.accounts().map(\.id), [account.id])
+        XCTAssertTrue(try migrated.taxPeople().isEmpty)
+        XCTAssertTrue(try migrated.taxAllowanceOrders().isEmpty)
+        XCTAssertTrue(try migrated.taxAllowanceUsages().isEmpty)
+        XCTAssertEqual(try migrated.taxAllowanceRules().count, 4)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 36)
         XCTAssertTrue(try migrated.integrityCheck())
     }
 

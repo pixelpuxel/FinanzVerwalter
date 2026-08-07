@@ -103,8 +103,14 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   entstehen aus demselben Snapshot und addieren verschiedene Währungen nie.
   Oberfläche und Exporte kennzeichnen ausdrücklich, dass noch kein
   Ist-Zahlungsabgleich stattfindet.
+- Der Freistellungsbericht verwendet Personen, institutsweite Einzel- und
+  Gemeinschaftsaufträge, Gültigkeit und Jahresnutzung aus Schema 36. Er zeigt
+  verteilten, genutzten und verbleibenden Betrag gegen das für das Steuerjahr
+  wirksame Regelpaket, filtert nach Jahr, Person und Institut und erzeugt aus
+  demselben Snapshot CSV, mehrseitiges PDF und Systemdruck.
 
-Noch offen sind weitere fachliche Standardberichte.
+Noch offen sind insbesondere Depot-/Performance-/Ertrags- und
+Vermietungsberichte.
 
 ## Verifizierte Referenzfunktionen
 

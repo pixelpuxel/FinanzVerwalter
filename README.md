@@ -595,6 +595,26 @@ Schritt bearbeiten. Budgets können umbenannt, vollständig in ein anderes
 Geschäftsjahr kopiert, als Folgejahr abgeleitet oder samt ihrer Planzeilen
 gelöscht werden; vorhandene Buchungen bleiben beim Löschen unangetastet.
 
+## Freistellungsaufträge
+
+Der eigene Bereich `Freistellungsaufträge` verwaltet Personen, Einzel- und
+Gemeinschaftsaufträge, Gültigkeitsjahre, Institute, jährliche Nutzung sowie
+die zugehörige Kontenabdeckung. Aus Datenschutzgründen wird nicht die volle
+Steuer-ID gespeichert, sondern nur deren letzte vier Ziffern und ein
+Bestätigungskennzeichen. Schema 36 hinterlegt versionierte gesetzliche
+Regelpakete: 801/1.602 Euro für 2009–2022 und 1.000/2.000 Euro ab 2023 nach
+§ 20 Absatz 9 EStG.
+
+Die Regelengine verhindert Überverteilungen, Beträge unterhalb einer bereits
+genutzten Freistellung und widersprüchliche gemeinsame Rahmen. Einzelaufträge
+beider Partner werden dabei in den gemeinsamen Höchstbetrag eingerechnet.
+Konten müssen zum Institut passen; ihre Auswahl dokumentiert nur die
+Abdeckung. Der Auftrag gilt weiterhin institutsweit und wird nicht auf
+einzelne Konten oder Depots begrenzt. Jahres-, Personen- und Institutsfilter,
+Nutzungs-/Restsummen, CSV, mehrseitiges PDF und Systemdruck verwenden denselben
+Snapshot. Die Oberfläche verweist auf die amtliche Rechtsgrundlage und
+kennzeichnet die Funktion als Verwaltungshilfe, nicht als Steuerberatung.
+
 ## Datensicherung und Wiederherstellung
 
 `Import/Export` erstellt manuelle vollständige SQLite-Sicherungen und prüft

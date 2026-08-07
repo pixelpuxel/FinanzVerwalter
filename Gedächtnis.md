@@ -3001,3 +3001,39 @@ Rechtsberatung.
   erklärt ausdrücklich den wegen der gesperrten Sitzung fehlenden Screenshot.
   Exakter kumulativer Zielzählerstand nach Telegram- und PR-Prüfung:
   17.933.283 Tokens.
+
+## 07.08.2026 – Freistellungsaufträge
+
+- Der neue Arbeitsbereich `Freistellungsaufträge` verwaltet Steuerpersonen,
+  Einzel- und gemeinsame Aufträge, Gültigkeitsjahre, Institute, institutionweit
+  abgedeckte Konten sowie die jährliche Ausschöpfung. Aus Datenschutzgründen
+  speichert er nur eine Bestätigung der Steuer-ID und optional deren letzte vier
+  Stellen; er ersetzt weder das amtliche Formular noch eine Steuerberatung.
+- Die Jahreslogik bildet die gesetzlichen Sparer-Pauschbeträge 801/1.602 EUR
+  bis 2022 und 1.000/2.000 EUR ab 2023 ab. Sie verhindert Überbelegung,
+  unzulässige Partnerkombinationen, institutsfremde Kontozuordnungen,
+  Überschreitung der Auftragshöhe und nachträgliche Absenkung unter bereits
+  genutzte Beträge. CSV, A4-PDF und Systemdruck beruhen auf demselben
+  unveränderlichen Berichtssnapshot.
+- SQLite-Schema 36 ergänzt Personen, Regeln, Aufträge, Kontodeckung und
+  Jahresnutzung. Die Migration 35→36 bewahrt Bestandsdaten und legt vorab die
+  bereits vorhandene wiederherstellbare Sicherung
+  `FinanzVerwalter-vor-Migration-v35-20260807-152642-728-B42DC55D.qbackup` an.
+- Der vollständige Testlauf ist grün: 136 Tests insgesamt, 135 bestanden,
+  1 privater opt-in-QIF-Test planmäßig übersprungen, 0 fehlgeschlagen. Das
+  Result-Bundle liegt unter
+  `build/DerivedData-TaxAllowances/Logs/Test/Test-FinanzVerwalter-2026.08.07_17-17-26-+0200.xcresult`.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-TaxAllowances-Release` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich; die ausführbare Datei
+  trägt SHA-256
+  `ad3100ee0bb4c2c5d64f4b3a9f9fcce8e18aab1391abab53875c919dcfeb81b6`.
+  Beide Vorgängerinstallationen liegen reversibel unter
+  `build/InstallBackups/20260807-1726/`; Prozess 2575 läuft aus
+  `/Applications`, und der Desktop-Link zeigt weiterhin dorthin.
+- Die produktive Datei wurde mit Integrität `ok` als Schema 36 geöffnet und
+  enthält unverändert 97 Konten, 2.170 Buchungen und 782 Kategorien. Die vier
+  gesetzlichen Regeln sind vorhanden; Personen, Aufträge und Nutzungen bleiben
+  bis zur bewussten Eingabe leer. Exakter kumulativer Zielzählerstand nach
+  Test, Release, Installation und Produktivprüfung: 18.368.754 Tokens.

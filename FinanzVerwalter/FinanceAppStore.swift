@@ -272,6 +272,10 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var propertyAssetPositions: [PropertyAssetPosition] = []
     @Published private(set) var contracts: [FinanceContract] = []
     @Published private(set) var inventoryItems: [InventoryItem] = []
+    @Published private(set) var taxPeople: [TaxPerson] = []
+    @Published private(set) var taxAllowanceRules: [TaxAllowanceRule] = []
+    @Published private(set) var taxAllowanceOrders: [TaxAllowanceOrder] = []
+    @Published private(set) var taxAllowanceUsages: [TaxAllowanceUsage] = []
     @Published var selectedAccountID: UUID?
     @Published var searchText = ""
     @Published var errorMessage: String?
@@ -2877,6 +2881,52 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func saveTaxPerson(_ value: TaxPerson) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveTaxPerson(value)
+            try load()
+            statusText = "Steuerperson „\(value.displayName)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func saveTaxAllowanceOrder(_ value: TaxAllowanceOrder) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveTaxAllowanceOrder(value)
+            try load()
+            statusText = "Freistellungsauftrag bei „\(value.institution)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func saveTaxAllowanceUsage(_ value: TaxAllowanceUsage) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveTaxAllowanceUsage(value)
+            try load()
+            statusText = "Genutzter Freistellungsbetrag gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func taxAllowanceReport(_ query: TaxAllowanceReportQuery) -> TaxAllowanceReportSnapshot {
+        TaxAllowanceRuleEngine.snapshot(
+            query: query, orders: taxAllowanceOrders, usages: taxAllowanceUsages,
+            people: taxPeople, accounts: accounts, rules: taxAllowanceRules
+        )
+    }
+
     private func load() throws {
         guard let repository else { return }
         fileInfo = try repository.financeFileInfo()
@@ -2921,6 +2971,10 @@ final class FinanceAppStore: ObservableObject {
         propertyAssetPositions = try repository.propertyAssetPositions()
         contracts = try repository.contracts()
         inventoryItems = try repository.inventoryItems()
+        taxPeople = try repository.taxPeople()
+        taxAllowanceRules = try repository.taxAllowanceRules()
+        taxAllowanceOrders = try repository.taxAllowanceOrders()
+        taxAllowanceUsages = try repository.taxAllowanceUsages()
         balances = Dictionary(
             uniqueKeysWithValues: try accounts.map { ($0.id, try repository.accountBalanceMinor(account: $0)) }
         )

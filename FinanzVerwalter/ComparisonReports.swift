@@ -1515,6 +1515,36 @@ enum ComparisonReportCSVExporter {
 }
 
 enum ComparisonReportPDFExporter {
+    static func taxAllowanceData(
+        snapshot: TaxAllowanceReportSnapshot,
+        generatedAt: Date,
+        orientation: ReportPDFOrientation = .landscape
+    ) throws -> Data {
+        let rows = snapshot.rows.map { row in
+            [row.institution, row.holderNames, row.assessmentType.title,
+             money(row.allowanceMinor, "EUR"), money(row.usedMinor, "EUR"),
+             money(row.remainingMinor, "EUR"), money(row.legalLimitMinor, "EUR"),
+             row.validity, row.taxIDComplete ? "Ja" : "Nein", row.accountNames]
+        } + snapshot.subjectTotals.map { total in
+            ["Gesamt", total.holderNames, "", money(total.allocatedMinor, "EUR"),
+             money(total.usedMinor, "EUR"), money(total.unusedOrderMinor, "EUR"),
+             money(total.legalLimitMinor, "EUR"), "", "", ""]
+        }
+        return try data(
+            rows: rows,
+            headers: ["Institut", "Person/en", "Art", "Auftrag", "Genutzt", "Rest",
+                      "Maximum", "Gültigkeit", "Steuer-ID", "Kontenabdeckung"],
+            metadata: ComparisonReportExportMetadata(
+                title: "Freistellungsaufträge",
+                currentLabel: "Steuerjahr \(snapshot.taxYear)",
+                referenceLabel: "§ 20 Absatz 9 EStG",
+                generatedAt: generatedAt
+            ),
+            orientation: orientation,
+            subtitle: "Steuerjahr \(snapshot.taxYear) · Verwaltungshilfe, keine Steuerberatung"
+        )
+    }
+
     static func assetRegisterData(
         snapshot: AssetRegisterReportSnapshot,
         metadata: AssetRegisterReportExportMetadata,

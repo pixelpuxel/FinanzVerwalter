@@ -11,6 +11,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
     case calendar
     case budget
     case reports
+    case taxAllowances
     case investments
     case assets
     case contracts
@@ -33,6 +34,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
         case .calendar: "Kalender & Prognose"
         case .budget: "Budget"
         case .reports: "Auswertungen"
+        case .taxAllowances: "Freistellungsaufträge"
         case .investments: "Wertpapiere & Depots"
         case .assets: "Kredite & Vermögen"
         case .contracts: "Verträge"
@@ -55,6 +57,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
         case .calendar: "calendar"
         case .budget: "chart.pie"
         case .reports: "chart.bar.xaxis"
+        case .taxAllowances: "eurosign.circle"
         case .investments: "chart.line.uptrend.xyaxis"
         case .assets: "house"
         case .contracts: "doc.text"
@@ -68,7 +71,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
 
     static let financeSections: [WorkspaceSection] = [
         .cockpit, .accounts, .register, .combinedRegister, .categories,
-        .banking, .payments, .calendar, .budget, .reports
+        .banking, .payments, .calendar, .budget, .reports, .taxAllowances
     ]
 
     static let organizationSections: [WorkspaceSection] = [
@@ -319,6 +322,7 @@ struct RootView: View {
         case .calendar: CalendarForecastView()
         case .budget: BudgetView()
         case .reports: ReportsView(launchQuery: reportLaunchQuery)
+        case .taxAllowances: TaxAllowancesView()
         case .investments: InvestmentsView()
         case .assets: AssetsView()
         case .contracts: ContractsView()

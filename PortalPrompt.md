@@ -121,10 +121,10 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 35 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 36 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 134 XCTest-Fälle: 133 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 136 XCTest-Fälle: 135 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -890,6 +890,44 @@ Für konfigurierbare Kontoblattansichten gilt reproduzierbar:
   bei erfüllten Pflichtfeldern. `⌘⇧S` öffnet eine neue Splitbuchung oder
   aktiviert Splits im bereits geöffneten Editor. `⌘N` und `⌘R` bleiben
   globale Befehle für neue Buchung und Kontoabgleich.
+
+## Freistellungsaufträge
+
+Migration 36 erzeugt `tax_people`, `tax_allowance_rules`,
+`tax_allowance_orders`, `tax_allowance_order_accounts` und
+`tax_allowance_usages`. Eine Person speichert Name, Aktivstatus, nur die
+letzten vier Ziffern der Steuer-ID und ein gesondertes
+Steuer-ID-Bestätigungskennzeichen; die vollständige Steuer-ID darf in diesem
+lokalen, noch unverschlüsselten Schema nicht persistiert werden.
+
+Die Regelpakete sind zeitlich versioniert und enthalten für Einzel-/gemeinsame
+Veranlagung 801/1.602 Euro von 2009 bis 2022 sowie 1.000/2.000 Euro ab 2023.
+Quelle und amtliche URL zu § 20 Absatz 9 EStG werden mitgespeichert. Ein Auftrag
+enthält Institut, Art, eine oder zwei verschiedene aktive Personen, Betrag,
+Beginn, optionales Ende zum Kalenderjahresende, Notiz und Aktivstatus. Die
+Kontoverknüpfungen dienen nur der Darstellung der institutsweiten Abdeckung;
+sie dürfen den Auftrag fachlich niemals auf einzelne Konten oder Depots
+beschränken und müssen zum selben normalisierten Institut gehören.
+
+Validiere jeden Speichervorgang atomar gegen alle überlappenden Jahre.
+Einzelaufträge derselben Person dürfen den Einzelrahmen nicht überschreiten.
+Sobald ein gemeinsamer Rahmen besteht, zählen die Einzelaufträge beider
+Partner zusammen mit allen gemeinsamen Aufträgen gegen dessen Höchstbetrag.
+Eine Person darf in einem Jahr nicht mehreren unterschiedlichen gemeinsamen
+Rahmen angehören. Die Jahresnutzung muss innerhalb der Gültigkeit liegen,
+nicht negativ sein und darf weder den Auftragsbetrag überschreiten noch eine
+spätere Herabsetzung unter den bereits genutzten Wert erlauben. Alle
+Speicherpfade erzeugen Auditereignisse.
+
+Die Oberfläche besitzt einen eigenen Seitenleisteneintrag und zusätzlich den
+Eintrag `Freistellungsaufträge …` unter `Standardberichte`. Filtere nach
+Steuerjahr, Person, Institut und Aktivstatus. Zeige Auftrag, Nutzung, Rest,
+gesetzliches Maximum, Gültigkeit, Steuer-ID-Status und Kontenabdeckung sowie
+zusammengefasste Personen-/Paarrahmen. CSV, mehrseitiges PDF und Systemdruck
+müssen aus demselben unveränderlichen Snapshot entstehen. Weise sichtbar auf
+die amtliche Rechtsgrundlage und darauf hin, dass es sich um eine
+Verwaltungshilfe, nicht um Steuerberatung oder elektronische Auftragserteilung
+an Banken handelt.
 
 ## Qualitätsschleife
 

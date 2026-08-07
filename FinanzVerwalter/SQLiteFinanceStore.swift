@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 35
+    static let currentSchemaVersion = 36
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -1834,6 +1834,110 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 35")
             }
         }
+        if version < 36 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_people (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        display_name TEXT NOT NULL CHECK(length(trim(display_name))>0),
+                        tax_id_last_four TEXT NOT NULL DEFAULT '' CHECK(length(tax_id_last_four) IN (0,4)),
+                        tax_id_confirmed INTEGER NOT NULL DEFAULT 0 CHECK(tax_id_confirmed IN (0,1)),
+                        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_rules (
+                        id TEXT PRIMARY KEY,
+                        effective_from_year INTEGER NOT NULL CHECK(effective_from_year BETWEEN 1900 AND 2200),
+                        effective_through_year INTEGER CHECK(effective_through_year IS NULL OR effective_through_year>=effective_from_year),
+                        assessment_type TEXT NOT NULL CHECK(assessment_type IN ('individual','joint')),
+                        allowance_minor INTEGER NOT NULL CHECK(allowance_minor>=0),
+                        source_name TEXT NOT NULL,
+                        source_url TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(effective_from_year,effective_through_year,assessment_type)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_orders (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        institution TEXT NOT NULL CHECK(length(trim(institution))>0),
+                        assessment_type TEXT NOT NULL CHECK(assessment_type IN ('individual','joint')),
+                        primary_person_id TEXT NOT NULL REFERENCES tax_people(id),
+                        partner_person_id TEXT REFERENCES tax_people(id),
+                        allowance_minor INTEGER NOT NULL CHECK(allowance_minor>=0),
+                        valid_from_year INTEGER NOT NULL CHECK(valid_from_year BETWEEN 1900 AND 2200),
+                        valid_through_year INTEGER CHECK(valid_through_year IS NULL OR valid_through_year>=valid_from_year),
+                        note TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        CHECK((assessment_type='individual' AND partner_person_id IS NULL) OR
+                              (assessment_type='joint' AND partner_person_id IS NOT NULL AND partner_person_id<>primary_person_id))
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_order_accounts (
+                        order_id TEXT NOT NULL REFERENCES tax_allowance_orders(id) ON DELETE CASCADE,
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        PRIMARY KEY(order_id,account_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_usages (
+                        id TEXT PRIMARY KEY,
+                        order_id TEXT NOT NULL REFERENCES tax_allowance_orders(id) ON DELETE CASCADE,
+                        tax_year INTEGER NOT NULL CHECK(tax_year BETWEEN 1900 AND 2200),
+                        used_minor INTEGER NOT NULL CHECK(used_minor>=0),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(order_id,tax_year)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS tax_allowance_orders_subject ON tax_allowance_orders(primary_person_id,partner_person_id,valid_from_year,valid_through_year)"
+                )
+                let sourceName = "§ 20 Absatz 9 EStG"
+                let sourceURL = "https://www.gesetze-im-internet.de/estg/__20.html"
+                let seeds: [(String, Int, Int?, String, Int64)] = [
+                    ("7A200001-0000-4000-8000-000000000001", 2009, 2022, "individual", 80_100),
+                    ("7A200001-0000-4000-8000-000000000002", 2009, 2022, "joint", 160_200),
+                    ("7A200001-0000-4000-8000-000000000003", 2023, nil, "individual", 100_000),
+                    ("7A200001-0000-4000-8000-000000000004", 2023, nil, "joint", 200_000)
+                ]
+                for seed in seeds {
+                    try run(
+                        """
+                        INSERT OR IGNORE INTO tax_allowance_rules(
+                            id,effective_from_year,effective_through_year,assessment_type,
+                            allowance_minor,source_name,source_url
+                        ) VALUES(?,?,?,?,?,?,?)
+                        """,
+                        [.text(seed.0), .integer(Int64(seed.1)),
+                         seed.2.map { .integer(Int64($0)) } ?? .null,
+                         .text(seed.3), .integer(seed.4), .text(sourceName), .text(sourceURL)]
+                    )
+                }
+                try execute("PRAGMA user_version = 36")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2800,6 +2904,204 @@ final class SQLiteFinanceStore {
         try transaction {
             try run("DELETE FROM forecast_scenario_entries WHERE id=?", [.text(id.uuidString)])
             try audit(entity: "forecast_scenario_entry", id: id, action: "delete", details: "")
+        }
+    }
+
+    func taxPeople() throws -> [TaxPerson] {
+        var values: [TaxPerson] = []
+        try query(
+            """
+            SELECT id,display_name,tax_id_last_four,tax_id_confirmed,is_active
+            FROM tax_people ORDER BY is_active DESC,lower(display_name),id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)) else { return }
+            values.append(TaxPerson(
+                id: id, displayName: Self.text(statement, 1),
+                taxIDLastFour: Self.text(statement, 2),
+                taxIDConfirmed: sqlite3_column_int(statement, 3) != 0,
+                isActive: sqlite3_column_int(statement, 4) != 0
+            ))
+        }
+        return values
+    }
+
+    func saveTaxPerson(_ value: TaxPerson) throws {
+        let name = value.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = value.taxIDLastFour.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, suffix.isEmpty || (suffix.count == 4 && suffix.allSatisfy(\.isNumber)) else {
+            throw FinanceError.database("Name und optional die letzten vier Ziffern der Steuer-ID sind erforderlich.")
+        }
+        guard !value.taxIDConfirmed || suffix.count == 4 else {
+            throw FinanceError.database("Zur bestätigten Steuer-ID müssen die letzten vier Ziffern hinterlegt sein.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO tax_people(
+                    id,finance_file_id,display_name,tax_id_last_four,tax_id_confirmed,
+                    is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    display_name=excluded.display_name,tax_id_last_four=excluded.tax_id_last_four,
+                    tax_id_confirmed=excluded.tax_id_confirmed,is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(info.id.uuidString), .text(name),
+                 .text(suffix), .integer(value.taxIDConfirmed ? 1 : 0),
+                 .integer(value.isActive ? 1 : 0), .text(now), .text(now)]
+            )
+            try audit(entity: "tax_person", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func taxAllowanceRules() throws -> [TaxAllowanceRule] {
+        var values: [TaxAllowanceRule] = []
+        try query(
+            """
+            SELECT id,effective_from_year,effective_through_year,assessment_type,
+                   allowance_minor,source_name,source_url
+            FROM tax_allowance_rules ORDER BY effective_from_year,assessment_type,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let type = TaxAssessmentType(rawValue: Self.text(statement, 3)) else { return }
+            values.append(TaxAllowanceRule(
+                id: id, effectiveFromYear: Int(sqlite3_column_int(statement, 1)),
+                effectiveThroughYear: sqlite3_column_type(statement, 2) == SQLITE_NULL
+                    ? nil : Int(sqlite3_column_int(statement, 2)),
+                assessmentType: type, allowanceMinor: sqlite3_column_int64(statement, 4),
+                sourceName: Self.text(statement, 5), sourceURL: Self.text(statement, 6)
+            ))
+        }
+        return values
+    }
+
+    func taxAllowanceOrders() throws -> [TaxAllowanceOrder] {
+        var accountIDsByOrder: [UUID: Set<UUID>] = [:]
+        try query("SELECT order_id,account_id FROM tax_allowance_order_accounts") { statement in
+            guard let orderID = UUID(uuidString: Self.text(statement, 0)),
+                  let accountID = UUID(uuidString: Self.text(statement, 1)) else { return }
+            accountIDsByOrder[orderID, default: []].insert(accountID)
+        }
+        var values: [TaxAllowanceOrder] = []
+        try query(
+            """
+            SELECT id,institution,assessment_type,primary_person_id,partner_person_id,
+                   allowance_minor,valid_from_year,valid_through_year,note,is_active
+            FROM tax_allowance_orders
+            ORDER BY is_active DESC,valid_from_year DESC,lower(institution),id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let type = TaxAssessmentType(rawValue: Self.text(statement, 2)),
+                  let primaryID = UUID(uuidString: Self.text(statement, 3)) else { return }
+            values.append(TaxAllowanceOrder(
+                id: id, institution: Self.text(statement, 1), assessmentType: type,
+                primaryPersonID: primaryID,
+                partnerPersonID: Self.optionalText(statement, 4).flatMap(UUID.init(uuidString:)),
+                allowanceMinor: sqlite3_column_int64(statement, 5),
+                validFromYear: Int(sqlite3_column_int(statement, 6)),
+                validThroughYear: sqlite3_column_type(statement, 7) == SQLITE_NULL
+                    ? nil : Int(sqlite3_column_int(statement, 7)),
+                accountIDs: accountIDsByOrder[id] ?? [], note: Self.text(statement, 8),
+                isActive: sqlite3_column_int(statement, 9) != 0
+            ))
+        }
+        return values
+    }
+
+    func taxAllowanceUsages() throws -> [TaxAllowanceUsage] {
+        var values: [TaxAllowanceUsage] = []
+        try query(
+            """
+            SELECT id,order_id,tax_year,used_minor
+            FROM tax_allowance_usages ORDER BY tax_year DESC,order_id,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let orderID = UUID(uuidString: Self.text(statement, 1)) else { return }
+            values.append(TaxAllowanceUsage(
+                id: id, orderID: orderID,
+                taxYear: Int(sqlite3_column_int(statement, 2)),
+                usedMinor: sqlite3_column_int64(statement, 3)
+            ))
+        }
+        return values
+    }
+
+    func saveTaxAllowanceOrder(_ value: TaxAllowanceOrder) throws {
+        let allOrders = try taxAllowanceOrders()
+        try TaxAllowanceRuleEngine.validate(
+            order: value, replacingExisting: allOrders.first { $0.id == value.id },
+            orders: allOrders, usages: try taxAllowanceUsages(), people: try taxPeople(),
+            accounts: try accounts(), rules: try taxAllowanceRules()
+        )
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        let institution = value.institution.trimmingCharacters(in: .whitespacesAndNewlines)
+        try transaction {
+            try run(
+                """
+                INSERT INTO tax_allowance_orders(
+                    id,finance_file_id,institution,assessment_type,primary_person_id,
+                    partner_person_id,allowance_minor,valid_from_year,valid_through_year,
+                    note,is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    institution=excluded.institution,assessment_type=excluded.assessment_type,
+                    primary_person_id=excluded.primary_person_id,
+                    partner_person_id=excluded.partner_person_id,
+                    allowance_minor=excluded.allowance_minor,
+                    valid_from_year=excluded.valid_from_year,
+                    valid_through_year=excluded.valid_through_year,note=excluded.note,
+                    is_active=excluded.is_active,updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(info.id.uuidString), .text(institution),
+                 .text(value.assessmentType.rawValue), .text(value.primaryPersonID.uuidString),
+                 value.partnerPersonID.map { .text($0.uuidString) } ?? .null,
+                 .integer(value.allowanceMinor), .integer(Int64(value.validFromYear)),
+                 value.validThroughYear.map { .integer(Int64($0)) } ?? .null,
+                 .text(value.note), .integer(value.isActive ? 1 : 0), .text(now), .text(now)]
+            )
+            try run(
+                "DELETE FROM tax_allowance_order_accounts WHERE order_id=?",
+                [.text(value.id.uuidString)]
+            )
+            for accountID in value.accountIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try run(
+                    "INSERT INTO tax_allowance_order_accounts(order_id,account_id) VALUES(?,?)",
+                    [.text(value.id.uuidString), .text(accountID.uuidString)]
+                )
+            }
+            try audit(
+                entity: "tax_allowance_order", id: value.id, action: "save",
+                details: "\(institution) · \(value.allowanceMinor)"
+            )
+        }
+    }
+
+    func saveTaxAllowanceUsage(_ value: TaxAllowanceUsage) throws {
+        let orders = try taxAllowanceOrders()
+        try TaxAllowanceRuleEngine.validateUsage(
+            value, order: orders.first { $0.id == value.orderID }
+        )
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO tax_allowance_usages(
+                    id,order_id,tax_year,used_minor,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?) ON CONFLICT(order_id,tax_year) DO UPDATE SET
+                    used_minor=excluded.used_minor,updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(value.orderID.uuidString),
+                 .integer(Int64(value.taxYear)), .integer(value.usedMinor), .text(now), .text(now)]
+            )
+            try audit(
+                entity: "tax_allowance_usage", id: value.id, action: "save",
+                details: "\(value.taxYear) · \(value.usedMinor)"
+            )
         }
     }
 
