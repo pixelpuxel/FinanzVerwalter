@@ -5,6 +5,7 @@ enum ReportGrouping: String, CaseIterable, Codable, Identifiable, Sendable {
     case payee
     case account
     case tag
+    case germanTaxLine
     case none
 
     var id: Self { self }
@@ -15,7 +16,38 @@ enum ReportGrouping: String, CaseIterable, Codable, Identifiable, Sendable {
         case .payee: "Empfänger"
         case .account: "Konto"
         case .tag: "Klasse/Tag"
+        case .germanTaxLine: "Deutsche Steuerzuordnung"
         case .none: "Keine Gruppierung"
+        }
+    }
+}
+
+enum ReportVisualization: String, CaseIterable, Codable, Identifiable, Sendable {
+    case table
+    case bar
+    case pie
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .table: "Tabelle"
+        case .bar: "Balken"
+        case .pie: "Torte"
+        }
+    }
+}
+
+enum ReportChartMetric: String, CaseIterable, Codable, Identifiable, Sendable {
+    case income
+    case expense
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .income: "Einnahmen"
+        case .expense: "Ausgaben"
         }
     }
 }
@@ -47,6 +79,7 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
     case cashFlow
     case accountActivity
     case categoryAndTag
+    case germanTaxReport
 
     var id: Self { self }
 
@@ -58,6 +91,7 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
         case .cashFlow: "Cashflow nach Konto und Kategorie"
         case .accountActivity: "Kontobewegungen nach Konto und Empfänger"
         case .categoryAndTag: "Kategorie- und Klassenbericht"
+        case .germanTaxReport: "Deutscher Steuerbericht"
         }
     }
 
@@ -69,6 +103,7 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
         case .cashFlow: "arrow.left.arrow.right"
         case .accountActivity: "building.columns"
         case .categoryAndTag: "tag"
+        case .germanTaxReport: "doc.text.magnifyingglass"
         }
     }
 
@@ -86,6 +121,8 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
             "Aktuelles Jahr, Konten mit Empfänger-Drill-down"
         case .categoryAndTag:
             "Aktuelles Jahr, Kategorien mit Klassen-/Tag-Drill-down"
+        case .germanTaxReport:
+            "Aktuelles Jahr, gepflegte deutsche Steuerzuordnungen mit Kategorie-Drill-down"
         }
     }
 
@@ -131,6 +168,14 @@ enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendab
                 grouping: .category, secondaryGrouping: .tag,
                 sort: .amountDescending
             )
+        case .germanTaxReport:
+            return TransactionReportQuery(
+                dateFrom: dateFrom, dateThrough: dateThrough,
+                expandSplits: true,
+                grouping: .germanTaxLine, secondaryGrouping: .category,
+                sort: .amountDescending,
+                requireGermanTaxAssignment: true
+            )
         }
     }
 }
@@ -164,10 +209,15 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var includeDetailRows: Bool? = nil
     var includeSubtotals: Bool? = nil
     var includeGrandTotals: Bool? = nil
+    var requireGermanTaxAssignment: Bool? = nil
+    var visualization: ReportVisualization? = nil
+    var chartMetric: ReportChartMetric? = nil
 
     var showsDetailRows: Bool { includeDetailRows ?? true }
     var showsSubtotals: Bool { includeSubtotals ?? true }
     var showsGrandTotals: Bool { includeGrandTotals ?? true }
+    var selectedVisualization: ReportVisualization { visualization ?? .table }
+    var selectedChartMetric: ReportChartMetric { chartMetric ?? .expense }
 }
 
 struct SavedReportTemplate: Identifiable, Equatable, Sendable {
@@ -196,6 +246,7 @@ struct TransactionReportFact: Identifiable, Hashable, Sendable {
     let amountMinor: Int64
     let currency: String
     let isTransfer: Bool
+    var germanTaxLine: String = ""
 }
 
 struct TransactionReportGroup: Identifiable, Hashable, Sendable {
@@ -315,7 +366,10 @@ enum TransactionReportEngine {
                         || !allowedTags.isDisjoint(with: fact.tagIDs)
                     let textMatches = normalizedText.isEmpty
                         || searchableText(for: fact).localizedCaseInsensitiveContains(normalizedText)
-                    return amountMatches && categoryMatches && tagMatches && textMatches
+                    let taxMatches = query.requireGermanTaxAssignment != true
+                        || !fact.germanTaxLine.isEmpty
+                    return amountMatches && categoryMatches && tagMatches
+                        && textMatches && taxMatches
                 }
             )
         }
@@ -396,7 +450,10 @@ enum TransactionReportEngine {
                     status: transaction.status,
                     amountMinor: split.amountMinor,
                     currency: transaction.currency,
-                    isTransfer: transaction.transferID != nil
+                    isTransfer: transaction.transferID != nil,
+                    germanTaxLine: germanTaxLine(
+                        split.categoryID, categoriesByID: categoriesByID
+                    )
                 )
             }
         }
@@ -422,7 +479,10 @@ enum TransactionReportEngine {
                 status: transaction.status,
                 amountMinor: transaction.amountMinor,
                 currency: transaction.currency,
-                isTransfer: transaction.transferID != nil
+                isTransfer: transaction.transferID != nil,
+                germanTaxLine: germanTaxLine(
+                    transaction.categoryID, categoriesByID: categoriesByID
+                )
             )
         ]
     }
@@ -607,6 +667,8 @@ enum TransactionReportEngine {
             fact.accountName
         case .tag:
             fact.tagPaths.isEmpty ? "Ohne Klasse/Tag" : fact.tagPaths.joined(separator: " + ")
+        case .germanTaxLine:
+            fact.germanTaxLine.isEmpty ? "Ohne deutsche Steuerzuordnung" : fact.germanTaxLine
         case .none:
             "Alle Buchungen"
         }
@@ -615,8 +677,17 @@ enum TransactionReportEngine {
     private static func searchableText(for fact: TransactionReportFact) -> String {
         [
             fact.payee, fact.purpose, fact.detail, fact.categoryPath,
-            fact.accountName, fact.status.title, fact.tagPaths.joined(separator: " ")
+            fact.accountName, fact.status.title, fact.tagPaths.joined(separator: " "),
+            fact.germanTaxLine
         ].joined(separator: "\n")
+    }
+
+    private static func germanTaxLine(
+        _ categoryID: UUID?,
+        categoriesByID: [UUID: FinanceCategory]
+    ) -> String {
+        guard let categoryID, let category = categoriesByID[categoryID] else { return "" }
+        return category.germanTaxLine.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func descendantIDs(
@@ -667,6 +738,88 @@ enum TransactionReportEngine {
 
     private static func absoluteNet(_ group: TransactionReportGroup) -> Int64 {
         group.netMinor == Int64.min ? Int64.max : abs(group.netMinor)
+    }
+}
+
+struct ReportChartDatum: Identifiable, Equatable, Sendable {
+    var id: String {
+        "\(currency)\u{1F}\(label)\u{1F}\(factIDs.sorted().joined(separator: ","))"
+    }
+    let label: String
+    let currency: String
+    let amountMinor: Int64
+    let factIDs: Set<String>
+    let isRemainder: Bool
+}
+
+struct ReportChartSeries: Identifiable, Equatable, Sendable {
+    var id: String { currency }
+    let currency: String
+    let values: [ReportChartDatum]
+
+    var totalMinor: Int64 { values.reduce(0) { $0 + $1.amountMinor } }
+}
+
+enum ReportChartEngine {
+    static func series(
+        snapshot: TransactionReportSnapshot,
+        metric: ReportChartMetric,
+        maximumSegments: Int = 12
+    ) -> [ReportChartSeries] {
+        let limit = max(2, maximumSegments)
+        let detailGroups = snapshot.groups.filter { $0.level == .detail }
+        if detailGroups.isEmpty {
+            return snapshot.totals.compactMap { total in
+                let amount = metric == .income ? total.incomeMinor : total.expenseMinor
+                guard amount > 0 else { return nil }
+                return ReportChartSeries(
+                    currency: total.currency,
+                    values: [ReportChartDatum(
+                        label: "Gesamt", currency: total.currency,
+                        amountMinor: amount,
+                        factIDs: Set(snapshot.facts.filter {
+                            $0.currency == total.currency
+                                && (metric == .income ? $0.amountMinor > 0 : $0.amountMinor < 0)
+                        }.map(\.id)),
+                        isRemainder: false
+                    )]
+                )
+            }
+        }
+        return Dictionary(grouping: detailGroups, by: \.currency)
+            .compactMap { currency, groups -> ReportChartSeries? in
+                let sorted = groups.compactMap { group -> ReportChartDatum? in
+                    let amount = metric == .income ? group.incomeMinor : group.expenseMinor
+                    guard amount > 0 else { return nil }
+                    return ReportChartDatum(
+                        label: group.label, currency: currency,
+                        amountMinor: amount, factIDs: group.factIDs,
+                        isRemainder: false
+                    )
+                }.sorted {
+                    $0.amountMinor == $1.amountMinor
+                        ? $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+                        : $0.amountMinor > $1.amountMinor
+                }
+                guard !sorted.isEmpty else { return nil }
+                guard sorted.count > limit else {
+                    return ReportChartSeries(currency: currency, values: sorted)
+                }
+                let visible = Array(sorted.prefix(limit - 1))
+                let remainder = Array(sorted.dropFirst(limit - 1))
+                let remainderValue = ReportChartDatum(
+                    label: "Weitere (\(remainder.count))", currency: currency,
+                    amountMinor: remainder.reduce(0) { $0 + $1.amountMinor },
+                    factIDs: remainder.reduce(into: Set<String>()) {
+                        $0.formUnion($1.factIDs)
+                    },
+                    isRemainder: true
+                )
+                return ReportChartSeries(
+                    currency: currency, values: visible + [remainderValue]
+                )
+            }
+            .sorted { $0.currency < $1.currency }
     }
 }
 

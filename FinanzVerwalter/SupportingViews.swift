@@ -1392,6 +1392,9 @@ struct ReportsView: View {
     @State private var includeDetailRows = true
     @State private var includeSubtotals = true
     @State private var includeGrandTotals = true
+    @State private var requireGermanTaxAssignment = false
+    @State private var visualization: ReportVisualization = .table
+    @State private var chartMetric: ReportChartMetric = .expense
     @State private var grouping: ReportGrouping = .category
     @State private var secondaryGrouping: ReportGrouping = .none
     @State private var sort: ReportSort = .amountDescending
@@ -1447,7 +1450,10 @@ struct ReportsView: View {
             includeForecast: includeForecast,
             includeDetailRows: includeDetailRows,
             includeSubtotals: includeSubtotals,
-            includeGrandTotals: includeGrandTotals
+            includeGrandTotals: includeGrandTotals,
+            requireGermanTaxAssignment: requireGermanTaxAssignment,
+            visualization: visualization,
+            chartMetric: chartMetric
         )
     }
 
@@ -1654,6 +1660,19 @@ struct ReportsView: View {
                         }
                     }
                     .frame(width: 185)
+                    Picker("Darstellung", selection: $visualization) {
+                        ForEach(ReportVisualization.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 125)
+                    Picker("Diagrammwert", selection: $chartMetric) {
+                        ForEach(ReportChartMetric.allCases) {
+                            Text($0.title).tag($0)
+                        }
+                    }
+                    .frame(width: 130)
+                    .disabled(visualization == .table)
                     optionsMenu
                     Spacer()
                     Button("Zurücksetzen", systemImage: "arrow.counterclockwise") {
@@ -1667,6 +1686,11 @@ struct ReportsView: View {
             .padding(.vertical, 10)
 
             Divider()
+
+            if visualization != .table {
+                reportCharts(snapshot)
+                Divider()
+            }
 
             if grouping == .none {
                 if includeDetailRows {
@@ -1984,6 +2008,10 @@ struct ReportsView: View {
         Menu {
             Toggle("Umbuchungen einbeziehen", isOn: $includeTransfers)
             Toggle("Splitzeilen einzeln auswerten", isOn: $expandSplits)
+            Toggle(
+                "Nur deutsche Steuerzuordnungen",
+                isOn: $requireGermanTaxAssignment
+            )
             Divider()
             Toggle("Buchungsdetails", isOn: $includeDetailRows)
             Toggle("Zwischensummen", isOn: $includeSubtotals)
@@ -2038,6 +2066,95 @@ struct ReportsView: View {
         }
     }
 
+    @ViewBuilder
+    private func reportCharts(_ snapshot: TransactionReportSnapshot) -> some View {
+        let series = ReportChartEngine.series(
+            snapshot: snapshot,
+            metric: chartMetric
+        )
+        if series.isEmpty {
+            ContentUnavailableView(
+                "Keine Diagrammwerte",
+                systemImage: visualization == .pie ? "chart.pie" : "chart.bar",
+                description: Text(
+                    "Die gewählten Filter enthalten keine \(chartMetric.title.lowercased())."
+                )
+            )
+            .frame(minHeight: 190)
+        } else {
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(series) { currencySeries in
+                        GroupBox {
+                            if visualization == .bar {
+                                Chart(currencySeries.values) { datum in
+                                    BarMark(
+                                        x: .value(chartMetric.title, chartAmount(datum)),
+                                        y: .value("Gruppe", datum.label)
+                                    )
+                                    .foregroundStyle(
+                                        datum.isRemainder
+                                            ? Color.secondary.gradient
+                                            : Color.accentColor.gradient
+                                    )
+                                    .accessibilityLabel(datum.label)
+                                    .accessibilityValue(
+                                        Money(
+                                            minorUnits: datum.amountMinor,
+                                            currency: datum.currency
+                                        ).formatted
+                                    )
+                                }
+                                .chartXAxisLabel(chartMetric.title)
+                                .frame(
+                                    width: 620,
+                                    height: max(190, CGFloat(currencySeries.values.count * 31))
+                                )
+                            } else {
+                                Chart(currencySeries.values) { datum in
+                                    SectorMark(
+                                        angle: .value(chartMetric.title, chartAmount(datum)),
+                                        innerRadius: .ratio(0.46),
+                                        angularInset: 1
+                                    )
+                                    .foregroundStyle(by: .value("Gruppe", datum.label))
+                                    .accessibilityLabel(datum.label)
+                                    .accessibilityValue(
+                                        Money(
+                                            minorUnits: datum.amountMinor,
+                                            currency: datum.currency
+                                        ).formatted
+                                    )
+                                }
+                                .chartLegend(position: .trailing, alignment: .center)
+                                .frame(width: 620, height: 270)
+                            }
+                        } label: {
+                            HStack {
+                                Text("\(chartMetric.title) · \(currencySeries.currency)")
+                                    .font(.headline)
+                                Spacer()
+                                Text(
+                                    Money(
+                                        minorUnits: currencySeries.totalMinor,
+                                        currency: currencySeries.currency
+                                    ).formatted
+                                )
+                                .monospacedDigit()
+                            }
+                        }
+                        .frame(width: 650)
+                    }
+                }
+                .padding(14)
+            }
+            .frame(maxHeight: 380)
+            .accessibilityLabel(
+                "Diagramm \(chartMetric.title), nach Währung getrennt"
+            )
+        }
+    }
+
     private func reportFactsTable(
         _ facts: [TransactionReportFact]
     ) -> some View {
@@ -2061,11 +2178,24 @@ struct ReportsView: View {
                     .help([fact.purpose, fact.detail].filter { !$0.isEmpty }.joined(separator: "\n"))
             }
             .width(min: 150, ideal: 220)
-            TableColumn("Kategorie") {
-                Text($0.categoryPath)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help($0.categoryPath)
+            TableColumn("Kategorie") { fact in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(fact.categoryPath)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if !fact.germanTaxLine.isEmpty {
+                        Text(fact.germanTaxLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .help(
+                    [fact.categoryPath, fact.germanTaxLine]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: "\n")
+                )
             }
             .width(min: 150, ideal: 210)
             TableColumn("Status") {
@@ -2086,6 +2216,11 @@ struct ReportsView: View {
                 )
             }
         }
+    }
+
+    private func chartAmount(_ datum: ReportChartDatum) -> Decimal {
+        Decimal(datum.amountMinor)
+            / Decimal(Money.minorUnitFactor(for: datum.currency))
     }
 
     private func reportTotals(
@@ -2165,6 +2300,9 @@ struct ReportsView: View {
             || !includeDetailRows
             || !includeSubtotals
             || !includeGrandTotals
+            || requireGermanTaxAssignment
+            || visualization != .table
+            || chartMetric != .expense
             || grouping != .category
             || secondaryGrouping != .none
             || sort != .amountDescending
@@ -2193,6 +2331,9 @@ struct ReportsView: View {
         includeDetailRows = true
         includeSubtotals = true
         includeGrandTotals = true
+        requireGermanTaxAssignment = false
+        visualization = .table
+        chartMetric = .expense
         grouping = .category
         secondaryGrouping = .none
         sort = .amountDescending
@@ -2209,7 +2350,7 @@ struct ReportsView: View {
         let template = SavedReportTemplate(
             id: id,
             name: templateName,
-            definitionVersion: 3,
+            definitionVersion: 4,
             query: query
         )
         if store.saveReportTemplate(template) {
@@ -2273,6 +2414,9 @@ struct ReportsView: View {
         includeDetailRows = savedQuery.showsDetailRows
         includeSubtotals = savedQuery.showsSubtotals
         includeGrandTotals = savedQuery.showsGrandTotals
+        requireGermanTaxAssignment = savedQuery.requireGermanTaxAssignment == true
+        visualization = savedQuery.selectedVisualization
+        chartMetric = savedQuery.selectedChartMetric
         selectedReportGroupID = nil
     }
 
@@ -2392,12 +2536,17 @@ struct ReportsView: View {
             "Status \(statuses.count)/\(TransactionStatus.allCases.count)",
             reportText.isEmpty ? "kein Volltext" : "Volltext: \(reportText)",
             includeTransfers ? "mit Umbuchungen" : "ohne Umbuchungen",
+            requireGermanTaxAssignment
+                ? "nur deutsche Steuerzuordnungen"
+                : "alle Steuerzuordnungen",
             expandSplits ? "Splitzeilen" : "Gesamtbuchungen",
             "Gruppierung \(reportGroupingTitle)",
+            "Darstellung \(visualization.title)",
+            visualization == .table ? nil : "Diagrammwert \(chartMetric.title)",
             includeDetailRows ? "mit Buchungsdetails" : "ohne Buchungsdetails",
             includeSubtotals ? "mit Zwischensummen" : "ohne Zwischensummen",
             includeGrandTotals ? "mit Gesamtsummen" : "ohne Gesamtsummen"
-        ].joined(separator: " · ")
+        ].compactMap { $0 }.joined(separator: " · ")
     }
 
     private var reportGroupingTitle: String {

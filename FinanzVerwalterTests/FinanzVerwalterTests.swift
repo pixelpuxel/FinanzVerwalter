@@ -4837,6 +4837,9 @@ final class FinanzVerwalterTests: XCTestCase {
             secondaryGrouping: .category,
             sort: .dateAscending
         )
+        query.requireGermanTaxAssignment = true
+        query.visualization = .pie
+        query.chartMetric = .income
         let id = UUID()
         try context.store.saveReportTemplate(
             SavedReportTemplate(
@@ -4942,6 +4945,9 @@ final class FinanzVerwalterTests: XCTestCase {
         legacyObject.removeValue(forKey: "includeDetailRows")
         legacyObject.removeValue(forKey: "includeSubtotals")
         legacyObject.removeValue(forKey: "includeGrandTotals")
+        legacyObject.removeValue(forKey: "requireGermanTaxAssignment")
+        legacyObject.removeValue(forKey: "visualization")
+        legacyObject.removeValue(forKey: "chartMetric")
         let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
         let decoded = try JSONDecoder().decode(
             TransactionReportQuery.self, from: legacyData
@@ -4950,6 +4956,9 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(decoded.showsDetailRows)
         XCTAssertTrue(decoded.showsSubtotals)
         XCTAssertTrue(decoded.showsGrandTotals)
+        XCTAssertFalse(decoded.requireGermanTaxAssignment == true)
+        XCTAssertEqual(decoded.selectedVisualization, .table)
+        XCTAssertEqual(decoded.selectedChartMetric, .expense)
     }
 
     func testTransactionReportStandardPresetsAreDeterministicAndDistinct() throws {
@@ -4966,11 +4975,11 @@ final class FinanzVerwalterTests: XCTestCase {
         ).addingTimeInterval(-0.001)
 
         let presets = TransactionReportStandardPreset.allCases
-        XCTAssertEqual(presets.count, 6)
+        XCTAssertEqual(presets.count, 7)
         let queries = presets.map { $0.query(now: now, calendar: calendar) }
         XCTAssertTrue(queries.allSatisfy { $0.dateFrom == expectedStart })
         XCTAssertTrue(queries.allSatisfy { $0.dateThrough == expectedEnd })
-        XCTAssertEqual(Set(queries.map { "\($0.grouping.rawValue):\($0.secondaryGrouping?.rawValue ?? "-"):\($0.sort.rawValue)" }).count, 6)
+        XCTAssertEqual(Set(queries.map { "\($0.grouping.rawValue):\($0.secondaryGrouping?.rawValue ?? "-"):\($0.sort.rawValue)" }).count, 7)
 
         let journal = TransactionReportStandardPreset.bookingJournal.query(
             now: now, calendar: calendar
@@ -4986,6 +4995,148 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(cashFlow.secondaryGrouping, .category)
         XCTAssertFalse(cashFlow.includeTransfers)
         XCTAssertTrue(cashFlow.expandSplits)
+
+        let tax = TransactionReportStandardPreset.germanTaxReport.query(
+            now: now, calendar: calendar
+        )
+        XCTAssertEqual(tax.grouping, .germanTaxLine)
+        XCTAssertEqual(tax.secondaryGrouping, .category)
+        XCTAssertTrue(tax.requireGermanTaxAssignment == true)
+    }
+
+    func testGermanTaxReportFiltersAssignmentsAndKeepsCategoryDrillDown() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let now = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 7, day: 14))
+        )
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let root = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Immobilie A", kind: .expense,
+            color: "", isActive: true
+        )
+        let assigned = FinanceCategory(
+            id: UUID(), parentID: root.id, name: "Grundsteuer", kind: .expense,
+            color: "", isActive: true,
+            germanTaxLine: "Anlage V · öffentliche Lasten"
+        )
+        let unassigned = FinanceCategory(
+            id: UUID(), parentID: root.id, name: "Instandhaltung", kind: .expense,
+            color: "", isActive: true
+        )
+        let splitTransaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: now, valueDate: nil,
+            payee: "Gemeinde", purpose: "Bescheid", categoryID: nil,
+            amountMinor: -1_000, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: [
+                FinanceSplit(
+                    id: UUID(), categoryID: assigned.id, amountMinor: -700,
+                    memo: "Grundsteuer", sortOrder: 0
+                ),
+                FinanceSplit(
+                    id: UUID(), categoryID: unassigned.id, amountMinor: -300,
+                    memo: "Reparatur", sortOrder: 1
+                )
+            ]
+        )
+        let direct = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: now, valueDate: nil,
+            payee: "Gemeinde", purpose: "Nachzahlung", categoryID: assigned.id,
+            amountMinor: -200, currency: "EUR", status: .booked,
+            memo: "", reference: "", transferID: nil, importFingerprint: nil,
+            splits: []
+        )
+        let snapshot = TransactionReportEngine.snapshot(
+            query: TransactionReportStandardPreset.germanTaxReport.query(
+                now: now, calendar: calendar
+            ),
+            transactions: [splitTransaction, direct], accounts: [account],
+            categories: [root, assigned, unassigned], tags: []
+        )
+
+        XCTAssertEqual(snapshot.facts.count, 2)
+        XCTAssertEqual(Set(snapshot.facts.map(\.transactionID)), [splitTransaction.id, direct.id])
+        XCTAssertTrue(snapshot.facts.allSatisfy {
+            $0.germanTaxLine == "Anlage V · öffentliche Lasten"
+        })
+        XCTAssertEqual(snapshot.totals.first?.expenseMinor, 900)
+        let detail = try XCTUnwrap(
+            snapshot.groups.first { $0.level == .detail }
+        )
+        XCTAssertEqual(
+            detail.label,
+            "Anlage V · öffentliche Lasten › Immobilie A › Grundsteuer"
+        )
+        XCTAssertEqual(detail.expenseMinor, 900)
+        XCTAssertEqual(snapshot.facts(inGroupID: detail.id).count, 2)
+    }
+
+    func testReportChartsAggregateTopSegmentsExactlyAndSeparateCurrencies() throws {
+        let euro = FinanceAccount(
+            id: UUID(), name: "Euro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let dollar = FinanceAccount(
+            id: UUID(), name: "Dollar", institution: "", type: .foreignCurrency,
+            currency: "USD", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        let categories = (0..<7).map { index in
+            FinanceCategory(
+                id: UUID(), parentID: nil, name: "Kategorie \(index)",
+                kind: .expense, color: "", isActive: true
+            )
+        }
+        let date = Date(timeIntervalSince1970: 1_735_689_600)
+        let euroTransactions = (0..<5).map { index in
+            FinanceTransaction(
+                id: UUID(), accountID: euro.id, bookingDate: date, valueDate: nil,
+                payee: "Test", purpose: "EUR \(index)", categoryID: categories[index].id,
+                amountMinor: -Int64((index + 1) * 100), currency: "EUR", status: .booked,
+                memo: "", reference: "", transferID: nil, importFingerprint: nil,
+                splits: []
+            )
+        }
+        let dollarTransactions = (5..<7).map { index in
+            FinanceTransaction(
+                id: UUID(), accountID: dollar.id, bookingDate: date, valueDate: nil,
+                payee: "Test", purpose: "USD \(index)", categoryID: categories[index].id,
+                amountMinor: -Int64((index - 4) * 700), currency: "USD", status: .booked,
+                memo: "", reference: "", transferID: nil, importFingerprint: nil,
+                splits: []
+            )
+        }
+        let snapshot = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(grouping: .category),
+            transactions: euroTransactions + dollarTransactions,
+            accounts: [euro, dollar], categories: categories, tags: []
+        )
+
+        let first = ReportChartEngine.series(
+            snapshot: snapshot, metric: .expense, maximumSegments: 3
+        )
+        let second = ReportChartEngine.series(
+            snapshot: snapshot, metric: .expense, maximumSegments: 3
+        )
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.map(\.currency), ["EUR", "USD"])
+        let euroSeries = try XCTUnwrap(first.first { $0.currency == "EUR" })
+        let usdSeries = try XCTUnwrap(first.first { $0.currency == "USD" })
+        XCTAssertEqual(euroSeries.values.count, 3)
+        XCTAssertEqual(euroSeries.values.map(\.amountMinor), [500, 400, 600])
+        XCTAssertEqual(euroSeries.values.last?.label, "Weitere (3)")
+        XCTAssertTrue(euroSeries.values.last?.isRemainder == true)
+        XCTAssertEqual(euroSeries.totalMinor, 1_500)
+        XCTAssertEqual(usdSeries.values.count, 2)
+        XCTAssertFalse(usdSeries.values.contains { $0.isRemainder })
+        XCTAssertEqual(usdSeries.totalMinor, 2_100)
+        XCTAssertEqual(first.reduce(0) { $0 + $1.totalMinor }, 3_600)
     }
 
     func testAccountBalanceReportUsesHistoricalCutoffAndSeparatesCurrencies() throws {
