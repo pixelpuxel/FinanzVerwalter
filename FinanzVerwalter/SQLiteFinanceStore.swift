@@ -7297,12 +7297,95 @@ final class SQLiteFinanceStore {
                 )
             )
         }
-        for index in values.indices {
-            values[index].splits = try splits(transactionID: values[index].id)
-            values[index].tagIDs = try tagIDs(
-                table: "transaction_tags", ownerColumn: "transaction_id",
-                ownerID: values[index].id
+        guard !values.isEmpty else { return values }
+
+        let filterValues: [SQLiteValue] = accountID.map {
+            [.text($0.uuidString)]
+        } ?? []
+        let joinedTransactionFilter = accountID == nil
+            ? ""
+            : "JOIN transactions t ON t.id=s.transaction_id WHERE t.account_id=?"
+        var splitsByTransaction: [UUID: [FinanceSplit]] = [:]
+        try query(
+            """
+            SELECT s.transaction_id,s.id,s.category_id,s.amount_minor,s.memo,
+                   s.sort_order,s.vat_code_id,s.vat_mode,s.net_minor,s.tax_minor
+            FROM transaction_splits s
+            \(joinedTransactionFilter)
+            ORDER BY s.transaction_id,s.sort_order,s.id
+            """,
+            filterValues
+        ) { statement in
+            guard
+                let transactionID = UUID(uuidString: Self.text(statement, 0)),
+                let splitID = UUID(uuidString: Self.text(statement, 1)),
+                let vatMode = VATMode(rawValue: Self.text(statement, 7))
+            else { return }
+            splitsByTransaction[transactionID, default: []].append(
+                FinanceSplit(
+                    id: splitID,
+                    categoryID: Self.optionalText(statement, 2).flatMap(UUID.init(uuidString:)),
+                    amountMinor: sqlite3_column_int64(statement, 3),
+                    memo: Self.text(statement, 4),
+                    sortOrder: Int(sqlite3_column_int(statement, 5)),
+                    tagIDs: [],
+                    vatCodeID: Self.optionalText(statement, 6).flatMap(UUID.init(uuidString:)),
+                    vatMode: vatMode,
+                    netMinor: sqlite3_column_int64(statement, 8),
+                    taxMinor: sqlite3_column_int64(statement, 9)
+                )
             )
+        }
+
+        let joinedSplitFilter = accountID == nil
+            ? ""
+            : "JOIN transactions t ON t.id=s.transaction_id WHERE t.account_id=?"
+        var splitTagsByID: [UUID: [UUID]] = [:]
+        try query(
+            """
+            SELECT st.split_id,st.tag_id
+            FROM split_tags st
+            JOIN transaction_splits s ON s.id=st.split_id
+            \(joinedSplitFilter)
+            ORDER BY st.split_id,st.tag_id
+            """,
+            filterValues
+        ) { statement in
+            guard
+                let splitID = UUID(uuidString: Self.text(statement, 0)),
+                let tagID = UUID(uuidString: Self.text(statement, 1))
+            else { return }
+            splitTagsByID[splitID, default: []].append(tagID)
+        }
+
+        let joinedTagFilter = accountID == nil
+            ? ""
+            : "JOIN transactions t ON t.id=tt.transaction_id WHERE t.account_id=?"
+        var transactionTagsByID: [UUID: [UUID]] = [:]
+        try query(
+            """
+            SELECT tt.transaction_id,tt.tag_id
+            FROM transaction_tags tt
+            \(joinedTagFilter)
+            ORDER BY tt.transaction_id,tt.tag_id
+            """,
+            filterValues
+        ) { statement in
+            guard
+                let transactionID = UUID(uuidString: Self.text(statement, 0)),
+                let tagID = UUID(uuidString: Self.text(statement, 1))
+            else { return }
+            transactionTagsByID[transactionID, default: []].append(tagID)
+        }
+
+        for index in values.indices {
+            var transactionSplits = splitsByTransaction[values[index].id] ?? []
+            for splitIndex in transactionSplits.indices {
+                transactionSplits[splitIndex].tagIDs =
+                    splitTagsByID[transactionSplits[splitIndex].id] ?? []
+            }
+            values[index].splits = transactionSplits
+            values[index].tagIDs = transactionTagsByID[values[index].id] ?? []
         }
         return values
     }
@@ -8169,6 +8252,148 @@ final class SQLiteFinanceStore {
                 now: now
             )
             try audit(entity: "transaction", id: value.id, action: "save", details: value.purpose)
+        }
+    }
+
+    func seedReferenceTransactions(_ values: [FinanceTransaction]) throws {
+        guard !values.isEmpty else { return }
+        guard Set(values.map(\.id)).count == values.count else {
+            throw FinanceError.database(
+                "Der Referenzdatensatz enthält doppelte Buchungskennungen."
+            )
+        }
+        let accountsByID = Dictionary(
+            uniqueKeysWithValues: try accounts().map { ($0.id, $0) }
+        )
+        for value in values {
+            try value.validate()
+            try validateVATReferences(value)
+            guard value.tagIDs.isEmpty,
+                  value.splits.allSatisfy({ $0.tagIDs.isEmpty }),
+                  let account = accountsByID[value.accountID],
+                  !account.isClosed,
+                  account.currency == value.currency else {
+                throw FinanceError.database(
+                    "Eine Referenzbuchung verweist auf ein ungeeignetes Konto."
+                )
+            }
+        }
+        let transferGroups = Dictionary(
+            grouping: values.compactMap { value in
+                value.transferID.map { ($0, value) }
+            },
+            by: { $0.0 }
+        )
+        for (_, members) in transferGroups {
+            let transactions = members.map(\.1)
+            guard transactions.count == 2,
+                  transactions[0].accountID != transactions[1].accountID,
+                  transactions[0].currency == transactions[1].currency,
+                  transactions.reduce(Int64.zero, { $0 + $1.amountMinor }) == 0
+            else {
+                throw FinanceError.database(
+                    "Eine Referenzumbuchung ist nicht vollständig ausgeglichen."
+                )
+            }
+        }
+
+        var transactionStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            """
+            INSERT INTO transactions(
+                id,account_id,booking_date,value_date,payee,purpose,category_id,
+                amount_minor,currency,status,memo,reference,transfer_id,
+                import_fingerprint,payee_id,created_at,updated_at,
+                vat_code_id,vat_mode,net_minor,tax_minor,
+                origin,external_provider,external_transaction_id,
+                counterparty_iban,end_to_end_id,mandate_reference,
+                duplicate_fingerprint,bank_balance_after_minor,
+                counterparty_bic,creditor_id,booking_text,
+                original_amount_minor,original_currency,exchange_rate_scaled
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            -1,
+            &transactionStatement,
+            nil
+        ) == SQLITE_OK else { throw databaseError() }
+        defer { sqlite3_finalize(transactionStatement) }
+
+        var splitStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            """
+            INSERT INTO transaction_splits(
+                id,transaction_id,category_id,amount_minor,memo,sort_order,
+                vat_code_id,vat_mode,net_minor,tax_minor
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            -1,
+            &splitStatement,
+            nil
+        ) == SQLITE_OK else { throw databaseError() }
+        defer { sqlite3_finalize(splitStatement) }
+
+        let now = Self.timestamp(Date())
+        try transaction {
+            for value in values {
+                sqlite3_reset(transactionStatement)
+                sqlite3_clear_bindings(transactionStatement)
+                try bind(
+                    [
+                        .text(value.id.uuidString), .text(value.accountID.uuidString),
+                        .text(Self.day(value.bookingDate)),
+                        value.valueDate.map { .text(Self.day($0)) } ?? .null,
+                        .text(value.payee), .text(value.purpose),
+                        value.categoryID.map { .text($0.uuidString) } ?? .null,
+                        .integer(value.amountMinor), .text(value.currency),
+                        .text(value.status.rawValue), .text(value.memo), .text(value.reference),
+                        value.transferID.map { .text($0.uuidString) } ?? .null,
+                        value.importFingerprint.map(SQLiteValue.text) ?? .null,
+                        value.payeeID.map { .text($0.uuidString) } ?? .null,
+                        .text(now), .text(now),
+                        value.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                        .text(value.vatMode.rawValue), .integer(value.netMinor),
+                        .integer(value.taxMinor), .text(value.origin.rawValue),
+                        .text(value.externalProvider), .text(value.externalTransactionID),
+                        .text(value.counterpartyIBAN), .text(value.endToEndID),
+                        .text(value.mandateReference), .text(value.duplicateFingerprint),
+                        value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null,
+                        .text(value.counterpartyBIC), .text(value.creditorID),
+                        .text(value.bookingText),
+                        value.originalAmountMinor.map(SQLiteValue.integer) ?? .null,
+                        .text(value.originalCurrency.uppercased()),
+                        value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null
+                    ],
+                    to: transactionStatement
+                )
+                guard sqlite3_step(transactionStatement) == SQLITE_DONE else {
+                    throw databaseError()
+                }
+                for split in value.splits {
+                    sqlite3_reset(splitStatement)
+                    sqlite3_clear_bindings(splitStatement)
+                    try bind(
+                        [
+                            .text(split.id.uuidString), .text(value.id.uuidString),
+                            split.categoryID.map { .text($0.uuidString) } ?? .null,
+                            .integer(split.amountMinor), .text(split.memo),
+                            .integer(Int64(split.sortOrder)),
+                            split.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                            .text(split.vatMode.rawValue), .integer(split.netMinor),
+                            .integer(split.taxMinor)
+                        ],
+                        to: splitStatement
+                    )
+                    guard sqlite3_step(splitStatement) == SQLITE_DONE else {
+                        throw databaseError()
+                    }
+                }
+            }
+            try audit(
+                entity: "reference_dataset", id: UUID(), action: "seed",
+                details: "transactions=\(values.count)"
+            )
         }
     }
 
@@ -10012,7 +10237,44 @@ final class SQLiteFinanceStore {
     }()
 
     private static func day(_ date: Date) -> String { dayFormatter.string(from: date) }
-    private static func date(_ text: String) -> Date? { dayFormatter.date(from: text) }
+    private static func date(_ text: String) -> Date? {
+        let bytes = Array(text.utf8)
+        guard bytes.count == 10, bytes[4] == 45, bytes[7] == 45 else {
+            return nil
+        }
+        func number(_ range: Range<Int>) -> Int? {
+            var result = 0
+            for index in range {
+                let byte = bytes[index]
+                guard byte >= 48, byte <= 57 else { return nil }
+                result = result * 10 + Int(byte - 48)
+            }
+            return result
+        }
+        guard let year = number(0..<4),
+              let month = number(5..<7),
+              let day = number(8..<10),
+              (1...12).contains(month) else { return nil }
+        let leapYear = year.isMultiple(of: 4)
+            && (!year.isMultiple(of: 100) || year.isMultiple(of: 400))
+        let daysInMonth = [
+            31, leapYear ? 29 : 28, 31, 30, 31, 30,
+            31, 31, 30, 31, 30, 31
+        ]
+        guard (1...daysInMonth[month - 1]).contains(day) else { return nil }
+
+        let adjustedYear = year - (month <= 2 ? 1 : 0)
+        let era = adjustedYear >= 0
+            ? adjustedYear / 400
+            : (adjustedYear - 399) / 400
+        let yearOfEra = adjustedYear - era * 400
+        let adjustedMonth = month + (month > 2 ? -3 : 9)
+        let dayOfYear = (153 * adjustedMonth + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4
+            - yearOfEra / 100 + dayOfYear
+        let daysSinceEpoch = era * 146_097 + dayOfEra - 719_468
+        return Date(timeIntervalSince1970: TimeInterval(daysSinceEpoch * 86_400))
+    }
     private static func timestamp(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
     private static func timestampDate(_ text: String) -> Date? {
         ISO8601DateFormatter().date(from: text)

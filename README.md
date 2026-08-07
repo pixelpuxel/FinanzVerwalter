@@ -40,9 +40,23 @@ Für eine isolierte Sichtprüfung mit lokal erzeugten Beispieldaten:
 open -n build/DerivedData/Build/Products/Debug/FinanzVerwalter.app --args -demo
 ```
 
+Ein größerer deterministischer Kontenblatt-Referenzfall lässt sich ohne
+private Quelldatei mit `-reference-demo` starten. Er erzeugt in einer
+temporären Finanzdatei 12 Konten in vier Gruppen, 10.000 Buchungen über zehn
+Jahre, 200 Splitzeilen, 150 Umbuchungen und EUR/USD/CHF. Die temporäre Datei
+wird weder zur normalen Finanzdatei noch zum Repository hinzugefügt.
+
 Der normale Start verwendet die lokale Finanzdatei:
 
 `~/Library/Application Support/FinanzVerwalter/Meine Finanzen.qdata`
+
+Der opt-in-Leistungstest erweitert denselben Datensatz auf 100.000 Buchungen.
+Lege dafür ausschließlich für den Test die Datei
+`/tmp/finanzverwalter-run-large-performance-tests` an und starte gezielt
+`testHundredThousandBookingReferencePerformanceTargets`; entferne die Datei
+danach wieder. Der normale Testlauf überspringt diesen ressourcenintensiven
+Fall. Die Grenzwerte sind 30 s Persistierung, 3 s vollständig geladener
+Startkern, 500 ms Kontenblattberechnung und 2 s Standardbericht.
 
 ## Kontenübersicht
 

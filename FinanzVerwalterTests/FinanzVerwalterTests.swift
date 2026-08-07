@@ -8988,6 +8988,168 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testReferenceRegisterDatasetIsDeterministicPersistentAndReportChecked() throws {
+        let context = try TestDatabase()
+        let appStore = FinanceAppStore(repository: context.store)
+        let manifest = try appStore.seedReferenceRegisterDataset()
+        let accounts = try context.store.accounts()
+        let transactions = try context.store.transactions()
+
+        XCTAssertEqual(manifest.accountCount, 12)
+        XCTAssertEqual(accounts.count, manifest.accountCount)
+        XCTAssertEqual(Set(accounts.compactMap(\.groupID)).count, 4)
+        XCTAssertEqual(Set(accounts.map(\.currency)), manifest.currencies)
+        XCTAssertEqual(transactions.count, manifest.transactionCount)
+        XCTAssertEqual(
+            try sqliteScalar(
+                context.store.fileURL,
+                "SELECT COUNT(*) FROM transaction_splits"
+            ),
+            Int64(manifest.splitRowCount)
+        )
+        XCTAssertEqual(
+            try sqliteScalar(
+                context.store.fileURL,
+                "SELECT COUNT(DISTINCT transfer_id) FROM transactions "
+                    + "WHERE transfer_id IS NOT NULL"
+            ),
+            Int64(manifest.transferCount)
+        )
+        XCTAssertEqual(transactions.map(\.bookingDate).min(), manifest.earliestBookingDate)
+        XCTAssertEqual(transactions.map(\.bookingDate).max(), manifest.latestBookingDate)
+
+        let snapshot = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(
+                dateFrom: nil, dateThrough: nil,
+                grouping: .category, sort: .amountDescending
+            ),
+            transactions: transactions, accounts: accounts,
+            categories: try context.store.categories(), tags: []
+        )
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: snapshot.totals.map {
+                ($0.currency, $0.netMinor)
+            }),
+            manifest.expectedReportNetByCurrency
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    @MainActor
+    func testHundredThousandBookingReferencePerformanceTargets() throws {
+        let explicitEnvironment = ProcessInfo.processInfo.environment[
+            "RUN_LARGE_PERFORMANCE_TESTS"
+        ] == "1"
+        let explicitSentinel = FileManager.default.fileExists(
+            atPath: "/tmp/finanzverwalter-run-large-performance-tests"
+        )
+        guard explicitEnvironment || explicitSentinel else {
+            throw XCTSkip(
+                "Großer 100.000-Buchungen-Lauf ist nur mit RUN_LARGE_PERFORMANCE_TESTS=1 aktiv."
+            )
+        }
+        let context = try TestDatabase()
+        let seedingStore = FinanceAppStore(repository: context.store)
+        _ = try seedingStore.seedReferenceRegisterDataset()
+        let accounts = try context.store.accounts()
+        let categories = try context.store.categories()
+        let expenseCategory = try XCTUnwrap(
+            categories.first { $0.kind == .expense }
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let endDate = try XCTUnwrap(calendar.date(
+            from: DateComponents(year: 2026, month: 12, day: 31)
+        ))
+        var additions: [FinanceTransaction] = []
+        additions.reserveCapacity(90_000)
+        for offset in 0..<90_000 {
+            let account = accounts[offset % accounts.count]
+            let date = try XCTUnwrap(calendar.date(
+                byAdding: .day, value: -(offset % 3_653), to: endDate
+            ))
+            additions.append(
+                FinanceTransaction(
+                    id: UUID(), accountID: account.id,
+                    bookingDate: date, valueDate: date,
+                    payee: "Lasttest \(offset % 1_000)",
+                    purpose: "Zusätzliche Referenzbuchung \(offset + 1)",
+                    categoryID: expenseCategory.id,
+                    amountMinor: -Int64(100 + offset % 10_000),
+                    currency: account.currency, status: .booked,
+                    memo: "100.000-Buchungen-Test", reference: "LOAD-\(offset + 1)",
+                    transferID: nil, importFingerprint: nil, splits: []
+                )
+            )
+        }
+        let importStartedAt = Date.timeIntervalSinceReferenceDate
+        try context.store.seedReferenceTransactions(additions)
+        let importElapsed = Date.timeIntervalSinceReferenceDate - importStartedAt
+        XCTAssertLessThan(
+            importElapsed, 30,
+            "90.000 zusätzliche validierte Zeilen müssen unter 30 Sekunden persistieren"
+        )
+
+        let launchStartedAt = Date.timeIntervalSinceReferenceDate
+        let reopenedRepository = try SQLiteFinanceStore(fileURL: context.store.fileURL)
+        let loadedStore = FinanceAppStore(repository: reopenedRepository)
+        let launchElapsed = Date.timeIntervalSinceReferenceDate - launchStartedAt
+        let loadedTransactions = loadedStore.transactions
+        let loadedAccounts = loadedStore.accounts
+        let loadedCategories = loadedStore.categories
+        let loadedTags = loadedStore.tags
+        XCTAssertEqual(loadedTransactions.count, 100_000)
+        XCTAssertLessThan(
+            launchElapsed, 3,
+            "Startkern bis vollständig geladener Store muss unter 3 Sekunden bleiben"
+        )
+
+        let registerStartedAt = Date.timeIntervalSinceReferenceDate
+        let balances = CombinedRegisterQuery.runningBalances(
+            accounts: loadedAccounts,
+            transactions: loadedTransactions
+        )
+        let registerResult = CombinedRegisterQuery.evaluate(
+            transactions: loadedTransactions, forecastTransactions: [],
+            allAccountIDs: Set(loadedAccounts.map(\.id)),
+            includedAccountIDs: [loadedAccounts[0].id], status: nil,
+            category: .all, period: .all,
+            customStart: .distantPast, customEnd: .distantFuture,
+            searchText: "", includeForecast: false
+        ) { _ in "" }
+        let registerElapsed = Date.timeIntervalSinceReferenceDate - registerStartedAt
+        XCTAssertFalse(balances.isEmpty)
+        XCTAssertFalse(registerResult.rows.isEmpty)
+        XCTAssertLessThan(
+            registerElapsed, 0.5,
+            "Kontenblattberechnung muss unter 500 ms bleiben"
+        )
+
+        let reportStartedAt = Date.timeIntervalSinceReferenceDate
+        let report = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(
+                dateFrom: nil, dateThrough: nil,
+                grouping: .category, sort: .amountDescending
+            ),
+            transactions: loadedTransactions,
+            accounts: loadedAccounts,
+            categories: loadedCategories, tags: loadedTags
+        )
+        let reportElapsed = Date.timeIntervalSinceReferenceDate - reportStartedAt
+        XCTAssertFalse(report.facts.isEmpty)
+        XCTAssertLessThan(
+            reportElapsed, 2,
+            "Standardbericht muss unter 2 Sekunden bleiben"
+        )
+        let measuredValues = String(
+            format: "PERF_REFERENCE import=%.3fs launch=%.3fs register=%.3fs report=%.3fs",
+            importElapsed, launchElapsed, registerElapsed, reportElapsed
+        )
+        XCTContext.runActivity(named: measuredValues) { _ in }
+        XCTAssertTrue(try reopenedRepository.integrityCheck())
+    }
+
     func testCombinedRegisterQueryForecastBalancesAndSavedViewRoundTrip() throws {
         let firstAccount = FinanceAccount(
             id: UUID(), name: "Giro", institution: "", type: .checking,

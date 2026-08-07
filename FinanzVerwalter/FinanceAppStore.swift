@@ -286,17 +286,27 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var registerSearchIndex = RegisterSearchIndex.empty
 
     private var repository: SQLiteFinanceStore?
+    private var registerSearchIndexTask: Task<Void, Never>?
+    private var registerSearchIndexGeneration = UUID()
 
     init(repository: SQLiteFinanceStore? = nil) {
+        let arguments = ProcessInfo.processInfo.arguments
+        let isReferenceDemo = arguments.contains("-reference-demo")
+        let isDemo = arguments.contains("-demo") || isReferenceDemo
         let shouldRunAutomaticBackup = repository == nil
-            && !ProcessInfo.processInfo.arguments.contains("-demo")
+            && !isDemo
             && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
         do {
             if let repository {
                 self.repository = repository
-            } else if ProcessInfo.processInfo.arguments.contains("-demo") {
+            } else if isDemo {
                 let demoURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("finanzverwalter-ui-demo-\(ProcessInfo.processInfo.processIdentifier).qdata")
+                    .appendingPathComponent(
+                        (isReferenceDemo
+                            ? "finanzverwalter-reference-demo-"
+                            : "finanzverwalter-ui-demo-")
+                            + "\(ProcessInfo.processInfo.processIdentifier).qdata"
+                    )
                 self.repository = try SQLiteFinanceStore(fileURL: demoURL)
             } else if ProcessInfo.processInfo.environment[
                 "XCTestConfigurationFilePath"
@@ -310,8 +320,12 @@ final class FinanceAppStore: ObservableObject {
                 self.repository = try SQLiteFinanceStore()
             }
             try load()
-            if ProcessInfo.processInfo.arguments.contains("-demo"), accounts.isEmpty {
-                try seedDemo()
+            if isDemo, accounts.isEmpty {
+                if isReferenceDemo {
+                    _ = try seedReferenceRegisterDataset()
+                } else {
+                    try seedDemo()
+                }
                 try load()
             }
             if shouldRunAutomaticBackup {
@@ -330,6 +344,16 @@ final class FinanceAppStore: ObservableObject {
 
     var filteredTransactions: [FinanceTransaction] {
         let query = RegisterSearchQuery(searchText)
+        if registerSearchIndex.documents.count != transactions.count {
+            return transactions.filter { transaction in
+                (selectedAccountID == nil || transaction.accountID == selectedAccountID)
+                    && matchesRegisterSearch(
+                        transaction,
+                        query: query,
+                        runningBalanceMinor: nil
+                    )
+            }
+        }
         let matchingIDs = registerSearchIndex.matchingTransactionIDs(query)
         return transactions.filter { transaction in
             (selectedAccountID == nil || transaction.accountID == selectedAccountID)
@@ -3158,16 +3182,55 @@ final class FinanceAppStore: ObservableObject {
         balances = Dictionary(
             uniqueKeysWithValues: try accounts.map { ($0.id, try repository.accountBalanceMinor(account: $0)) }
         )
-        registerSearchIndex = RegisterSearchIndex.build(
-            transactions: transactions,
-            accounts: accounts,
-            accountGroups: accountGroups,
-            categories: categories,
-            tags: tags,
-            runningBalances: runningBalances()
-        )
+        rebuildRegisterSearchIndex()
         if selectedAccountID == nil || !accounts.contains(where: { $0.id == selectedAccountID }) {
             selectedAccountID = accounts.first?.id
+        }
+    }
+
+    private func rebuildRegisterSearchIndex() {
+        registerSearchIndexTask?.cancel()
+        let generation = UUID()
+        registerSearchIndexGeneration = generation
+        guard transactions.count > 25_000 else {
+            registerSearchIndex = RegisterSearchIndex.build(
+                transactions: transactions,
+                accounts: accounts,
+                accountGroups: accountGroups,
+                categories: categories,
+                tags: tags,
+                runningBalances: runningBalances()
+            )
+            return
+        }
+
+        registerSearchIndex = .empty
+        let indexedTransactions = transactions
+        let indexedAccounts = accounts
+        let indexedGroups = accountGroups
+        let indexedCategories = categories
+        let indexedTags = tags
+        registerSearchIndexTask = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            let runningBalances = CombinedRegisterQuery.runningBalances(
+                accounts: indexedAccounts,
+                transactions: indexedTransactions
+            )
+            let index = RegisterSearchIndex.build(
+                transactions: indexedTransactions,
+                accounts: indexedAccounts,
+                accountGroups: indexedGroups,
+                categories: indexedCategories,
+                tags: indexedTags,
+                runningBalances: runningBalances
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard self?.registerSearchIndexGeneration == generation else { return }
+                self?.registerSearchIndex = index
+                self?.registerSearchIndexTask = nil
+            }
         }
     }
 
@@ -3357,6 +3420,174 @@ final class FinanceAppStore: ObservableObject {
         try seedDemoContractsAndInventory(
             repository: repository, linkedAccount: checking
         )
+    }
+
+    func seedReferenceRegisterDataset() throws -> ReferenceRegisterDatasetManifest {
+        guard let repository, try repository.accounts().isEmpty else {
+            throw FinanceError.database(
+                "Der Referenzdatensatz kann nur in eine leere Finanzdatei geschrieben werden."
+            )
+        }
+        let groups = try repository.accountGroups()
+        let groupNames = ["Bankkonten", "Bargeld", "Vermögen", "Verbindlichkeiten"]
+        let usedGroups = try groupNames.map { name in
+            guard let group = groups.first(where: { $0.name == name }) else {
+                throw FinanceError.database(
+                    "Die Referenzkontengruppe „\(name)“ fehlt."
+                )
+            }
+            return group
+        }
+        let accountDefinitions: [(String, AccountType, String, Int)] = [
+            ("Giro Haushalt", .checking, "EUR", 0),
+            ("Giro Rücklagen", .checking, "EUR", 0),
+            ("Tagesgeld", .savings, "EUR", 0),
+            ("Bargeld", .cash, "EUR", 1),
+            ("Kreditkarte", .creditCard, "EUR", 3),
+            ("Immobilie", .asset, "EUR", 2),
+            ("Darlehen", .loan, "EUR", 3),
+            ("Depot Inland", .investment, "EUR", 2),
+            ("Depot Ausland", .investment, "USD", 2),
+            ("Dollar-Konto", .foreignCurrency, "USD", 0),
+            ("Franken-Konto", .foreignCurrency, "CHF", 0),
+            ("Verrechnung", .clearing, "EUR", 0)
+        ]
+        var referenceAccounts: [FinanceAccount] = []
+        referenceAccounts.reserveCapacity(accountDefinitions.count)
+        for (offset, definition) in accountDefinitions.enumerated() {
+            let id = Self.referenceUUID(prefix: "A", number: offset + 1)
+            let account = FinanceAccount(
+                id: id, name: definition.0, institution: "Referenzbank",
+                type: definition.1, currency: definition.2,
+                openingBalanceMinor: Int64((offset + 1) * 100_000),
+                isHidden: false, isClosed: false, sortOrder: offset,
+                shortName: "R\(offset + 1)",
+                description: "Synthetisches Referenzkonto",
+                groupID: usedGroups[definition.3].id,
+                accountNumberMasked: String(format: "•••• %04d", offset + 1),
+                ownerName: "Referenzhaushalt",
+                includeBudget: definition.2 == "EUR",
+                includeForecast: definition.2 == "EUR"
+            )
+            try repository.saveAccount(account)
+            referenceAccounts.append(account)
+        }
+
+        let categories = try repository.categories()
+        let incomeCategories = categories.filter { $0.kind == .income }
+        let expenseCategories = categories.filter { $0.kind == .expense }
+        guard !incomeCategories.isEmpty, expenseCategories.count >= 2 else {
+            throw FinanceError.database(
+                "Für den Referenzdatensatz fehlen Standardkategorien."
+            )
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let endDate = calendar.date(
+            from: DateComponents(year: 2026, month: 12, day: 31)
+        )!
+        var transactions: [FinanceTransaction] = []
+        transactions.reserveCapacity(10_000)
+        var expectedNetByCurrency: [String: Int64] = [:]
+        for offset in 0..<9_700 {
+            let account = referenceAccounts[offset % referenceAccounts.count]
+            let isIncome = offset % 11 == 0
+            let magnitude = Int64(500 + (offset * 97) % 45_000)
+            let amount = isIncome ? magnitude : -magnitude
+            let category = isIncome
+                ? incomeCategories[offset % incomeCategories.count]
+                : expenseCategories[offset % expenseCategories.count]
+            let date = calendar.date(
+                byAdding: .day, value: -((offset * 37) % 3_653), to: endDate
+            )!
+            let splitValues: [FinanceSplit]
+            if offset < 100 {
+                let first = amount / 2
+                splitValues = [
+                    FinanceSplit(
+                        id: Self.referenceUUID(prefix: "C", number: offset * 2 + 1),
+                        categoryID: expenseCategories[offset % expenseCategories.count].id,
+                        amountMinor: first, memo: "Referenzsplit A", sortOrder: 0
+                    ),
+                    FinanceSplit(
+                        id: Self.referenceUUID(prefix: "C", number: offset * 2 + 2),
+                        categoryID: expenseCategories[(offset + 1) % expenseCategories.count].id,
+                        amountMinor: amount - first, memo: "Referenzsplit B", sortOrder: 1
+                    )
+                ]
+            } else {
+                splitValues = []
+            }
+            transactions.append(
+                FinanceTransaction(
+                    id: Self.referenceUUID(prefix: "B", number: offset + 1),
+                    accountID: account.id, bookingDate: date, valueDate: date,
+                    payee: "Referenzpartner \(offset % 250)",
+                    purpose: "Synthetische Buchung \(offset + 1)",
+                    categoryID: splitValues.isEmpty ? category.id : nil,
+                    amountMinor: amount, currency: account.currency,
+                    status: offset % 17 == 0 ? .cleared : .booked,
+                    memo: "Referenzdatensatz", reference: "REF-\(offset + 1)",
+                    transferID: nil, importFingerprint: nil, splits: splitValues
+                )
+            )
+            expectedNetByCurrency[account.currency, default: 0] += amount
+        }
+        for offset in 0..<150 {
+            let source = referenceAccounts[offset % 4]
+            let destination = referenceAccounts[(offset + 1) % 4]
+            let date = calendar.date(
+                byAdding: .day, value: -((offset * 23) % 3_653), to: endDate
+            )!
+            let amount = Int64(1_000 + offset * 10)
+            let transferID = Self.referenceUUID(prefix: "D", number: offset + 1)
+            let common = (
+                purpose: "Referenzumbuchung \(offset + 1)",
+                firstID: Self.referenceUUID(prefix: "B", number: 9_701 + offset * 2),
+                secondID: Self.referenceUUID(prefix: "B", number: 9_702 + offset * 2)
+            )
+            transactions.append(
+                FinanceTransaction(
+                    id: common.firstID, accountID: source.id,
+                    bookingDate: date, valueDate: date,
+                    payee: destination.name, purpose: common.purpose,
+                    categoryID: nil, amountMinor: -amount,
+                    currency: source.currency, status: .booked,
+                    memo: "", reference: "", transferID: transferID,
+                    importFingerprint: nil, splits: [], origin: .transfer
+                )
+            )
+            transactions.append(
+                FinanceTransaction(
+                    id: common.secondID, accountID: destination.id,
+                    bookingDate: date, valueDate: date,
+                    payee: source.name, purpose: common.purpose,
+                    categoryID: nil, amountMinor: amount,
+                    currency: destination.currency, status: .booked,
+                    memo: "", reference: "", transferID: transferID,
+                    importFingerprint: nil, splits: [], origin: .transfer
+                )
+            )
+        }
+        try repository.seedReferenceTransactions(transactions)
+        return ReferenceRegisterDatasetManifest(
+            accountCount: 12, usedAccountGroupCount: 4,
+            transactionCount: 10_000, splitRowCount: 200,
+            transferCount: 150, currencies: ["EUR", "USD", "CHF"],
+            earliestBookingDate: calendar.date(
+                byAdding: .day, value: -3_652, to: endDate
+            )!,
+            latestBookingDate: endDate,
+            expectedReportNetByCurrency: expectedNetByCurrency
+        )
+    }
+
+    private static func referenceUUID(prefix: Character, number: Int) -> UUID {
+        let value = String(
+            format: "%@0000000-0000-4000-8000-%012llX",
+            String(prefix), Int64(number)
+        )
+        return UUID(uuidString: value)!
     }
 
     private func seedDemoPortfolio(

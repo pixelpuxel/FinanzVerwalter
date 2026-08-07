@@ -95,6 +95,18 @@ struct FinanceFileInfo: Identifiable, Hashable, Sendable {
     var timeZone: String
 }
 
+struct ReferenceRegisterDatasetManifest: Equatable, Sendable {
+    let accountCount: Int
+    let usedAccountGroupCount: Int
+    let transactionCount: Int
+    let splitRowCount: Int
+    let transferCount: Int
+    let currencies: Set<String>
+    let earliestBookingDate: Date
+    let latestBookingDate: Date
+    let expectedReportNetByCurrency: [String: Int64]
+}
+
 struct FinanceAccount: Identifiable, Hashable, Sendable {
     let id: UUID
     var name: String

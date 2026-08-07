@@ -3674,3 +3674,51 @@ Rechtsberatung.
 - Telegram-Nachricht 1101 meldet denselben Stand im `/quicken`-Thread 894.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 21.861.107 Tokens.
+
+## 08.08.2026 – Reproduzierbarer Kontenblatt-Referenzdatensatz und 100.000er Leistungstest
+
+- Die Startoption `-reference-demo` erzeugt unabhängig von privaten Dateien
+  eine temporäre Finanzdatei mit 12 stabilen Konten in vier Gruppen, drei
+  Währungen, 10.000 Buchungen über zehn Jahre, 200 Splitzeilen und 150
+  ausgeglichenen Umbuchungen. Ein Manifest hält Struktur, Datumsgrenzen und
+  erwartete Berichtssummen fest.
+- Der SQLite-Stapelpfad validiert zuerst vollständig und schreibt danach mit
+  wiederverwendeten Prepared Statements atomar. Der Buchungsleser lädt
+  Splits sowie Buchungs- und Split-Tags gebündelt und beseitigt das frühere
+  N+1-Abfragemuster.
+- Der feste Datenbanktag `yyyy-MM-dd` wird jetzt mit gültigem Schaltjahr und
+  Monatstag direkt dekodiert. Dadurch fiel der vollständige Startkern bei
+  100.000 Buchungen von 6,018 auf 0,994 Sekunden.
+- Ab 25.001 Buchungen entsteht der globale Volltextindex verzögert auf einer
+  Utility-Task; ein Generationswert schützt vor der Übernahme veralteter
+  Ergebnisse. Vor Fertigstellung bleibt die direkte Suchprüfung korrekt.
+- Der explizite 100.000er Debug-Lauf unter
+  `build/TestResults/ReferenceRegister-100k-final-20260807-231329.xcresult`
+  bestand mit 90.000 Zusatzbuchungen in 2,233 s, Start in 0,994 s,
+  Kontenblatt in 0,389 s und Standardbericht in 1,982 s. Alle vier
+  Mastergrenzen wurden damit eingehalten.
+- Die abschließende vollständige Regression unter
+  `build/TestResults/Full-reference-20260807-231427.xcresult` umfasst 158
+  Tests: 156 bestanden, 2 explizite opt-in-Tests übersprungen, 0 Fehler und 0
+  erwartete Fehler. Einer der übersprungenen Tests ist der private QIF-Lauf,
+  der andere der bereits separat bestandene 100.000er Lauf.
+- Die private echte QIF-Datei wurde weder gelesen noch kopiert oder in Git
+  aufgenommen. Die sichtbare UI-Prüfung bleibt wegen der gesperrten macOS-
+  Sitzung ungeprüft; die Sperre wird nicht umgangen.
+- Der native arm64-Release unter `build/DerivedData-Reference-Product` wurde
+  erfolgreich gebaut und lokal ad-hoc signiert. Die ausführbare Datei hat
+  SHA-256
+  `8423d4a5cae95334de4989dec861c42a85352df27a84904bd8cfa95567378671`.
+  Die strenge lokale `codesign`-Prüfung besteht; die Gatekeeper-Bewertung
+  lehnt das Paket erwartungsgemäß ab, weil noch keine Developer-ID-
+  Signierung und Apple-Notarisierung vorliegen.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2320-reference-performance/`. Die konsistente
+  Produktionssicherung liegt unter
+  `build/ProductionBackups/20260807-2320-reference-performance/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Schreibtisch-Link zeigt auf die erste Installation. Prozess 55638 läuft
+  daraus. Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen, 782 Kategorien sowie 0
+  Überweisungen, Lastschriften und Sammler.

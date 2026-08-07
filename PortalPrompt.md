@@ -1864,3 +1864,38 @@ ausführbare Rechte und bekannte Programm-, Skript-, Shortcut- und
 Terminalendungen. Übergib das Ziel erst danach an `NSWorkspace`. Teste
 Erkennung und Anzeige ohne URL-Abfrageparameter, HTTPS, lokale Datei, HTTP,
 FTP, URL-Zugangsdaten, ausführbares Skript und Symlink.
+
+# Deterministischer Kontenblatt-Referenzdatensatz und Leistungs-Gate
+
+Erzeuge für Tests und die Startoption `-reference-demo` in einer leeren,
+temporären Finanzdatei einen vollständig synthetischen Datensatz. Verwende
+stabile UUIDs und genau 12 Konten in den vier Standardgruppen Bankkonten,
+Bargeld, Vermögen und Verbindlichkeiten. Verteile die Konten auf EUR, USD und
+CHF. Erzeuge genau 10.000 Buchungen über 3.653 Kalendertage, davon genau 200
+Splitzeilen und 150 ausgeglichene, jeweils aus zwei Buchungsseiten bestehende
+Umbuchungen. Liefere ein Manifest mit den Anzahlen, frühestem/spätestem Datum
+und der erwarteten Nettosumme je Währung. Prüfe die Berichtssummen gegen einen
+echten `TransactionReportEngine`-Snapshot und anschließend die
+SQLite-Integrität. Private QIF-Dateien sind dafür niemals Fixture oder Quelle.
+
+Validiere den vollständigen Stapel vor dem Schreiben und speichere ihn mit
+wiederverwendeten SQLite-Statements in genau einer Transaktion. Lade
+Buchungen, Splits sowie Buchungs- und Split-Tags in gebündelten Abfragen ohne
+N+1-Muster. Dekodiere den festen Datenbanktag `yyyy-MM-dd` durch einen
+validierenden gregorianischen Festformat-Parser, nicht durch einen
+`DateFormatter` pro Zeile.
+
+Baue den globalen Volltextindex bei mehr als 25.000 Buchungen verzögert im
+Hintergrund auf, damit der vollständig geladene Kern sofort bedienbar ist.
+Bis zur Fertigstellung muss die direkte Suchprüfung korrekt bleiben. Verwirf
+das Ergebnis, wenn zwischenzeitlich eine neuere Store-Generation geladen
+wurde.
+
+Halte den 100.000-Buchungen-Test opt-in. Erweitere den 10.000er Datensatz in
+derselben Datei um 90.000 validierte Buchungen und fordere auf dem Testsystem:
+Persistierung unter 30 Sekunden, erneutes Öffnen samt vollständig geladenem
+`FinanceAppStore` unter 3 Sekunden, Kontenblattberechnung unter 500
+Millisekunden und einen Standardbericht unter 2 Sekunden. Protokolliere die
+Messwerte als XCTest-Aktivität. Die bereits vorhandene Nutzerabfrage gegen
+100.000 fertig indexierte Dokumente muss weiterhin unter 100 Millisekunden
+bleiben.
