@@ -44,6 +44,16 @@ Der normale Start verwendet die lokale Finanzdatei:
 
 `~/Library/Application Support/FinanzVerwalter/Meine Finanzen.qdata`
 
+## Kontenübersicht
+
+Die Kontenübersicht zeigt Gruppenzuordnung, Kontoart, Währung, Saldo,
+verfügbaren Betrag, Abrufstatus und letzten Abruf. Toolbar und Kontextmenü
+führen das gewählte Konto direkt zum Kontoblatt, schreibgeschützten
+Banking-Abruf oder Abgleich. Konten lassen sich ausblenden, schließen und
+wieder öffnen. Vor dem bestätigten Schließen werden der aktuelle Saldo und
+verknüpfte aktive Serien-, Dauer- und offene Zahlungsaufträge genannt;
+vorhandene Buchungen bleiben erhalten.
+
 ## QIF-Import
 
 Einzelne Kontoblätter und vollständige Mehrkontenpakete werden unterschieden.

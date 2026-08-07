@@ -167,4 +167,10 @@ extension Notification.Name {
     static let openTransactionReport = Notification.Name(
         "FinanzVerwalter.openTransactionReport"
     )
+    static let openAccountRegister = Notification.Name(
+        "FinanzVerwalter.openAccountRegister"
+    )
+    static let openAccountBanking = Notification.Name(
+        "FinanzVerwalter.openAccountBanking"
+    )
 }

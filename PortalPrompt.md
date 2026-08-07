@@ -121,10 +121,10 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 32 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 35 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
-Sicherungskerne sind implementiert. Die jüngste vollständige isolierte
-Abnahme umfasst 114 XCTest-Fälle: 113 bestanden, der private opt-in-Real-QIF-
+Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
+Abnahme umfasst 133 XCTest-Fälle: 132 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -137,8 +137,15 @@ Eröffnungsdatum, Kreditlimit, Onlinekennzeichen, vier getrennte
 Einbeziehungsregeln, Abrufzeit, Banksaldo und Abrufstatus. Kontonamen sind
 Pflicht, Kreditlimits nicht negativ, IBANs werden normalisiert und mit Mod 97
 validiert, Gruppen müssen existieren. Kontengruppen besitzen Reihenfolge und
-Aktivstatus. Die Kontenübersicht zeigt Gruppensummen, Saldo, verfügbaren Betrag
-und Abrufstatus; der Editor kann bestehende Konten vollständig ändern.
+Aktivstatus. Die Kontenübersicht zeigt Gruppensummen, Saldo, verfügbaren Betrag,
+Abrufstatus und letzten Abruf; der Editor kann bestehende Konten vollständig
+ändern. Toolbar und Kontextmenü öffnen das gewählte Konto tatsächlich im
+Kontoblatt, Banking-Abruf oder Abgleich. Ausblenden, Schließen und
+Wiederöffnen laufen über den auditierten Konto-Speicherpfad. Vor dem Schließen
+zeigt ein Bestätigungsdialog Saldo und die Anzahl aktiver Serien,
+Daueraufträge und noch offener Zahlungsaufträge. Buchungen werden dabei nicht
+gelöscht; ein geschlossenes oder ausgeblendetes Konto darf nicht als aktive
+globale Kontoauswahl zurückbleiben.
 Vermögenssumme, Budget-Ist, Berichte und Prognose müssen ihren jeweiligen
 Einbeziehungsschalter beachten. Konten- und Gruppensalden sind in ihrer
 jeweiligen Währung zu formatieren. Ohne FX-Tabelle darf das Nettovermögen nur

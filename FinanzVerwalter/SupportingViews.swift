@@ -410,6 +410,7 @@ struct AccountsView: View {
     @State private var selectedAccountID: UUID?
     @State private var selectedGroupID: UUID?
     @State private var showHidden = false
+    @State private var accountPendingClosure: FinanceAccount?
 
     private var visibleAccounts: [FinanceAccount] {
         store.accounts.filter {
@@ -430,12 +431,23 @@ struct AccountsView: View {
                     }
                 }
                 .frame(width: 210)
-                Toggle("Ausgeblendete", isOn: $showHidden)
+                Toggle("Ausgeblendete/geschlossene", isOn: $showHidden)
                     .toggleStyle(.checkbox)
                 Button("Gruppen …", systemImage: "folder") { showGroups = true }
+                Button("Öffnen", systemImage: "list.bullet.rectangle") {
+                    if let account = selectedAccount { openRegister(account) }
+                }
+                .disabled(selectedAccount == nil)
+                Button("Abrufen", systemImage: "arrow.triangle.2.circlepath") {
+                    if let account = selectedAccount { openBanking(account) }
+                }
+                .disabled(selectedAccount?.isOnline != true || selectedAccount?.isClosed == true)
+                Button("Abgleichen", systemImage: "checkmark.seal") {
+                    if let account = selectedAccount { reconcile(account) }
+                }
+                .disabled(selectedAccount == nil || selectedAccount?.isClosed == true)
                 Button("Bearbeiten", systemImage: "pencil") {
-                    editingAccount = store.accounts.first { $0.id == selectedAccountID }
-                    showEditor = editingAccount != nil
+                    if let account = selectedAccount { edit(account) }
                 }
                 .disabled(selectedAccountID == nil)
                 Button("Konto hinzufügen", systemImage: "plus") {
@@ -512,6 +524,13 @@ struct AccountsView: View {
                     )
                     .foregroundStyle(account.syncStatus == .failed ? .red : .secondary)
                 }
+                TableColumn("Letzter Abruf") { account in
+                    if let date = account.lastSyncAt {
+                        Text(date, format: .dateTime.day().month().year().hour().minute())
+                    } else {
+                        Text("–").foregroundStyle(.tertiary)
+                    }
+                }
             }
             .overlay {
                 if visibleAccounts.isEmpty {
@@ -530,11 +549,27 @@ struct AccountsView: View {
                 if let id = selection.first,
                    let account = store.accounts.first(where: { $0.id == id }) {
                     Button("Konto bearbeiten") {
-                        editingAccount = account
-                        showEditor = true
+                        edit(account)
                     }
                     Button("Im Kontoblatt öffnen") {
-                        store.selectedAccountID = account.id
+                        openRegister(account)
+                    }
+                    Button("Umsätze und Salden abrufen") {
+                        openBanking(account)
+                    }
+                    .disabled(!account.isOnline || account.isClosed)
+                    Button("Konto abgleichen") { reconcile(account) }
+                        .disabled(account.isClosed)
+                    Divider()
+                    Button(account.isHidden ? "Einblenden" : "Ausblenden") {
+                        setHidden(account, !account.isHidden)
+                    }
+                    if account.isClosed {
+                        Button("Konto wieder öffnen") { reopen(account) }
+                    } else {
+                        Button("Konto schließen …", role: .destructive) {
+                            accountPendingClosure = account
+                        }
                     }
                 }
             }
@@ -543,6 +578,98 @@ struct AccountsView: View {
             AccountEditorView(account: editingAccount)
         }
         .sheet(isPresented: $showGroups) { AccountGroupsEditorView() }
+        .alert(
+            "Konto schließen?",
+            isPresented: Binding(
+                get: { accountPendingClosure != nil },
+                set: { if !$0 { accountPendingClosure = nil } }
+            ),
+            presenting: accountPendingClosure
+        ) { account in
+            Button("Konto schließen", role: .destructive) { close(account) }
+            Button("Abbrechen", role: .cancel) { accountPendingClosure = nil }
+        } message: { account in
+            Text(closureMessage(account))
+        }
+    }
+
+    private var selectedAccount: FinanceAccount? {
+        selectedAccountID.flatMap { id in store.accounts.first { $0.id == id } }
+    }
+
+    private func edit(_ account: FinanceAccount) {
+        editingAccount = account
+        showEditor = true
+    }
+
+    private func openRegister(_ account: FinanceAccount) {
+        store.selectedAccountID = account.id
+        NotificationCenter.default.post(name: .openAccountRegister, object: account.id)
+    }
+
+    private func openBanking(_ account: FinanceAccount) {
+        guard account.isOnline, !account.isClosed else { return }
+        store.selectedAccountID = account.id
+        NotificationCenter.default.post(name: .openAccountBanking, object: account.id)
+    }
+
+    private func reconcile(_ account: FinanceAccount) {
+        guard !account.isClosed else { return }
+        store.selectedAccountID = account.id
+        NotificationCenter.default.post(name: .reconcileAccount, object: account.id)
+    }
+
+    private func setHidden(_ account: FinanceAccount, _ hidden: Bool) {
+        var updated = account
+        updated.isHidden = hidden
+        if store.saveAccount(updated), hidden, !showHidden {
+            selectedAccountID = nil
+            store.selectedAccountID = nil
+        }
+    }
+
+    private func close(_ account: FinanceAccount) {
+        var updated = account
+        updated.isClosed = true
+        if store.saveAccount(updated) {
+            accountPendingClosure = nil
+            if !showHidden {
+                selectedAccountID = nil
+                store.selectedAccountID = nil
+            }
+        }
+    }
+
+    private func reopen(_ account: FinanceAccount) {
+        var updated = account
+        updated.isClosed = false
+        _ = store.saveAccount(updated)
+    }
+
+    private func closureMessage(_ account: FinanceAccount) -> String {
+        let balance = Money(
+            minorUnits: store.balances[account.id] ?? 0,
+            currency: account.currency
+        ).formatted
+        let impact = AccountClosureImpact.evaluate(
+            accountID: account.id,
+            scheduledTransactions: store.scheduledTransactions,
+            standingOrders: store.standingOrders,
+            paymentOrders: store.paymentOrders
+        )
+        var details = ["Aktueller Saldo: \(balance)."]
+        if impact.openItemCount > 0 {
+            details.append(
+                "Offen verknüpft: \(impact.activeScheduledTransactions) regelmäßige Vorgänge, "
+                    + "\(impact.activeStandingOrders) Daueraufträge und "
+                    + "\(impact.openPaymentOrders) Zahlungsaufträge."
+            )
+        }
+        details.append(
+            "Buchungen bleiben erhalten. Das Konto wird aus normalen Auswahllisten, "
+                + "Prognosen und neuen Zahlungsaufträgen entfernt und kann später wieder geöffnet werden."
+        )
+        return details.joined(separator: "\n\n")
     }
 
     private func icon(_ type: AccountType) -> String {

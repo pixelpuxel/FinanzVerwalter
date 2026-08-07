@@ -199,6 +199,22 @@ struct RootView: View {
             reportLaunchQuery = query
             selectedSection = .reports
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openAccountRegister)
+        ) { notification in
+            guard let accountID = notification.object as? UUID,
+                  store.accounts.contains(where: { $0.id == accountID }) else { return }
+            store.selectedAccountID = accountID
+            selectedSection = .register
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openAccountBanking)
+        ) { notification in
+            guard let accountID = notification.object as? UUID,
+                  store.accounts.contains(where: { $0.id == accountID }) else { return }
+            store.selectedAccountID = accountID
+            selectedSection = .banking
+        }
     }
 
     private func accountSidebarButton(_ account: FinanceAccount) -> some View {

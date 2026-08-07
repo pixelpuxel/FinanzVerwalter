@@ -2897,3 +2897,43 @@ Rechtsberatung.
   ausdrücklich darauf hin, dass wegen der weiterhin gesperrten Sitzung kein
   veralteter oder fingierter Screenshot gesendet wurde. Exakter kumulativer
   Zielzählerstand unmittelbar vor dem Versand: 17.435.457 Tokens.
+
+## 07.08.2026 – Kontenschnellaktionen und sicherer Kontolebenszyklus
+
+- Die Kontenübersicht besitzt jetzt kontoabhängige Toolbar-Aktionen für
+  Kontoblatt, schreibgeschützten Abruf, Abgleich und Bearbeitung. Die zuvor
+  wirkungslose Kontextaktion „Im Kontoblatt öffnen“ navigiert nun mit der
+  gewählten Konto-ID wirklich zum Kontoblatt; Onlinekonten gelangen analog
+  direkt in den Banking-Bereich.
+- Tabelle und Kontextmenü zeigen zusätzlich den letzten Abruf und bieten
+  Ein-/Ausblenden, Schließen und Wiederöffnen. Vor dem Schließen nennt der
+  Bestätigungsdialog den aktuellen Saldo sowie die Anzahl aktiver
+  regelmäßiger Vorgänge, Daueraufträge und noch offener Zahlungsaufträge.
+  Der vorhandene auditierte `saveAccount`-Pfad erhält sämtliche Buchungen.
+  Ausgeblendete oder geschlossene Konten bleiben nicht versehentlich als
+  globale aktive Kontoauswahl gesetzt.
+- `AccountClosureImpact` kapselt die reproduzierbare, kontengenaue
+  Offene-Posten-Ermittlung. Der neue Test prüft, dass fremde Konten,
+  deaktivierte Serien, pausierte Daueraufträge und endgültig angenommene,
+  abgelehnte oder abgebrochene Zahlungsaufträge nicht gezählt werden.
+- Der vollständige Debug-Testlauf vom 07.08.2026 um 16:18 Uhr ist grün:
+  132 Tests bestanden, der private opt-in-QIF-Test wurde ohne gesetzten Pfad
+  planmäßig übersprungen, 0 Tests schlugen fehl. Das Result-Bundle liegt unter
+  `build/DerivedData-AccountOverviewQuickActions/Logs/Test/Test-FinanzVerwalter-2026.08.07_16-18-43-+0200.xcresult`.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-AccountQuickActions-Release` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Der ausführbare Code trägt
+  SHA-256 `d766f1f3412cadb74c60691974ad1e4b3be6a0068a0b4a852be0ebefcb43ffca`;
+  Release, `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich.
+- Die beiden Vorgängerinstallationen sind reversibel als
+  `build/FinanzVerwalter-vor-kontenschnellaktionen-20260807-162340.app` und
+  `build/FinanzVerwalter-user-vor-kontenschnellaktionen-20260807-162340.app`
+  erhalten. Der Desktop-Link zeigt auf die Systeminstallation; der neue
+  Prozess 92524 läuft direkt aus `/Applications/FinanzVerwalter.app`.
+- Die produktive Datei blieb unverändert bei Schema 35 und Integrität `ok`:
+  97 Konten, 2.170 Buchungen, 782 Kategorien und erwartungsgemäß keine
+  Szenarien oder Szenariopositionen. Die macOS-Sitzung ist weiterhin
+  gesperrt; deshalb war keine ehrliche sichtbare UI-Abnahme oder ein aktueller
+  Screenshot möglich. Exakter kumulativer Zielzählerstand nach Test, Release,
+  Installation und Produktivprüfung: 17.643.074 Tokens.

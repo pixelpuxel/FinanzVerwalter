@@ -124,6 +124,36 @@ struct FinanceAccount: Identifiable, Hashable, Sendable {
     var syncStatus: AccountSyncStatus = .offline
 }
 
+struct AccountClosureImpact: Equatable, Sendable {
+    let activeScheduledTransactions: Int
+    let activeStandingOrders: Int
+    let openPaymentOrders: Int
+
+    var openItemCount: Int {
+        activeScheduledTransactions + activeStandingOrders + openPaymentOrders
+    }
+
+    static func evaluate(
+        accountID: UUID,
+        scheduledTransactions: [ScheduledTransaction],
+        standingOrders: [StandingOrder],
+        paymentOrders: [PaymentOrder]
+    ) -> Self {
+        Self(
+            activeScheduledTransactions: scheduledTransactions.filter {
+                $0.accountID == accountID && $0.isActive
+            }.count,
+            activeStandingOrders: standingOrders.filter {
+                $0.accountID == accountID && $0.status == .active
+            }.count,
+            openPaymentOrders: paymentOrders.filter {
+                $0.accountID == accountID
+                    && ![PaymentStatus.accepted, .rejected, .cancelled].contains($0.status)
+            }.count
+        )
+    }
+}
+
 enum CategoryKind: String, Codable, CaseIterable, Sendable {
     case income
     case expense

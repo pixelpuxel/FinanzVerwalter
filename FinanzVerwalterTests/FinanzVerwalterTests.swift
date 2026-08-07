@@ -9282,6 +9282,51 @@ final class FinanzVerwalterTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testAccountClosureImpactCountsOnlyOpenItemsForSelectedAccount() throws {
+        let accountID = UUID()
+        let otherID = UUID()
+        let now = Date()
+        func schedule(_ id: UUID, active: Bool) -> ScheduledTransaction {
+            ScheduledTransaction(
+                id: UUID(), name: "Plan", accountID: id, payee: "Empfänger",
+                purpose: "Zweck", categoryID: nil, amountMinor: -100,
+                currency: "EUR", nextDueDate: now, endDate: nil,
+                frequency: .monthly, action: .remind, reminderDays: 3,
+                isActive: active
+            )
+        }
+        func standing(_ id: UUID, status: StandingOrderStatus) -> StandingOrder {
+            StandingOrder(
+                id: UUID(), accountID: id, name: "Dauerauftrag",
+                recipientName: "Empfänger", iban: "DE12500105170648489890",
+                bic: "", amountMinor: 100, currency: "EUR", purpose: "Zweck",
+                nextExecutionDate: now, endDate: nil, frequency: .monthly,
+                businessDayAdjustment: .none, status: status,
+                createdAt: now, updatedAt: now
+            )
+        }
+        func payment(_ id: UUID, status: PaymentStatus) -> PaymentOrder {
+            PaymentOrder(
+                id: UUID(), accountID: id, type: .sepaCreditTransfer,
+                recipientName: "Empfänger", iban: "DE12500105170648489890",
+                bic: "", amountMinor: 100, currency: "EUR", executionDate: now,
+                purpose: "Zweck", endToEndID: "NOTPROVIDED", status: status,
+                idempotencyKey: UUID().uuidString, bankReference: "",
+                createdAt: now, updatedAt: now
+            )
+        }
+        let impact = AccountClosureImpact.evaluate(
+            accountID: accountID,
+            scheduledTransactions: [schedule(accountID, active: true), schedule(accountID, active: false), schedule(otherID, active: true)],
+            standingOrders: [standing(accountID, status: .active), standing(accountID, status: .paused), standing(otherID, status: .active)],
+            paymentOrders: [payment(accountID, status: .draft), payment(accountID, status: .submitted), payment(accountID, status: .accepted), payment(accountID, status: .rejected), payment(accountID, status: .cancelled), payment(otherID, status: .draft)]
+        )
+        XCTAssertEqual(impact.activeScheduledTransactions, 1)
+        XCTAssertEqual(impact.activeStandingOrders, 1)
+        XCTAssertEqual(impact.openPaymentOrders, 2)
+        XCTAssertEqual(impact.openItemCount, 4)
+    }
+
     @MainActor
     func testForecastScenarioPersistsUpdatesAuditsAndCascadesEntries() throws {
         let context = try TestDatabase()
