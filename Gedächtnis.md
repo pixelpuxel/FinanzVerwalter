@@ -2148,3 +2148,10 @@ Rechtsberatung.
   automatisch entsperrt werden. Deshalb wurde kein Screenshot vorgetäuscht.
   Der dokumentierte Tokenstand vor der Veröffentlichung beträgt exakt
   13.577.274 Tokens.
+- Implementierung, Tests, ADR und Dokumentation wurden als Commit `ba85d9e`
+  auf `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 wurde auf den neuen
+  Berichts-, HTML-, Test-, Release- und Echtdatenstand aktualisiert.
+- Telegram-Nachricht 996 wurde im Projektthread 894 (`/quicken`) mit dem
+  geprüften Zwischenstand und exakt 13.589.705 Tokens veröffentlicht. Wegen
+  der bestätigten Bildschirmsperre wurde ausdrücklich kein neuer Screenshot
+  vorgetäuscht.
