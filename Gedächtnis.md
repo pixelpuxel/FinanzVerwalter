@@ -2519,3 +2519,11 @@ Rechtsberatung.
   macOS-Sitzung ist weiterhin nachweislich gesperrt; deshalb wurde kein
   fingierter Screenshot erzeugt. Der exakte Zielzählerstand vor dieser
   Dokumentation beträgt 15.672.744 Tokens.
+- Implementierung und Tests wurden als Commit `763d82e`, die reproduzierbare
+  Dokumentation als Commit `07601bd` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 enthält den
+  117-Test-Nachweis, den finalen Release-Hash und die weiterhin offenen Punkte.
+- Telegram-Nachricht 1018 dokumentiert denselben Stand im gefundenen
+  `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
+  deshalb fehlenden Screenshot. Der exakte Zielzählerstand vor dem Versand
+  beträgt 15.689.959 Tokens.
