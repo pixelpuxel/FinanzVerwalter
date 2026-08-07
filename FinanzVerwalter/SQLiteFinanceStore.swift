@@ -3,13 +3,20 @@ import Foundation
 import SQLite3
 
 final class SQLiteFinanceStore {
-    static let currentSchemaVersion = 31
+    typealias AttachmentScanHook = (Data, String) throws -> Void
+
+    static let currentSchemaVersion = 32
     private var database: OpaquePointer?
     private var transactionDepth = 0
+    private let attachmentScanHook: AttachmentScanHook
     let fileURL: URL
 
-    init(fileURL: URL = SQLiteFinanceStore.defaultFileURL()) throws {
+    init(
+        fileURL: URL = SQLiteFinanceStore.defaultFileURL(),
+        attachmentScanHook: @escaping AttachmentScanHook = { _, _ in }
+    ) throws {
         self.fileURL = fileURL
+        self.attachmentScanHook = attachmentScanHook
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -1694,6 +1701,41 @@ final class SQLiteFinanceStore {
                     "CREATE INDEX IF NOT EXISTS transaction_undo_runs_active ON transaction_undo_runs(undone_at,sequence DESC)"
                 )
                 try execute("PRAGMA user_version = 31")
+            }
+        }
+        if version < 32 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS attachment_blobs (
+                        sha256 TEXT PRIMARY KEY CHECK(length(sha256)=64),
+                        mime_type TEXT NOT NULL,
+                        byte_count INTEGER NOT NULL CHECK(byte_count>0),
+                        payload BLOB NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS attachment_links (
+                        id TEXT PRIMARY KEY,
+                        entity_type TEXT NOT NULL
+                            CHECK(entity_type IN ('account','transaction','contract','security','inventory')),
+                        entity_id TEXT NOT NULL,
+                        blob_sha256 TEXT NOT NULL REFERENCES attachment_blobs(sha256),
+                        file_name TEXT NOT NULL,
+                        source TEXT NOT NULL DEFAULT 'Dateiimport',
+                        ocr_text TEXT NOT NULL DEFAULT '',
+                        added_at TEXT NOT NULL,
+                        UNIQUE(entity_type,entity_id,blob_sha256,file_name)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS attachment_links_entity ON attachment_links(entity_type,entity_id,added_at,id)"
+                )
+                try execute("PRAGMA user_version = 32")
             }
         }
     }
@@ -6133,6 +6175,317 @@ final class SQLiteFinanceStore {
         return result
     }
 
+    private static let maximumAttachmentBytes = 50 * 1_024 * 1_024
+
+    private func validateAttachmentEntity(
+        _ entityType: AttachmentEntityType,
+        id: UUID
+    ) throws {
+        let table: String
+        switch entityType {
+        case .account: table = "accounts"
+        case .transaction: table = "transactions"
+        case .contract: table = "contracts"
+        case .security: table = "securities"
+        case .inventory: table = "inventory_items"
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM \(table) WHERE id=?",
+            [.text(id.uuidString)]
+        ) == 1 else {
+            throw FinanceError.database("Das Ziel des Anhangs wurde nicht gefunden.")
+        }
+    }
+
+    private func validatedAttachmentInput(
+        from url: URL
+    ) throws -> (fileName: String, mimeType: String, data: Data, sha256: String) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+        let values = try url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw FinanceError.database("Anhänge müssen normale Dateien sein.")
+        }
+        guard let fileSize = values.fileSize, fileSize > 0,
+              fileSize <= Self.maximumAttachmentBytes else {
+            throw FinanceError.database(
+                "Ein Anhang muss zwischen 1 Byte und 50 MB groß sein."
+            )
+        }
+        let fileName = url.lastPathComponent.precomposedStringWithCanonicalMapping
+        guard !fileName.isEmpty, fileName.utf8.count <= 255,
+              fileName.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else {
+            throw FinanceError.database("Der Dateiname des Anhangs ist ungültig.")
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard data.count == fileSize else {
+            throw FinanceError.database("Der Anhang wurde während des Lesens verändert.")
+        }
+        let suffix = url.pathExtension.lowercased()
+        let mimeType: String
+        switch suffix {
+        case "pdf":
+            guard data.starts(with: Data("%PDF-".utf8)) else {
+                throw FinanceError.database("Die Datei ist kein gültiger PDF-Anhang.")
+            }
+            mimeType = "application/pdf"
+        case "png":
+            guard data.starts(with: Data([137, 80, 78, 71, 13, 10, 26, 10])) else {
+                throw FinanceError.database("Die Datei ist kein gültiger PNG-Anhang.")
+            }
+            mimeType = "image/png"
+        case "jpg", "jpeg":
+            guard data.count >= 3, data[0] == 0xff, data[1] == 0xd8,
+                  data[2] == 0xff else {
+                throw FinanceError.database("Die Datei ist kein gültiger JPEG-Anhang.")
+            }
+            mimeType = "image/jpeg"
+        case "txt", "csv", "qif", "xml":
+            guard !data.contains(0), String(data: data, encoding: .utf8) != nil else {
+                throw FinanceError.database("Der Textanhang muss gültiges UTF-8 enthalten.")
+            }
+            switch suffix {
+            case "csv": mimeType = "text/csv"
+            case "qif": mimeType = "application/x-qif"
+            case "xml": mimeType = "application/xml"
+            default: mimeType = "text/plain"
+            }
+        default:
+            throw FinanceError.database(
+                "Erlaubte Anhangstypen sind PDF, PNG, JPEG, TXT, CSV, QIF und XML."
+            )
+        }
+        try attachmentScanHook(data, fileName)
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return (fileName, mimeType, data, digest)
+    }
+
+    func attachments(
+        entityType: AttachmentEntityType,
+        entityID: UUID
+    ) throws -> [FinanceAttachment] {
+        var values: [FinanceAttachment] = []
+        try query(
+            """
+            SELECT l.id,l.file_name,b.mime_type,b.byte_count,b.sha256,
+                   l.source,l.added_at,l.ocr_text
+            FROM attachment_links l
+            JOIN attachment_blobs b ON b.sha256=l.blob_sha256
+            WHERE l.entity_type=? AND l.entity_id=?
+            ORDER BY l.added_at,l.id
+            """,
+            [.text(entityType.rawValue), .text(entityID.uuidString)]
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let addedAt = Self.timestampDate(Self.text(statement, 6))
+            else {
+                throw FinanceError.database("Anhangsmetadaten sind beschädigt.")
+            }
+            values.append(
+                FinanceAttachment(
+                    id: id, entityType: entityType, entityID: entityID,
+                    fileName: Self.text(statement, 1),
+                    mimeType: Self.text(statement, 2),
+                    byteCount: sqlite3_column_int64(statement, 3),
+                    sha256: Self.text(statement, 4),
+                    source: Self.text(statement, 5), addedAt: addedAt,
+                    ocrText: Self.text(statement, 7)
+                )
+            )
+        }
+        return values
+    }
+
+    @discardableResult
+    func addAttachment(
+        from url: URL,
+        to entityType: AttachmentEntityType,
+        entityID: UUID,
+        source: String = "Dateiimport"
+    ) throws -> FinanceAttachment {
+        try validateAttachmentEntity(entityType, id: entityID)
+        let input = try validatedAttachmentInput(from: url)
+        let cleanSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanSource.utf8.count <= 100 else {
+            throw FinanceError.database("Die Quellenangabe des Anhangs ist zu lang.")
+        }
+        let now = Self.timestamp(Date())
+        var linkID = UUID()
+        try transaction {
+            try run(
+                """
+                INSERT OR IGNORE INTO attachment_blobs(
+                    sha256,mime_type,byte_count,payload,created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                [
+                    .text(input.sha256), .text(input.mimeType),
+                    .integer(Int64(input.data.count)), .blob(input.data), .text(now)
+                ]
+            )
+            var storedMime = ""
+            var storedSize: Int64 = 0
+            var storedPayload = Data()
+            try query(
+                "SELECT mime_type,byte_count,payload FROM attachment_blobs WHERE sha256=?",
+                [.text(input.sha256)]
+            ) { statement in
+                storedMime = Self.text(statement, 0)
+                storedSize = sqlite3_column_int64(statement, 1)
+                storedPayload = Self.data(statement, 2)
+            }
+            guard storedMime == input.mimeType,
+                  storedSize == Int64(input.data.count),
+                  storedPayload == input.data else {
+                throw FinanceError.database("Die Anhangs-Deduplizierung ist inkonsistent.")
+            }
+
+            try run(
+                """
+                INSERT OR IGNORE INTO attachment_links(
+                    id,entity_type,entity_id,blob_sha256,file_name,source,added_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(linkID.uuidString), .text(entityType.rawValue),
+                    .text(entityID.uuidString), .text(input.sha256),
+                    .text(input.fileName),
+                    .text(cleanSource.isEmpty ? "Dateiimport" : cleanSource),
+                    .text(now)
+                ]
+            )
+            let inserted = sqlite3_changes(database) == 1
+            if !inserted {
+                try query(
+                    """
+                    SELECT id FROM attachment_links
+                    WHERE entity_type=? AND entity_id=? AND blob_sha256=? AND file_name=?
+                    """,
+                    [
+                        .text(entityType.rawValue), .text(entityID.uuidString),
+                        .text(input.sha256), .text(input.fileName)
+                    ]
+                ) { statement in
+                    if let existing = UUID(uuidString: Self.text(statement, 0)) {
+                        linkID = existing
+                    }
+                }
+            } else {
+                try audit(
+                    entity: "attachment", id: linkID, action: "add",
+                    details: "\(entityType.rawValue);\(entityID.uuidString);\(input.sha256)"
+                )
+            }
+        }
+        guard let result = try attachments(
+            entityType: entityType, entityID: entityID
+        ).first(where: { $0.id == linkID }) else {
+            throw FinanceError.database("Der Anhang konnte nicht geladen werden.")
+        }
+        return result
+    }
+
+    func removeAttachment(id: UUID) throws {
+        var sha256: String?
+        var entityType = ""
+        var entityID = ""
+        try query(
+            "SELECT blob_sha256,entity_type,entity_id FROM attachment_links WHERE id=?",
+            [.text(id.uuidString)]
+        ) { statement in
+            sha256 = Self.text(statement, 0)
+            entityType = Self.text(statement, 1)
+            entityID = Self.text(statement, 2)
+        }
+        guard let sha256 else {
+            throw FinanceError.database("Der Anhang wurde nicht gefunden.")
+        }
+        try transaction {
+            try run("DELETE FROM attachment_links WHERE id=?", [.text(id.uuidString)])
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Der Anhang wurde parallel verändert.")
+            }
+            if try scalarInt(
+                "SELECT COUNT(*) FROM attachment_links WHERE blob_sha256=?",
+                [.text(sha256)]
+            ) == 0 {
+                try run("DELETE FROM attachment_blobs WHERE sha256=?", [.text(sha256)])
+            }
+            try audit(
+                entity: "attachment", id: id, action: "remove",
+                details: "\(entityType);\(entityID);\(sha256)"
+            )
+        }
+    }
+
+    private func verifiedAttachmentPayload(id: UUID) throws -> (FinanceAttachment, Data) {
+        var metadata: FinanceAttachment?
+        var payload = Data()
+        try query(
+            """
+            SELECT l.entity_type,l.entity_id,l.file_name,b.mime_type,b.byte_count,
+                   b.sha256,l.source,l.added_at,l.ocr_text,b.payload
+            FROM attachment_links l
+            JOIN attachment_blobs b ON b.sha256=l.blob_sha256
+            WHERE l.id=?
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard let entityType = AttachmentEntityType(rawValue: Self.text(statement, 0)),
+                  let entityID = UUID(uuidString: Self.text(statement, 1)),
+                  let addedAt = Self.timestampDate(Self.text(statement, 7))
+            else { return }
+            metadata = FinanceAttachment(
+                id: id, entityType: entityType, entityID: entityID,
+                fileName: Self.text(statement, 2), mimeType: Self.text(statement, 3),
+                byteCount: sqlite3_column_int64(statement, 4),
+                sha256: Self.text(statement, 5), source: Self.text(statement, 6),
+                addedAt: addedAt, ocrText: Self.text(statement, 8)
+            )
+            payload = Self.data(statement, 9)
+        }
+        guard let metadata, Int64(payload.count) == metadata.byteCount else {
+            throw FinanceError.database("Der Anhang fehlt oder seine Größe ist beschädigt.")
+        }
+        let digest = SHA256.hash(data: payload)
+            .map { String(format: "%02x", $0) }.joined()
+        guard digest == metadata.sha256 else {
+            throw FinanceError.database("Die SHA-256-Prüfung des Anhangs ist fehlgeschlagen.")
+        }
+        return (metadata, payload)
+    }
+
+    func attachmentPreviewURL(id: UUID) throws -> URL {
+        let (metadata, payload) = try verifiedAttachmentPayload(id: id)
+        let directory = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask
+        )[0]
+            .appendingPathComponent("FinanzVerwalter", isDirectory: true)
+            .appendingPathComponent("Anhangsvorschau", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let suffix = URL(fileURLWithPath: metadata.fileName).pathExtension.lowercased()
+        let target = directory.appendingPathComponent(
+            metadata.sha256 + (suffix.isEmpty ? "" : ".\(suffix)")
+        )
+        try payload.write(to: target, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: target.path
+        )
+        return target
+    }
+
     @discardableResult
     func undoTransactionMutation(id: UUID) throws -> Int {
         var beforeJSON: String?
@@ -6156,6 +6509,8 @@ final class SQLiteFinanceStore {
         let before = try decodeUndoTransactions(beforeJSON)
         let after = try decodeUndoTransactions(afterJSON)
         let affectedIDs = Set((before + after).map(\.id))
+        let transactionIDsRemovedByUndo = Set(after.map(\.id))
+            .subtracting(before.map(\.id))
         let current = try transactionSnapshots(ids: affectedIDs)
         guard current == after else {
             throw FinanceError.database(
@@ -6168,6 +6523,19 @@ final class SQLiteFinanceStore {
 
         let now = Self.timestamp(Date())
         try transaction {
+            for transactionID in transactionIDsRemovedByUndo.sorted(
+                by: { $0.uuidString < $1.uuidString }
+            ) {
+                try run(
+                    "DELETE FROM attachment_links WHERE entity_type='transaction' AND entity_id=?",
+                    [.text(transactionID.uuidString)]
+                )
+            }
+            if !transactionIDsRemovedByUndo.isEmpty {
+                try run(
+                    "DELETE FROM attachment_blobs WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE blob_sha256=attachment_blobs.sha256)"
+                )
+            }
             for transactionID in affectedIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
                 try run("DELETE FROM transactions WHERE id=?", [.text(transactionID.uuidString)])
             }
@@ -8011,6 +8379,13 @@ final class SQLiteFinanceStore {
                 code = sqlite3_bind_int64(statement, index, number)
             case .text(let text):
                 code = sqlite3_bind_text(statement, index, text, -1, transient)
+            case .blob(let data):
+                code = data.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(
+                        statement, index, bytes.baseAddress,
+                        Int32(bytes.count), transient
+                    )
+                }
             case .null:
                 code = sqlite3_bind_null(statement, index)
             }
@@ -8029,6 +8404,14 @@ final class SQLiteFinanceStore {
 
     private static func optionalText(_ statement: OpaquePointer?, _ column: Int32) -> String? {
         sqlite3_column_type(statement, column) == SQLITE_NULL ? nil : text(statement, column)
+    }
+
+    private static func data(_ statement: OpaquePointer?, _ column: Int32) -> Data {
+        let count = Int(sqlite3_column_bytes(statement, column))
+        guard count > 0, let bytes = sqlite3_column_blob(statement, column) else {
+            return Data()
+        }
+        return Data(bytes: bytes, count: count)
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -8094,6 +8477,7 @@ final class SQLiteFinanceStore {
 private enum SQLiteValue {
     case integer(Int64)
     case text(String)
+    case blob(Data)
     case null
 }
 

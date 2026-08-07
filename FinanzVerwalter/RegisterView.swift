@@ -1776,6 +1776,12 @@ struct TransactionEditorView: View {
     @State private var useSplits = false
     @State private var splitDrafts: [SplitDraft] = []
     @State private var initialized = false
+    @State private var attachments: [FinanceAttachment] = []
+    @State private var showAttachmentImporter = false
+    @State private var pendingAttachmentOpen: FinanceAttachment?
+    @State private var pendingAttachmentRemoval: FinanceAttachment?
+    @State private var confirmAttachmentOpen = false
+    @State private var confirmAttachmentRemoval = false
 
     init(
         transaction: FinanceTransaction? = nil,
@@ -1978,6 +1984,55 @@ struct TransactionEditorView: View {
                     ForEach(TransactionStatus.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 TextField("Notiz", text: $memo)
+                if let transaction {
+                    Section("Anhänge") {
+                        if attachments.isEmpty {
+                            Text("Noch keine Anhänge")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(attachments) { attachment in
+                                HStack {
+                                    Image(systemName: "paperclip")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(attachment.fileName)
+                                            .lineLimit(1)
+                                        Text(
+                                            "\(attachment.mimeType) · \(ByteCountFormatter.string(fromByteCount: attachment.byteCount, countStyle: .file))"
+                                        )
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("Öffnen") {
+                                        pendingAttachmentOpen = attachment
+                                        confirmAttachmentOpen = true
+                                    }
+                                    Button(role: .destructive) {
+                                        pendingAttachmentRemoval = attachment
+                                        confirmAttachmentRemoval = true
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .help("Anhang entfernen")
+                                }
+                            }
+                        }
+                        Button("Datei hinzufügen …", systemImage: "paperclip.badge.plus") {
+                            showAttachmentImporter = true
+                        }
+                        Text(
+                            "Erlaubt: PDF, PNG, JPEG, TXT, CSV, QIF und XML bis 50 MB. "
+                                + "Vor dem Öffnen wird SHA-256 erneut geprüft."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .accessibilityIdentifier("transactionEditor.attachments.\(transaction.id.uuidString)")
+                    .dropDestination(for: URL.self) { urls, _ in
+                        guard let url = urls.first else { return false }
+                        return importAttachment(url, transactionID: transaction.id)
+                    }
+                }
                 if !store.tags.filter(\.isActive).isEmpty {
                     Section("Klassen & Tags") {
                         ScrollView(.horizontal) {
@@ -2187,6 +2242,11 @@ struct TransactionEditorView: View {
             if useSplits, splitDrafts.isEmpty {
                 splitDrafts = [SplitDraft(), SplitDraft()]
             }
+            if let transaction {
+                attachments = store.attachments(
+                    entityType: .transaction, entityID: transaction.id
+                )
+            }
         }
         .onChange(of: useSplits) {
             if useSplits, splitDrafts.isEmpty {
@@ -2207,6 +2267,75 @@ struct TransactionEditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openSplitEditor)) { _ in
             useSplits = true
         }
+        .fileImporter(
+            isPresented: $showAttachmentImporter,
+            allowedContentTypes: allowedAttachmentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            guard let transaction else { return }
+            do {
+                guard let url = try result.get().first else { return }
+                _ = importAttachment(url, transactionID: transaction.id)
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .confirmationDialog(
+            "Anhang sicher öffnen?",
+            isPresented: $confirmAttachmentOpen,
+            titleVisibility: .visible
+        ) {
+            Button("Nach SHA-256-Prüfung öffnen") {
+                guard let attachment = pendingAttachmentOpen,
+                      let url = store.attachmentPreviewURL(attachment) else { return }
+                NSWorkspace.shared.open(url)
+                pendingAttachmentOpen = nil
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingAttachmentOpen = nil
+            }
+        } message: {
+            if let attachment = pendingAttachmentOpen {
+                Text(
+                    "„\(attachment.fileName)“ wird als lokale Vorschau an die für diesen Dateityp registrierte App übergeben."
+                )
+            }
+        }
+        .confirmationDialog(
+            "Anhang wirklich entfernen?",
+            isPresented: $confirmAttachmentRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Anhang entfernen", role: .destructive) {
+                guard let attachment = pendingAttachmentRemoval else { return }
+                if store.removeAttachment(attachment) {
+                    attachments.removeAll { $0.id == attachment.id }
+                }
+                pendingAttachmentRemoval = nil
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingAttachmentRemoval = nil
+            }
+        } message: {
+            if let attachment = pendingAttachmentRemoval {
+                Text("„\(attachment.fileName)“ wird aus dieser Finanzdatei entfernt.")
+            }
+        }
+    }
+
+    private var allowedAttachmentTypes: [UTType] {
+        ["pdf", "png", "jpg", "jpeg", "txt", "csv", "qif", "xml"]
+            .map { UTType(filenameExtension: $0) ?? UTType(importedAs: "de.pixelpuxel.attachment.\($0)") }
+    }
+
+    private func importAttachment(_ url: URL, transactionID: UUID) -> Bool {
+        guard store.addAttachment(
+            from: url, to: .transaction, entityID: transactionID
+        ) else { return false }
+        attachments = store.attachments(
+            entityType: .transaction, entityID: transactionID
+        )
+        return true
     }
 
     private var accountCurrency: String {

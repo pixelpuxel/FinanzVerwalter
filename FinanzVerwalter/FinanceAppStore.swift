@@ -963,6 +963,63 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func attachments(
+        entityType: AttachmentEntityType,
+        entityID: UUID
+    ) -> [FinanceAttachment] {
+        guard let repository else { return [] }
+        do {
+            return try repository.attachments(
+                entityType: entityType, entityID: entityID
+            )
+        } catch {
+            present(error)
+            return []
+        }
+    }
+
+    @discardableResult
+    func addAttachment(
+        from url: URL,
+        to entityType: AttachmentEntityType,
+        entityID: UUID
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            let attachment = try repository.addAttachment(
+                from: url, to: entityType, entityID: entityID
+            )
+            statusText = "Anhang „\(attachment.fileName)“ gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func removeAttachment(_ attachment: FinanceAttachment) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.removeAttachment(id: attachment.id)
+            statusText = "Anhang „\(attachment.fileName)“ entfernt"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func attachmentPreviewURL(_ attachment: FinanceAttachment) -> URL? {
+        guard let repository else { return nil }
+        do {
+            return try repository.attachmentPreviewURL(id: attachment.id)
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
     func createTransfer(
         from sourceID: UUID,
         to destinationID: UUID,

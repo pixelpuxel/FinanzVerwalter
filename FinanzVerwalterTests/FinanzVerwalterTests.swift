@@ -4260,7 +4260,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=32", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=33", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -4269,8 +4269,8 @@ final class FinanzVerwalterTests: XCTestCase {
             guard case let FinanceError.database(message) = error else {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
+            XCTAssertTrue(message.contains("Schema 33"))
             XCTAssertTrue(message.contains("Schema 32"))
-            XCTAssertTrue(message.contains("Schema 31"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         var statement: OpaquePointer?
@@ -4279,7 +4279,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 32)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 33)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4352,7 +4352,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 32)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4474,7 +4474,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 32)
         sqlite3_finalize(statement)
     }
 
@@ -7545,10 +7545,310 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 32)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
+
+    func testAttachmentsDeduplicateVerifyPreviewAndCleanUpLastBlob() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Belegkonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let firstTransaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Lieferant A", purpose: "Rechnung",
+            categoryID: nil, amountMinor: -1_234, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let secondTransaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Lieferant B", purpose: "Rechnung",
+            categoryID: nil, amountMinor: -5_678, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(firstTransaction)
+        try context.store.saveTransaction(secondTransaction)
+        let payload = Data("%PDF-1.7\nFinanzVerwalter-Testbeleg\n%%EOF\n".utf8)
+        let source = context.directory.appendingPathComponent("rechnung.pdf")
+        try payload.write(to: source, options: .atomic)
+
+        let first = try context.store.addAttachment(
+            from: source, to: .transaction, entityID: firstTransaction.id
+        )
+        let repeated = try context.store.addAttachment(
+            from: source, to: .transaction, entityID: firstTransaction.id
+        )
+        let second = try context.store.addAttachment(
+            from: source, to: .transaction, entityID: secondTransaction.id
+        )
+        XCTAssertEqual(first.id, repeated.id)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(first.sha256, SHA256.hash(data: payload).hexString)
+        XCTAssertEqual(first.mimeType, "application/pdf")
+        XCTAssertEqual(first.byteCount, Int64(payload.count))
+        XCTAssertEqual(
+            try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"),
+            1
+        )
+        XCTAssertEqual(
+            try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_links"),
+            2
+        )
+
+        let backupURL = context.directory.appendingPathComponent("anhaenge.qbackup")
+        try context.store.backup(to: backupURL)
+        let backup = try SQLiteFinanceStore(fileURL: backupURL)
+        XCTAssertEqual(
+            try backup.attachments(
+                entityType: .transaction, entityID: firstTransaction.id
+            ).map(\.sha256),
+            [first.sha256]
+        )
+        XCTAssertEqual(
+            try backup.attachments(
+                entityType: .transaction, entityID: secondTransaction.id
+            ).map(\.sha256),
+            [second.sha256]
+        )
+        XCTAssertTrue(try backup.integrityCheck())
+        backup.close()
+
+        let preview = try context.store.attachmentPreviewURL(id: first.id)
+        defer { try? FileManager.default.removeItem(at: preview) }
+        XCTAssertEqual(try Data(contentsOf: preview), payload)
+        let permissions = try FileManager.default.attributesOfItem(atPath: preview.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+
+        try context.store.removeAttachment(id: first.id)
+        XCTAssertEqual(
+            try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"),
+            1
+        )
+        try context.store.removeAttachment(id: second.id)
+        XCTAssertEqual(
+            try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"),
+            0
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testAttachmentsRejectUnsafeInputsAndScannerFailureAtomically() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finanzverwalter-attachment-reject-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try SQLiteFinanceStore(
+            fileURL: directory.appendingPathComponent("test.qdata"),
+            attachmentScanHook: { _, fileName in
+                if fileName == "gesperrt.txt" {
+                    throw FinanceError.database("Testscanner hat den Anhang gesperrt.")
+                }
+            }
+        )
+        defer { store.close() }
+        let account = FinanceAccount(
+            id: UUID(), name: "Prüfkonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try store.saveAccount(account)
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Test", purpose: "", categoryID: nil,
+            amountMinor: -1, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try store.saveTransaction(value)
+
+        let executable = directory.appendingPathComponent("schadcode.exe")
+        try Data("MZ".utf8).write(to: executable)
+        XCTAssertThrowsError(try store.addAttachment(from: executable, to: .transaction, entityID: value.id))
+        let fakePDF = directory.appendingPathComponent("falsch.pdf")
+        try Data("kein pdf".utf8).write(to: fakePDF)
+        XCTAssertThrowsError(try store.addAttachment(from: fakePDF, to: .transaction, entityID: value.id))
+        let blocked = directory.appendingPathComponent("gesperrt.txt")
+        try Data("Scanner-Test".utf8).write(to: blocked)
+        XCTAssertThrowsError(try store.addAttachment(from: blocked, to: .transaction, entityID: value.id))
+        let link = directory.appendingPathComponent("verknuepfung.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: blocked)
+        XCTAssertThrowsError(try store.addAttachment(from: link, to: .transaction, entityID: value.id))
+        let oversized = directory.appendingPathComponent("zu-gross.txt")
+        XCTAssertTrue(FileManager.default.createFile(atPath: oversized.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: UInt64(50 * 1_024 * 1_024 + 1))
+        try handle.close()
+        XCTAssertThrowsError(try store.addAttachment(from: oversized, to: .transaction, entityID: value.id))
+        XCTAssertThrowsError(try store.addAttachment(from: blocked, to: .transaction, entityID: UUID()))
+        XCTAssertEqual(
+            try sqliteScalar(store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"),
+            0
+        )
+        XCTAssertEqual(
+            try sqliteScalar(store.fileURL, "SELECT COUNT(*) FROM attachment_links"),
+            0
+        )
+        XCTAssertTrue(try store.integrityCheck())
+    }
+
+    func testAttachmentPreviewRejectsPayloadManipulation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finanzverwalter-attachment-corrupt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("test.qdata")
+        var store: SQLiteFinanceStore? = try SQLiteFinanceStore(fileURL: databaseURL)
+        let account = FinanceAccount(
+            id: UUID(), name: "Manipulationsprüfung", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try store?.saveAccount(account)
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Test", purpose: "", categoryID: nil,
+            amountMinor: -1, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try store?.saveTransaction(value)
+        let source = directory.appendingPathComponent("beleg.txt")
+        try Data("unveränderter Beleg".utf8).write(to: source)
+        let attachment = try XCTUnwrap(
+            try store?.addAttachment(from: source, to: .transaction, entityID: value.id)
+        )
+        store?.close()
+        store = nil
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(database, "UPDATE attachment_blobs SET payload=zeroblob(byte_count)", nil, nil, nil),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+        store = try SQLiteFinanceStore(fileURL: databaseURL)
+        XCTAssertThrowsError(try store?.attachmentPreviewURL(id: attachment.id))
+        store?.close()
+    }
+
+    func testMigration31To32AddsEmptyAttachmentStoreWithoutChangingBookings() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finanzverwalter-migration-31-32-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.qdata")
+        let account = FinanceAccount(
+            id: UUID(), name: "Schema-31-Konto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Bestand", purpose: "Bleibt erhalten",
+            categoryID: nil, amountMinor: -987, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        var initial: SQLiteFinanceStore? = try SQLiteFinanceStore(fileURL: url)
+        try initial?.saveAccount(account)
+        try initial?.saveTransaction(value)
+        initial?.close()
+        initial = nil
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "DROP TABLE attachment_links; DROP TABLE attachment_blobs; PRAGMA user_version=31;",
+                nil, nil, nil
+            ),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        XCTAssertEqual(try migrated.transactions().first?.id, value.id)
+        XCTAssertEqual(try migrated.transactions().first?.amountMinor, -987)
+        XCTAssertEqual(try migrated.attachments(entityType: .transaction, entityID: value.id), [])
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 32)
+        XCTAssertEqual(try sqliteScalar(url, "SELECT COUNT(*) FROM attachment_blobs"), 0)
+        XCTAssertTrue(try migrated.integrityCheck())
+    }
+
+    func testTransactionUndoRemovesAttachmentsOfUndoneCreationAndRestoresDeletedBookingLink() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Undo-Belege", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let source = context.directory.appendingPathComponent("undo-beleg.txt")
+        try Data("Undo-Beleg".utf8).write(to: source)
+
+        let created = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Neu", purpose: "", categoryID: nil,
+            amountMinor: -100, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(created)
+        _ = try context.store.addAttachment(
+            from: source, to: .transaction, entityID: created.id
+        )
+        let creationUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: creationUndo.id), 1)
+        XCTAssertFalse(try context.store.transactions().contains { $0.id == created.id })
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_links"), 0)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"), 0)
+
+        let deleted = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Löschen", purpose: "", categoryID: nil,
+            amountMinor: -200, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(deleted)
+        let attachment = try context.store.addAttachment(
+            from: source, to: .transaction, entityID: deleted.id
+        )
+        try context.store.deleteTransactions(ids: Set([deleted.id]))
+        XCTAssertFalse(try context.store.transactions().contains { $0.id == deleted.id })
+        let deletionUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: deletionUndo.id), 1)
+        XCTAssertTrue(try context.store.transactions().contains { $0.id == deleted.id })
+        XCTAssertEqual(
+            try context.store.attachments(entityType: .transaction, entityID: deleted.id).map(\.id),
+            [attachment.id]
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+}
+
+private extension Digest {
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}
+
+private func sqliteScalar(_ url: URL, _ sql: String) throws -> Int64 {
+    var database: OpaquePointer?
+    guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        throw FinanceError.database("Testdatenbank konnte nicht gelesen werden.")
+    }
+    defer { sqlite3_close(database) }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+        throw FinanceError.database("Testabfrage konnte nicht vorbereitet werden.")
+    }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw FinanceError.database("Testabfrage lieferte keinen Wert.")
+    }
+    return sqlite3_column_int64(statement, 0)
 }
 
 private final class TestDatabase {

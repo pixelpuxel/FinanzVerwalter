@@ -338,6 +338,27 @@ struct TransactionUndoSummary: Identifiable, Hashable, Sendable {
     let createdAt: Date
 }
 
+enum AttachmentEntityType: String, Codable, CaseIterable, Sendable {
+    case account
+    case transaction
+    case contract
+    case security
+    case inventory
+}
+
+struct FinanceAttachment: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let entityType: AttachmentEntityType
+    let entityID: UUID
+    let fileName: String
+    let mimeType: String
+    let byteCount: Int64
+    let sha256: String
+    let source: String
+    let addedAt: Date
+    let ocrText: String
+}
+
 struct TransactionTemplateSplit: Codable, Equatable, Sendable {
     var categoryID: UUID?
     var amountMinor: Int64
