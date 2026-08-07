@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 36
+    static let currentSchemaVersion = 37
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -1936,6 +1936,88 @@ final class SQLiteFinanceStore {
                     )
                 }
                 try execute("PRAGMA user_version = 36")
+            }
+        }
+        if version < 37 {
+            try transaction {
+                // Some early finance files were written without the otherwise
+                // unused v9 match table. Recreate it before extending the
+                // metadata so those valid legacy files remain migratable.
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS loan_payment_matches (
+                        id TEXT PRIMARY KEY,
+                        loan_id TEXT NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
+                        transaction_id TEXT NOT NULL UNIQUE REFERENCES transactions(id),
+                        scheduled_date TEXT NOT NULL,
+                        principal_minor INTEGER NOT NULL,
+                        interest_minor INTEGER NOT NULL,
+                        fee_minor INTEGER NOT NULL,
+                        matched_at TEXT NOT NULL,
+                        extra_payment_minor INTEGER NOT NULL DEFAULT 0
+                            CHECK(extra_payment_minor>=0),
+                        source TEXT NOT NULL DEFAULT 'legacy'
+                            CHECK(source IN ('generated','linkedExisting','legacy')),
+                        original_transaction_json TEXT,
+                        matched_transaction_json TEXT,
+                        UNIQUE(loan_id,scheduled_date)
+                    )
+                    """
+                )
+                var columns = Set<String>()
+                try query("PRAGMA table_info(loan_payment_matches)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("extra_payment_minor") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN extra_payment_minor INTEGER NOT NULL DEFAULT 0 CHECK(extra_payment_minor>=0)"
+                    )
+                }
+                if !columns.contains("source") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy' CHECK(source IN ('generated','linkedExisting','legacy'))"
+                    )
+                }
+                if !columns.contains("original_transaction_json") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN original_transaction_json TEXT"
+                    )
+                }
+                if !columns.contains("matched_transaction_json") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN matched_transaction_json TEXT"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS loan_payment_matches_loan_date ON loan_payment_matches(loan_id,scheduled_date,transaction_id)"
+                )
+                try execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS loan_matched_transaction_guard_update
+                    BEFORE UPDATE ON transactions
+                    WHEN EXISTS(
+                        SELECT 1 FROM loan_payment_matches
+                        WHERE transaction_id=OLD.id
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT,'Zugeordnete Kreditraten sind vor Änderungen zu lösen.');
+                    END
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS loan_matched_transaction_guard_delete
+                    BEFORE DELETE ON transactions
+                    WHEN EXISTS(
+                        SELECT 1 FROM loan_payment_matches
+                        WHERE transaction_id=OLD.id
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT,'Zugeordnete Kreditraten sind vor dem Löschen zu lösen.');
+                    END
+                    """
+                )
+                try execute("PRAGMA user_version = 37")
             }
         }
     }
@@ -5082,6 +5164,345 @@ final class SQLiteFinanceStore {
         }
         let entries = try loanSchedule(loanID: loanID).filter { $0.dueDate <= date }
         return entries.last?.closingBalanceMinor ?? loan.principalMinor
+    }
+
+    func loanPaymentMatches(loanID: UUID? = nil) throws -> [LoanPaymentMatch] {
+        var values: [LoanPaymentMatch] = []
+        let filter = loanID == nil ? "" : " WHERE loan_id=?"
+        let bindings: [SQLiteValue] = loanID.map { [.text($0.uuidString)] } ?? []
+        try query(
+            """
+            SELECT id,loan_id,transaction_id,scheduled_date,principal_minor,
+                   interest_minor,fee_minor,extra_payment_minor,matched_at,source
+            FROM loan_payment_matches\(filter)
+            ORDER BY scheduled_date,loan_id,id
+            """,
+            bindings
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let storedLoanID = UUID(uuidString: Self.text(statement, 1)),
+                  let transactionID = UUID(uuidString: Self.text(statement, 2)),
+                  let scheduledDate = Self.date(Self.text(statement, 3)),
+                  let matchedAt = Self.timestampDate(Self.text(statement, 8)),
+                  let source = LoanPaymentMatchSource(rawValue: Self.text(statement, 9))
+            else { return }
+            values.append(
+                LoanPaymentMatch(
+                    id: id, loanID: storedLoanID, transactionID: transactionID,
+                    scheduledDate: scheduledDate,
+                    principalMinor: sqlite3_column_int64(statement, 4),
+                    interestMinor: sqlite3_column_int64(statement, 5),
+                    feeMinor: sqlite3_column_int64(statement, 6),
+                    extraPaymentMinor: sqlite3_column_int64(statement, 7),
+                    matchedAt: matchedAt, source: source
+                )
+            )
+        }
+        return values
+    }
+
+    @discardableResult
+    func postLoanScheduleEntry(
+        loanID: UUID,
+        scheduleEntryID: String,
+        bookingDate: Date? = nil
+    ) throws -> LoanPaymentMatch {
+        let (loan, entry) = try loanAndScheduleEntry(
+            loanID: loanID, scheduleEntryID: scheduleEntryID
+        )
+        guard let accountID = loan.linkedAccountID,
+              let account = try accounts().first(where: { $0.id == accountID })
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Für die automatische Rate muss ein vorhandenes Zahlungskonto verknüpft sein."
+            )
+        }
+        guard !account.isClosed,
+              account.currency.uppercased() == loan.currency.uppercased()
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Das Zahlungskonto ist geschlossen oder verwendet eine andere Währung."
+            )
+        }
+        guard try loanPaymentMatches(loanID: loanID).allSatisfy({
+            !Calendar.current.isDate($0.scheduledDate, inSameDayAs: entry.dueDate)
+        }) else {
+            throw FinanceError.invalidLoanTerms("Diese Planrate ist bereits zugeordnet.")
+        }
+        let total = entry.installmentMinor + entry.extraPaymentMinor
+        let booking = FinanceTransaction(
+            id: UUID(), accountID: accountID,
+            bookingDate: bookingDate ?? entry.dueDate,
+            valueDate: bookingDate ?? entry.dueDate,
+            payee: loan.lender,
+            purpose: "Darlehensrate \(loan.name) – Rate \(entry.sequence)",
+            categoryID: nil, amountMinor: -total,
+            currency: loan.currency.uppercased(), status: .booked,
+            memo: "Automatisch aus dem Kreditplan gebucht",
+            reference: "KREDIT-\(loan.id.uuidString)-\(entry.sequence)",
+            transferID: nil, importFingerprint: nil,
+            splits: loanPaymentSplits(
+                principalMinor: entry.principalMinor,
+                interestMinor: entry.interestMinor,
+                feeMinor: entry.feeMinor,
+                extraPaymentMinor: entry.extraPaymentMinor
+            )
+        )
+        try booking.validate()
+        try validateVATReferences(booking)
+        let now = Self.timestamp(Date())
+        let match = LoanPaymentMatch(
+            id: UUID(), loanID: loanID, transactionID: booking.id,
+            scheduledDate: entry.dueDate,
+            principalMinor: entry.principalMinor,
+            interestMinor: entry.interestMinor, feeMinor: entry.feeMinor,
+            extraPaymentMinor: entry.extraPaymentMinor,
+            matchedAt: Self.timestampDate(now) ?? Date(), source: .generated
+        )
+        try transaction {
+            try writeTransaction(booking, now: now)
+            guard let persistedBooking = try transactionSnapshots(ids: [booking.id]).first else {
+                throw FinanceError.database("Die erzeugte Kreditrate konnte nicht gelesen werden.")
+            }
+            try insertLoanPaymentMatch(
+                match, originalTransactionJSON: nil,
+                matchedTransactionJSON: try encodeUndoTransactions([persistedBooking])
+            )
+            try audit(
+                entity: "loan-payment-match", id: match.id, action: "post-generated",
+                details: "loan=\(loanID.uuidString);rate=\(entry.sequence);transaction=\(booking.id.uuidString)"
+            )
+        }
+        return match
+    }
+
+    @discardableResult
+    func matchLoanPayment(
+        loanID: UUID,
+        scheduleEntryID: String,
+        transactionID: UUID
+    ) throws -> LoanPaymentMatch {
+        let (loan, entry) = try loanAndScheduleEntry(
+            loanID: loanID, scheduleEntryID: scheduleEntryID
+        )
+        guard let linkedAccountID = loan.linkedAccountID else {
+            throw FinanceError.invalidLoanTerms("Das Darlehen besitzt kein Zahlungskonto.")
+        }
+        guard let original = try transactions().first(where: { $0.id == transactionID }) else {
+            throw FinanceError.database("Die reale Buchung wurde nicht gefunden.")
+        }
+        guard original.accountID == linkedAccountID,
+              original.currency.uppercased() == loan.currency.uppercased(),
+              original.amountMinor < 0,
+              original.transferID == nil,
+              original.splits.isEmpty,
+              original.vatMode == .none,
+              original.status == .booked || original.status == .cleared
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Nur eine ungeteilte gebuchte oder bestätigte Belastung des verknüpften Zahlungskontos kann zugeordnet werden."
+            )
+        }
+        let existing = try loanPaymentMatches()
+        guard existing.allSatisfy({ $0.transactionID != transactionID }) else {
+            throw FinanceError.invalidLoanTerms("Diese Buchung ist bereits einer Kreditrate zugeordnet.")
+        }
+        guard existing.filter({ $0.loanID == loanID }).allSatisfy({
+            !Calendar.current.isDate($0.scheduledDate, inSameDayAs: entry.dueDate)
+        }) else {
+            throw FinanceError.invalidLoanTerms("Diese Planrate ist bereits zugeordnet.")
+        }
+        guard original.amountMinor != Int64.min else {
+            throw FinanceError.invalidLoanTerms("Der Buchungsbetrag liegt außerhalb des zulässigen Bereichs.")
+        }
+        let actualPayment = abs(original.amountMinor)
+        guard actualPayment >= entry.interestMinor + entry.feeMinor else {
+            throw FinanceError.invalidLoanTerms(
+                "Die reale Zahlung deckt den geplanten Zins- und Gebührenanteil nicht."
+            )
+        }
+        let actualPrincipal = actualPayment - entry.interestMinor - entry.feeMinor
+        guard actualPrincipal <= entry.openingBalanceMinor else {
+            throw FinanceError.invalidLoanTerms(
+                "Die reale Tilgung übersteigt die Restschuld vor dieser Rate."
+            )
+        }
+        let regularPrincipal = min(entry.principalMinor, actualPrincipal)
+        let extraPayment = actualPrincipal - regularPrincipal
+        var matched = original
+        matched.categoryID = nil
+        matched.splits = loanPaymentSplits(
+            principalMinor: regularPrincipal,
+            interestMinor: entry.interestMinor,
+            feeMinor: entry.feeMinor,
+            extraPaymentMinor: extraPayment
+        )
+        matched.memo = [original.memo, "Kreditabgleich: \(loan.name), Rate \(entry.sequence)"]
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        try matched.validate()
+        try validateVATReferences(matched)
+        let now = Self.timestamp(Date())
+        let match = LoanPaymentMatch(
+            id: UUID(), loanID: loanID, transactionID: transactionID,
+            scheduledDate: entry.dueDate, principalMinor: regularPrincipal,
+            interestMinor: entry.interestMinor, feeMinor: entry.feeMinor,
+            extraPaymentMinor: extraPayment,
+            matchedAt: Self.timestampDate(now) ?? Date(), source: .linkedExisting
+        )
+        try transaction {
+            try writeTransaction(matched, now: now)
+            try insertLoanPaymentMatch(
+                match,
+                originalTransactionJSON: try encodeUndoTransactions([original]),
+                matchedTransactionJSON: try encodeUndoTransactions([matched])
+            )
+            try audit(
+                entity: "loan-payment-match", id: match.id, action: "link-existing",
+                details: "loan=\(loanID.uuidString);rate=\(entry.sequence);transaction=\(transactionID.uuidString)"
+            )
+        }
+        return match
+    }
+
+    func removeLoanPaymentMatch(id: UUID) throws {
+        var stored: (LoanPaymentMatch, String?, String?)?
+        try query(
+            """
+            SELECT loan_id,transaction_id,scheduled_date,principal_minor,interest_minor,
+                   fee_minor,extra_payment_minor,matched_at,source,
+                   original_transaction_json,matched_transaction_json
+            FROM loan_payment_matches WHERE id=?
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard let loanID = UUID(uuidString: Self.text(statement, 0)),
+                  let transactionID = UUID(uuidString: Self.text(statement, 1)),
+                  let scheduledDate = Self.date(Self.text(statement, 2)),
+                  let matchedAt = Self.timestampDate(Self.text(statement, 7)),
+                  let source = LoanPaymentMatchSource(rawValue: Self.text(statement, 8))
+            else { return }
+            stored = (
+                LoanPaymentMatch(
+                    id: id, loanID: loanID, transactionID: transactionID,
+                    scheduledDate: scheduledDate,
+                    principalMinor: sqlite3_column_int64(statement, 3),
+                    interestMinor: sqlite3_column_int64(statement, 4),
+                    feeMinor: sqlite3_column_int64(statement, 5),
+                    extraPaymentMinor: sqlite3_column_int64(statement, 6),
+                    matchedAt: matchedAt, source: source
+                ),
+                Self.optionalText(statement, 9), Self.optionalText(statement, 10)
+            )
+        }
+        guard let (match, originalJSON, matchedJSON) = stored,
+              match.source != .legacy,
+              let matchedJSON,
+              let current = try transactions().first(where: { $0.id == match.transactionID })
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Diese ältere oder unvollständige Zuordnung kann nicht sicher gelöst werden."
+            )
+        }
+        guard try encodeUndoTransactions([current]) == matchedJSON else {
+            throw FinanceError.invalidLoanTerms(
+                "Die zugeordnete Buchung wurde verändert; die Zuordnung kann nicht verlustfrei gelöst werden."
+            )
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run("DELETE FROM loan_payment_matches WHERE id=?", [.text(id.uuidString)])
+            switch match.source {
+            case .generated:
+                try run(
+                    "DELETE FROM attachment_links WHERE entity_type='transaction' AND entity_id=?",
+                    [.text(match.transactionID.uuidString)]
+                )
+                try run(
+                    "DELETE FROM attachment_blobs WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE blob_sha256=attachment_blobs.sha256)"
+                )
+                try run(
+                    "DELETE FROM transactions WHERE id=?",
+                    [.text(match.transactionID.uuidString)]
+                )
+            case .linkedExisting:
+                guard let originalJSON else {
+                    throw FinanceError.invalidLoanTerms(
+                        "Der ursprüngliche Buchungsstand ist nicht verfügbar."
+                    )
+                }
+                let originals = try decodeUndoTransactions(originalJSON)
+                guard originals.count == 1, let original = originals.first else {
+                    throw FinanceError.invalidLoanTerms(
+                        "Der ursprüngliche Buchungsstand ist nicht eindeutig."
+                    )
+                }
+                try writeTransaction(original, now: now, computeFingerprint: false)
+            case .legacy:
+                break
+            }
+            try audit(
+                entity: "loan-payment-match", id: id, action: "remove",
+                details: "loan=\(match.loanID.uuidString);transaction=\(match.transactionID.uuidString)"
+            )
+        }
+    }
+
+    private func loanAndScheduleEntry(
+        loanID: UUID,
+        scheduleEntryID: String
+    ) throws -> (FinanceLoan, LoanScheduleEntry) {
+        guard let loan = try loans().first(where: { $0.id == loanID }),
+              let entry = try loanSchedule(loanID: loanID).first(where: {
+                  $0.id == scheduleEntryID
+              })
+        else {
+            throw FinanceError.invalidLoanTerms("Darlehen oder Planrate wurde nicht gefunden.")
+        }
+        return (loan, entry)
+    }
+
+    private func loanPaymentSplits(
+        principalMinor: Int64,
+        interestMinor: Int64,
+        feeMinor: Int64,
+        extraPaymentMinor: Int64
+    ) -> [FinanceSplit] {
+        let parts: [(String, Int64)] = [
+            ("Tilgung", principalMinor), ("Sollzins", interestMinor),
+            ("Gebühr", feeMinor), ("Sondertilgung", extraPaymentMinor)
+        ]
+        return parts.enumerated().compactMap { index, part in
+            guard part.1 > 0 else { return nil }
+            return FinanceSplit(
+                id: UUID(), categoryID: nil, amountMinor: -part.1,
+                memo: part.0, sortOrder: index
+            )
+        }
+    }
+
+    private func insertLoanPaymentMatch(
+        _ match: LoanPaymentMatch,
+        originalTransactionJSON: String?,
+        matchedTransactionJSON: String
+    ) throws {
+        try run(
+            """
+            INSERT INTO loan_payment_matches(
+                id,loan_id,transaction_id,scheduled_date,principal_minor,
+                interest_minor,fee_minor,matched_at,extra_payment_minor,source,
+                original_transaction_json,matched_transaction_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                .text(match.id.uuidString), .text(match.loanID.uuidString),
+                .text(match.transactionID.uuidString), .text(Self.day(match.scheduledDate)),
+                .integer(match.principalMinor), .integer(match.interestMinor),
+                .integer(match.feeMinor), .text(Self.timestamp(match.matchedAt)),
+                .integer(match.extraPaymentMinor), .text(match.source.rawValue),
+                originalTransactionJSON.map { .text($0) } ?? .null,
+                .text(matchedTransactionJSON)
+            ]
+        )
     }
 
     func propertyAssets() throws -> [PropertyAsset] {

@@ -3044,3 +3044,48 @@ Rechtsberatung.
 - Telegram-Nachricht 1051 meldet denselben Stand im `/quicken`-Thread 894 und
   erklärt ausdrücklich den wegen der gesperrten Sitzung fehlenden Screenshot.
   Exakter kumulativer Zielzählerstand nach Veröffentlichung: 18.460.050 Tokens.
+
+## 07.08.2026 – Reversibler Kreditratenabgleich und Plan/Ist-Bericht
+
+- SQLite-Schema 37 erweitert Kreditratenzuordnungen um Sondertilgung,
+  Herkunft sowie vollständige Transaktionszustände vor und nach dem Abgleich.
+  Zwei Trigger verhindern, dass eine zugeordnete Kontobuchung über normale
+  Bearbeitungs- oder Löschwege verändert wird. Die Migration rekonstruiert die
+  historische, früher ungenutzte Tabelle defensiv, wenn eine frühe Altdatei sie
+  nicht enthält.
+- Offene Tilgungsplanzeilen bieten passende reale Belastungen des verknüpften
+  Zahlungskontos innerhalb von ±45 Tagen an. Die Zuordnung zerlegt atomar in
+  Tilgung, Sollzins, Gebühr und Mehrbetrag als Sondertilgung. Alternativ erzeugt
+  `Planrate buchen` eine neue Splitbuchung. Beim Lösen wird diese entfernt oder
+  eine vorhandene Buchung exakt auf den gespeicherten Originalzustand
+  zurückgesetzt; Doppelzuordnung, Unterdeckung und Übertilgung werden
+  abgewiesen.
+- Der Kreditbericht zeigt nun Plan, Ist, Abweichung, Zuordnungsquelle und
+  abgeglichene Raten in Oberfläche, CSV, mehrseitigem PDF und Systemdruck.
+  Summen bleiben strikt je Währung getrennt. ADR 0029 beschreibt die
+  Reversibilitätsentscheidung; README, Berichtswerkstatt, Anforderungsmatrix und
+  `PortalPrompt.md` wurden reproduzierbar aktualisiert.
+- Der vollständige Testlauf ist grün: 138 Tests insgesamt, 137 bestanden,
+  1 privater opt-in-QIF-Test planmäßig übersprungen, 0 fehlgeschlagen. Das
+  Result-Bundle liegt unter
+  `build/DerivedData-LoanActual/Logs/Test/Test-FinanzVerwalter-2026.08.07_18-20-40-+0200.xcresult`.
+- Der optimierte arm64-Release wurde unter
+  `build/DerivedData-LoanActual-Release` erfolgreich gebaut, lokal ad-hoc
+  signiert und streng geprüft. Release, `/Applications/FinanzVerwalter.app`
+  und `~/Applications/FinanzVerwalter.app` sind bytegleich; die ausführbare
+  Datei trägt SHA-256
+  `c3f71e8c103cb3b9a03c7fea4c845eee171baa619634e58c97581811260c23a8`.
+  Die Vorgängerinstallationen liegen reversibel unter
+  `build/InstallBackups/20260807-1818-loan-matching/`, die manuelle geprüfte
+  Schema-36-Sicherung unter
+  `build/ProductionBackups/20260807-1818-loan-matching/`.
+- Prozess 12666 läuft direkt aus `/Applications`; der Desktop-Link zeigt auf
+  diese Installation. Die Produktionsdatei besitzt nach automatischer
+  Vor-Migrationssicherung Schema 37 und Integrität `ok`; 97 Konten, 2.170
+  Buchungen und 782 Kategorien blieben unverändert. Es existieren derzeit
+  keine Darlehen und daher keine produktiven Kreditratenzuordnungen.
+- Die Computer-Use-Prüfung konnte das Fenster wegen der gesperrten macOS-Sitzung
+  nicht sichtbar abnehmen oder fotografieren. Die Sperre wurde nicht umgangen;
+  nach manuellem Entsperren steht die bereits gestartete App bereit. Exakter
+  kumulativer Zielzählerstand nach Test, Release, Installation und
+  Produktivprüfung: 19.103.530 Tokens.

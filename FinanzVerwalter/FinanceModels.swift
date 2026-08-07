@@ -2237,6 +2237,84 @@ struct LoanScheduleEntry: Identifiable, Hashable, Sendable {
     let annualBasisPoints: Int
 }
 
+enum LoanPaymentMatchSource: String, Codable, CaseIterable, Sendable {
+    case generated
+    case linkedExisting
+    case legacy
+
+    var title: String {
+        switch self {
+        case .generated: "Automatisch gebucht"
+        case .linkedExisting: "Reale Buchung zugeordnet"
+        case .legacy: "Ältere Zuordnung"
+        }
+    }
+}
+
+struct LoanPaymentMatch: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let loanID: UUID
+    let transactionID: UUID
+    let scheduledDate: Date
+    let principalMinor: Int64
+    let interestMinor: Int64
+    let feeMinor: Int64
+    let extraPaymentMinor: Int64
+    let matchedAt: Date
+    let source: LoanPaymentMatchSource
+
+    var actualPaymentMinor: Int64 {
+        principalMinor + interestMinor + feeMinor + extraPaymentMinor
+    }
+}
+
+struct LoanPaymentCandidate: Identifiable, Hashable, Sendable {
+    var id: UUID { transaction.id }
+    let transaction: FinanceTransaction
+    let dayDistance: Int
+    let amountDifferenceMinor: Int64
+}
+
+enum LoanPaymentMatchingEngine {
+    static func candidates(
+        for entry: LoanScheduleEntry,
+        loan: FinanceLoan,
+        transactions: [FinanceTransaction],
+        alreadyMatchedTransactionIDs: Set<UUID>,
+        calendar suppliedCalendar: Calendar? = nil,
+        dayWindow: Int = 45
+    ) -> [LoanPaymentCandidate] {
+        guard let accountID = loan.linkedAccountID else { return [] }
+        var calendar = suppliedCalendar ?? Calendar(identifier: .gregorian)
+        if suppliedCalendar == nil { calendar.timeZone = TimeZone(secondsFromGMT: 0)! }
+        let expected = entry.installmentMinor + entry.extraPaymentMinor
+        return transactions.compactMap { transaction in
+            guard transaction.accountID == accountID,
+                  transaction.currency.uppercased() == loan.currency.uppercased(),
+                  transaction.amountMinor < 0,
+                  transaction.transferID == nil,
+                  transaction.splits.isEmpty,
+                  transaction.vatMode == .none,
+                  transaction.status == .booked || transaction.status == .cleared,
+                  !alreadyMatchedTransactionIDs.contains(transaction.id)
+            else { return nil }
+            let start = calendar.startOfDay(for: entry.dueDate)
+            let end = calendar.startOfDay(for: transaction.valueDate ?? transaction.bookingDate)
+            let distance = calendar.dateComponents([.day], from: start, to: end).day ?? 0
+            guard abs(distance) <= dayWindow else { return nil }
+            return LoanPaymentCandidate(
+                transaction: transaction,
+                dayDistance: distance,
+                amountDifferenceMinor: abs(transaction.amountMinor) - expected
+            )
+        }.sorted {
+            let left = (abs($0.amountDifferenceMinor), abs($0.dayDistance), $0.transaction.bookingDate, $0.id.uuidString)
+            let right = (abs($1.amountDifferenceMinor), abs($1.dayDistance), $1.transaction.bookingDate, $1.id.uuidString)
+            return left < right
+        }
+    }
+}
+
 enum LoanAmortizationEngine {
     static func schedule(
         loan: FinanceLoan,

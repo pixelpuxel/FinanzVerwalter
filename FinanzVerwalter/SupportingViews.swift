@@ -3383,7 +3383,7 @@ private struct LoanReportView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Kredit-, Zins- und Tilgungsbericht")
                         .font(.title2.bold())
-                    Text("Planwerte mit Restschuldverlauf – kein Ist-Zahlungsabgleich")
+                    Text("Planwerte mit Restschuldverlauf und abgeglichenen Ist-Zahlungen")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -3438,25 +3438,32 @@ private struct LoanReportView: View {
                         TableColumn("Darlehen") { summary in
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(summary.loanName).fontWeight(.semibold).lineLimit(1)
-                                Text("\(summary.lender) · \(summary.paymentCount) Raten")
+                                Text(
+                                    "\(summary.lender) · \(summary.matchedPaymentCount) von \(summary.paymentCount) Raten abgeglichen"
+                                )
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }.width(190)
                         TableColumn("Anfangssaldo") {
                             loanMoney($0.openingBalanceMinor, $0.currency)
                         }.width(125)
-                        TableColumn("Zahlungen") {
-                            loanMoney($0.paymentMinor, $0.currency)
+                        TableColumn("Plan / Ist") { summary in
+                            VStack(alignment: .trailing, spacing: 1) {
+                                loanMoney(summary.paymentMinor, summary.currency)
+                                Text(Money(minorUnits: summary.actualPaymentMinor,
+                                           currency: summary.currency).formatted)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }.width(125)
+                        TableColumn("Abweichung") {
+                            loanVariance($0.paymentVarianceMinor, $0.currency)
                         }.width(115)
                         TableColumn("Tilgung") {
                             loanMoney($0.principalMinor, $0.currency)
                         }.width(110)
-                        TableColumn("Zins") {
-                            loanMoney($0.interestMinor, $0.currency)
-                        }.width(105)
-                        TableColumn("Gebühren") {
-                            loanMoney($0.feeMinor, $0.currency)
-                        }.width(95)
+                        TableColumn("Zins + Gebühr") {
+                            loanMoney($0.interestMinor + $0.feeMinor, $0.currency)
+                        }.width(120)
                         TableColumn("Sondertilgung") {
                             loanMoney($0.extraPaymentMinor, $0.currency)
                         }.width(115)
@@ -3466,9 +3473,8 @@ private struct LoanReportView: View {
                         TableColumn("Schuldenfrei") { summary in
                             Text(summary.payoffDate.map(reportDate) ?? "Ballonrest")
                         }.width(105)
-                        TableColumn("Währung") { Text($0.currency) }.width(70)
                     }
-                    .frame(width: 1_220, height: 245)
+                    .frame(width: 1_470, height: 245)
                 }
                 .overlay {
                     if snapshot.summaries.isEmpty {
@@ -3521,21 +3527,38 @@ private struct LoanReportView: View {
                         TableColumn("Anfangssaldo") {
                             loanMoney($0.openingBalanceMinor, $0.currency)
                         }.width(115)
-                        TableColumn("Rate") {
-                            loanMoney($0.installmentMinor, $0.currency)
+                        TableColumn("Plan / Ist") { row in
+                            VStack(alignment: .trailing, spacing: 1) {
+                                loanMoney(row.installmentMinor + row.extraPaymentMinor,
+                                          row.currency)
+                                Text(row.actualPaymentMinor.map {
+                                    Money(minorUnits: $0, currency: row.currency).formatted
+                                } ?? "Offen")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            }
                         }.width(105)
-                        TableColumn("Tilgung") {
-                            loanMoney($0.principalMinor, $0.currency)
+                        TableColumn("Abweichung") { row in
+                            if let variance = row.paymentVarianceMinor {
+                                loanVariance(variance, row.currency)
+                            } else {
+                                Text("—").foregroundStyle(.secondary)
+                            }
                         }.width(105)
-                        TableColumn("Zins") {
-                            loanMoney($0.interestMinor, $0.currency)
-                        }.width(95)
-                        TableColumn("Gebühr") {
-                            loanMoney($0.feeMinor, $0.currency)
-                        }.width(85)
-                        TableColumn("Sondertilgung") {
-                            loanMoney($0.extraPaymentMinor, $0.currency)
-                        }.width(110)
+                        TableColumn("Quelle") { row in
+                            Text(row.matchSource?.title ?? "Nicht zugeordnet")
+                                .foregroundStyle(row.matchSource == nil ? .secondary : .primary)
+                        }.width(155)
+                        TableColumn("Tilgung / Sonder") { row in
+                            VStack(alignment: .trailing, spacing: 1) {
+                                loanMoney(row.principalMinor, row.currency)
+                                Text(Money(minorUnits: row.extraPaymentMinor,
+                                           currency: row.currency).formatted)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }.width(115)
+                        TableColumn("Zins + Gebühr") {
+                            loanMoney($0.interestMinor + $0.feeMinor, $0.currency)
+                        }.width(115)
                         TableColumn("Restschuld") {
                             loanMoney($0.closingBalanceMinor, $0.currency)
                         }.width(115)
@@ -3556,17 +3579,7 @@ private struct LoanReportView: View {
                 HStack(spacing: 18) {
                     Text("Plan-Summen").fontWeight(.semibold)
                     ForEach(snapshot.totals) { total in
-                        Text(
-                            "\(total.currency): Tilgung "
-                                + Money(minorUnits: total.principalMinor,
-                                        currency: total.currency).formatted
-                                + " · Zins/Gebühr "
-                                + Money(minorUnits: total.interestMinor + total.feeMinor,
-                                        currency: total.currency).formatted
-                                + " · Restschuld "
-                                + Money(minorUnits: total.closingBalanceMinor,
-                                        currency: total.currency).formatted
-                        )
+                        Text(loanTotalDescription(total))
                         .monospacedDigit()
                     }
                     if snapshot.totals.count > 1 {
@@ -3644,6 +3657,24 @@ private struct LoanReportView: View {
         Text(Money(minorUnits: minor, currency: currency).formatted)
             .frame(maxWidth: .infinity, alignment: .trailing)
             .monospacedDigit()
+    }
+
+    private func loanVariance(_ minor: Int64, _ currency: String) -> some View {
+        Text(Money(minorUnits: minor, currency: currency).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .monospacedDigit()
+            .foregroundStyle(minor == 0 ? Color.secondary : Color.orange)
+    }
+
+    private func loanTotalDescription(_ total: LoanReportCurrencyTotal) -> String {
+        let currency = total.currency
+        let principal = Money(minorUnits: total.principalMinor, currency: currency).formatted
+        let cost = Money(minorUnits: total.interestMinor + total.feeMinor,
+                         currency: currency).formatted
+        let balance = Money(minorUnits: total.closingBalanceMinor, currency: currency).formatted
+        let actual = Money(minorUnits: total.actualPaymentMinor, currency: currency).formatted
+        let variance = Money(minorUnits: total.paymentVarianceMinor, currency: currency).formatted
+        return "\(currency): Tilgung \(principal) · Zins/Gebühr \(cost) · Restschuld \(balance) · Ist \(actual) · Abweichung \(variance)"
     }
 
     private func chartAmount(_ minor: Int64, _ currency: String) -> Decimal {
@@ -12606,6 +12637,13 @@ private struct AllocationEditor: View {
     }
 }
 
+private struct LoanPaymentActionContext: Identifiable {
+    var id: String { entry.id }
+    let loan: FinanceLoan
+    let entry: LoanScheduleEntry
+    let match: LoanPaymentMatch?
+}
+
 struct AssetsView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var mode = 0
@@ -12616,6 +12654,7 @@ struct AssetsView: View {
     @State private var showExtraEditor = false
     @State private var showAssetEditor = false
     @State private var showValuationEditor = false
+    @State private var loanPaymentAction: LoanPaymentActionContext?
 
     private var selectedLoan: FinanceLoan? {
         store.loans.first { $0.id == selectedLoanID }
@@ -12705,6 +12744,11 @@ struct AssetsView: View {
         .sheet(isPresented: $showValuationEditor) {
             if let selectedAsset { AssetValuationEditor(asset: selectedAsset.asset) }
         }
+        .sheet(item: $loanPaymentAction) { context in
+            LoanPaymentMatchSheet(
+                loan: context.loan, entry: context.entry, match: context.match
+            )
+        }
     }
 
     private var loanWorkspace: some View {
@@ -12769,9 +12813,9 @@ struct AssetsView: View {
                     }
                 }
                 Spacer()
-                loanMetric("Ursprung", loan.principalMinor)
-                loanMetric("Restschuld", remaining)
-                loanMetric("Zins + Gebühren", totalInterest + totalFees)
+                loanMetric("Ursprung", loan.principalMinor, currency: loan.currency)
+                loanMetric("Restschuld", remaining, currency: loan.currency)
+                loanMetric("Zins + Gebühren", totalInterest + totalFees, currency: loan.currency)
             }
             .padding(14)
             Divider()
@@ -12800,14 +12844,22 @@ struct AssetsView: View {
             .padding(.horizontal, 14)
             .frame(height: 38)
             Divider()
-            loanScheduleTable(schedule)
+            loanScheduleTable(schedule, loan: loan)
         }
     }
 
-    private func loanScheduleTable(_ entries: [LoanScheduleEntry]) -> some View {
-        VStack(spacing: 0) {
+    private func loanScheduleTable(
+        _ entries: [LoanScheduleEntry],
+        loan: FinanceLoan
+    ) -> some View {
+        let matches = store.loanPaymentMatches.filter { $0.loanID == loan.id }
+        return VStack(spacing: 0) {
             HStack {
                 Text("Tilgungsplan").font(.headline)
+                let matchedCount = matches.count
+                Text("\(matchedCount) von \(entries.count) abgeglichen")
+                    .font(.caption)
+                    .foregroundStyle(matchedCount == 0 ? Color.secondary : Color.green)
                 Spacer()
                 Text("\(entries.count) Raten")
                     .foregroundStyle(.secondary)
@@ -12823,6 +12875,8 @@ struct AssetsView: View {
                     scheduleHeader("Zins", alignment: .trailing)
                     scheduleHeader("Sondertilgung", alignment: .trailing)
                     scheduleHeader("Restschuld", alignment: .trailing)
+                    scheduleHeader("Ist / Abweichung", alignment: .trailing)
+                    Color.clear
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 30)
@@ -12837,11 +12891,18 @@ struct AssetsView: View {
                             GridItem(.flexible(minimum: 82, maximum: 110), alignment: .trailing),
                             GridItem(.flexible(minimum: 75, maximum: 100), alignment: .trailing),
                             GridItem(.flexible(minimum: 96, maximum: 125), alignment: .trailing),
-                            GridItem(.flexible(minimum: 100, maximum: 140), alignment: .trailing)
+                            GridItem(.flexible(minimum: 100, maximum: 140), alignment: .trailing),
+                            GridItem(.flexible(minimum: 105, maximum: 145), alignment: .trailing),
+                            GridItem(.fixed(28), alignment: .center)
                         ],
                         alignment: .leading, spacing: 0
                     ) {
                         ForEach(entries) { entry in
+                            let match = matches.first {
+                                Calendar.current.isDate(
+                                    $0.scheduledDate, inSameDayAs: entry.dueDate
+                                )
+                            }
                             Text("\(entry.sequence)")
                             Text(entry.dueDate.formatted(date: .numeric, time: .omitted))
                             Text(
@@ -12850,18 +12911,55 @@ struct AssetsView: View {
                                         .precision(.fractionLength(2))
                                 ) + " %"
                             )
-                            Text(Money(minorUnits: entry.installmentMinor).formatted)
-                            Text(Money(minorUnits: entry.principalMinor).formatted)
-                            Text(Money(minorUnits: entry.interestMinor).formatted)
+                            Text(Money(minorUnits: entry.installmentMinor,
+                                       currency: loan.currency).formatted)
+                            Text(Money(minorUnits: entry.principalMinor,
+                                       currency: loan.currency).formatted)
+                            Text(Money(minorUnits: entry.interestMinor,
+                                       currency: loan.currency).formatted)
                             Text(
                                 entry.extraPaymentMinor == 0
-                                    ? "–" : Money(minorUnits: entry.extraPaymentMinor).formatted
+                                    ? "–" : Money(minorUnits: entry.extraPaymentMinor,
+                                                    currency: loan.currency).formatted
                             )
-                            Text(Money(minorUnits: entry.closingBalanceMinor).formatted)
+                            Text(Money(minorUnits: entry.closingBalanceMinor,
+                                       currency: loan.currency).formatted)
                                 .fontWeight(entry.closingBalanceMinor == 0 ? .semibold : .regular)
+                            if let match {
+                                let planned = entry.installmentMinor + entry.extraPaymentMinor
+                                let difference = match.actualPaymentMinor - planned
+                                VStack(alignment: .trailing, spacing: 1) {
+                                    Text(Money(minorUnits: match.actualPaymentMinor,
+                                               currency: loan.currency).formatted)
+                                        .foregroundStyle(.green)
+                                    Text(
+                                        difference == 0
+                                            ? "planmäßig"
+                                            : "Δ \(Money(minorUnits: difference, currency: loan.currency).formatted)"
+                                    )
+                                    .font(.caption2)
+                                    .foregroundStyle(difference == 0 ? Color.secondary : Color.orange)
+                                }
+                            } else {
+                                Text("Offen").foregroundStyle(.secondary)
+                            }
+                            Button {
+                                loanPaymentAction = LoanPaymentActionContext(
+                                    loan: loan, entry: entry, match: match
+                                )
+                            } label: {
+                                Image(systemName: match == nil ? "link.badge.plus" : "checkmark.circle.fill")
+                                    .foregroundStyle(match == nil ? Color.accentColor : Color.green)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(
+                                match == nil
+                                    ? "Rate \(entry.sequence) abgleichen"
+                                    : "Abgleich für Rate \(entry.sequence) anzeigen"
+                            )
                         }
                         .font(.caption.monospacedDigit())
-                        .frame(height: 28)
+                        .frame(height: 38)
                     }
                     .padding(.horizontal, 10)
                 }
@@ -12960,10 +13058,12 @@ struct AssetsView: View {
             .last?.closingBalanceMinor ?? loan.principalMinor
     }
 
-    private func loanMetric(_ title: String, _ value: Int64) -> some View {
+    private func loanMetric(
+        _ title: String, _ value: Int64, currency: String = "EUR"
+    ) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(Money(minorUnits: value).formatted)
+            Text(Money(minorUnits: value, currency: currency).formatted)
                 .font(.headline.monospacedDigit())
         }
         .frame(minWidth: 125, alignment: .trailing)
@@ -12977,6 +13077,291 @@ struct AssetsView: View {
             .font(.caption.bold())
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: alignment)
+    }
+}
+
+private struct LoanPaymentMatchSheet: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+
+    let loan: FinanceLoan
+    let entry: LoanScheduleEntry
+    let match: LoanPaymentMatch?
+
+    @State private var bookingDate: Date
+    @State private var selectedCandidate: LoanPaymentCandidate?
+    @State private var confirmGeneratedBooking = false
+    @State private var confirmRemoval = false
+
+    init(
+        loan: FinanceLoan,
+        entry: LoanScheduleEntry,
+        match: LoanPaymentMatch?
+    ) {
+        self.loan = loan
+        self.entry = entry
+        self.match = match
+        _bookingDate = State(initialValue: entry.dueDate)
+    }
+
+    private var candidates: [LoanPaymentCandidate] {
+        store.loanPaymentCandidates(loan: loan, entry: entry)
+    }
+
+    private var matchedTransaction: FinanceTransaction? {
+        guard let match else { return nil }
+        return store.transactions.first { $0.id == match.transactionID }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Kreditrate abgleichen").font(.title2.bold())
+                    Text(
+                        "\(loan.name) · Rate \(entry.sequence) · \(entry.dueDate.formatted(date: .long, time: .omitted))"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Schließen") { dismiss() }
+            }
+            .padding(16)
+
+            Divider()
+            HStack(spacing: 18) {
+                paymentMetric("Planrate", entry.installmentMinor + entry.extraPaymentMinor)
+                paymentMetric("Tilgung", entry.principalMinor)
+                paymentMetric("Zins", entry.interestMinor)
+                paymentMetric("Gebühr", entry.feeMinor)
+                paymentMetric("Sondertilgung", entry.extraPaymentMinor)
+            }
+            .padding(16)
+
+            Divider()
+            if let match {
+                matchedContent(match)
+            } else {
+                unmatchedContent
+            }
+        }
+        .frame(width: 760, height: 590)
+        .confirmationDialog(
+            "Reale Buchung aufteilen und fest zuordnen?",
+            isPresented: Binding(
+                get: { selectedCandidate != nil },
+                set: { if !$0 { selectedCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let selectedCandidate {
+                Button("Buchung zuordnen und splitten") {
+                    if store.matchLoanPayment(
+                        loanID: loan.id, scheduleEntryID: entry.id,
+                        transactionID: selectedCandidate.id
+                    ) { dismiss() }
+                }
+            }
+            Button("Abbrechen", role: .cancel) { selectedCandidate = nil }
+        } message: {
+            if let selectedCandidate {
+                Text(
+                    "\(selectedCandidate.transaction.bookingDate.formatted(date: .numeric, time: .omitted)) · \(selectedCandidate.transaction.payee) · \(Money(minorUnits: selectedCandidate.transaction.amountMinor, currency: selectedCandidate.transaction.currency).formatted). Die Buchung wird in Tilgung, Zins, Gebühr und gegebenenfalls Sondertilgung zerlegt."
+                )
+            }
+        }
+        .confirmationDialog(
+            "Planrate als neue Splitbuchung anlegen?",
+            isPresented: $confirmGeneratedBooking,
+            titleVisibility: .visible
+        ) {
+            Button("Splitbuchung anlegen") {
+                if store.postLoanScheduleEntry(
+                    loanID: loan.id, scheduleEntryID: entry.id,
+                    bookingDate: bookingDate
+                ) { dismiss() }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(
+                "Auf \(linkedAccountName) wird am \(bookingDate.formatted(date: .long, time: .omitted)) eine Belastung über \(Money(minorUnits: entry.installmentMinor + entry.extraPaymentMinor, currency: loan.currency).formatted) erzeugt."
+            )
+        }
+        .confirmationDialog(
+            match?.source == .generated
+                ? "Automatisch erzeugte Rate entfernen?"
+                : "Zuordnung lösen und Originalbuchung wiederherstellen?",
+            isPresented: $confirmRemoval,
+            titleVisibility: .visible
+        ) {
+            if let match {
+                Button(
+                    match.source == .generated
+                        ? "Splitbuchung entfernen" : "Original wiederherstellen",
+                    role: .destructive
+                ) {
+                    if store.removeLoanPaymentMatch(id: match.id) { dismiss() }
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(
+                match?.source == .generated
+                    ? "Die von FinanzVerwalter erzeugte Buchung wird entfernt."
+                    : "Die automatische Aufteilung wird entfernt und der exakt gespeicherte Zustand vor der Zuordnung wiederhergestellt."
+            )
+        }
+    }
+
+    private var linkedAccountName: String {
+        guard let accountID = loan.linkedAccountID else { return "kein Zahlungskonto" }
+        return store.accountName(accountID)
+    }
+
+    private var unmatchedContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Reale Belastung zuordnen").font(.headline)
+                    Text("Geeignete ungeteilte Buchungen im Zahlungskonto, höchstens 45 Tage entfernt")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(candidates.count) Treffer").foregroundStyle(.secondary)
+            }
+            .padding(14)
+
+            if candidates.isEmpty {
+                ContentUnavailableView(
+                    "Keine geeignete reale Belastung",
+                    systemImage: "link.badge.plus",
+                    description: Text(
+                        "Du kannst die Planrate als neue Splitbuchung anlegen oder später eine Bankbuchung zuordnen."
+                    )
+                )
+                .frame(maxHeight: .infinity)
+            } else {
+                List(candidates) { candidate in
+                    Button { selectedCandidate = candidate } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(candidate.transaction.payee.isEmpty
+                                     ? candidate.transaction.purpose
+                                     : candidate.transaction.payee)
+                                    .fontWeight(.semibold)
+                                Text(
+                                    "\(candidate.transaction.bookingDate.formatted(date: .numeric, time: .omitted)) · \(candidate.transaction.purpose)"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(Money(minorUnits: candidate.transaction.amountMinor,
+                                           currency: candidate.transaction.currency).formatted)
+                                    .monospacedDigit()
+                                Text(candidateSummary(candidate))
+                                    .font(.caption)
+                                    .foregroundStyle(
+                                        candidate.amountDifferenceMinor == 0 ? .green : .orange
+                                    )
+                            }
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Divider()
+            HStack {
+                DatePicker(
+                    "Buchungsdatum", selection: $bookingDate,
+                    displayedComponents: .date
+                )
+                .frame(width: 250)
+                Spacer()
+                Button("Planrate als Splitbuchung buchen", systemImage: "plus.rectangle.on.rectangle") {
+                    confirmGeneratedBooking = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(loan.linkedAccountID == nil)
+            }
+            .padding(14)
+        }
+    }
+
+    private func matchedContent(_ match: LoanPaymentMatch) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(match.source.title, systemImage: "checkmark.seal.fill")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                Spacer()
+                Text("Zugeordnet \(match.matchedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .foregroundStyle(.secondary)
+            }
+            GroupBox("Ist-Zahlung") {
+                HStack(spacing: 20) {
+                    paymentMetric("Gesamt", match.actualPaymentMinor)
+                    paymentMetric("Tilgung", match.principalMinor)
+                    paymentMetric("Zins", match.interestMinor)
+                    paymentMetric("Gebühr", match.feeMinor)
+                    paymentMetric("Sondertilgung", match.extraPaymentMinor)
+                }
+                .padding(.vertical, 8)
+            }
+            if let transaction = matchedTransaction {
+                GroupBox("Buchung") {
+                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
+                        GridRow { Text("Datum").foregroundStyle(.secondary); Text(transaction.bookingDate.formatted(date: .long, time: .omitted)) }
+                        GridRow { Text("Empfänger").foregroundStyle(.secondary); Text(transaction.payee) }
+                        GridRow { Text("Verwendungszweck").foregroundStyle(.secondary); Text(transaction.purpose) }
+                        GridRow { Text("Konto").foregroundStyle(.secondary); Text(store.accountName(transaction.accountID)) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                }
+            }
+            Text(
+                "Zugeordnete Kreditraten sind vor versehentlichem Bearbeiten oder Löschen geschützt. Löse zuerst diesen Abgleich."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Spacer()
+            HStack {
+                Spacer()
+                Button(
+                    match.source == .generated
+                        ? "Erzeugte Splitbuchung entfernen"
+                        : "Zuordnung lösen und Original wiederherstellen",
+                    role: .destructive
+                ) { confirmRemoval = true }
+                .disabled(match.source == .legacy)
+            }
+        }
+        .padding(16)
+    }
+
+    private func paymentMetric(_ title: String, _ value: Int64) -> some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(Money(minorUnits: value, currency: loan.currency).formatted)
+                .font(.headline.monospacedDigit())
+        }
+        .frame(minWidth: 100, alignment: .trailing)
+    }
+
+    private func candidateSummary(_ candidate: LoanPaymentCandidate) -> String {
+        let date = candidate.dayDistance == 0
+            ? "Fälligkeitstag"
+            : "\(abs(candidate.dayDistance)) Tage \(candidate.dayDistance < 0 ? "vorher" : "später")"
+        let amount = candidate.amountDifferenceMinor == 0
+            ? "Betrag passend"
+            : "Δ \(Money(minorUnits: candidate.amountDifferenceMinor, currency: candidate.transaction.currency).formatted)"
+        return "\(amount) · \(date)"
     }
 }
 

@@ -269,6 +269,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var portfolioPositions: [PortfolioPosition] = []
     @Published private(set) var securityTrades: [SecurityTrade] = []
     @Published private(set) var loans: [FinanceLoan] = []
+    @Published private(set) var loanPaymentMatches: [LoanPaymentMatch] = []
     @Published private(set) var propertyAssetPositions: [PropertyAssetPosition] = []
     @Published private(set) var contracts: [FinanceContract] = []
     @Published private(set) var inventoryItems: [InventoryItem] = []
@@ -412,7 +413,8 @@ final class FinanceAppStore: ObservableObject {
             query: query, loans: loans,
             schedulesByLoanID: Dictionary(uniqueKeysWithValues: loans.map {
                 ($0.id, loanSchedule(loanID: $0.id))
-            })
+            }),
+            matches: loanPaymentMatches
         )
     }
 
@@ -2812,6 +2814,69 @@ final class FinanceAppStore: ObservableObject {
         return (try? repository.loanSchedule(loanID: loanID)) ?? []
     }
 
+    func loanPaymentCandidates(
+        loan: FinanceLoan,
+        entry: LoanScheduleEntry
+    ) -> [LoanPaymentCandidate] {
+        LoanPaymentMatchingEngine.candidates(
+            for: entry, loan: loan, transactions: transactions,
+            alreadyMatchedTransactionIDs: Set(loanPaymentMatches.map(\.transactionID))
+        )
+    }
+
+    func postLoanScheduleEntry(
+        loanID: UUID,
+        scheduleEntryID: String,
+        bookingDate: Date? = nil
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.postLoanScheduleEntry(
+                loanID: loanID, scheduleEntryID: scheduleEntryID,
+                bookingDate: bookingDate
+            )
+            try load()
+            statusText = "Kreditrate als Splitbuchung angelegt"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func matchLoanPayment(
+        loanID: UUID,
+        scheduleEntryID: String,
+        transactionID: UUID
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.matchLoanPayment(
+                loanID: loanID, scheduleEntryID: scheduleEntryID,
+                transactionID: transactionID
+            )
+            try load()
+            statusText = "Reale Kreditrate zugeordnet und aufgeteilt"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func removeLoanPaymentMatch(id: UUID) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.removeLoanPaymentMatch(id: id)
+            try load()
+            statusText = "Kreditabgleich sicher gelöst"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func savePropertyAsset(_ value: PropertyAsset) -> Bool {
         guard let repository else { return false }
         do {
@@ -2968,6 +3033,7 @@ final class FinanceAppStore: ObservableObject {
         portfolioPositions = try repository.portfolioPositions()
         securityTrades = try repository.securityTrades()
         loans = try repository.loans()
+        loanPaymentMatches = try repository.loanPaymentMatches()
         propertyAssetPositions = try repository.propertyAssetPositions()
         contracts = try repository.contracts()
         inventoryItems = try repository.inventoryItems()

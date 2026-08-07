@@ -2,7 +2,8 @@
 
 ## Status
 
-Angenommen am 07.08.2026.
+Angenommen am 07.08.2026. Der fehlende Ist-Abgleich wurde später durch
+ADR 0029 abgelöst; die Trennung von Plan- und Ist-Werten bleibt bestehen.
 
 ## Kontext
 
@@ -21,7 +22,7 @@ und tragen sichtbar den Hinweis `Planwerte – kein Ist-Zahlungsabgleich`.
 
 ## Folgen
 
-Der Bericht ist bereits für Planung und Restschuldverläufe nutzbar, ohne eine
-nicht vorhandene Ist-Verknüpfung vorzutäuschen. Automatische Ratensplits,
-Zahlungs-Matching und Szenarien bleiben getrennte, ausdrücklich offene
-Funktionen.
+Diese Entscheidung verhinderte bis Schema 36, dass eine nicht vorhandene
+Ist-Verknüpfung vorgetäuscht wurde. Seit Schema 37 ergänzt ADR 0029 reale,
+reversible Ratensplits und weist Plan und Ist weiterhin getrennt aus;
+Kredit-Szenarien bleiben offen.

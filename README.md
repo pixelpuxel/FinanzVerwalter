@@ -534,15 +534,20 @@ MwSt.-Schlüssel. Ein Drill-down führt zu den vollständigen Buchungs- und
 Splitpositionen; CSV, mehrseitiges PDF und Systemdruck verwenden denselben
 Snapshot.
 
-Der eigenständige `Kredit-, Zins- und Tilgungsbericht` wertet die hinterlegten
-Tilgungspläne als Planwerte aus. Zeitraum, Darlehen, Währungen und inaktive
-Darlehen sind filterbar. Die Übersicht trennt Anfangssaldo, Zahlungen,
-Tilgung, Zinsen, Gebühren, Sondertilgungen und Restschuld; ein Drill-down zeigt
-den vollständigen Ratenplan und den geplanten Restschuldverlauf. Summen werden
-streng je Währung geführt. Deterministisches Semikolon-CSV, mehrseitiges PDF
-und Systemdruck verwenden denselben Snapshot. Der Bericht kennzeichnet
-sichtbar, dass ein Abgleich mit tatsächlich gebuchten Kreditraten noch nicht
-implementiert ist.
+Der eigenständige `Kredit-, Zins- und Tilgungsbericht` verbindet die
+hinterlegten Tilgungspläne mit zugeordneten Ist-Zahlungen. Zeitraum, Darlehen,
+Währungen und inaktive Darlehen sind filterbar. Übersicht und Raten-Drill-down
+zeigen Plan, Ist, Abweichung, Herkunft, Tilgung, Zins, Gebühren,
+Sondertilgungen und Restschuld; die Restschuldlinie bleibt der berechnete
+Planverlauf. Summen werden streng je Währung geführt. Deterministisches
+Semikolon-CSV, mehrseitiges PDF und Systemdruck verwenden denselben Snapshot.
+
+Im Tilgungsplan kann eine vorhandene Belastung des verknüpften Zahlungskontos
+zugeordnet oder eine Planrate als neue Buchung erzeugt werden. Schema 37
+zerlegt sie atomar in Tilgung, Sollzins, Gebühr und Sondertilgung und schützt
+zugeordnete Buchungen vor versehentlicher Änderung. Beim Lösen wird eine
+erzeugte Buchung entfernt oder eine vorhandene Buchung exakt auf ihren zuvor
+gespeicherten Zustand zurückgesetzt.
 
 Die eigenständige `Vertrags- und Inventarübersicht` verbindet die beiden
 Fachakten in einem gemeinsamen, unveränderlichen Snapshot. Vertragstypen,

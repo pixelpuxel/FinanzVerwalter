@@ -121,10 +121,10 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 36 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 37 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 136 XCTest-Fälle: 135 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 138 XCTest-Fälle: 137 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -835,14 +835,28 @@ Für Kredite und Vermögenswerte gilt reproduzierbar:
   `Standardberichte`, zeigt eine breite Darlehensübersicht und für die Auswahl
   den vollständigen Ratenplan sowie eine Restschuldlinie. Verschiedene
   Währungen bleiben in Ansicht und Summen strikt getrennt.
-- CSV, mehrseitiges A4-PDF und direkter Systemdruck werden aus demselben
-  Snapshot erzeugt. Oberfläche und alle Exporte müssen sichtbar
-  `Planwerte – kein Ist-Zahlungsabgleich` ausweisen, solange echte Buchungen
-  noch nicht mit Planraten verknüpft werden. Tests sichern Periodenfilter,
-  Sondertilgung, stabile IDs, Währungstrennung, deterministisches CSV und ein
-  semantisch lesbares mehrseitiges PDF.
-- Noch offen sind die automatische Splitbuchung realer Raten, der
-  Ist-Abgleich, Szenarien und der optionale Debt-Reduction-Planner.
+- Migration 37 erweitert `loan_payment_matches` um Sondertilgung, Herkunft
+  sowie den JSON-Zustand vor und nach der Zuordnung. Fehlt die historische,
+  bis dahin ungenutzte Tabelle in einer frühen Altdatei, wird sie defensiv
+  rekonstruiert. Trigger blockieren Änderungen und Löschungen zugeordneter
+  Buchungen außerhalb des dafür vorgesehenen Workflows.
+- Für eine offene Planzeile bietet das UI negative, gebuchte, ungeteilte und
+  noch nicht verwendete Belastungen des verknüpften Kontos in derselben
+  Währung innerhalb von ±45 Tagen an. Exakte Beträge stehen vor Datumstreffern.
+  Die Zuordnung zerlegt den tatsächlichen Betrag atomar in Sollzins, Gebühr,
+  Tilgung und einen etwaigen Mehrbetrag als Sondertilgung. Unterdeckung von
+  Zins und Gebühr sowie Übertilgung werden abgewiesen.
+- Alternativ erzeugt `Planrate buchen` eine neue Splitbuchung. Jede Zuordnung
+  ist je Transaktion und Planfälligkeit eindeutig. Beim Lösen wird eine
+  generierte Buchung gelöscht oder eine vorhandene Buchung aus dem gespeicherten
+  Original-JSON exakt wiederhergestellt; eine zwischenzeitlich abweichende
+  Buchung wird nicht überschrieben.
+- `LoanReportEngine` nimmt die Zahlungszuordnungen in denselben unveränderlichen
+  Snapshot auf. UI, CSV, mehrseitiges A4-PDF und Systemdruck zeigen Plan, Ist,
+  Abweichung, Herkunft und Anzahl abgeglichener Raten; Währungen bleiben strikt
+  getrennt. Tests sichern zusätzlich reversible Splits, Datenbankschutz,
+  Migration 36→37 und lückenhafte frühe Altdateien.
+- Noch offen sind Kredit-Szenarien und der optionale Debt-Reduction-Planner.
 
 Für die Vertrags- und Inventarübersicht gilt reproduzierbar:
 

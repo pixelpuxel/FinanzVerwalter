@@ -255,6 +255,10 @@ struct LoanReportRow: Identifiable, Equatable, Sendable {
     let extraPaymentMinor: Int64
     let closingBalanceMinor: Int64
     let annualBasisPoints: Int
+    var actualPaymentMinor: Int64? = nil
+    var paymentVarianceMinor: Int64? = nil
+    var matchSource: LoanPaymentMatchSource? = nil
+    var matchTransactionID: UUID? = nil
 }
 
 struct LoanReportSummary: Identifiable, Equatable, Sendable {
@@ -274,6 +278,9 @@ struct LoanReportSummary: Identifiable, Equatable, Sendable {
     let payoffDate: Date?
     let fixedRateUntil: Date?
     let rowIDs: Set<String>
+    var actualPaymentMinor: Int64 = 0
+    var paymentVarianceMinor: Int64 = 0
+    var matchedPaymentCount: Int = 0
 
     var paymentMinor: Int64 { installmentMinor + extraPaymentMinor }
     var borrowingCostMinor: Int64 { interestMinor + feeMinor }
@@ -290,6 +297,9 @@ struct LoanReportCurrencyTotal: Identifiable, Equatable, Sendable {
     let feeMinor: Int64
     let extraPaymentMinor: Int64
     let closingBalanceMinor: Int64
+    var actualPaymentMinor: Int64 = 0
+    var paymentVarianceMinor: Int64 = 0
+    var matchedPaymentCount: Int = 0
 }
 
 struct LoanReportSnapshot: Equatable, Sendable {
@@ -309,7 +319,9 @@ enum LoanReportEngine {
     static func snapshot(
         query: LoanReportQuery,
         loans: [FinanceLoan],
-        schedulesByLoanID: [UUID: [LoanScheduleEntry]]
+        schedulesByLoanID: [UUID: [LoanScheduleEntry]],
+        matches: [LoanPaymentMatch] = [],
+        calendar: Calendar = .current
     ) -> LoanReportSnapshot {
         let start = query.dateFrom.map { date in
             query.dateThrough.map { min(date, $0) } ?? date
@@ -340,8 +352,13 @@ enum LoanReportEngine {
                     && (end.map { entry.dueDate <= $0 } ?? true)
             }
             guard let first = selected.first, let last = selected.last else { continue }
+            let loanMatches = matches.filter { $0.loanID == loan.id }
             let loanRows = selected.map { entry in
-                LoanReportRow(
+                let match = loanMatches.first {
+                    calendar.isDate($0.scheduledDate, inSameDayAs: entry.dueDate)
+                }
+                let planPayment = entry.installmentMinor + entry.extraPaymentMinor
+                return LoanReportRow(
                     id: entry.id, loanID: loan.id, loanName: loan.name,
                     lender: loan.lender, currency: loan.currency.uppercased(),
                     sequence: entry.sequence, dueDate: entry.dueDate,
@@ -352,9 +369,14 @@ enum LoanReportEngine {
                     feeMinor: entry.feeMinor,
                     extraPaymentMinor: entry.extraPaymentMinor,
                     closingBalanceMinor: entry.closingBalanceMinor,
-                    annualBasisPoints: entry.annualBasisPoints
+                    annualBasisPoints: entry.annualBasisPoints,
+                    actualPaymentMinor: match?.actualPaymentMinor,
+                    paymentVarianceMinor: match.map { $0.actualPaymentMinor - planPayment },
+                    matchSource: match?.source,
+                    matchTransactionID: match?.transactionID
                 )
             }
+            let matchedRows = loanRows.filter { $0.actualPaymentMinor != nil }
             rows.append(contentsOf: loanRows)
             summaries.append(
                 LoanReportSummary(
@@ -372,7 +394,10 @@ enum LoanReportEngine {
                         $0.closingBalanceMinor == 0 ? $0.dueDate : nil
                     },
                     fixedRateUntil: loan.fixedRateUntil,
-                    rowIDs: Set(loanRows.map(\.id))
+                    rowIDs: Set(loanRows.map(\.id)),
+                    actualPaymentMinor: matchedRows.compactMap(\.actualPaymentMinor).reduce(0, +),
+                    paymentVarianceMinor: matchedRows.compactMap(\.paymentVarianceMinor).reduce(0, +),
+                    matchedPaymentCount: matchedRows.count
                 )
             )
         }
@@ -386,7 +411,10 @@ enum LoanReportEngine {
                 interestMinor: values.reduce(0) { $0 + $1.interestMinor },
                 feeMinor: values.reduce(0) { $0 + $1.feeMinor },
                 extraPaymentMinor: values.reduce(0) { $0 + $1.extraPaymentMinor },
-                closingBalanceMinor: values.reduce(0) { $0 + $1.closingBalanceMinor }
+                closingBalanceMinor: values.reduce(0) { $0 + $1.closingBalanceMinor },
+                actualPaymentMinor: values.reduce(0) { $0 + $1.actualPaymentMinor },
+                paymentVarianceMinor: values.reduce(0) { $0 + $1.paymentVarianceMinor },
+                matchedPaymentCount: values.reduce(0) { $0 + $1.matchedPaymentCount }
             )
         }.sorted { $0.currency < $1.currency }
         return LoanReportSnapshot(
@@ -1245,47 +1273,57 @@ enum LoanReportCSVExporter {
             ["Zeitraum", metadata.dateLabel],
             ["Filter", metadata.filterSummary],
             ["Erstellt", ISO8601DateFormatter().string(from: metadata.generatedAt)],
-            ["Datenart", "Planwerte; kein Ist-Zahlungsabgleich"],
+            ["Datenart", "Planwerte mit Ist-Zahlungsabgleich"],
             [],
             ["Darlehen", "Kreditgeber", "Ursprung", "Anfangssaldo", "Zahlungen",
-             "Tilgung", "Zins", "Gebühren", "Sondertilgung", "Restschuld",
-             "Schuldenfrei", "Währung", "Raten"]
+             "Ist-Zahlungen", "Abweichung", "Tilgung", "Zins", "Gebühren",
+             "Sondertilgung", "Restschuld", "Schuldenfrei", "Währung",
+             "Abgeglichen", "Raten"]
         ]
         rows.append(contentsOf: snapshot.summaries.map { summary in
             [summary.loanName, summary.lender,
              amount(summary.originalPrincipalMinor, summary.currency),
              amount(summary.openingBalanceMinor, summary.currency),
              amount(summary.paymentMinor, summary.currency),
+             amount(summary.actualPaymentMinor, summary.currency),
+             amount(summary.paymentVarianceMinor, summary.currency),
              amount(summary.principalMinor, summary.currency),
              amount(summary.interestMinor, summary.currency),
              amount(summary.feeMinor, summary.currency),
              amount(summary.extraPaymentMinor, summary.currency),
              amount(summary.closingBalanceMinor, summary.currency),
              summary.payoffDate.map(date) ?? "Ballonrest",
-             summary.currency, String(summary.paymentCount)]
+             summary.currency, String(summary.matchedPaymentCount),
+             String(summary.paymentCount)]
         })
         rows.append([])
         rows.append(["Währungssummen", "", "", "Anfangssaldo", "Zahlungen",
-                     "Tilgung", "Zins", "Gebühren", "Sondertilgung", "Restschuld",
-                     "", "Währung", ""])
+                     "Ist-Zahlungen", "Abweichung", "Tilgung", "Zins", "Gebühren",
+                     "Sondertilgung", "Restschuld", "", "Währung", "Abgeglichen", ""])
         rows.append(contentsOf: snapshot.totals.map { total in
             ["Gesamt", "", "", amount(total.openingBalanceMinor, total.currency),
              amount(total.paymentMinor, total.currency),
+             amount(total.actualPaymentMinor, total.currency),
+             amount(total.paymentVarianceMinor, total.currency),
              amount(total.principalMinor, total.currency),
              amount(total.interestMinor, total.currency),
              amount(total.feeMinor, total.currency),
              amount(total.extraPaymentMinor, total.currency),
-             amount(total.closingBalanceMinor, total.currency), "", total.currency, ""]
+             amount(total.closingBalanceMinor, total.currency), "", total.currency,
+             String(total.matchedPaymentCount), ""]
         })
         rows.append([])
         rows.append(["Tilgungsplan"])
         rows.append(["Darlehen", "Nr.", "Fälligkeit", "Sollzins", "Anfangssaldo",
-                     "Rate", "Tilgung", "Zins", "Gebühr", "Sondertilgung",
-                     "Restschuld", "Währung"])
+                     "Rate", "Ist", "Abweichung", "Zuordnung", "Tilgung", "Zins",
+                     "Gebühr", "Sondertilgung", "Restschuld", "Währung"])
         rows.append(contentsOf: snapshot.rows.map { row in
             [row.loanName, String(row.sequence), date(row.dueDate),
              rate(row.annualBasisPoints), amount(row.openingBalanceMinor, row.currency),
              amount(row.installmentMinor, row.currency),
+             row.actualPaymentMinor.map { amount($0, row.currency) } ?? "",
+             row.paymentVarianceMinor.map { amount($0, row.currency) } ?? "",
+             row.matchSource?.title ?? "Offen",
              amount(row.principalMinor, row.currency),
              amount(row.interestMinor, row.currency), amount(row.feeMinor, row.currency),
              amount(row.extraPaymentMinor, row.currency),
@@ -1592,6 +1630,8 @@ enum ComparisonReportPDFExporter {
             [row.loanName, date(row.dueDate), rate(row.annualBasisPoints),
              money(row.openingBalanceMinor, row.currency),
              money(row.installmentMinor, row.currency),
+             row.actualPaymentMinor.map { money($0, row.currency) } ?? "Offen",
+             row.paymentVarianceMinor.map { money($0, row.currency) } ?? "—",
              money(row.principalMinor, row.currency),
              money(row.interestMinor + row.feeMinor, row.currency),
              money(row.extraPaymentMinor, row.currency),
@@ -1599,6 +1639,8 @@ enum ComparisonReportPDFExporter {
         } + snapshot.totals.map { total in
             ["Gesamt", "", "", money(total.openingBalanceMinor, total.currency),
              money(total.paymentMinor - total.extraPaymentMinor, total.currency),
+             money(total.actualPaymentMinor, total.currency),
+             money(total.paymentVarianceMinor, total.currency),
              money(total.principalMinor, total.currency),
              money(total.interestMinor + total.feeMinor, total.currency),
              money(total.extraPaymentMinor, total.currency),
@@ -1607,13 +1649,14 @@ enum ComparisonReportPDFExporter {
         return try data(
             rows: rows,
             headers: ["Darlehen", "Fälligkeit", "Sollzins", "Anfang", "Rate",
-                      "Tilgung", "Zins+Geb.", "Sondertilg.", "Restschuld", "Währ."],
+                      "Ist", "Abw.", "Tilgung", "Zins+Geb.", "Sondertilg.",
+                      "Restschuld", "Währ."],
             metadata: ComparisonReportExportMetadata(
                 title: metadata.title, currentLabel: metadata.dateLabel,
                 referenceLabel: metadata.filterSummary, generatedAt: metadata.generatedAt
             ),
             orientation: orientation,
-            subtitle: "Planwerte · \(metadata.dateLabel) · \(metadata.filterSummary)"
+            subtitle: "Plan und Ist · \(metadata.dateLabel) · \(metadata.filterSummary)"
         )
     }
 

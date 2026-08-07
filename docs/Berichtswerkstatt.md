@@ -96,13 +96,13 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   Buchungs-Drill-down, deterministisches CSV, mehrseitiges PDF und Systemdruck
   verwenden denselben Snapshot.
 - Der eigenständige Kredit-, Zins- und Tilgungsbericht erzeugt aus den
-  versionierten Zinssätzen, Gebühren und Sondertilgungen einen unveränderlichen
-  Plan-Snapshot. Zeitraum, Darlehen, Währungen und inaktive Darlehen sind
-  filterbar. Übersicht, vollständiger Raten-Drill-down und Restschuldlinie
-  verwenden stabile Planzeilen-IDs. CSV, mehrseitiges PDF und Systemdruck
-  entstehen aus demselben Snapshot und addieren verschiedene Währungen nie.
-  Oberfläche und Exporte kennzeichnen ausdrücklich, dass noch kein
-  Ist-Zahlungsabgleich stattfindet.
+  versionierten Zinssätzen, Gebühren, Sondertilgungen und Zahlungszuordnungen
+  einen unveränderlichen Plan/Ist-Snapshot. Zeitraum, Darlehen, Währungen und
+  inaktive Darlehen sind filterbar. Übersicht, vollständiger Raten-Drill-down
+  und Restschuldlinie verwenden stabile Planzeilen-IDs; Plan, Ist, Abweichung,
+  Zuordnungsquelle und Abgleichszahl sind sichtbar. CSV, mehrseitiges PDF und
+  Systemdruck entstehen aus demselben Snapshot und addieren verschiedene
+  Währungen nie.
 - Der Freistellungsbericht verwendet Personen, institutsweite Einzel- und
   Gemeinschaftsaufträge, Gültigkeit und Jahresnutzung aus Schema 36. Er zeigt
   verteilten, genutzten und verbleibenden Betrag gegen das für das Steuerjahr
@@ -190,9 +190,9 @@ P0:
   Linien-/Flächenzeitreihe und bestehende Exportpipeline umgesetzt)*
 - Umsatzsteuerbericht *(zeilenweise Brutto-/Netto-/Steuerlogik,
   Gutschriften, Drill-down, CSV, PDF und Druck umgesetzt)*
-- Kredit- und Tilgungsbericht *(Planwerte, Zins-/Gebühren-/Sondertilgungsanteile,
-  Restschuldverlauf, Drill-down, CSV, PDF und Druck umgesetzt; Ist-Abgleich
-  noch offen)*
+- Kredit- und Tilgungsbericht *(Plan/Ist, Abweichung,
+  Zins-/Gebühren-/Sondertilgungsanteile, Restschuldverlauf, Drill-down, CSV,
+  PDF und Druck umgesetzt)*
 - Vertrags- und Inventarübersicht *(Aktivstatus, Typ/Kategorie, Volltext,
   30/90/365-Tage-Fristen, Jahreskosten, Werte, Garantie, Zeilen-Drill-down,
   deterministisches CSV, PDF und Druck umgesetzt; Fachmodell derzeit EUR)*
