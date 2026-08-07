@@ -1106,6 +1106,9 @@ struct ReportsView: View {
     @State private var includeExcludedAccounts = false
     @State private var includeTransfers = false
     @State private var expandSplits = true
+    @State private var includeDetailRows = true
+    @State private var includeSubtotals = true
+    @State private var includeGrandTotals = true
     @State private var grouping: ReportGrouping = .category
     @State private var secondaryGrouping: ReportGrouping = .none
     @State private var sort: ReportSort = .amountDescending
@@ -1124,6 +1127,8 @@ struct ReportsView: View {
     @State private var pdfOrientation: ReportPDFOrientation = .landscape
     @State private var pdfDocument = ReportPDFDocument(data: Data())
     @State private var showPDFExporter = false
+    @State private var htmlDocument = ReportHTMLDocument(data: Data())
+    @State private var showHTMLExporter = false
     @State private var constrainedTransactionIDs: Set<UUID>?
     @State private var exactPayee: String?
     @State private var includeForecast = false
@@ -1154,7 +1159,10 @@ struct ReportsView: View {
             sort: sort,
             transactionIDs: constrainedTransactionIDs,
             exactPayee: exactPayee,
-            includeForecast: includeForecast
+            includeForecast: includeForecast,
+            includeDetailRows: includeDetailRows,
+            includeSubtotals: includeSubtotals,
+            includeGrandTotals: includeGrandTotals
         )
     }
 
@@ -1282,6 +1290,9 @@ struct ReportsView: View {
                     Button("CSV exportieren …", systemImage: "tablecells") {
                         prepareCSVExport(snapshot)
                     }
+                    Button("HTML exportieren …", systemImage: "chevron.left.forwardslash.chevron.right") {
+                        prepareHTMLExport(snapshot)
+                    }
                     Menu {
                         Picker("Papierausrichtung", selection: $pdfOrientation) {
                             ForEach(ReportPDFOrientation.allCases) {
@@ -1367,7 +1378,17 @@ struct ReportsView: View {
             Divider()
 
             if grouping == .none {
-                reportFactsTable(snapshot.facts)
+                if includeDetailRows {
+                    reportFactsTable(snapshot.facts)
+                } else {
+                    ContentUnavailableView(
+                        "Detailzeilen ausgeblendet",
+                        systemImage: "list.bullet.rectangle",
+                        description: Text(
+                            "Aktiviere „Buchungsdetails“, um einzelne Buchungen anzuzeigen."
+                        )
+                    )
+                }
             } else {
                 HSplitView {
                     reportGroupsTable(snapshot.groups)
@@ -1398,7 +1419,17 @@ struct ReportsView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
                             Divider()
-                            reportFactsTable(snapshot.facts(inGroupID: selectedReportGroupID))
+                            if includeDetailRows {
+                                reportFactsTable(snapshot.facts(inGroupID: selectedReportGroupID))
+                            } else {
+                                ContentUnavailableView(
+                                    "Detailzeilen ausgeblendet",
+                                    systemImage: "list.bullet.rectangle",
+                                    description: Text(
+                                        "Die Gruppensumme bleibt sichtbar; Buchungsdetails sind deaktiviert."
+                                    )
+                                )
+                            }
                         } else {
                             ContentUnavailableView(
                                 "Gruppe auswählen",
@@ -1415,7 +1446,9 @@ struct ReportsView: View {
             }
 
             Divider()
-            reportTotals(snapshot.totals)
+            if includeGrandTotals {
+                reportTotals(snapshot.totals)
+            }
         }
         .onChange(of: grouping) {
             selectedReportGroupID = nil
@@ -1495,6 +1528,19 @@ struct ReportsView: View {
             switch result {
             case .success:
                 store.statusText = "Druckfertigen Bericht als PDF exportiert"
+            case .failure(let error):
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .fileExporter(
+            isPresented: $showHTMLExporter,
+            document: htmlDocument,
+            contentType: .html,
+            defaultFilename: exportFilename
+        ) { result in
+            switch result {
+            case .success:
+                store.statusText = "Bericht als HTML exportiert"
             case .failure(let error):
                 store.errorMessage = error.localizedDescription
             }
@@ -1634,6 +1680,11 @@ struct ReportsView: View {
         Menu {
             Toggle("Umbuchungen einbeziehen", isOn: $includeTransfers)
             Toggle("Splitzeilen einzeln auswerten", isOn: $expandSplits)
+            Divider()
+            Toggle("Buchungsdetails", isOn: $includeDetailRows)
+            Toggle("Zwischensummen", isOn: $includeSubtotals)
+                .disabled(grouping == .none || secondaryGrouping == .none)
+            Toggle("Gesamtsummen", isOn: $includeGrandTotals)
             Toggle("Ausgeblendete/geschlossene Konten", isOn: $includeHiddenAccounts)
             Toggle(
                 "Von Berichten ausgeschlossene Konten",
@@ -1651,6 +1702,7 @@ struct ReportsView: View {
             TableColumn(reportGroupingTitle) { group in
                 VStack(alignment: .leading, spacing: 1) {
                     Text(group.label)
+                        .font(group.level == .subtotal ? .headline : .body)
                         .lineLimit(2)
                     Text("\(group.bookingCount) Positionen · \(group.currency)")
                         .font(.caption2)
@@ -1806,6 +1858,9 @@ struct ReportsView: View {
             || includeExcludedAccounts
             || includeTransfers
             || !expandSplits
+            || !includeDetailRows
+            || !includeSubtotals
+            || !includeGrandTotals
             || grouping != .category
             || secondaryGrouping != .none
             || sort != .amountDescending
@@ -1831,6 +1886,9 @@ struct ReportsView: View {
         includeExcludedAccounts = false
         includeTransfers = false
         expandSplits = true
+        includeDetailRows = true
+        includeSubtotals = true
+        includeGrandTotals = true
         grouping = .category
         secondaryGrouping = .none
         sort = .amountDescending
@@ -1847,7 +1905,7 @@ struct ReportsView: View {
         let template = SavedReportTemplate(
             id: id,
             name: templateName,
-            definitionVersion: 2,
+            definitionVersion: 3,
             query: query
         )
         if store.saveReportTemplate(template) {
@@ -1908,6 +1966,9 @@ struct ReportsView: View {
         constrainedTransactionIDs = savedQuery.transactionIDs
         exactPayee = savedQuery.exactPayee
         includeForecast = savedQuery.includeForecast == true
+        includeDetailRows = savedQuery.showsDetailRows
+        includeSubtotals = savedQuery.showsSubtotals
+        includeGrandTotals = savedQuery.showsGrandTotals
         selectedReportGroupID = nil
     }
 
@@ -1944,6 +2005,16 @@ struct ReportsView: View {
         } catch {
             store.errorMessage = error.localizedDescription
         }
+    }
+
+    private func prepareHTMLExport(_ snapshot: TransactionReportSnapshot) {
+        htmlDocument = ReportHTMLDocument(
+            data: TransactionReportHTMLExporter.data(
+                snapshot: snapshot,
+                metadata: reportExportMetadata
+            )
+        )
+        showHTMLExporter = true
     }
 
     private func printReport(_ snapshot: TransactionReportSnapshot) {
@@ -1992,7 +2063,10 @@ struct ReportsView: View {
             reportText.isEmpty ? "kein Volltext" : "Volltext: \(reportText)",
             includeTransfers ? "mit Umbuchungen" : "ohne Umbuchungen",
             expandSplits ? "Splitzeilen" : "Gesamtbuchungen",
-            "Gruppierung \(reportGroupingTitle)"
+            "Gruppierung \(reportGroupingTitle)",
+            includeDetailRows ? "mit Buchungsdetails" : "ohne Buchungsdetails",
+            includeSubtotals ? "mit Zwischensummen" : "ohne Zwischensummen",
+            includeGrandTotals ? "mit Gesamtsummen" : "ohne Gesamtsummen"
         ].joined(separator: " · ")
     }
 
@@ -2901,6 +2975,23 @@ private struct ReportCSVDocument: FileDocument {
 
 private struct ReportPDFDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.pdf] }
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct ReportHTMLDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.html] }
     let data: Data
 
     init(data: Data) {

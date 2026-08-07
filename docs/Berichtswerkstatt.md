@@ -1,6 +1,6 @@
 # Berichtswerkstatt
 
-Stand: 31.07.2026
+Stand: 07.08.2026
 
 Dieses Dokument beschreibt den reproduzierbaren Sollzustand der
 FinanzVerwalter-Berichtswerkstatt. Der gegenwärtige Kategoriebericht ist nur
@@ -21,6 +21,12 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   Einnahmen, Ausgaben, Saldo und referenzierte Fakten.
 - Eine optionale zweite, abweichende Gruppierungsdimension bildet stabile
   kombinierte Gruppen für Bildschirm, Drill-down, CSV, PDF und Druck.
+- Bei zweistufiger Gruppierung bildet die Engine nach jeder Primärgruppe eine
+  eigene währungsgetrennte Zwischensumme. Deren Drill-down referenziert exakt
+  die Vereinigung der untergeordneten Fakten.
+- Buchungsdetails, primäre Zwischensummen und Gesamtsummen sind unabhängig
+  schaltbar. Die optionalen Query-Felder bleiben beim Laden alter Vorlagen
+  rückwärtskompatibel und werden ab Definitionsversion 3 gespeichert.
 - Sechs editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
   Kategorie, Empfänger, Buchungsjournal, Cashflow, Kontobewegungen und
   Kategorie/Klasse. Dieselben Definitionen sind deterministisch testbar und
@@ -43,6 +49,9 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   und visuell geprüft.
 - PDF-Export und direkter macOS-Systemdruck verwenden denselben erzeugten
   Datenstrom und dieselbe unveränderliche Momentaufnahme.
+- HTML entsteht bytegenau reproduzierbar aus demselben Snapshot, enthält
+  semantische Tabellen, vollständige Metadaten und Druck-CSS und maskiert alle
+  importierten Texte. Ein SHA-256-Golden-Test sichert den Datenstrom ab.
 - `Kontosalden und Nettovermögen` berechnet je Konto einen historischen
   Tagesabschluss aus Eröffnungssaldo und nicht stornierten Bewegungen seit dem
   Eröffnungsdatum. Konten, Gruppen, Währungen sowie versteckte, geschlossene
@@ -62,8 +71,7 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   mehrseitiges A4-PDF in Hoch-/Querformat und direkten Systemdruck aus
   derselben Momentaufnahme.
 
-Noch offen sind frei konfigurierbare Zwischensummen, weitere Diagramme sowie
-XLSX, HTML und Zwischenablage.
+Noch offen sind weitere Diagramme sowie XLSX und Zwischenablage.
 
 ## Verifizierte Referenzfunktionen
 
@@ -168,7 +176,6 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 
 ## Umsetzungsreihenfolge
 
-1. frei konfigurierbare Zwischensummen
-2. weitere Standardberichte und Diagrammtypen
-3. Zwischenablage
-4. XLSX/HTML sowie Golden-Tests
+1. weitere Standardberichte und Diagrammtypen
+2. Zwischenablage
+3. XLSX samt Golden-Test

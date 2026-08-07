@@ -211,6 +211,19 @@ Konvertierung. Geld wird deterministisch aus Minor-Units als deutsches
 Dezimalformat ohne Binär-Float geschrieben; Felder mit Trennzeichen,
 Anführungszeichen oder Zeilenumbrüchen folgen RFC-4180-Escaping.
 
+Eine Berichtsvorlage ab Definitionsversion 3 speichert zusätzlich die drei
+optionalen Darstellungsfelder `includeDetailRows`, `includeSubtotals` und
+`includeGrandTotals`. Fehlen sie in älterem JSON, gelten alle drei Bereiche
+als sichtbar. Bei einer zweiten Gruppierungsdimension folgen auf die stabil
+sortierten Detailgruppen währungsgetrennte Primär-Zwischensummen. Ihre
+Faktenmenge ist exakt die Vereinigung der untergeordneten Gruppen, sodass der
+Drill-down dieselben Buchungen zeigt. CSV, PDF und
+`TransactionReportHTMLExporter` verwenden ausschließlich den bereits
+berechneten Snapshot und beachten dieselben Sichtbarkeitsschalter. HTML ist
+UTF-8, semantisch, druckoptimiert, vollständig HTML-maskiert und durch einen
+bytegenauen SHA-256-Golden-Test reproduzierbar abgesichert. PDF erzeugt auch
+bei vollständig ausgeblendeten Tabellen ein gültiges Metadatenblatt.
+
 Die gemeinsame Massenorganisation erhält eine Menge Buchungs-UUIDs, einen
 expliziten Schalter samt optionaler Zielkategorie sowie optional eine
 vollständig ersetzende Menge aktiver Klassen/Tags. Prüfe vor jeder Mutation,

@@ -396,6 +396,7 @@ private struct ReportPDFRenderer {
     private enum TableKind {
         case groups
         case facts
+        case totals
     }
 
     let context: CGContext
@@ -443,6 +444,20 @@ private struct ReportPDFRenderer {
     }
 
     mutating func render() {
+        let hasVisibleSection = !snapshot.groups.isEmpty
+            || snapshot.presentation.includeDetailRows
+            || snapshot.presentation.includeGrandTotals
+
+        if !hasVisibleSection {
+            beginPage(
+                section: "Keine sichtbaren Berichtsbereiche",
+                table: .facts,
+                detailedHeader: true
+            )
+            endPage()
+            return
+        }
+
         if !snapshot.groups.isEmpty {
             beginPage(section: "Gruppierte Übersicht", table: .groups, detailedHeader: true)
             for (index, group) in snapshot.groups.enumerated() {
@@ -452,16 +467,32 @@ private struct ReportPDFRenderer {
             endPage()
         }
 
-        beginPage(
-            section: "Buchungen und Splitpositionen",
-            table: .facts,
-            detailedHeader: snapshot.groups.isEmpty
-        )
-        for (index, fact) in snapshot.facts.enumerated() {
-            ensureSpace(22, section: "Buchungen und Splitpositionen", table: .facts)
-            drawFact(fact, striped: index.isMultiple(of: 2))
+        if snapshot.presentation.includeDetailRows {
+            beginPage(
+                section: "Buchungen und Splitpositionen",
+                table: .facts,
+                detailedHeader: snapshot.groups.isEmpty
+            )
+            for (index, fact) in snapshot.facts.enumerated() {
+                ensureSpace(22, section: "Buchungen und Splitpositionen", table: .facts)
+                drawFact(fact, striped: index.isMultiple(of: 2))
+            }
+            endPage()
         }
-        endPage()
+
+        if snapshot.presentation.includeGrandTotals {
+            beginPage(
+                section: "Gesamtsummen",
+                table: .totals,
+                detailedHeader: snapshot.groups.isEmpty
+                    && !snapshot.presentation.includeDetailRows
+            )
+            for (index, total) in snapshot.totals.enumerated() {
+                ensureSpace(26, section: "Gesamtsummen", table: .totals)
+                drawTotal(total, striped: index.isMultiple(of: 2))
+            }
+            endPage()
+        }
     }
 
     private mutating func beginPage(
@@ -596,6 +627,17 @@ private struct ReportPDFRenderer {
                     rightAligned: index == columns.count - 1
                 )
             }
+        case .totals:
+            let columns = totalColumns
+            for (index, title) in [
+                "Währung", "Einnahmen", "Ausgaben", "Saldo"
+            ].enumerated() {
+                drawHeaderCell(
+                    title,
+                    column: columns[index],
+                    rightAligned: index > 0
+                )
+            }
         }
         y += 22
     }
@@ -604,7 +646,7 @@ private struct ReportPDFRenderer {
         _ group: TransactionReportGroup,
         striped: Bool
     ) {
-        if striped {
+        if striped || group.level == .subtotal {
             fillRect(
                 CGRect(
                     x: margin,
@@ -616,7 +658,13 @@ private struct ReportPDFRenderer {
             )
         }
         let columns = groupColumns
-        drawCell(group.label, column: columns[0], height: 30, fontSize: 8.5)
+        drawCell(
+            group.label,
+            column: columns[0],
+            height: 30,
+            fontSize: 8.5,
+            bold: group.level == .subtotal
+        )
         drawCell(
             "\(group.bookingCount)",
             column: columns[1],
@@ -625,21 +673,21 @@ private struct ReportPDFRenderer {
             rightAligned: true
         )
         drawCell(
-            germanAmount(group.incomeMinor),
+            germanAmount(group.incomeMinor, currency: group.currency),
             column: columns[2],
             height: 30,
             fontSize: 8.5,
             rightAligned: true
         )
         drawCell(
-            germanAmount(group.expenseMinor),
+            germanAmount(group.expenseMinor, currency: group.currency),
             column: columns[3],
             height: 30,
             fontSize: 8.5,
             rightAligned: true
         )
         drawCell(
-            germanAmount(group.netMinor),
+            germanAmount(group.netMinor, currency: group.currency),
             column: columns[4],
             height: 30,
             fontSize: 8.5,
@@ -682,13 +730,51 @@ private struct ReportPDFRenderer {
             fontSize: 7.8
         )
         drawCell(
-            "\(germanAmount(fact.amountMinor)) \(fact.currency)",
+            "\(germanAmount(fact.amountMinor, currency: fact.currency)) \(fact.currency)",
             column: columns[6],
             height: 22,
             fontSize: 7.8,
             rightAligned: true
         )
         y += 22
+    }
+
+    private mutating func drawTotal(
+        _ total: TransactionReportCurrencyTotal,
+        striped: Bool
+    ) {
+        if striped {
+            fillRect(
+                CGRect(
+                    x: margin,
+                    y: y,
+                    width: pageSize.width - 2 * margin,
+                    height: 26
+                ),
+                color: stripe
+            )
+        }
+        let columns = totalColumns
+        drawCell(
+            total.currency,
+            column: columns[0],
+            height: 26,
+            fontSize: 9,
+            bold: true
+        )
+        for (index, amount) in [
+            total.incomeMinor, total.expenseMinor, total.netMinor
+        ].enumerated() {
+            drawCell(
+                germanAmount(amount, currency: total.currency),
+                column: columns[index + 1],
+                height: 26,
+                fontSize: 9,
+                rightAligned: true,
+                bold: true
+            )
+        }
+        y += 26
     }
 
     private var groupColumns: [CGRect] {
@@ -717,6 +803,13 @@ private struct ReportPDFRenderer {
         return horizontalColumns(
             widths: [date, account, payee, purpose, category, status, amount]
         )
+    }
+
+    private var totalColumns: [CGRect] {
+        let content = pageSize.width - 2 * margin
+        let currency: CGFloat = 90
+        let money = (content - currency) / 3
+        return horizontalColumns(widths: [currency, money, money, money])
     }
 
     private func horizontalColumns(widths: [CGFloat]) -> [CGRect] {
@@ -760,7 +853,8 @@ private struct ReportPDFRenderer {
         column: CGRect,
         height: CGFloat,
         fontSize: CGFloat,
-        rightAligned: Bool = false
+        rightAligned: Bool = false,
+        bold: Bool = false
     ) {
         if rightAligned {
             drawRightLine(
@@ -769,6 +863,7 @@ private struct ReportPDFRenderer {
                 top: y + (height - fontSize) / 2 - 1,
                 width: column.width - 10,
                 fontSize: fontSize,
+                bold: bold,
                 color: dark
             )
         } else {
@@ -778,6 +873,7 @@ private struct ReportPDFRenderer {
                 top: y + (height - fontSize) / 2 - 1,
                 width: column.width - 10,
                 fontSize: fontSize,
+                bold: bold,
                 color: dark
             )
         }
@@ -912,20 +1008,8 @@ private struct ReportPDFRenderer {
         context.strokePath()
     }
 
-    private func germanAmount(_ minorUnits: Int64) -> String {
-        let magnitude = minorUnits.magnitude
-        let units = String(magnitude / 100)
-        let grouped = stride(from: units.count, to: 0, by: -3)
-            .reversed()
-            .reduce(into: "") { result, index in
-                let end = units.index(units.startIndex, offsetBy: index)
-                let startOffset = max(0, index - 3)
-                let start = units.index(units.startIndex, offsetBy: startOffset)
-                if !result.isEmpty { result += "." }
-                result += String(units[start..<end])
-            }
-        let cents = magnitude % 100
-        return "\(minorUnits < 0 ? "-" : "")\(grouped),\(cents < 10 ? "0" : "")\(cents)"
+    private func germanAmount(_ minorUnits: Int64, currency: String) -> String {
+        Money(minorUnits: minorUnits, currency: currency).editingString
     }
 
     private func isoDate(_ date: Date) -> String {

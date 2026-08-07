@@ -2102,3 +2102,49 @@ Rechtsberatung.
   geprüften Zwischenstand und exakt 13.334.173 Tokens veröffentlicht. Die
   Nachricht nennt transparent, dass wegen der macOS-Sperre kein neuer
   Screenshot angehängt werden konnte.
+
+## 2026-08-07 – Berichtssummen und reproduzierbarer HTML-Export
+
+- Die buchungsbasierte Berichtswerkstatt kann Buchungsdetails, primäre
+  Zwischensummen und währungsgetrennte Gesamtsummen unabhängig ein- und
+  ausblenden. Die Schalter werden ab Vorlagendefinition 3 gespeichert; ältere
+  JSON-Vorlagen ohne diese optionalen Felder bleiben mit allen Bereichen
+  sichtbar.
+- Bei einer zweiten Gruppierungsdimension folgt auf jede Primärgruppe eine
+  eigene Zwischensumme. Sie enthält exakt die Vereinigung der Fakten-IDs ihrer
+  Detailgruppen, sodass auch der Drill-down keine Buchung verliert oder
+  doppelt zählt.
+- CSV und PDF beachten dieselben Sichtbarkeitsschalter und geben Gruppen- und
+  Gesamtsummen aus demselben unveränderlichen Snapshot aus. Geldbeträge
+  verwenden die jeweilige ISO-Nachkommastellenzahl. Ein vollständig
+  ausgeblendeter PDF-Bericht bleibt als gültiges Metadatenblatt druckbar.
+- Der neue UTF-8-HTML-Export enthält Metadaten, semantische Tabellen,
+  Druck-CSS, Gruppen, Zwischensummen, Buchungsdetails und Gesamtsummen gemäß
+  derselben Momentaufnahme. Alle importierten Texte werden HTML-maskiert; der
+  vollständige Referenzdatenstrom ist mit SHA-256
+  `eade30d54725fe90fe4a00620ecac5a425e268c4900740767f69b8564f6ff8c4`
+  als Golden-Test fixiert.
+- Der vollständige Result-Bundle liegt unter
+  `/tmp/FinanzVerwalter-Report-full-1.xcresult`: 99 Tests, 98 bestanden, der
+  private opt-in-QIF-Test ohne Pfad planmäßig übersprungen, 0 Fehler und 0
+  erwartete Fehler. Die fünf gezielten CSV-, HTML-, PDF-, Gruppierungs- und
+  Vorlagentests waren zuvor ebenfalls vollständig grün.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-ReportPresentation-Release` ist streng
+  signaturgeprüft. Sein ausführbarer Code hat SHA-256
+  `6bf5f3e3e871613136c6dd62c61ce6afff3d0eb176532a1fafdd518085c81245`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert. Die Vorgänger liegen
+  reversibel unter
+  `build/FinanzVerwalter-vor-berichtssummen-20260807-112339.app` und
+  `build/FinanzVerwalter-user-vor-berichtssummen-20260807-112339.app`; der
+  Schreibtisch-Link zeigt weiterhin auf die Systeminstallation.
+- Die neue App läuft als Prozess 51044. Nach dem echten Start blieb die
+  Produktivdatei bytegleich bei SHA-256
+  `e76a7733b0729bebcd85437f0bad425ecc67326e7e7df738161da18f9701e746`,
+  Schema 30 und Integrität `ok`; sie enthält unverändert 97 Konten, 2.170
+  Buchungen und 782 Kategorien.
+- Die macOS-Sitzung war bei der UI-Prüfung weiterhin gesperrt und konnte nicht
+  automatisch entsperrt werden. Deshalb wurde kein Screenshot vorgetäuscht.
+  Der dokumentierte Tokenstand vor der Veröffentlichung beträgt exakt
+  13.577.274 Tokens.

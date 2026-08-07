@@ -161,6 +161,13 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var transactionIDs: Set<UUID>? = nil
     var exactPayee: String? = nil
     var includeForecast: Bool? = nil
+    var includeDetailRows: Bool? = nil
+    var includeSubtotals: Bool? = nil
+    var includeGrandTotals: Bool? = nil
+
+    var showsDetailRows: Bool { includeDetailRows ?? true }
+    var showsSubtotals: Bool { includeSubtotals ?? true }
+    var showsGrandTotals: Bool { includeGrandTotals ?? true }
 }
 
 struct SavedReportTemplate: Identifiable, Equatable, Sendable {
@@ -199,8 +206,24 @@ struct TransactionReportGroup: Identifiable, Hashable, Sendable {
     let expenseMinor: Int64
     let netMinor: Int64
     let factIDs: Set<String>
+    var primaryLabel: String = ""
+    var secondaryLabel: String = ""
+    var level: ReportSummaryLevel = .detail
 
     var bookingCount: Int { factIDs.count }
+}
+
+enum ReportSummaryLevel: Hashable, Sendable {
+    case detail
+    case subtotal
+}
+
+struct TransactionReportPresentation: Equatable, Sendable {
+    var includeDetailRows = true
+    var includeSubtotals = true
+    var includeGrandTotals = true
+
+    static let all = TransactionReportPresentation()
 }
 
 struct TransactionReportCurrencyTotal: Identifiable, Hashable, Sendable {
@@ -215,6 +238,7 @@ struct TransactionReportSnapshot: Equatable, Sendable {
     let facts: [TransactionReportFact]
     let groups: [TransactionReportGroup]
     let totals: [TransactionReportCurrencyTotal]
+    var presentation: TransactionReportPresentation = .all
 
     func facts(inGroupID id: String?) -> [TransactionReportFact] {
         guard let id, let group = groups.first(where: { $0.id == id }) else {
@@ -301,10 +325,20 @@ enum TransactionReportEngine {
             facts: facts,
             grouping: query.grouping,
             secondaryGrouping: query.secondaryGrouping,
-            sort: query.sort
+            sort: query.sort,
+            includeSubtotals: query.showsSubtotals
         )
         let totals = makeTotals(facts)
-        return TransactionReportSnapshot(facts: facts, groups: groups, totals: totals)
+        return TransactionReportSnapshot(
+            facts: facts,
+            groups: groups,
+            totals: totals,
+            presentation: TransactionReportPresentation(
+                includeDetailRows: query.showsDetailRows,
+                includeSubtotals: query.showsSubtotals,
+                includeGrandTotals: query.showsGrandTotals
+            )
+        )
     }
 
     private static func normalized(_ value: String) -> String {
@@ -397,7 +431,8 @@ enum TransactionReportEngine {
         facts: [TransactionReportFact],
         grouping: ReportGrouping,
         secondaryGrouping: ReportGrouping?,
-        sort: ReportSort
+        sort: ReportSort,
+        includeSubtotals: Bool
     ) -> [TransactionReportGroup] {
         guard grouping != .none else { return [] }
         let secondary: ReportGrouping = secondaryGrouping == grouping
@@ -410,7 +445,7 @@ enum TransactionReportEngine {
                 : groupLabel(for: fact, grouping: secondary)
             return "\(primaryLabel)\u{1E}\(secondaryLabel)\u{1F}\(fact.currency)"
         }
-        let result = grouped.map { key, values in
+        let detailGroups = grouped.map { key, values in
             let parts = key.components(separatedBy: "\u{1F}")
             let labels = (parts.first ?? "").components(separatedBy: "\u{1E}")
             let primaryLabel = labels.first ?? "Ohne Zuordnung"
@@ -428,10 +463,61 @@ enum TransactionReportEngine {
                 incomeMinor: income,
                 expenseMinor: expense,
                 netMinor: income - expense,
-                factIDs: Set(values.map(\.id))
+                factIDs: Set(values.map(\.id)),
+                primaryLabel: primaryLabel,
+                secondaryLabel: secondaryLabel,
+                level: .detail
             )
         }
-        return result.sorted { lhs, rhs in
+        let sortedDetails = sortGroups(detailGroups, by: sort)
+        guard includeSubtotals, secondary != .none else {
+            return sortedDetails
+        }
+
+        let primaryGroups = Dictionary(grouping: facts) { fact in
+            "\(groupLabel(for: fact, grouping: grouping))\u{1F}\(fact.currency)"
+        }.map { key, values in
+            let parts = key.components(separatedBy: "\u{1F}")
+            let primaryLabel = parts.first ?? "Ohne Zuordnung"
+            let income = values.filter { $0.amountMinor > 0 }
+                .reduce(Int64.zero) { $0 + $1.amountMinor }
+            let expense = values.filter { $0.amountMinor < 0 }
+                .reduce(Int64.zero) { $0 - $1.amountMinor }
+            return TransactionReportGroup(
+                id: "subtotal\u{1D}\(key)",
+                label: "Summe \(primaryLabel)",
+                currency: parts.count > 1 ? parts[1] : "EUR",
+                incomeMinor: income,
+                expenseMinor: expense,
+                netMinor: income - expense,
+                factIDs: Set(values.map(\.id)),
+                primaryLabel: primaryLabel,
+                secondaryLabel: "",
+                level: .subtotal
+            )
+        }
+
+        var result: [TransactionReportGroup] = []
+        for subtotal in sortGroups(primaryGroups, by: sort) {
+            result.append(
+                contentsOf: sortGroups(
+                    detailGroups.filter {
+                        $0.primaryLabel == subtotal.primaryLabel
+                            && $0.currency == subtotal.currency
+                    },
+                    by: sort
+                )
+            )
+            result.append(subtotal)
+        }
+        return result
+    }
+
+    private static func sortGroups(
+        _ groups: [TransactionReportGroup],
+        by sort: ReportSort
+    ) -> [TransactionReportGroup] {
+        groups.sorted { lhs, rhs in
             switch sort {
             case .amountDescending:
                 return absoluteNet(lhs) == absoluteNet(rhs)
@@ -639,28 +725,66 @@ enum TransactionReportCSVExporter {
             ["Zeitraum", metadata.dateLabel],
             ["Filter", metadata.filterSummary],
             ["Erstellt", isoDateTime(metadata.generatedAt)],
-            ["Basiswährung", metadata.baseCurrency],
-            [],
-            [
+            ["Basiswährung", metadata.baseCurrency]
+        ]
+
+        if !snapshot.groups.isEmpty {
+            rows.append([])
+            rows.append(["Gruppenübersicht"])
+            rows.append([
+                "Typ", "Gruppe", "Anzahl", "Einnahmen", "Ausgaben",
+                "Saldo", "Währung"
+            ])
+            rows.append(contentsOf: snapshot.groups.map { group in
+                [
+                    group.level == .subtotal ? "Zwischensumme" : "Gruppe",
+                    group.label,
+                    String(group.bookingCount),
+                    germanAmount(group.incomeMinor, currency: group.currency),
+                    germanAmount(group.expenseMinor, currency: group.currency),
+                    germanAmount(group.netMinor, currency: group.currency),
+                    group.currency
+                ]
+            })
+        }
+
+        if snapshot.presentation.includeDetailRows {
+            rows.append([])
+            rows.append(["Buchungen und Splitpositionen"])
+            rows.append([
                 "Datum", "Konto", "Empfänger", "Verwendungszweck", "Kategorie",
                 "Status", "Betrag", "Währung", "Split"
-            ]
-        ]
-        rows.append(
-            contentsOf: snapshot.facts.map { fact in
+            ])
+            rows.append(
+                contentsOf: snapshot.facts.map { fact in
+                    [
+                        isoDate(fact.bookingDate),
+                        fact.accountName,
+                        fact.payee,
+                        fact.purpose,
+                        fact.categoryPath,
+                        fact.status.title,
+                        germanAmount(fact.amountMinor, currency: fact.currency),
+                        fact.currency,
+                        fact.splitID == nil ? "Nein" : "Ja"
+                    ]
+                }
+            )
+        }
+
+        if snapshot.presentation.includeGrandTotals {
+            rows.append([])
+            rows.append(["Gesamtsummen"])
+            rows.append(["Währung", "Einnahmen", "Ausgaben", "Saldo"])
+            rows.append(contentsOf: snapshot.totals.map { total in
                 [
-                    isoDate(fact.bookingDate),
-                    fact.accountName,
-                    fact.payee,
-                    fact.purpose,
-                    fact.categoryPath,
-                    fact.status.title,
-                    germanAmount(fact.amountMinor),
-                    fact.currency,
-                    fact.splitID == nil ? "Nein" : "Ja"
+                    total.currency,
+                    germanAmount(total.incomeMinor, currency: total.currency),
+                    germanAmount(total.expenseMinor, currency: total.currency),
+                    germanAmount(total.netMinor, currency: total.currency)
                 ]
-            }
-        )
+            })
+        }
         let text = rows.map { row in
             row.map { escape($0, delimiter: delimiter) }.joined(separator: delimiter)
         }.joined(separator: "\r\n") + "\r\n"
@@ -688,11 +812,20 @@ enum TransactionReportCSVExporter {
         return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 
-    private static func germanAmount(_ minorUnits: Int64) -> String {
+    fileprivate static func germanAmount(
+        _ minorUnits: Int64,
+        currency: String
+    ) -> String {
+        let digits = Money.fractionDigits(for: currency)
+        let factor = UInt64(Money.minorUnitFactor(for: currency))
         let magnitude = minorUnits.magnitude
-        let units = magnitude / 100
-        let cents = magnitude % 100
-        return "\(minorUnits < 0 ? "-" : "")\(units),\(cents < 10 ? "0" : "")\(cents)"
+        let units = magnitude / factor
+        guard digits > 0 else {
+            return "\(minorUnits < 0 ? "-" : "")\(units)"
+        }
+        let fraction = String(magnitude % factor)
+            .leftPadded(to: digits, with: "0")
+        return "\(minorUnits < 0 ? "-" : "")\(units),\(fraction)"
     }
 
     private static func isoDate(_ date: Date) -> String {
@@ -711,6 +844,151 @@ enum TransactionReportCSVExporter {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
+}
+
+enum TransactionReportHTMLExporter {
+    static func data(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata
+    ) -> Data {
+        Data(html(snapshot: snapshot, metadata: metadata).utf8)
+    }
+
+    static func html(
+        snapshot: TransactionReportSnapshot,
+        metadata: ReportExportMetadata
+    ) -> String {
+        var sections: [String] = []
+        if !snapshot.groups.isEmpty {
+            let rows = snapshot.groups.map { group in
+                let cssClass = group.level == .subtotal ? " class=\"subtotal\"" : ""
+                return "<tr\(cssClass)><td>\(escape(group.label))</td>"
+                    + "<td class=\"number\">\(group.bookingCount)</td>"
+                    + amountCells(
+                        [group.incomeMinor, group.expenseMinor, group.netMinor],
+                        currency: group.currency
+                    )
+                    + "<td>\(escape(group.currency))</td></tr>"
+            }.joined(separator: "\n")
+            sections.append(
+                """
+                <section>
+                <h2>Gruppenübersicht</h2>
+                <table><thead><tr><th>Gruppe</th><th class="number">Anzahl</th><th class="number">Einnahmen</th><th class="number">Ausgaben</th><th class="number">Saldo</th><th>Währung</th></tr></thead>
+                <tbody>
+                \(rows)
+                </tbody></table>
+                </section>
+                """
+            )
+        }
+
+        if snapshot.presentation.includeDetailRows {
+            let rows = snapshot.facts.map { fact in
+                "<tr><td><time datetime=\"\(isoDate(fact.bookingDate))\">\(isoDate(fact.bookingDate))</time></td>"
+                    + "<td>\(escape(fact.accountName))</td>"
+                    + "<td>\(escape(fact.payee))</td>"
+                    + "<td>\(escape(fact.purpose))</td>"
+                    + "<td>\(escape(fact.categoryPath))</td>"
+                    + "<td>\(escape(fact.status.title + (fact.splitID == nil ? "" : " · Split")))</td>"
+                    + amountCells([fact.amountMinor], currency: fact.currency)
+                    + "<td>\(escape(fact.currency))</td></tr>"
+            }.joined(separator: "\n")
+            sections.append(
+                """
+                <section>
+                <h2>Buchungen und Splitpositionen</h2>
+                <table><thead><tr><th>Datum</th><th>Konto</th><th>Empfänger</th><th>Verwendungszweck</th><th>Kategorie</th><th>Status</th><th class="number">Betrag</th><th>Währung</th></tr></thead>
+                <tbody>
+                \(rows)
+                </tbody></table>
+                </section>
+                """
+            )
+        }
+
+        if snapshot.presentation.includeGrandTotals {
+            let rows = snapshot.totals.map { total in
+                "<tr class=\"grand-total\"><td>\(escape(total.currency))</td>"
+                    + amountCells(
+                        [total.incomeMinor, total.expenseMinor, total.netMinor],
+                        currency: total.currency
+                    )
+                    + "</tr>"
+            }.joined(separator: "\n")
+            sections.append(
+                """
+                <section>
+                <h2>Gesamtsummen</h2>
+                <table class="totals"><thead><tr><th>Währung</th><th class="number">Einnahmen</th><th class="number">Ausgaben</th><th class="number">Saldo</th></tr></thead>
+                <tbody>
+                \(rows)
+                </tbody></table>
+                </section>
+                """
+            )
+        }
+
+        return """
+        <!doctype html>
+        <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>\(escape(metadata.title))</title>
+        <style>
+        :root{color-scheme:light dark;--accent:#146136;--line:#cfd8d2;--stripe:#f4f7f5;--subtotal:#e6f2eb}*{box-sizing:border-box}body{font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:32px;color:#17211b;background:#fff}h1{color:var(--accent);margin:0 0 6px}h2{font-size:17px;margin:28px 0 8px}.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:12px 0 24px}.meta dt{font-weight:600}.meta dd{margin:0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{background:var(--accent);color:#fff}.number{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}tbody tr:nth-child(even){background:var(--stripe)}tr.subtotal td{background:var(--subtotal);font-weight:700;border-top:2px solid var(--accent)}tr.grand-total td{font-weight:700}footer{margin-top:28px;color:#536158;font-size:11px}@media print{body{margin:12mm;color:#000}section{break-inside:auto}thead{display:table-header-group}tr{break-inside:avoid}:root{color-scheme:light}}
+        </style></head><body>
+        <header><h1>\(escape(metadata.title))</h1><div>\(escape(metadata.dateLabel))</div></header>
+        <dl class="meta"><dt>Filter</dt><dd>\(escape(metadata.filterSummary))</dd><dt>Erstellt</dt><dd><time datetime="\(isoDateTime(metadata.generatedAt))">\(isoDateTime(metadata.generatedAt))</time></dd><dt>Basiswährung</dt><dd>\(escape(metadata.baseCurrency))</dd></dl>
+        \(sections.joined(separator: "\n"))
+        <footer>Erstellt mit FinanzVerwalter</footer>
+        </body></html>
+        """ + "\n"
+    }
+
+    private static func amountCells(
+        _ values: [Int64],
+        currency: String
+    ) -> String {
+        values.map {
+            "<td class=\"number\">"
+                + TransactionReportCSVExporter.germanAmount($0, currency: currency)
+                + "</td>"
+        }.joined()
+    }
+
+    private static func escape(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+    private static func isoDate(_ date: Date) -> String {
+        dateFormatter.string(from: date)
+    }
+
+    private static func isoDateTime(_ date: Date) -> String {
+        isoDateTimeFormatter.string(from: date)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let isoDateTimeFormatter = ISO8601DateFormatter()
+}
+
+private extension String {
+    func leftPadded(to length: Int, with character: Character) -> String {
+        guard count < length else { return self }
+        return String(repeating: String(character), count: length - count) + self
+    }
 }
 
 private protocol HierarchyNamedValue {

@@ -2,6 +2,7 @@ import XCTest
 import SQLite3
 import PDFKit
 import AppKit
+import CryptoKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
 @testable import FinanzVerwalter
@@ -4774,6 +4775,9 @@ final class FinanzVerwalterTests: XCTestCase {
             grouping: .account,
             sort: .dateAscending
         )
+        query.includeDetailRows = false
+        query.includeSubtotals = false
+        query.includeGrandTotals = false
         let allTransactions = [normal, hiddenValue, transfer, cancelled]
         let base = TransactionReportEngine.snapshot(
             query: query,
@@ -4909,21 +4913,43 @@ final class FinanzVerwalterTests: XCTestCase {
             accounts: [giro, card], categories: [housing, food], tags: []
         )
         XCTAssertEqual(
-            Set(snapshot.groups.map(\.label)),
+            Set(snapshot.groups.filter { $0.level == .detail }.map(\.label)),
             ["Wohnen › Giro", "Lebensmittel › Giro", "Wohnen › Karte"]
         )
-        XCTAssertEqual(snapshot.groups.reduce(0) { $0 + $1.bookingCount }, 3)
+        XCTAssertEqual(
+            Set(snapshot.groups.filter { $0.level == .subtotal }.map(\.label)),
+            ["Summe Lebensmittel", "Summe Wohnen"]
+        )
+        XCTAssertEqual(
+            snapshot.groups.filter { $0.level == .detail }
+                .reduce(0) { $0 + $1.bookingCount },
+            3
+        )
+        let housingSubtotal = try XCTUnwrap(
+            snapshot.groups.first { $0.label == "Summe Wohnen" }
+        )
+        XCTAssertEqual(housingSubtotal.expenseMinor, 400)
+        XCTAssertEqual(
+            Set(snapshot.facts(inGroupID: housingSubtotal.id).map(\.accountName)),
+            ["Giro", "Karte"]
+        )
 
         let currentData = try JSONEncoder().encode(TransactionReportQuery())
         var legacyObject = try XCTUnwrap(
             JSONSerialization.jsonObject(with: currentData) as? [String: Any]
         )
         legacyObject.removeValue(forKey: "secondaryGrouping")
+        legacyObject.removeValue(forKey: "includeDetailRows")
+        legacyObject.removeValue(forKey: "includeSubtotals")
+        legacyObject.removeValue(forKey: "includeGrandTotals")
         let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
         let decoded = try JSONDecoder().decode(
             TransactionReportQuery.self, from: legacyData
         )
         XCTAssertNil(decoded.secondaryGrouping)
+        XCTAssertTrue(decoded.showsDetailRows)
+        XCTAssertTrue(decoded.showsSubtotals)
+        XCTAssertTrue(decoded.showsGrandTotals)
     }
 
     func testTransactionReportStandardPresetsAreDeterministicAndDistinct() throws {
@@ -5628,11 +5654,105 @@ final class FinanzVerwalterTests: XCTestCase {
             "Erstellt;1970-01-01T00:00:00Z",
             "Basiswährung;EUR",
             "",
+            "Buchungen und Splitpositionen",
             "Datum;Konto;Empfänger;Verwendungszweck;Kategorie;Status;Betrag;Währung;Split",
             "1970-01-01;\"Giro;Privat\";\"Händler \"\"Nord\"\"\";"
-                + "\"Zeile 1\nZeile 2\";Haushalt › Lebensmittel;Gebucht;-1234,56;EUR;Ja"
+                + "\"Zeile 1\nZeile 2\";Haushalt › Lebensmittel;Gebucht;-1234,56;EUR;Ja",
+            "",
+            "Gesamtsummen",
+            "Währung;Einnahmen;Ausgaben;Saldo",
+            "EUR;0,00;1234,56;-1234,56"
         ].joined(separator: "\r\n") + "\r\n"
         XCTAssertEqual(text, expected)
+    }
+
+    func testReportHTMLExportIsDeterministicEscapedAndPresentationAware() throws {
+        let fact = TransactionReportFact(
+            id: "html-fact",
+            transactionID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            splitID: nil,
+            bookingDate: Date(timeIntervalSince1970: 0),
+            accountID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            accountName: "Giro <Privat>",
+            payee: "Händler & Sohn",
+            payeeID: nil,
+            purpose: "</script><script>alert(\"x\")</script>",
+            detail: "",
+            categoryID: nil,
+            categoryPath: "Wohnen › Miete",
+            tagIDs: [],
+            tagPaths: [],
+            status: .booked,
+            amountMinor: -123_456,
+            currency: "EUR",
+            isTransfer: false
+        )
+        let subtotal = TransactionReportGroup(
+            id: "subtotal",
+            label: "Summe Wohnen & Haus",
+            currency: "EUR",
+            incomeMinor: 0,
+            expenseMinor: 123_456,
+            netMinor: -123_456,
+            factIDs: [fact.id],
+            primaryLabel: "Wohnen & Haus",
+            secondaryLabel: "",
+            level: .subtotal
+        )
+        let snapshot = TransactionReportSnapshot(
+            facts: [fact],
+            groups: [subtotal],
+            totals: [
+                TransactionReportCurrencyTotal(
+                    currency: "EUR",
+                    incomeMinor: 0,
+                    expenseMinor: 123_456,
+                    netMinor: -123_456
+                )
+            ]
+        )
+        let metadata = ReportExportMetadata(
+            title: "Miete <2025>",
+            dateLabel: "Gesamter Zeitraum",
+            filterSummary: "Empfänger & Kategorie",
+            baseCurrency: "EUR",
+            generatedAt: Date(timeIntervalSince1970: 0)
+        )
+        let data = TransactionReportHTMLExporter.data(
+            snapshot: snapshot,
+            metadata: metadata
+        )
+        let html = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(html.hasPrefix("<!doctype html>"))
+        XCTAssertTrue(html.contains("Miete &lt;2025&gt;"))
+        XCTAssertTrue(html.contains("Giro &lt;Privat&gt;"))
+        XCTAssertTrue(html.contains("Händler &amp; Sohn"))
+        XCTAssertTrue(html.contains("&lt;/script&gt;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"))
+        XCTAssertFalse(html.contains("<script>alert"))
+        XCTAssertTrue(html.contains("class=\"subtotal\""))
+        XCTAssertTrue(html.contains("Gesamtsummen"))
+        XCTAssertTrue(html.contains("1234,56"))
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        XCTAssertEqual(
+            digest,
+            "eade30d54725fe90fe4a00620ecac5a425e268c4900740767f69b8564f6ff8c4"
+        )
+
+        var summaryOnly = snapshot
+        summaryOnly.presentation = TransactionReportPresentation(
+            includeDetailRows: false,
+            includeSubtotals: true,
+            includeGrandTotals: false
+        )
+        let summaryHTML = TransactionReportHTMLExporter.html(
+            snapshot: summaryOnly,
+            metadata: metadata
+        )
+        XCTAssertFalse(summaryHTML.contains("Buchungen und Splitpositionen"))
+        XCTAssertFalse(summaryHTML.contains("Gesamtsummen"))
+        XCTAssertTrue(summaryHTML.contains("Gruppenübersicht"))
     }
 
     func testReportPDFExportCreatesReadableMultipagePrintLayout() throws {

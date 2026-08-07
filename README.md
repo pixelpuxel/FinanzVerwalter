@@ -373,9 +373,11 @@ Kategorie, Empfänger, Konto oder Klasse/Tag; optional teilt eine zweite,
 abweichende Dimension jede Primärgruppe weiter auf. Kombinierte Bezeichnungen
 wie `Kategorie › Konto` bleiben in Tabelle, Drill-down, CSV, PDF und Druck
 identisch. Jede Gruppe besitzt einen Drill-down bis zu ihren Buchungen und
-Splitzeilen. Währungen werden niemals
-unbemerkt addiert. Filter, Gruppierung und Sortierung lassen sich als
-versionierte Vorlage speichern. Das Menü `Standardberichte` setzt sechs
+Splitzeilen. Währungen werden niemals unbemerkt addiert. Filter, Gruppierung
+und Sortierung lassen sich als versionierte Vorlage speichern.
+Buchungsdetails, primäre Zwischensummen und währungsgetrennte Gesamtsummen
+sind unabhängig ein- und ausblendbar; diese Darstellungseinstellungen werden
+ebenfalls in Vorlagen gespeichert. Das Menü `Standardberichte` setzt sechs
 sofort nutzbare, weiterhin vollständig editierbare Abfragen für
 Einnahmen/Ausgaben nach Kategorie oder Empfänger, Buchungsbericht, Cashflow,
 Kontobewegungen sowie Kategorie/Klasse auf. Sie beginnen im aktuellen
@@ -386,7 +388,9 @@ deutsches Zahlenformat. Druckfertige PDF-Berichte entstehen wahlweise als
 A4-Hoch- oder Querformat mit Titel, Zeitraum, Filterbeschreibung,
 Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen. Dieselbe aktuelle
 Momentaufnahme kann entweder als PDF gespeichert oder direkt über den
-macOS-Systemdruckdialog ausgegeben werden.
+macOS-Systemdruckdialog ausgegeben werden. Ein druckoptimierter,
+deterministischer HTML-Export enthält dieselben Metadaten, Gruppen,
+Zwischen-/Gesamtsummen und optionalen Buchungsdetails wie die Oberfläche.
 
 Der Standardbericht `Kontosalden und Nettovermögen` besitzt eine eigene
 Stichtagsberechnung: Eröffnungssaldo und alle nicht stornierten Buchungen bis
