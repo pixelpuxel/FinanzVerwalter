@@ -119,6 +119,350 @@ enum RegisterAmountPresentation {
     }
 }
 
+struct RegisterSearchQuery: Equatable, Sendable {
+    let tokens: [String]
+
+    init(_ text: String) {
+        tokens = RegisterSearchDocument.normalizedTokens(text).sorted {
+            if $0.count != $1.count { return $0.count > $1.count }
+            return $0 < $1
+        }
+    }
+
+    var isEmpty: Bool { tokens.isEmpty }
+}
+
+struct RegisterSearchDocument: Equatable, Sendable {
+    let normalizedText: String
+
+    init(fields: [String]) {
+        normalizedText = Self.normalizedTokens(fields.joined(separator: " "))
+            .joined(separator: " ")
+    }
+
+    func matches(_ query: RegisterSearchQuery) -> Bool {
+        query.tokens.allSatisfy(normalizedText.contains)
+    }
+
+    static func normalizedTokens(_ text: String) -> [String] {
+        text.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "de_DE")
+        )
+        .lowercased(with: Locale(identifier: "de_DE"))
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { !$0.isEmpty }
+    }
+}
+
+struct RegisterSearchIndex: Equatable, Sendable {
+    let documents: [UUID: RegisterSearchDocument]
+    private let transactionIDsByFragment: [String: Set<UUID>]
+
+    static let empty = RegisterSearchIndex(documents: [:])
+
+    init(documents: [UUID: RegisterSearchDocument]) {
+        self.documents = documents
+        var inverted: [String: Set<UUID>] = [:]
+        for (transactionID, document) in documents {
+            let tokens = Set(document.normalizedText.split(separator: " ").map(String.init))
+            for token in tokens {
+                for fragment in Self.searchFragments(token) {
+                    inverted[fragment, default: []].insert(transactionID)
+                }
+            }
+        }
+        transactionIDsByFragment = inverted
+    }
+
+    func matches(transactionID: UUID, query: RegisterSearchQuery) -> Bool {
+        query.isEmpty || documents[transactionID]?.matches(query) == true
+    }
+
+    func matchingTransactionIDs(_ query: RegisterSearchQuery) -> Set<UUID> {
+        guard !query.isEmpty else { return Set(documents.keys) }
+        var matches: Set<UUID>?
+        for queryToken in query.tokens {
+            var tokenMatches: Set<UUID>?
+            for fragment in Self.queryFragments(queryToken) {
+                let fragmentMatches = transactionIDsByFragment[fragment] ?? []
+                if let existing = tokenMatches {
+                    tokenMatches = existing.intersection(fragmentMatches)
+                } else {
+                    tokenMatches = fragmentMatches
+                }
+                if tokenMatches?.isEmpty == true { break }
+            }
+            if let existing = matches {
+                matches = existing.intersection(tokenMatches ?? [])
+            } else {
+                matches = tokenMatches ?? []
+            }
+            if matches?.isEmpty == true { break }
+        }
+        return Set((matches ?? []).filter { documents[$0]?.matches(query) == true })
+    }
+
+    static func build(
+        transactions: [FinanceTransaction],
+        accounts: [FinanceAccount],
+        accountGroups: [AccountGroup] = [],
+        categories: [FinanceCategory],
+        tags: [FinanceTag],
+        runningBalances: [UUID: Int64]
+    ) -> RegisterSearchIndex {
+        let groupNames = Dictionary(
+            uniqueKeysWithValues: accountGroups.map { ($0.id, $0.name) }
+        )
+        let accountSearchTexts = Dictionary(
+            uniqueKeysWithValues: accounts.map { account in
+                (
+                    account.id,
+                    accountSearchText(
+                        account,
+                        groupName: account.groupID.flatMap { groupNames[$0] }
+                    )
+                )
+            }
+        )
+        let categoryPaths = categoryPathMap(categories)
+        let tagPaths = tagPathMap(tags)
+        return RegisterSearchIndex(documents: Dictionary(
+            uniqueKeysWithValues: transactions.map { transaction in
+                let categoryPath: String
+                if transaction.transferID != nil {
+                    categoryPath = "Umbuchung"
+                } else if transaction.splits.isEmpty {
+                    categoryPath = transaction.categoryID.flatMap {
+                        categoryPaths[$0]
+                    } ?? "Nicht kategorisiert"
+                } else {
+                    let paths = transaction.splits.compactMap {
+                        $0.categoryID.flatMap { categoryPaths[$0] }
+                    }.uniqued()
+                    categoryPath = "Split " + paths.joined(separator: " ")
+                }
+                let allTagIDs = transaction.tagIDs
+                    + transaction.splits.flatMap(\.tagIDs)
+                let fullTagPaths = allTagIDs.compactMap { tagPaths[$0] }
+                    .uniqued()
+                return (
+                    transaction.id,
+                    document(
+                        transaction: transaction,
+                        accountName: accountSearchTexts[transaction.accountID] ?? "",
+                        categoryPath: categoryPath,
+                        tagPaths: fullTagPaths,
+                        runningBalanceMinor: runningBalances[transaction.id]
+                    )
+                )
+            }
+        ))
+    }
+
+    static func accountSearchText(
+        _ account: FinanceAccount,
+        groupName: String? = nil
+    ) -> String {
+        var fields = [
+            account.name, account.shortName, account.institution,
+            account.description, account.type.title, account.type.rawValue,
+            account.currency, groupName ?? "", account.iban, account.bic,
+            account.accountNumberMasked, account.ownerName,
+            account.syncStatus.title, account.syncStatus.rawValue,
+            account.isClosed ? "geschlossen" : "offen",
+            account.isHidden ? "ausgeblendet" : "sichtbar",
+            account.isOnline ? "online" : "offline"
+        ]
+        fields.append(contentsOf: moneyFields(
+            account.openingBalanceMinor,
+            currency: account.currency
+        ))
+        fields.append(contentsOf: moneyFields(
+            account.creditLimitMinor,
+            currency: account.currency
+        ))
+        if let lastBankBalanceMinor = account.lastBankBalanceMinor {
+            fields.append(contentsOf: moneyFields(
+                lastBankBalanceMinor,
+                currency: account.currency
+            ))
+        }
+        if let openingDate = account.openingDate {
+            fields.append(contentsOf: dateFields(openingDate))
+        }
+        if let lastSyncAt = account.lastSyncAt {
+            fields.append(contentsOf: dateFields(lastSyncAt))
+        }
+        return fields.joined(separator: " ")
+    }
+
+    static func document(
+        transaction: FinanceTransaction,
+        accountName: String,
+        categoryPath: String,
+        tagPaths: [String],
+        runningBalanceMinor: Int64?
+    ) -> RegisterSearchDocument {
+        var fields = [
+            accountName, transaction.payee, transaction.purpose,
+            transaction.memo, transaction.reference, categoryPath,
+            tagPaths.joined(separator: " "), transaction.status.title,
+            transaction.status.rawValue, transaction.currency,
+            transaction.externalProvider, transaction.externalTransactionID,
+            transaction.counterpartyIBAN, transaction.counterpartyBIC,
+            transaction.endToEndID, transaction.mandateReference,
+            transaction.creditorID, transaction.bookingText,
+            transaction.origin.rawValue, transaction.duplicateFingerprint
+        ]
+        fields.append(contentsOf: dateFields(transaction.bookingDate))
+        if let valueDate = transaction.valueDate {
+            fields.append(contentsOf: dateFields(valueDate))
+        }
+        fields.append(contentsOf: moneyFields(
+            transaction.amountMinor,
+            currency: transaction.currency
+        ))
+        fields.append(contentsOf: moneyFields(
+            transaction.netMinor,
+            currency: transaction.currency
+        ))
+        fields.append(contentsOf: moneyFields(
+            transaction.taxMinor,
+            currency: transaction.currency
+        ))
+        if let runningBalanceMinor {
+            fields.append(contentsOf: moneyFields(
+                runningBalanceMinor,
+                currency: transaction.currency
+            ))
+        }
+        if let bankBalanceAfterMinor = transaction.bankBalanceAfterMinor {
+            fields.append(contentsOf: moneyFields(
+                bankBalanceAfterMinor,
+                currency: transaction.currency
+            ))
+        }
+        if let originalAmountMinor = transaction.originalAmountMinor,
+           !transaction.originalCurrency.isEmpty {
+            fields.append(contentsOf: moneyFields(
+                originalAmountMinor,
+                currency: transaction.originalCurrency
+            ))
+        }
+        if let exchangeRateScaled = transaction.exchangeRateScaled {
+            fields.append(String(exchangeRateScaled))
+        }
+        for split in transaction.splits {
+            fields.append(split.memo)
+            fields.append(contentsOf: moneyFields(
+                split.amountMinor,
+                currency: transaction.currency
+            ))
+            fields.append(contentsOf: moneyFields(
+                split.netMinor,
+                currency: transaction.currency
+            ))
+            fields.append(contentsOf: moneyFields(
+                split.taxMinor,
+                currency: transaction.currency
+            ))
+        }
+        return RegisterSearchDocument(fields: fields)
+    }
+
+    private static func moneyFields(
+        _ minorUnits: Int64,
+        currency: String
+    ) -> [String] {
+        let money = Money(minorUnits: minorUnits, currency: currency)
+        return [String(minorUnits), money.editingString, money.formatted]
+    }
+
+    private static func dateFields(_ date: Date) -> [String] {
+        let values = Calendar.current.dateComponents(
+            [.day, .month, .year],
+            from: date
+        )
+        guard let day = values.day,
+              let month = values.month,
+              let year = values.year
+        else { return [] }
+        return [
+            String(format: "%02d.%02d.%04d", day, month, year),
+            String(format: "%04d-%02d-%02d", year, month, day)
+        ]
+    }
+
+    private static func categoryPathMap(
+        _ categories: [FinanceCategory]
+    ) -> [UUID: String] {
+        let byID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        return Dictionary(uniqueKeysWithValues: categories.map { category in
+            (category.id, hierarchyPath(
+                id: category.id,
+                name: { byID[$0]?.name },
+                parent: { byID[$0]?.parentID }
+            ))
+        })
+    }
+
+    private static func tagPathMap(_ tags: [FinanceTag]) -> [UUID: String] {
+        let byID = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0) })
+        return Dictionary(uniqueKeysWithValues: tags.map { tag in
+            (tag.id, hierarchyPath(
+                id: tag.id,
+                name: { byID[$0]?.name },
+                parent: { byID[$0]?.parentID }
+            ))
+        })
+    }
+
+    private static func hierarchyPath(
+        id: UUID,
+        name: (UUID) -> String?,
+        parent: (UUID) -> UUID?
+    ) -> String {
+        var names: [String] = []
+        var currentID: UUID? = id
+        var visited = Set<UUID>()
+        while let value = currentID,
+              visited.insert(value).inserted {
+            if let valueName = name(value) {
+                names.insert(valueName, at: 0)
+            }
+            currentID = parent(value)
+        }
+        return names.joined(separator: " › ")
+    }
+
+    private static func searchFragments(_ token: String) -> Set<String> {
+        let characters = Array(token)
+        var result = Set<String>()
+        for length in 1...min(3, characters.count) {
+            for start in 0...(characters.count - length) {
+                result.insert(String(characters[start..<(start + length)]))
+            }
+        }
+        return result
+    }
+
+    private static func queryFragments(_ token: String) -> Set<String> {
+        let characters = Array(token)
+        guard characters.count > 3 else { return [token] }
+        return Set((0...(characters.count - 3)).map {
+            String(characters[$0..<($0 + 3)])
+        })
+    }
+}
+
+private extension Sequence where Element: Hashable {
+    func uniqued() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
+    }
+}
+
 enum CombinedRegisterChartMode: String, Equatable, Sendable {
     case balance
     case filteredMovement

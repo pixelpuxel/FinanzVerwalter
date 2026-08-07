@@ -283,6 +283,7 @@ final class FinanceAppStore: ObservableObject {
     @Published var statusText = "Bereit"
     @Published var isBusy = false
     @Published private(set) var automaticBackupStatusText = "Autosicherung noch nicht geprüft"
+    @Published private(set) var registerSearchIndex = RegisterSearchIndex.empty
 
     private var repository: SQLiteFinanceStore?
 
@@ -328,19 +329,47 @@ final class FinanceAppStore: ObservableObject {
     }
 
     var filteredTransactions: [FinanceTransaction] {
-        transactions.filter { transaction in
+        let query = RegisterSearchQuery(searchText)
+        let matchingIDs = registerSearchIndex.matchingTransactionIDs(query)
+        return transactions.filter { transaction in
             (selectedAccountID == nil || transaction.accountID == selectedAccountID)
-                && (
-                    searchText.isEmpty
-                    || transaction.payee.localizedCaseInsensitiveContains(searchText)
-                    || transaction.purpose.localizedCaseInsensitiveContains(searchText)
-                    || transaction.memo.localizedCaseInsensitiveContains(searchText)
-                    || categoryName(transaction.categoryID).localizedCaseInsensitiveContains(searchText)
-                    || transaction.tagIDs.contains {
-                        tagName($0).localizedCaseInsensitiveContains(searchText)
-                    }
+                && matchingIDs.contains(transaction.id)
+        }
+    }
+
+    func matchesRegisterSearch(
+        _ transaction: FinanceTransaction,
+        query: RegisterSearchQuery,
+        runningBalanceMinor: Int64?,
+        indexedMatches: Set<UUID>? = nil
+    ) -> Bool {
+        guard !query.isEmpty else { return true }
+        if registerSearchIndex.documents[transaction.id] != nil {
+            return indexedMatches?.contains(transaction.id)
+                ?? registerSearchIndex.matches(
+                    transactionID: transaction.id,
+                    query: query
                 )
         }
+        let allTagIDs = transaction.tagIDs
+            + transaction.splits.flatMap(\.tagIDs)
+        let tagPaths = allTagIDs.map { tagPath($0) }
+        let account = accounts.first { $0.id == transaction.accountID }
+        let groupName = account?.groupID.flatMap { groupID in
+            accountGroups.first { $0.id == groupID }?.name
+        }
+        return RegisterSearchIndex.document(
+            transaction: transaction,
+            accountName: account.map {
+                RegisterSearchIndex.accountSearchText(
+                    $0,
+                    groupName: groupName
+                )
+            } ?? accountName(transaction.accountID),
+            categoryPath: transactionCategoryPath(transaction),
+            tagPaths: tagPaths,
+            runningBalanceMinor: runningBalanceMinor
+        ).matches(query)
     }
 
     var totalBalanceMinor: Int64 {
@@ -3056,6 +3085,14 @@ final class FinanceAppStore: ObservableObject {
         taxAllowanceUsages = try repository.taxAllowanceUsages()
         balances = Dictionary(
             uniqueKeysWithValues: try accounts.map { ($0.id, try repository.accountBalanceMinor(account: $0)) }
+        )
+        registerSearchIndex = RegisterSearchIndex.build(
+            transactions: transactions,
+            accounts: accounts,
+            accountGroups: accountGroups,
+            categories: categories,
+            tags: tags,
+            runningBalances: runningBalances()
         )
         if selectedAccountID == nil || !accounts.contains(where: { $0.id == selectedAccountID }) {
             selectedAccountID = accounts.first?.id

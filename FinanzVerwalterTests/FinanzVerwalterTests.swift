@@ -8655,6 +8655,126 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testRegisterSearchIndexCoversAllFieldsAcrossViewsAndStaysResponsive() throws {
+        let account = FinanceAccount(
+            id: UUID(), name: "Haushaltskonto", institution: "Musterbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let parentCategory = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Immobilie Köln",
+            kind: .expense, color: "#336699", isActive: true
+        )
+        let category = FinanceCategory(
+            id: UUID(), parentID: parentCategory.id, name: "Grundsteuer",
+            kind: .expense, color: "#336699", isActive: true
+        )
+        let parentTag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Objekt", color: "#445566",
+            description: "", isActive: true
+        )
+        let tag = FinanceTag(
+            id: UUID(), parentID: parentTag.id, name: "Wohnung Süd",
+            color: "#445566", description: "", isActive: true
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let bookingDate = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2025, month: 8, day: 7))
+        )
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: bookingDate,
+            valueDate: bookingDate, payee: "Stadt Köln", purpose: "Bescheid 2025",
+            categoryID: category.id, amountMinor: -123_456, currency: "EUR",
+            status: .reconciled, memo: "Fälligkeit August", reference: "BELEG-4711",
+            transferID: nil, importFingerprint: nil, splits: [], tagIDs: [tag.id],
+            externalProvider: "FinTS Musterbank", externalTransactionID: "BANK-99",
+            counterpartyIBAN: "DE02120300000000202051",
+            endToEndID: "E2E-GRUNDA", mandateReference: "MANDAT-8",
+            bankBalanceAfterMinor: 876_544, counterpartyBIC: "BYLADEM1001",
+            creditorID: "DE98ZZZ09999999999", bookingText: "LASTSCHRIFT"
+        )
+        let index = RegisterSearchIndex.build(
+            transactions: [transaction], accounts: [account],
+            categories: [parentCategory, category], tags: [parentTag, tag],
+            runningBalances: [transaction.id: 876_544]
+        )
+        let matchingQueries = [
+            "Haushaltskonto Grundsteuer 1.234,56",
+            "immobilie koln beleg 4711",
+            "wohnung sud abgeglichen",
+            "steuer 4711",
+            "8.765,44 eur",
+            "DE02120300000000202051 E2E-GRUNDA",
+            "07.08.2025 lastschrift"
+        ]
+        for text in matchingQueries {
+            XCTAssertTrue(
+                index.matches(
+                    transactionID: transaction.id,
+                    query: RegisterSearchQuery(text)
+                ),
+                "Volltextabfrage sollte treffen: \(text)"
+            )
+        }
+        XCTAssertFalse(index.matches(
+            transactionID: transaction.id,
+            query: RegisterSearchQuery("anderes konto gehalt")
+        ))
+
+        let secondary = RegisterSecondaryQuery.visible(
+            transactions: [transaction], accountID: account.id, status: nil,
+            category: .all, period: .all, customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: "Haushaltskonto Wohnung Süd 1.234,56",
+            searchMatches: { value, query in
+                index.matchingTransactionIDs(query).contains(value.id)
+            }
+        ) { _ in "Immobilie Köln › Grundsteuer" }
+        XCTAssertEqual(secondary.map(\.id), [transaction.id])
+
+        let combined = CombinedRegisterQuery.evaluate(
+            transactions: [transaction], forecastTransactions: [],
+            allAccountIDs: [account.id], includedAccountIDs: [], status: nil,
+            category: .all, period: .all, customStart: .distantPast,
+            customEnd: .distantFuture,
+            searchText: "Musterbank Grundsteuer BELEG-4711",
+            includeForecast: false,
+            searchMatches: { value, query in
+                index.matchingTransactionIDs(query).contains(value.id)
+            }
+        ) { _ in "Immobilie Köln › Grundsteuer" }
+        XCTAssertEqual(combined.rows.map(\.id), [transaction.id])
+        XCTAssertTrue(combined.isFiltered)
+
+        let document = try XCTUnwrap(index.documents[transaction.id])
+        let decoy = RegisterSearchDocument(fields: [
+            "Anderes Konto", "Unabhängige Buchung", "999,00 EUR"
+        ])
+        var performanceDocuments: [UUID: RegisterSearchDocument] = [:]
+        performanceDocuments.reserveCapacity(100_000)
+        for offset in 0..<100_000 {
+            performanceDocuments[UUID()] = offset < 100 ? document : decoy
+        }
+        let performanceIndex = RegisterSearchIndex(
+            documents: performanceDocuments
+        )
+        let performanceQuery = RegisterSearchQuery(
+            "E2E-GRUNDA Grundsteuer"
+        )
+        let startedAt = Date.timeIntervalSinceReferenceDate
+        let matchCount = performanceIndex.matchingTransactionIDs(
+            performanceQuery
+        ).count
+        let elapsed = Date.timeIntervalSinceReferenceDate - startedAt
+        XCTAssertEqual(matchCount, 100)
+        XCTAssertLessThan(
+            elapsed,
+            0.100,
+            "100.000 vorindexierte Buchungen müssen in unter 100 ms reagieren"
+        )
+    }
+
     func testCombinedRegisterQueryForecastBalancesAndSavedViewRoundTrip() throws {
         let firstAccount = FinanceAccount(
             id: UUID(), name: "Giro", institution: "", type: .checking,

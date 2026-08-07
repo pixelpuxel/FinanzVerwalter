@@ -1853,12 +1853,11 @@ enum RegisterSecondaryQuery {
         customStart: Date,
         customEnd: Date,
         searchText: String,
+        searchMatches: ((FinanceTransaction, RegisterSearchQuery) -> Bool)? = nil,
         categoryPath: (FinanceTransaction) -> String
     ) -> [FinanceTransaction] {
         guard let accountID else { return [] }
-        let search = searchText.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
+        let search = RegisterSearchQuery(searchText)
         return transactions.filter { transaction in
             guard transaction.accountID == accountID else { return false }
             let statusMatches = status == nil || transaction.status == status
@@ -1873,14 +1872,21 @@ enum RegisterSecondaryQuery {
                 categoryMatches = transaction.categoryID == id
                     || transaction.splits.contains { $0.categoryID == id }
             }
-            let searchMatches = search.isEmpty
-                || transaction.payee.localizedCaseInsensitiveContains(search)
-                || transaction.purpose.localizedCaseInsensitiveContains(search)
-                || transaction.memo.localizedCaseInsensitiveContains(search)
-                || transaction.reference.localizedCaseInsensitiveContains(search)
-                || categoryPath(transaction)
-                    .localizedCaseInsensitiveContains(search)
-            return statusMatches && categoryMatches && searchMatches
+            let matchesText: Bool
+            if search.isEmpty {
+                matchesText = true
+            } else if let searchMatches {
+                matchesText = searchMatches(transaction, search)
+            } else {
+                matchesText = RegisterSearchIndex.document(
+                    transaction: transaction,
+                    accountName: "",
+                    categoryPath: categoryPath(transaction),
+                    tagPaths: [],
+                    runningBalanceMinor: nil
+                ).matches(search)
+            }
+            return statusMatches && categoryMatches && matchesText
                 && period.contains(
                     transaction.bookingDate,
                     customStart: customStart,
@@ -3129,6 +3135,12 @@ private struct SecondaryRegisterPane: View {
     }
 
     private var visibleTransactions: [FinanceTransaction] {
+        let runningBalances = store.runningBalances(
+            accountID: selectedAccountID
+        )
+        let searchQuery = RegisterSearchQuery(store.searchText)
+        let indexedMatches = store.registerSearchIndex
+            .matchingTransactionIDs(searchQuery)
         let base = RegisterSecondaryQuery.visible(
             transactions: store.transactions,
             accountID: selectedAccountID,
@@ -3137,7 +3149,15 @@ private struct SecondaryRegisterPane: View {
             period: periodFilter,
             customStart: customStart,
             customEnd: customEnd,
-            searchText: store.searchText
+            searchText: store.searchText,
+            searchMatches: { transaction, query in
+                store.matchesRegisterSearch(
+                    transaction,
+                    query: query,
+                    runningBalanceMinor: runningBalances[transaction.id],
+                    indexedMatches: indexedMatches
+                )
+            }
         ) { transaction in
             store.transactionCategoryPath(transaction)
         }
@@ -3866,9 +3886,18 @@ private struct SecondaryCombinedRegisterPane: View {
     }
 
     private var result: CombinedRegisterQueryResult {
-        CombinedRegisterQuery.evaluate(
+        let forecast = includeForecast
+            ? store.forecastOccurrences(days: 365) : []
+        let runningBalances = CombinedRegisterQuery.runningBalances(
+            accounts: store.accounts,
+            transactions: store.transactions + forecast
+        )
+        let searchQuery = RegisterSearchQuery(store.searchText)
+        let indexedMatches = store.registerSearchIndex
+            .matchingTransactionIDs(searchQuery)
+        return CombinedRegisterQuery.evaluate(
             transactions: store.transactions,
-            forecastTransactions: store.forecastOccurrences(days: 365),
+            forecastTransactions: forecast,
             allAccountIDs: Set(store.accounts.filter {
                 !$0.isClosed
             }.map(\.id)),
@@ -3880,7 +3909,15 @@ private struct SecondaryCombinedRegisterPane: View {
             customStart: customStart,
             customEnd: customEnd,
             searchText: store.searchText,
-            includeForecast: includeForecast
+            includeForecast: includeForecast,
+            searchMatches: { transaction, query in
+                store.matchesRegisterSearch(
+                    transaction,
+                    query: query,
+                    runningBalanceMinor: runningBalances[transaction.id],
+                    indexedMatches: indexedMatches
+                )
+            }
         ) { transaction in
             store.transactionCategoryPath(transaction)
         }
@@ -4160,14 +4197,13 @@ enum CombinedRegisterQuery {
         customEnd: Date,
         searchText: String,
         includeForecast: Bool,
+        searchMatches: ((FinanceTransaction, RegisterSearchQuery) -> Bool)? = nil,
         categoryPath: (FinanceTransaction) -> String
     ) -> CombinedRegisterQueryResult {
         let effectiveAccounts = includedAccountIDs.isEmpty
             ? allAccountIDs : includedAccountIDs
         let combined = transactions + (includeForecast ? forecastTransactions : [])
-        let search = searchText.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
+        let search = RegisterSearchQuery(searchText)
         let rows = combined.filter { transaction in
             guard effectiveAccounts.contains(transaction.accountID) else {
                 return false
@@ -4191,14 +4227,21 @@ enum CombinedRegisterQuery {
             } else {
                 tagMatches = true
             }
-            let searchMatches = search.isEmpty
-                || transaction.payee.localizedCaseInsensitiveContains(search)
-                || transaction.purpose.localizedCaseInsensitiveContains(search)
-                || transaction.memo.localizedCaseInsensitiveContains(search)
-                || transaction.reference.localizedCaseInsensitiveContains(search)
-                || categoryPath(transaction)
-                    .localizedCaseInsensitiveContains(search)
-            return statusMatches && categoryMatches && tagMatches && searchMatches
+            let matchesText: Bool
+            if search.isEmpty {
+                matchesText = true
+            } else if let searchMatches {
+                matchesText = searchMatches(transaction, search)
+            } else {
+                matchesText = RegisterSearchIndex.document(
+                    transaction: transaction,
+                    accountName: "",
+                    categoryPath: categoryPath(transaction),
+                    tagPaths: [],
+                    runningBalanceMinor: nil
+                ).matches(search)
+            }
+            return statusMatches && categoryMatches && tagMatches && matchesText
                 && period.contains(
                     transaction.bookingDate,
                     customStart: customStart,
@@ -4323,9 +4366,18 @@ struct CombinedRegisterView: View {
     }
 
     private var queryResult: CombinedRegisterQueryResult {
-        CombinedRegisterQuery.evaluate(
+        let forecast = includeForecast
+            ? store.forecastOccurrences(days: 365) : []
+        let runningBalances = CombinedRegisterQuery.runningBalances(
+            accounts: store.accounts,
+            transactions: store.transactions + forecast
+        )
+        let searchQuery = RegisterSearchQuery(store.searchText)
+        let indexedMatches = store.registerSearchIndex
+            .matchingTransactionIDs(searchQuery)
+        return CombinedRegisterQuery.evaluate(
             transactions: store.transactions,
-            forecastTransactions: store.forecastOccurrences(days: 365),
+            forecastTransactions: forecast,
             allAccountIDs: Set(store.accounts.filter {
                 !$0.isClosed
             }.map(\.id)),
@@ -4337,7 +4389,15 @@ struct CombinedRegisterView: View {
             customStart: customStart,
             customEnd: customEnd,
             searchText: store.searchText,
-            includeForecast: includeForecast
+            includeForecast: includeForecast,
+            searchMatches: { transaction, query in
+                store.matchesRegisterSearch(
+                    transaction,
+                    query: query,
+                    runningBalanceMinor: runningBalances[transaction.id],
+                    indexedMatches: indexedMatches
+                )
+            }
         ) { transaction in
             store.transactionCategoryPath(transaction)
         }

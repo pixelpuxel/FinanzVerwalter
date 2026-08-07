@@ -418,6 +418,15 @@ Klasse/Tag aus. Einnahmen, Ausgaben und Saldo bleiben je Währung getrennt;
 bei Splitbuchungen zählt nur der fachlich passende Splitbetrag. Die letzten
 passenden Buchungen bleiben als kompakte Detailhistorie sichtbar.
 
+Die globale Kontenblattsuche verwendet in Einzel-, geteilter und
+Sammelansicht denselben vorberechneten Volltextindex. Mehrere Suchwörter
+müssen gemeinsam vorkommen, dürfen aber aus unterschiedlichen Feldern
+stammen. Durchsucht werden unter anderem alle Konto- und Bankangaben,
+Empfänger, Zweck, Memo, Referenz, vollständige Kategorie- und Klassenpfade,
+Status, Buchungs- und Wertstellungstag, Beträge, laufender Saldo sowie
+Bankreferenzen. Groß-/Kleinschreibung und Diakritika spielen keine Rolle;
+auch Wortteiltreffer wie `steuer` in `Grundsteuer` bleiben möglich.
+
 Mit `Teilen` öffnet sich daneben ein zweites Kontoblatt für ein anderes
 Konto. Es besitzt eine eigene Kontowahl sowie unabhängige Status-, Kategorie-
 und Zeitraumfilter, zeigt vollständige Kategoriepfade, Betrag und laufenden

@@ -178,13 +178,13 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 154 XCTest-Fälle: 153 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 155 XCTest-Fälle: 154 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
 unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
 Die installierte ausführbare Datei besitzt SHA-256
-`7f10e90e3f8819f4b9e2870a39cebe5df2eeff3059ea296e0b9c796e8700416f`.
+`0ffb85dcd96f8c47bca3f2fd1cbf0fbcb5889f1ec6b3fc84ec6a3c3f7f5ec6af`.
 Details und der ehrliche Nachweis der wegen der gesperrten macOS-Sitzung noch
 ausstehenden sichtbaren Abnahme stehen in `Gedächtnis.md`.
 
@@ -1414,6 +1414,32 @@ Beide Zustände und die sekundäre Konto-ID liegen nur in lokalen
 Benutzereinstellungen, nicht in der Finanzdatei. Teste die Minireport-
 Splitbeiträge, Währungstrennung, Stornoausschluss sowie die unabhängige
 Konto-/Status-/Kategorie-/Textfilterung als reine deterministische Logik.
+
+# Reproduzierbare globale Kontenblatt-Volltextsuche
+
+Erzeuge beim Laden der Finanzdatei genau einen unveränderlichen Suchindex für
+alle persistenten Buchungen. Ein Dokument enthält sämtliche Kontofelder
+einschließlich Institut, Typ, Gruppe, IBAN/BIC, Kontonummer, Inhaber,
+Eröffnungsbetrag, Kreditlimit, Banksaldo und Synchronisationsstatus; außerdem
+alle Buchungsfelder, vollständige Kategorie- und Klassenpfade aller Splits,
+Status, Buchungs- und Wertstellungstag, Betrag, Netto, Steuer, laufenden Saldo,
+Fremdwährungswerte und Bankreferenzen. Prognosezeilen erhalten dasselbe
+Dokument flüchtig und werden nicht persistiert.
+
+Normalisiere groß-/kleinschreibungs- und diakritikaunabhängig auf
+alphanumerische Tokens. Alle eingegebenen Tokens müssen irgendwo im Dokument
+vorkommen und dürfen aus verschiedenen Feldern stammen. Wortteiltreffer müssen
+erhalten bleiben. Indexiere dafür ein-, zwei- und dreistellige Zeichenfragmente,
+schneide die Kandidatenmenge über die Fragmente und verifiziere zuletzt am
+normalisierten Gesamtdokument, damit keine Trigramm-Scheinmatches entstehen.
+Einzelkonto, zweites Kontoblatt sowie beide Sammelansichten verwenden exakt
+dieselbe Abfrage und dieselbe globale Suche.
+
+Teste Konto-/Institutsfeld, vollständige Kategorie und Klasse, Status, Datum,
+formatierten Betrag, laufenden Saldo, IBAN und Bankreferenz, kombinierte Tokens
+aus mehreren Feldern, Diakritika und einen inneren Wortteil. Miss nur die
+Nutzerabfrage gegen 100.000 bereits indexierte Dokumente; sie muss auf dem
+Testsystem in weniger als 100 ms antworten.
 
 # Reproduzierbarer Sammelkontoblatt-Ausbau
 

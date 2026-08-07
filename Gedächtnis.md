@@ -3504,3 +3504,50 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 20.987.656 Tokens; Zählerstand nach
   überprüfter Zustellung: 20.990.728 Tokens.
+
+## 07.08.2026 – Einheitliche globale Kontenblatt-Volltextsuche
+
+- `RegisterSearchIndex` bereitet beim Laden genau ein normalisiertes Dokument
+  je persistenter Buchung vor. Es umfasst sämtliche Kontoangaben einschließlich
+  Institut, Typ, Gruppe, IBAN/BIC, Kontonummer, Inhaber, Eröffnungsbetrag,
+  Kreditlimit, Banksaldo und Syncstatus sowie Buchungstexte, vollständige
+  Kategorie- und Klassenpfade aller Splits, Status, Datumswerte, Betrag,
+  Netto, Steuer, laufenden Saldo, Fremdwährung und technische Bankreferenzen.
+- Die Abfrage ist groß-/kleinschreibungs- und diakritikaunabhängig. Alle
+  Suchwörter müssen vorkommen, dürfen aber aus verschiedenen Feldern stammen.
+  Ein invertierter Index aus Ein-, Zwei- und Dreizeichenfragmenten erhält
+  innere Wortteiltreffer wie `steuer` in `Grundsteuer`; eine anschließende
+  Dokumentprüfung verhindert Fragment-Scheinmatches. Einzelkonto, zweites
+  Kontenblatt sowie beide Sammelansichten verwenden dieselbe Logik.
+- Der gezielte Regressionstest unter
+  `build/TestResults/RegisterSearch-substring-targeted-20260807-2200.xcresult`
+  deckt Kontofeld und Institut, vollständige Hierarchien, Status, Datum,
+  formatierten Betrag, laufenden Saldo, IBAN, Bankreferenz, Diakritika,
+  Mehrfeld- und Wortteilabfrage ab. Die Nutzerabfrage auf 100.000 bereits
+  indexierten Dokumenten blieb unter der verbindlichen Grenze von 100 ms.
+- Die finale vollständige Release-Regression unter
+  `build/TestResults/RegisterSearch-substring-release-final-full-20260807-2205.xcresult`
+  umfasst 155 Tests: 154 bestanden, 1 privater opt-in-Real-QIF-Test ohne
+  temporären Pfad erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0
+  erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-FullText-Release` wurde erfolgreich gebaut, lokal ad-hoc
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `0ffb85dcd96f8c47bca3f2fd1cbf0fbcb5889f1ec6b3fc84ec6a3c3f7f5ec6af`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Schreibtisch-Link zeigt auf `/Applications/FinanzVerwalter.app`.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2145-fulltext-index/`. Die vor dem Austausch
+  per SQLite konsistent erzeugte Produktionssicherung liegt unter
+  `build/ProductionBackups/20260807-2145-fulltext-index/Meine Finanzen.qdata`.
+  Nach dem Austausch läuft Prozess 44347 direkt aus `/Applications`.
+  Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien; die
+  Produktivdatei enthält weiterhin 0 Serienbuchungen. Die private echte
+  QIF-Datei wurde weder kopiert noch in Git aufgenommen.
+- Die Computersteuerung konnte die sichtbare Oberfläche nach dem Start nicht
+  prüfen oder fotografieren, weil die macOS-Sitzung weiterhin gesperrt ist.
+  Die Sperre wurde nicht umgangen. Exakter kumulativer Zielzählerstand nach
+  Umsetzung, Test, Release, Installation, Produktivprüfung und diesem
+  Prüfversuch: 21.322.286 Tokens.
