@@ -224,6 +224,37 @@ UTF-8, semantisch, druckoptimiert, vollständig HTML-maskiert und durch einen
 bytegenauen SHA-256-Golden-Test reproduzierbar abgesichert. PDF erzeugt auch
 bei vollständig ausgeblendeten Tabellen ein gültiges Metadatenblatt.
 
+Ab Definitionsversion 4 speichert die Query zusätzlich die optionalen Felder
+`requireGermanTaxAssignment`, `visualization` und `chartMetric`. Fehlende
+Felder aus älteren Vorlagen bedeuten: kein Steuerfilter, Tabelle und Ausgaben.
+Erweitere `ReportGrouping` um `germanTaxLine` und ergänze den Katalog um den
+Standardbericht `Deutscher Steuerbericht`. Er läuft im aktuellen lokalen
+Kalenderjahr, expandiert Splits, verwirft Fakten ohne nichtleere deutsche
+Steuerzeile und gruppiert zuerst nach Steuerzeile, dann nach vollständigem
+Kategoriepfad. Übernimm die Steuerzeile in jeden Berichtsfakt und in den
+Volltextindex; die Detailtabelle zeigt sie als zweite, zurückhaltende Zeile
+unter der Kategorie.
+
+Implementiere `ReportChartEngine` als reine Ableitung eines bereits
+berechneten `TransactionReportSnapshot`. Akzeptiere Einnahmen oder Ausgaben,
+verwende ausschließlich Detailgruppen und erzeuge eine `ReportChartSeries`
+je Währung. Sortiere deterministisch nach Betrag absteigend und bei Gleichstand
+nach Bezeichnung. Zeige standardmäßig höchstens zwölf Segmente: Bei mehr
+Werten bleiben elf sichtbar, alle übrigen werden mit exakter Minor-Unit-Summe
+und vereinigten Fakten-IDs zu `Weitere (n)` zusammengefasst. Addiere niemals
+verschiedene Währungen. Falls es bei ungruppierter Abfrage keine Detailgruppen
+gibt, leite je Währung einen Gesamtwert direkt aus den Snapshot-Summen ab.
+
+Das UI bietet Tabelle, Balken und Torte sowie Einnahmen oder Ausgaben als
+Kennzahl. Verwende Swift Charts, formatiere sichtbare Summen über `Money`,
+beschrifte Segmente für VoiceOver und trenne mehrere Währungen horizontal in
+eigene Karten. Das Diagramm ergänzt die bestehende Tabelle; Filter,
+Gruppentabelle, Fakten-Drill-down, CSV, HTML, XLSX, PDF und Systemdruck bleiben
+auf demselben unveränderlichen Snapshot. Teste Steuerfilter inklusive Splits,
+vollständigen Kategoriepfad, Vorlagen-Rückwärtskompatibilität, Roundtrip der
+Version-4-Felder, deterministische Top-N-Reihenfolge, exakte Restaggregation,
+Fakten-IDs und Währungstrennung.
+
 `TransactionReportXLSXExporter` erzeugt ohne externe Bibliothek ein valides,
 deterministisches Open-XML-ZIP-Paket mit genau einem Blatt `Bericht`.
 Metadaten, Gruppen, Details und Gesamtsummen stammen aus demselben Snapshot.

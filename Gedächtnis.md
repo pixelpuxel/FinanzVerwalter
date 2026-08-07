@@ -2430,3 +2430,46 @@ Rechtsberatung.
 - Telegram-Nachricht 1011 dokumentiert denselben Stand im gefundenen
   `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
   deshalb fehlenden Screenshot sowie den exakten Zielzählerstand 15.175.982.
+
+## 07.08.2026 – Deutscher Steuerbericht und währungssichere Diagramme
+
+- Die buchungsbasierte Berichtswerkstatt besitzt nun den siebten
+  Standardbericht `Deutscher Steuerbericht`. Er verwendet das aktuelle lokale
+  Kalenderjahr, löst Splits einzeln auf, berücksichtigt ausschließlich
+  Kategorien mit gepflegter deutscher Steuerzeile und gliedert zuerst nach
+  Steuerzeile, dann nach dem vollständigen Kategoriepfad. Die Steuerzeile ist
+  zugleich Teil der Volltextsuche und erscheint im Fakten-Drill-down dezent
+  unter der Kategorie.
+- Jeder freie oder gespeicherte Buchungsbericht kann als Tabelle,
+  Balkendiagramm oder Tortendiagramm für Einnahmen beziehungsweise Ausgaben
+  angezeigt werden. `ReportChartEngine` leitet seine Werte ausschließlich aus
+  dem bereits gefilterten Snapshot ab, trennt Währungen strikt und fasst bei
+  mehr als zwölf Segmenten den Rest centgenau als `Weitere (n)` mit den
+  vollständigen Fakten-IDs zusammen. Die Tabelle und ihr Drill-down bleiben
+  unter dem Diagramm erhalten.
+- Berichtsvorlagen der Definitionsversion 4 speichern Steuerfilter,
+  Darstellung und Diagrammkennzahl. Die neuen Query-Felder sind optional;
+  ältere Vorlagen laden reproduzierbar ohne Steuerfilter als Tabelle mit der
+  Ausgabenkennzahl.
+- Vier gezielte Engine-, Preset-, Legacy- und Diagrammtests waren grün. Der
+  vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-ReportCharts-20260807-1318.xcresult` enthält 116 Tests:
+  115 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig
+  übersprungen, 0 Fehler und 0 erwartete Fehler. Debug-Build,
+  `git diff --check` und der optimierte Release-Build sind ebenfalls grün.
+- Der signaturgeprüfte arm64-Release liegt unter
+  `build/DerivedData-ReportCharts-Release`. Sein ausführbarer Code hat
+  SHA-256
+  `ad5b61867e9ea68a95f274b018d2594a5a8a5557c76ad74dab4754ab6b800ebf`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiter auf die Systeminstallation. Die Vorgänger bleiben reversibel unter
+  `build/FinanzVerwalter-vor-steuer-diagramme-20260807-1321.app` und
+  `build/FinanzVerwalter-user-vor-steuer-diagramme-20260807-1321.app`; die
+  kurzzeitig installierte Vorstufe vor der Hauptwährungskorrektur liegt unter
+  `build/FinanzVerwalter-vor-haupteinheiten-20260807-1326.app` und
+  `build/FinanzVerwalter-user-vor-haupteinheiten-20260807-1326.app`.
+- Der echte Start läuft als Prozess 64542 direkt aus `/Applications`.
+  Datenintegrität `ok`, Schema 32, 97 Konten, 2.170 Buchungen, 782 Kategorien
+  und eine Berichtsvorlage blieben unverändert. Der exakte Zielzählerstand vor
+  der Dokumentation beträgt 15.438.166 Tokens.

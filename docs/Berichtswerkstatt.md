@@ -17,7 +17,8 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Umbuchungen und Splitauflösung sind explizite Optionen.
 - `TransactionReportEngine` erzeugt unveränderliche Fakten, trennt Währungen
   und verhindert die Doppelzählung von Haupt- und Splitbuchung.
-- Gruppierung nach Kategorie, Empfänger, Konto oder Klasse/Tag liefert
+- Gruppierung nach Kategorie, Empfänger, Konto, Klasse/Tag oder deutscher
+  Steuerzuordnung liefert
   Einnahmen, Ausgaben, Saldo und referenzierte Fakten.
 - Eine optionale zweite, abweichende Gruppierungsdimension bildet stabile
   kombinierte Gruppen für Bildschirm, Drill-down, CSV, PDF und Druck.
@@ -27,10 +28,18 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Buchungsdetails, primäre Zwischensummen und Gesamtsummen sind unabhängig
   schaltbar. Die optionalen Query-Felder bleiben beim Laden alter Vorlagen
   rückwärtskompatibel und werden ab Definitionsversion 3 gespeichert.
-- Sechs editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
+- Sieben editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
   Kategorie, Empfänger, Buchungsjournal, Cashflow, Kontobewegungen und
-  Kategorie/Klasse. Dieselben Definitionen sind deterministisch testbar und
+  Kategorie/Klasse sowie deutsche Steuerzuordnungen. Der Steuerbericht filtert
+  nicht gepflegte Steuerzeilen und gliedert danach nach vollständigem
+  Kategoriepfad. Dieselben Definitionen sind deterministisch testbar und
   können als normale Vorlage gespeichert werden.
+- Balken- und Tortendiagramme für Einnahmen oder Ausgaben werden rein aus dem
+  bestehenden Snapshot abgeleitet. Sie trennen Währungen, sortieren
+  deterministisch und fassen Werte hinter den größten elf centgenau als
+  Restsegment zusammen. Die Berichtstabelle und ihr Drill-down bleiben dabei
+  erhalten. Steuerfilter, Diagrammart und Kennzahl werden ab
+  Definitionsversion 4 rückwärtskompatibel gespeichert.
 - Die SwiftUI-Werkstatt zeigt die Gruppen und einen Buchungs-Drill-down.
 - Zwei Engine-Tests und die vollständige reale 2025-QIF-Abnahme prüfen
   Filterkombinationen und Splitinvarianten.
@@ -79,7 +88,8 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   mehrseitiges A4-PDF in Hoch-/Querformat und direkten Systemdruck aus
   derselben Momentaufnahme.
 
-Noch offen sind weitere fachliche Standardberichte und Diagramme.
+Noch offen sind weitere fachliche Standardberichte sowie Linien- und
+Flächendiagramme.
 
 ## Verifizierte Referenzfunktionen
 
@@ -153,10 +163,12 @@ P0:
 - Kategorie-, Klassen- und Tagbericht *(Kategorie/Klasse-Preset umgesetzt)*
 - Zeitvergleich *(Summe/Monatsdurchschnitt, Drill-down, CSV, PDF und Druck umgesetzt)*
 - Budgetabweichung *(Geschäftsjahr/Monat, Drill-down, CSV, PDF und Druck umgesetzt)*
+- Deutscher Steuerbericht *(gepflegte Steuerzeilen, Kategorie-Drill-down und
+  bestehende Exportpipeline umgesetzt)*
 
 P1:
 
-- Steuer-/Umsatzsteuerbericht
+- Umsatzsteuerbericht
 - Kredit- und Tilgungsbericht
 - Depot-, Performance- und Steuerbericht
 - Vertrags-, Inventar- und Vermietungsbericht

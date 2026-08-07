@@ -423,7 +423,8 @@ aus. Filter kombinieren Zeitraum, Konten und Gruppen, Kategorieunterbäume,
 Klassen/Tags, Empfänger, Status, Betragsspanne, Volltext und Währung.
 Ausgeblendete Konten, von Berichten ausgeschlossene Konten, Umbuchungen und
 die Einzelauflösung von Splits sind explizite Optionen. Gruppiert wird nach
-Kategorie, Empfänger, Konto oder Klasse/Tag; optional teilt eine zweite,
+Kategorie, Empfänger, Konto, Klasse/Tag oder deutscher Steuerzuordnung;
+optional teilt eine zweite,
 abweichende Dimension jede Primärgruppe weiter auf. Kombinierte Bezeichnungen
 wie `Kategorie › Konto` bleiben in Tabelle, Drill-down, CSV, PDF und Druck
 identisch. Jede Gruppe besitzt einen Drill-down bis zu ihren Buchungen und
@@ -431,10 +432,12 @@ Splitzeilen. Währungen werden niemals unbemerkt addiert. Filter, Gruppierung
 und Sortierung lassen sich als versionierte Vorlage speichern.
 Buchungsdetails, primäre Zwischensummen und währungsgetrennte Gesamtsummen
 sind unabhängig ein- und ausblendbar; diese Darstellungseinstellungen werden
-ebenfalls in Vorlagen gespeichert. Das Menü `Standardberichte` setzt sechs
+ebenfalls in Vorlagen gespeichert. Das Menü `Standardberichte` setzt sieben
 sofort nutzbare, weiterhin vollständig editierbare Abfragen für
 Einnahmen/Ausgaben nach Kategorie oder Empfänger, Buchungsbericht, Cashflow,
-Kontobewegungen sowie Kategorie/Klasse auf. Sie beginnen im aktuellen
+Kontobewegungen, Kategorie/Klasse sowie einen deutschen Steuerbericht auf.
+Der Steuerbericht berücksichtigt nur Kategorien mit gepflegter deutscher
+Steuerzeile und gliedert darunter nach dem vollständigen Kategoriepfad. Sie beginnen im aktuellen
 Kalenderjahr und verwenden dieselbe Snapshot-, Drill-down- und Exportlogik wie
 freie Berichte. CSV-Ausgaben unterstützen Semikolon, Komma
 oder Tabulator sowie UTF-8 oder ISO-8859-1 und verwenden ein deterministisches
@@ -449,6 +452,16 @@ Der XLSX-Export erzeugt ohne zusätzliche Laufzeitabhängigkeit ein echtes
 Open-XML-Arbeitsblatt mit numerischen, währungsabhängig formatierten Beträgen.
 `Kopieren` legt denselben Bericht gleichzeitig als tabulatorgetrennte Tabelle
 und als maskiertes HTML in die macOS-Zwischenablage.
+
+Jeder buchungsbasierte Bericht kann zusätzlich als Balken- oder
+Tortendiagramm für Einnahmen oder Ausgaben dargestellt werden. Die Diagramme
+verwenden ausschließlich die bereits gefilterten Detailgruppen desselben
+Snapshots. Pro Währung entstehen getrennte Diagramme; die größten elf Werte
+bleiben einzeln sichtbar und weitere Werte werden als exakt summierter Rest
+zusammengefasst. Tabelle, Gruppenwahl und Buchungs-Drill-down bleiben darunter
+erhalten. Darstellung, Diagrammkennzahl und Steuerfilter werden in
+Berichtsvorlagen der Definitionsversion 4 gespeichert; ältere Vorlagen öffnen
+weiterhin als Tabelle.
 
 Der Standardbericht `Kontosalden und Nettovermögen` besitzt eine eigene
 Stichtagsberechnung: Eröffnungssaldo und alle nicht stornierten Buchungen bis
