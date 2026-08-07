@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 37
+    static let currentSchemaVersion = 38
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -2020,6 +2020,49 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 37")
             }
         }
+        if version < 38 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(scheduled_transactions)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if columns.isEmpty {
+                    try execute(
+                        """
+                        CREATE TABLE scheduled_transactions (
+                            id TEXT PRIMARY KEY,
+                            finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                            name TEXT NOT NULL,
+                            account_id TEXT NOT NULL REFERENCES accounts(id),
+                            payee TEXT NOT NULL DEFAULT '',
+                            purpose TEXT NOT NULL DEFAULT '',
+                            category_id TEXT REFERENCES categories(id),
+                            amount_minor INTEGER NOT NULL,
+                            currency TEXT NOT NULL,
+                            next_due_date TEXT NOT NULL,
+                            end_date TEXT,
+                            frequency TEXT NOT NULL,
+                            action TEXT NOT NULL,
+                            reminder_days INTEGER NOT NULL DEFAULT 0,
+                            is_active INTEGER NOT NULL DEFAULT 1,
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            version INTEGER NOT NULL DEFAULT 1,
+                            transaction_template_json TEXT
+                        )
+                        """
+                    )
+                    try execute(
+                        "CREATE INDEX IF NOT EXISTS scheduled_transactions_due ON scheduled_transactions(is_active,next_due_date,id)"
+                    )
+                } else if !columns.contains("transaction_template_json") {
+                    try execute(
+                        "ALTER TABLE scheduled_transactions ADD COLUMN transaction_template_json TEXT"
+                    )
+                }
+                try execute("PRAGMA user_version = 38")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2515,10 +2558,12 @@ final class SQLiteFinanceStore {
 
     func scheduledTransactions() throws -> [ScheduledTransaction] {
         var values: [ScheduledTransaction] = []
+        let decoder = JSONDecoder()
         try query(
             """
             SELECT id,name,account_id,payee,purpose,category_id,amount_minor,currency,
-                   next_due_date,end_date,frequency,action,reminder_days,is_active
+                   next_due_date,end_date,frequency,action,reminder_days,is_active,
+                   transaction_template_json
             FROM scheduled_transactions ORDER BY is_active DESC,next_due_date,name COLLATE NOCASE,id
             """
         ) {
@@ -2529,6 +2574,25 @@ final class SQLiteFinanceStore {
                 let frequency = RecurrenceFrequency(rawValue: Self.text($0, 10)),
                 let action = ScheduledAction(rawValue: Self.text($0, 11))
             else { return }
+            let transactionTemplate: TransactionTemplate?
+            if let payload = Self.optionalText($0, 14) {
+                guard let data = payload.data(using: .utf8) else {
+                    throw FinanceError.database(
+                        "Der Buchungsinhalt eines regelmäßigen Vorgangs ist beschädigt."
+                    )
+                }
+                do {
+                    transactionTemplate = try decoder.decode(
+                        TransactionTemplate.self, from: data
+                    )
+                } catch {
+                    throw FinanceError.database(
+                        "Der Buchungsinhalt des regelmäßigen Vorgangs „\(Self.text($0, 1))“ ist beschädigt."
+                    )
+                }
+            } else {
+                transactionTemplate = nil
+            }
             values.append(
                 ScheduledTransaction(
                     id: id,
@@ -2544,7 +2608,8 @@ final class SQLiteFinanceStore {
                     frequency: frequency,
                     action: action,
                     reminderDays: Int(sqlite3_column_int($0, 12)),
-                    isActive: sqlite3_column_int($0, 13) != 0
+                    isActive: sqlite3_column_int($0, 13) != 0,
+                    transactionTemplate: transactionTemplate
                 )
             )
         }
@@ -2558,6 +2623,44 @@ final class SQLiteFinanceStore {
         if let endDate = value.endDate, endDate < value.nextDueDate {
             throw FinanceError.database("Das Enddatum liegt vor der nächsten Fälligkeit.")
         }
+        guard let account = try accounts().first(where: { $0.id == value.accountID }) else {
+            throw FinanceError.database("Das Konto des regelmäßigen Vorgangs fehlt.")
+        }
+        guard !account.isClosed else {
+            throw FinanceError.database("Für ein geschlossenes Konto kann kein regelmäßiger Vorgang gespeichert werden.")
+        }
+        guard account.currency == value.currency else {
+            throw FinanceError.database(
+                "Die Währung des regelmäßigen Vorgangs stimmt nicht mit dem Konto überein."
+            )
+        }
+        var transactionTemplate = value.transactionTemplate
+        if transactionTemplate != nil {
+            transactionTemplate?.name = value.name
+            transactionTemplate?.accountID = value.accountID
+            transactionTemplate?.payee = value.payee
+            transactionTemplate?.purpose = value.purpose
+            transactionTemplate?.categoryID = value.categoryID
+            transactionTemplate?.amountMinor = value.amountMinor
+            transactionTemplate?.currency = value.currency
+            if let transactionTemplate {
+                try transactionTemplate.transaction().validate()
+            }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let transactionTemplateJSON: String?
+        if let transactionTemplate {
+            let data = try encoder.encode(transactionTemplate)
+            guard let payload = String(data: data, encoding: .utf8) else {
+                throw FinanceError.database(
+                    "Der Buchungsinhalt des regelmäßigen Vorgangs konnte nicht codiert werden."
+                )
+            }
+            transactionTemplateJSON = payload
+        } else {
+            transactionTemplateJSON = nil
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -2566,14 +2669,15 @@ final class SQLiteFinanceStore {
                 INSERT INTO scheduled_transactions(
                     id,finance_file_id,name,account_id,payee,purpose,category_id,amount_minor,
                     currency,next_due_date,end_date,frequency,action,reminder_days,is_active,
-                    created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    transaction_template_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,account_id=excluded.account_id,
                     payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                     amount_minor=excluded.amount_minor,currency=excluded.currency,
                     next_due_date=excluded.next_due_date,end_date=excluded.end_date,
                     frequency=excluded.frequency,action=excluded.action,
                     reminder_days=excluded.reminder_days,is_active=excluded.is_active,
+                    transaction_template_json=excluded.transaction_template_json,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
@@ -2585,6 +2689,7 @@ final class SQLiteFinanceStore {
                     value.endDate.map { .text(Self.day($0)) } ?? .null,
                     .text(value.frequency.rawValue), .text(value.action.rawValue),
                     .integer(Int64(value.reminderDays)), .integer(value.isActive ? 1 : 0),
+                    transactionTemplateJSON.map { .text($0) } ?? .null,
                     .text(now), .text(now)
                 ]
             )

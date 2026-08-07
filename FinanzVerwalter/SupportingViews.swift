@@ -8306,16 +8306,36 @@ private struct ScheduledOccurrenceEditor: View {
     }
 }
 
-private struct ScheduledTransactionEditor: View {
+struct ScheduledTransactionEditor: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: FinanceAppStore
     @State private var value: ScheduledTransaction
     @State private var amountText: String
     @State private var hasEndDate: Bool
 
+    private var template: TransactionTemplate? { value.transactionTemplate }
+
+    private var locksAmount: Bool {
+        guard let template else { return false }
+        return !template.splits.isEmpty
+            || (template.vatMode ?? .none) != .none
+            || template.originalAmountMinor != nil
+    }
+
+    private var availableAccounts: [FinanceAccount] {
+        store.accounts.filter {
+            !$0.isClosed && $0.currency == value.currency
+        }
+    }
+
     init(value: ScheduledTransaction) {
         _value = State(initialValue: value)
-        _amountText = State(initialValue: Money(minorUnits: value.amountMinor).editingString)
+        _amountText = State(
+            initialValue: Money(
+                minorUnits: value.amountMinor,
+                currency: value.currency
+            ).editingString
+        )
         _hasEndDate = State(initialValue: value.endDate != nil)
     }
 
@@ -8335,7 +8355,7 @@ private struct ScheduledTransactionEditor: View {
                 Section("Vorgang") {
                     TextField("Name", text: $value.name)
                     Picker("Konto", selection: $value.accountID) {
-                        ForEach(store.accounts) { Text($0.name).tag($0.id) }
+                        ForEach(availableAccounts) { Text($0.name).tag($0.id) }
                     }
                     TextField("Empfänger", text: $value.payee)
                     TextField("Verwendungszweck", text: $value.purpose)
@@ -8345,8 +8365,56 @@ private struct ScheduledTransactionEditor: View {
                             Text(store.categoryPath($0.id)).tag(Optional($0.id))
                         }
                     }
+                    .disabled(template?.splits.isEmpty == false)
                     TextField("Betrag", text: $amountText)
                         .multilineTextAlignment(.trailing)
+                        .disabled(locksAmount)
+                        .help(
+                            locksAmount
+                                ? "Der Betrag ist geschützt, damit übernommene Splits, MwSt. oder Fremdwährung exakt bleiben."
+                                : "Grundrechenarten und Klammern sind erlaubt."
+                        )
+                    if locksAmount {
+                        Text(
+                            "Betrag und Aufteilung stammen vollständig aus der Buchung. "
+                                + "Splits, MwSt. und Fremdwährung bleiben dadurch unverändert."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                if let template, !template.splits.isEmpty {
+                    Section("Übernommene Aufteilung") {
+                        ForEach(template.splits.indices, id: \.self) { index in
+                            let split = template.splits[index]
+                            HStack {
+                                Text(
+                                    split.categoryID.map(store.categoryPath)
+                                        ?? "Nicht kategorisiert"
+                                )
+                                Spacer()
+                                Text(
+                                    Money(
+                                        minorUnits: split.amountMinor,
+                                        currency: value.currency
+                                    ).formatted
+                                )
+                                .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                if let template, let originalAmount = template.originalAmountMinor,
+                   let originalCurrency = template.originalCurrency {
+                    Section("Übernommene Fremdwährung") {
+                        LabeledContent(
+                            "Originalbetrag",
+                            value: Money(
+                                minorUnits: originalAmount,
+                                currency: originalCurrency
+                            ).formatted
+                        )
+                    }
                 }
                 Section("Zeitplan") {
                     DatePicker("Nächste Fälligkeit", selection: $value.nextDueDate, displayedComponents: .date)
@@ -8392,7 +8460,10 @@ private struct ScheduledTransactionEditor: View {
 
     private func save() {
         do {
-            value.amountMinor = try Money(parsing: amountText, currency: value.currency).minorUnits
+            value.amountMinor = try Money(
+                evaluating: amountText,
+                currency: value.currency
+            ).minorUnits
             if !hasEndDate { value.endDate = nil }
             if store.saveScheduledTransaction(value) {
                 dismiss()

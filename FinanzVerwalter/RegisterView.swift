@@ -13,6 +13,7 @@ struct RegisterView: View {
     @State private var showTemplateNameEditor = false
     @State private var templateName = ""
     @State private var templateSource: FinanceTransaction?
+    @State private var scheduledDraft: ScheduledTransaction?
     @State private var showDeleteConfirmation = false
     @State private var showTransactionUndoConfirmation = false
     @State private var statusFilter: TransactionStatus?
@@ -334,6 +335,13 @@ struct RegisterView: View {
                             selection = ids
                             prepareTemplateFromSelection()
                         }
+                        Button(
+                            "Als regelmäßigen Vorgang …",
+                            systemImage: "calendar.badge.plus"
+                        ) {
+                            prepareScheduledTransaction(from: transaction)
+                        }
+                        .disabled(transaction.transferID != nil)
                         if transaction.categoryID != nil,
                            transaction.splits.isEmpty {
                             Button("Regel aus Buchung erstellen") {
@@ -437,6 +445,9 @@ struct RegisterView: View {
             MoveTransactionView(transaction: transaction) {
                 selection.removeAll()
             }
+        }
+        .sheet(item: $scheduledDraft) { value in
+            ScheduledTransactionEditor(value: value)
         }
         .sheet(isPresented: $showSaveView) {
             VStack(alignment: .leading, spacing: 18) {
@@ -669,6 +680,14 @@ struct RegisterView: View {
             transaction: value
         )
         showEditor = true
+    }
+
+    private func prepareScheduledTransaction(from value: FinanceTransaction) {
+        do {
+            scheduledDraft = try ScheduledTransaction.draft(from: value)
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
     }
 
     private func copyToPasteboard(_ value: FinanceTransaction) {

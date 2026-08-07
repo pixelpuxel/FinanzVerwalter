@@ -124,6 +124,18 @@ Splits, Tags und vorhandene Fremdwährungsangaben, aber niemals altes Datum,
 Belegnummer, Transfer- oder Importidentität. Eine einzelne Umbuchungsseite ist
 keine zulässige Vorlage.
 
+Über das Kontextmenü `Als regelmäßigen Vorgang …` entsteht aus genau einer
+markierten Buchung unmittelbar ein vorausgefüllter Serienentwurf. Die nächste
+monatliche Fälligkeit behält den Buchungstag beziehungsweise die
+Monatsende-Semantik. Schema 38 speichert zusätzlich den vollständigen
+Buchungsinhalt: Notiz, Empfängerakte, Tags, Splits samt Split-Tags und MwSt.
+sowie Originalbetrag und Wechselkurs. Bank-, Import-, Abgleichs- und
+Umbuchungsidentitäten werden nicht kopiert. Bei strukturierten Beträgen bleibt
+das Betragsfeld im Serieneditor geschützt, damit Aufteilung, Steuer und
+Fremdwährung nicht auseinanderlaufen. Eine bewusst abweichende einzelne oder
+künftige Serieninstanz wird als einfache Buchung erzeugt und übernimmt keine
+dadurch unzutreffenden Splits oder Währungsdaten.
+
 ## Betragsrechner im Buchungsdialog
 
 Das Betragsfeld wertet neben deutschen Beträgen auch die Grundrechenarten

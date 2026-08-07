@@ -3145,3 +3145,44 @@ Rechtsberatung.
 - Telegram-Nachricht 1059 meldet denselben Stand im `/quicken`-Thread 894 und
   erklärt ausdrücklich den wegen der gesperrten Sitzung fehlenden Screenshot.
   Exakter kumulativer Zielzählerstand nach Veröffentlichung: 19.492.107 Tokens.
+
+## Direkter Serienentwurf aus einer Buchung, Schema 38 und Installation am 7. August 2026
+
+- Das Kontoblatt bietet für genau eine ausgewählte Nicht-Umbuchung nun
+  `Als regelmäßigen Vorgang …`. Der vorausgefüllte Monatsentwurf liegt heute
+  oder künftig und bewahrt die Monatsende-Semantik. Eine einzelne Seite einer
+  Umbuchung wird bewusst abgewiesen.
+- Migration 38 ergänzt den vollständigen, deterministisch codierten
+  Buchungsinhalt einer Serie. Notiz, Empfängerakte, Tags, Splits samt
+  Split-Tags und MwSt. sowie Fremdwährungsbetrag und Kurs bleiben erhalten;
+  Referenz-, Import-, Provider-, Bank-, Abgleichs- und Transferidentitäten
+  werden nicht kopiert. Abweichende Beträge oder Kategorien einer Instanz
+  entfernen abhängige Struktur statt inkonsistente Buchungen zu erzeugen.
+- Der Serieneditor zeigt den geerbten strukturierten Inhalt an, beschränkt
+  Kontowechsel auf offene Konten derselben Währung und schützt Betrag bzw.
+  Kategorie, solange Splits, Steuer oder Fremdwährung davon abhängen. Der
+  Store validiert Konto, Währung und vollständige Buchung erneut und speichert
+  Payload und Audit atomar. ADR 0031 hält diese Invarianten fest.
+- Die gezielten Modell-, Persistenz-, Serien- und Migrationstests sind grün.
+  Der vollständige Lauf unter
+  `build/TestResults/ScheduledFromBooking-full-20260807-1932.xcresult` umfasst
+  147 Tests: 146 bestanden, 1 privater opt-in-Real-QIF-Test erwartungsgemäß
+  übersprungen, 0 fehlgeschlagen.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-ScheduledFromBooking-Release` wurde gebaut, lokal ad-hoc
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `060872f77fc04a28654d5de6c3fe7b3771af8898a7cbe954f183ebbde9abe810`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link `FinanzVerwalter.app` zeigt auf die Systeminstallation.
+- Beide Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-1936-scheduled-from-booking/`. Vor der
+  Migration wurde die Produktivdatei als validiertes Schema-37-Backup unter
+  `build/ProductionBackups/20260807-1936-scheduled-from-booking/` gesichert.
+  Nach dem Start besitzt die Produktivdatei Schema 38 und Integrität `ok`;
+  97 Konten, 2.170 Buchungen und 782 Kategorien blieben unverändert.
+- Prozess 23802 läuft direkt aus `/Applications`. Die Computersteuerung konnte
+  das Fenster wegen der gesperrten macOS-Sitzung nicht sichtbar prüfen oder
+  fotografieren; die Sperre wurde nicht umgangen. Exakter kumulativer
+  Zielzählerstand nach Test, Release, Installation und Produktivprüfung:
+  19.853.136 Tokens.

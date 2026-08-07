@@ -491,7 +491,7 @@ enum SecureNoteLinkPolicy {
     }
 }
 
-struct TransactionTemplateSplit: Codable, Equatable, Sendable {
+struct TransactionTemplateSplit: Codable, Hashable, Sendable {
     var categoryID: UUID?
     var amountMinor: Int64
     var memo: String
@@ -503,7 +503,7 @@ struct TransactionTemplateSplit: Codable, Equatable, Sendable {
     var taxMinor: Int64?
 }
 
-struct TransactionTemplate: Identifiable, Codable, Equatable, Sendable {
+struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
     var accountID: UUID
@@ -1431,6 +1431,44 @@ struct ScheduledTransaction: Identifiable, Hashable, Sendable {
     var action: ScheduledAction
     var reminderDays: Int
     var isActive: Bool
+    var transactionTemplate: TransactionTemplate? = nil
+
+    static func draft(
+        from transaction: FinanceTransaction,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) throws -> ScheduledTransaction {
+        guard transaction.transferID == nil else {
+            throw FinanceError.database(
+                "Eine einzelne Umbuchungsseite kann nicht als regelmäßiger Vorgang gespeichert werden."
+            )
+        }
+        let suggested = transaction.payee.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = transaction.purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = suggested.isEmpty
+            ? (fallback.isEmpty ? "Neuer regelmäßiger Vorgang" : fallback)
+            : suggested
+        let frequency = RecurrenceFrequency.monthly
+        let today = calendar.startOfDay(for: now)
+        var nextDueDate = calendar.startOfDay(for: transaction.bookingDate)
+        var guardCount = 0
+        while nextDueDate < today, guardCount < 1_200 {
+            nextDueDate = frequency.next(after: nextDueDate, calendar: calendar)
+            guardCount += 1
+        }
+        if nextDueDate < today { nextDueDate = today }
+        return ScheduledTransaction(
+            id: UUID(), name: name, accountID: transaction.accountID,
+            payee: transaction.payee, purpose: transaction.purpose,
+            categoryID: transaction.categoryID,
+            amountMinor: transaction.amountMinor, currency: transaction.currency,
+            nextDueDate: nextDueDate, endDate: nil, frequency: frequency,
+            action: .remind, reminderDays: 3, isActive: true,
+            transactionTemplate: TransactionTemplate(
+                name: name, transaction: transaction
+            )
+        )
+    }
 
     func occurrences(
         until end: Date,
@@ -1492,20 +1530,52 @@ struct ScheduledTransaction: Identifiable, Hashable, Sendable {
                   effectiveDate <= end,
                   !excludingReferences.contains(reference)
             else { continue }
-            let value = FinanceTransaction(
+            let effectivePayee = exception?.payee ?? activeRevision?.payee ?? payee
+            let effectivePurpose = exception?.purpose ?? activeRevision?.purpose ?? purpose
+            let effectiveCategory = exception.map(\.categoryID)
+                ?? activeRevision.map(\.categoryID) ?? categoryID
+            let effectiveAmount = exception?.amountMinor
+                ?? activeRevision?.amountMinor ?? amountMinor
+            var value = transactionTemplate?.transaction(on: effectiveDate)
+                ?? FinanceTransaction(
                     id: UUID(), accountID: accountID,
                     bookingDate: effectiveDate, valueDate: effectiveDate,
-                    payee: exception?.payee ?? activeRevision?.payee ?? payee,
-                    purpose: exception?.purpose ?? activeRevision?.purpose ?? purpose,
-                    categoryID: exception.map { $0.categoryID }
-                        ?? activeRevision.map { $0.categoryID } ?? categoryID,
-                    amountMinor: exception?.amountMinor
-                        ?? activeRevision?.amountMinor ?? amountMinor,
+                    payee: effectivePayee, purpose: effectivePurpose,
+                    categoryID: effectiveCategory, amountMinor: effectiveAmount,
                     currency: currency, status: .expected,
-                    memo: "Regelmäßig: \(name)",
-                    reference: reference,
-                    transferID: nil, importFingerprint: nil, splits: []
+                    memo: "", reference: "", transferID: nil,
+                    importFingerprint: nil, splits: []
                 )
+            value.accountID = accountID
+            value.bookingDate = effectiveDate
+            value.valueDate = effectiveDate
+            value.payee = effectivePayee
+            value.purpose = effectivePurpose
+            value.categoryID = effectiveCategory
+            value.amountMinor = effectiveAmount
+            value.currency = currency
+            value.status = .expected
+            value.memo = value.memo.isEmpty
+                ? "Regelmäßig: \(name)"
+                : value.memo + "\nRegelmäßig: \(name)"
+            value.reference = reference
+            value.transferID = nil
+            value.importFingerprint = nil
+            value.origin = .manual
+            value.externalProvider = ""
+            value.externalTransactionID = ""
+            value.duplicateFingerprint = ""
+            value.bankBalanceAfterMinor = nil
+            if effectiveAmount != amountMinor || effectiveCategory != categoryID {
+                value.splits = []
+                value.vatCodeID = nil
+                value.vatMode = .none
+                value.netMinor = 0
+                value.taxMinor = 0
+                value.originalAmountMinor = nil
+                value.originalCurrency = ""
+                value.exchangeRateScaled = nil
+            }
             values.append(value)
         }
         return values.sorted {

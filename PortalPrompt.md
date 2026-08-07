@@ -122,10 +122,10 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 37 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 145 XCTest-Fälle: 144 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 147 XCTest-Fälle: 146 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -331,6 +331,12 @@ oder persönliche Pfade committen.
 Für Serientermine gilt reproduzierbar:
 
 - Persistenz in `scheduled_transactions` ab SQLite-Migration 4.
+- Migration 38 ergänzt `transaction_template_json` als optionalen,
+  deterministisch codierten vollständigen Buchungsinhalt. Ein aus dem
+  Kontoblatt erzeugter Serienentwurf bewahrt Notiz, Empfängerakte, Tags,
+  Splits samt Split-Tags und MwSt.-Werten sowie Fremdwährungsbetrag und Kurs.
+  Referenz, Transfer-, Import-, Provider-, Bank- und Abgleichsidentitäten
+  werden niemals übernommen.
 - Einzelne geänderte oder übersprungene Instanzen werden ab Migration 33 in
   `scheduled_transaction_exceptions` gespeichert. Pro Serie und
   ursprünglichem Fälligkeitsdatum existiert höchstens eine Ausnahme.
@@ -349,6 +355,12 @@ Für Serientermine gilt reproduzierbar:
   Verwendungszweck, Kategorie einschließlich `keine Kategorie` und Betrag
   vollständig überschreiben. Eine übersprungene Instanz wird nicht in die
   Prognose aufgenommen, bleibt aber als rücksetzbare Ausnahme sichtbar.
+- Solange Betrag und Kategorie unverändert bleiben, erzeugt eine Serie mit
+  vollständigem Buchungsinhalt pro Instanz neue Buchungs- und Split-UUIDs und
+  bewahrt Splits, Tags, MwSt. und Fremdwährung. Ändert eine Einzelinstanz oder
+  Revision Betrag beziehungsweise Kategorie, entferne Splits, MwSt.- und
+  Fremdwährungsdetails statt einen inkonsistenten strukturierten Beleg zu
+  erzeugen. Die resultierende einfache Instanz muss weiterhin validieren.
 - Eine Serienrevision überschreibt ab ihrer ursprünglichen Fälligkeit Datum,
   Empfänger, Verwendungszweck, Kategorie und Betrag. Die unveränderte
   Frequenz läuft vom neuen Datum aus weiter; die n-te wirksame Instanz behält
@@ -1098,6 +1110,16 @@ Split-Tags. Eine abgeglichene oder stornierte Quellbuchung wird als gebuchte
 Vorlage gespeichert; eine einzelne Umbuchungsseite wird abgelehnt. Beim
 Anwenden entstehen neue Buchungs- und Split-IDs sowie das heutige Datum;
 Referenz, Transfer-ID und Importfingerprint bleiben leer.
+
+Das Kontoblatt bietet zusätzlich `Als regelmäßigen Vorgang …`. Erzeuge daraus
+über `ScheduledTransaction.draft(from:)` eine neue UUID, einen Namen aus
+Empfänger oder Zweck, den nächsten heute oder künftig liegenden Monatstermin
+mit erhaltener Monatsende-Semantik und Aktion `Nur erinnern`. Lehne eine
+einzelne Umbuchungsseite ab. Der Serieneditor zeigt geerbte Splits und
+Fremdwährung sichtbar an und sperrt den Betrag, solange Split-, MwSt.- oder
+Fremdwährungsinvarianten davon abhängen. Kontowechsel sind nur innerhalb
+derselben Währung zulässig. Der Store prüft offenes Konto, Kontowährung und
+den vollständigen Payload erneut, bevor er atomar speichert und auditiert.
 
 Vor dem Mehrfachlöschen müssen alle ausgewählten IDs existieren und alle
 ausgewählten Buchungen sowie beide Seiten betroffener Umbuchungen
