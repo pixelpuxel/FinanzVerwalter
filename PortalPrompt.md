@@ -372,6 +372,15 @@ Für Serientermine gilt reproduzierbar:
   alle Splitzeilen müssen beim Kategorie- und Klassenfilter geprüft werden.
 - Navigation über vorherigen Zeitraum, `Heute` und nächsten Zeitraum muss
   Monats-, Schaltjahres- und Jahresgrenzen deterministisch erhalten.
+- Mache ausschließlich erwartete Buchungen ohne verknüpftes Umbuchungspaar
+  sowie virtuelle regelmäßige Termine ziehbar. Eine Kalenderzelle nimmt ihre
+  stabile interne Kennung entgegen, validiert vor einer Mutation und verlangt
+  eine Bestätigung mit Quell- und Zieldatum. Ziele vor dem heutigen lokalen
+  Tag und der identische Tag sind unzulässig. Reale erwartete Buchungen werden
+  vollständig mit neuem Buchungsdatum und gegebenenfalls mitlaufender
+  Wertstellung über den vorhandenen auditierbaren Buchungsspeicher geändert.
+  Ein virtueller Termin wird als persistente, rücksetzbare Einzelausnahme mit
+  unveränderter Serien-ID und ursprünglicher Fälligkeitskennung verschoben.
 
 Für Budgets gilt reproduzierbar:
 

@@ -403,6 +403,14 @@ Unterklassen mit einbezogen. Kategorien und Klassen in Splitzeilen zählen
 ebenfalls. `Heute` und die Pfeiltasten navigieren deterministisch durch den
 gewählten Zeitraum.
 
+Erwartete manuelle Prognosebuchungen und regelmäßige Termine lassen sich in
+Monat und Woche auf einen anderen Tag ziehen. Vor dem Speichern zeigt die App
+Quell- und Zieldatum zur Bestätigung. Vergangenheit, derselbe Tag, gebuchte
+Vorgänge und verknüpfte Umbuchungen werden abgewiesen. Eine reale erwartete
+Buchung behält alle Inhalte und wird mit Buchungs-Undo gespeichert; ein
+regelmäßiger Termin wird als rücksetzbare Einzelausnahme verschoben und behält
+seine stabile Ursprungskennung.
+
 Eine einzelne Serieninstanz kann über ihren stabilen Ursprungstermin
 geändert oder übersprungen werden. Datum, Empfänger, Verwendungszweck,
 Kategorie und Betrag der geänderten Instanz werden dauerhaft als Ausnahme
@@ -416,8 +424,8 @@ Rhythmus wird dabei vom neuen Datum aus mit derselben Frequenz fortgeführt;
 alle virtuellen Termine behalten dennoch ihre stabile ursprüngliche
 Herkunftskennung. Solche Änderungspunkte sind als `Serienänderungen`
 sichtbar, einzeln rücksetzbar und können weiterhin durch eine spätere
-Einzelausnahme übersteuert werden. Direktes Drag-and-drop im Kalender und
-Was-wäre-wenn-Szenarien sind noch nicht umgesetzt.
+Einzelausnahme übersteuert werden. Was-wäre-wenn-Szenarien sind noch nicht
+umgesetzt.
 
 ## Kategorien und Mehrwertsteuer
 

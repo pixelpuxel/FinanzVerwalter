@@ -2783,6 +2783,44 @@ Rechtsberatung.
   und GitHub-Stand im gefundenen `/quicken`-Thread 894. Sie nennt transparent
   die Bildschirmsperre als Grund für den fehlenden echten Screenshot. Der
   exakte kumulative Zielzählerstand nach dem Versand beträgt 16.941.246 Tokens.
+
+## 07.08.2026 – Validiertes Kalender-Drag-and-drop
+
+- Erwartete Buchungen ohne verknüpftes Umbuchungspaar und virtuelle
+  regelmäßige Termine können in Monats- und Wochenansicht auf einen anderen
+  Kalendertag gezogen werden. Alle anderen Status sind keine Drag-Quellen.
+  Vor der Mutation nennt ein Bestätigungsdialog Vorgang, Quell- und Zieldatum.
+- Die reine `FinanceCalendarMovePolicy` lehnt Ziele vor dem heutigen lokalen
+  Tag, denselben Tag, gebuchte Zustände, Umbuchungspaare und ungültige
+  Serienreferenzen ab. Bei einer erwarteten realen Buchung folgt die
+  Wertstellung nur dann dem neuen Buchungsdatum, wenn sie zuvor mit diesem
+  zusammenfiel; ein abweichendes Wertstellungsdatum bleibt erhalten. Die
+  vollständige Buchung wird über den vorhandenen Audit-/Undo-Pfad gespeichert.
+- Ein virtueller Serientermin wird als persistente `modified`-Einzelausnahme
+  verschoben. Serien-ID, ursprüngliche Fälligkeit, Ausnahme-ID, Erstellzeit
+  und vorhandene Notiz bleiben bei erneutem Verschieben stabil; dadurch
+  funktionieren Deduplizierung und Rücksetzen unverändert.
+- Der vollständige Result-Bundle
+  `/tmp/FinanzVerwalterCalendarDragDD/Logs/Test/Test-FinanzVerwalter-2026.08.07_15-35-18-+0200.xcresult`
+  enthält 129 Tests: 128 bestanden, der private opt-in-QIF-Test ohne Pfad
+  planmäßig übersprungen, 0 Fehler und 0 erwartete Fehler. Gezielte Tests
+  prüfen sämtliche Verbote, mitlaufende und unabhängige Wertstellung,
+  normalisiertes Zieldatum, stabile Serienausnahme und ungültige Referenz.
+  Debug-Build, Vollsuite, `git diff --check` und optimierter arm64-Release sind
+  grün.
+- Der signaturgeprüfte Release liegt unter
+  `build/DerivedData-CalendarDrag-Release`; SHA-256 des ausführbaren Codes ist
+  `66801bd43e8cbe8d513e37356af29dc1aea96945f025521bc83e153b07f2854a`.
+  Identische Kopien liegen unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app`. Die Vorgänger sind reversibel als
+  `build/FinanzVerwalter-vor-kalenderdrag-20260807-1540.app` und
+  `build/FinanzVerwalter-user-vor-kalenderdrag-20260807-1540.app` erhalten.
+- Der echte Start läuft als Prozess 83581 aus `/Applications`. Produktivdatei:
+  Schema 34, Integrität `ok`, unverändert 97 Konten, 2.170 Buchungen,
+  782 Kategorien, eine Berichtsvorlage und jeweils 0 Serien, Einzelausnahmen
+  und Serienrevisionen. Die Sitzung ist weiterhin gesperrt, weshalb kein
+  fingierter Screenshot erzeugt wurde. Exakter kumulativer Zielzählerstand
+  nach Installation und Produktivprüfung: 17.059.375 Tokens.
   Der exakte Zielzählerstand vor dieser Dokumentation beträgt 16.682.116
   Tokens.
 - GitHub Draft-PR #1 wurde konfliktfrei mit Head `4ed8485`, dem

@@ -27,10 +27,17 @@ Termine bilden eine eigene Klasse. Konto-, Kategorie- und Klassenfilter sind
 kombinierbar. Hierarchiefilter schließen Nachfahren ein und prüfen auch
 Splitzeilen; Auswahllisten zeigen stets den vollständigen Pfad.
 
+Drag-and-drop transportiert ausschließlich die stabile interne Kennung. Nur
+erwartete Buchungen ohne Umbuchungspaar und virtuelle regelmäßige Termine
+sind Quellen. Vor der bestätigten Mutation werden Vergangenheit und derselbe
+Tag abgewiesen. Reale Vorgänge nutzen den auditierbaren Buchungsspeicher;
+regelmäßige Vorgänge erzeugen oder aktualisieren eine rücksetzbare Ausnahme
+mit unveränderter Ursprungsidentität.
+
 ## Folgen
 
 Schaltmonate und Wochen über Jahresgrenzen sind ohne UI deterministisch
 testbar. Der Kalender verändert keine Buchungs- oder Prognosedaten. Reale und
-virtuelle Vorgänge können visuell unterschieden werden, ohne die bestehende
-Serienbearbeitung der Liste zu verlieren. Direktes Drag-and-drop und
-Was-wäre-wenn-Szenarien bleiben getrennte Erweiterungen.
+virtuelle Vorgänge können visuell unterschieden und sicher verschoben werden,
+ohne die bestehende Serienbearbeitung der Liste zu verlieren.
+Was-wäre-wenn-Szenarien bleiben eine getrennte Erweiterung.
