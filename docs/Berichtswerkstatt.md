@@ -17,7 +17,7 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Umbuchungen und Splitauflösung sind explizite Optionen.
 - `TransactionReportEngine` erzeugt unveränderliche Fakten, trennt Währungen
   und verhindert die Doppelzählung von Haupt- und Splitbuchung.
-- Gruppierung nach Kategorie, Empfänger, Konto, Klasse/Tag oder deutscher
+- Gruppierung nach Kategorie, Empfänger, Konto, Klasse/Tag, Monat oder deutscher
   Steuerzuordnung liefert
   Einnahmen, Ausgaben, Saldo und referenzierte Fakten.
 - Eine optionale zweite, abweichende Gruppierungsdimension bildet stabile
@@ -28,16 +28,17 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Buchungsdetails, primäre Zwischensummen und Gesamtsummen sind unabhängig
   schaltbar. Die optionalen Query-Felder bleiben beim Laden alter Vorlagen
   rückwärtskompatibel und werden ab Definitionsversion 3 gespeichert.
-- Sieben editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
+- Acht editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
   Kategorie, Empfänger, Buchungsjournal, Cashflow, Kontobewegungen und
-  Kategorie/Klasse sowie deutsche Steuerzuordnungen. Der Steuerbericht filtert
+  Kategorie/Klasse, monatlichen Cashflow sowie deutsche Steuerzuordnungen. Der Steuerbericht filtert
   nicht gepflegte Steuerzeilen und gliedert danach nach vollständigem
   Kategoriepfad. Dieselben Definitionen sind deterministisch testbar und
   können als normale Vorlage gespeichert werden.
-- Balken- und Tortendiagramme für Einnahmen oder Ausgaben werden rein aus dem
+- Balken-, Linien-, Flächen- und Tortendiagramme für Einnahmen oder Ausgaben werden rein aus dem
   bestehenden Snapshot abgeleitet. Sie trennen Währungen, sortieren
-  deterministisch und fassen Werte hinter den größten elf centgenau als
-  Restsegment zusammen. Die Berichtstabelle und ihr Drill-down bleiben dabei
+  deterministisch. Balken und Torte fassen Werte hinter den größten elf
+  centgenau als Restsegment zusammen; Linie und Fläche bleiben chronologisch
+  und ungekürzt. Die Berichtstabelle und ihr Drill-down bleiben dabei
   erhalten. Steuerfilter, Diagrammart und Kennzahl werden ab
   Definitionsversion 4 rückwärtskompatibel gespeichert.
 - Die SwiftUI-Werkstatt zeigt die Gruppen und einen Buchungs-Drill-down.
@@ -88,8 +89,7 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   mehrseitiges A4-PDF in Hoch-/Querformat und direkten Systemdruck aus
   derselben Momentaufnahme.
 
-Noch offen sind weitere fachliche Standardberichte sowie Linien- und
-Flächendiagramme.
+Noch offen sind weitere fachliche Standardberichte.
 
 ## Verifizierte Referenzfunktionen
 
@@ -165,6 +165,8 @@ P0:
 - Budgetabweichung *(Geschäftsjahr/Monat, Drill-down, CSV, PDF und Druck umgesetzt)*
 - Deutscher Steuerbericht *(gepflegte Steuerzeilen, Kategorie-Drill-down und
   bestehende Exportpipeline umgesetzt)*
+- Monatlicher Cashflow *(chronologische Monatsgruppierung, vollständige
+  Linien-/Flächenzeitreihe und bestehende Exportpipeline umgesetzt)*
 
 P1:
 
@@ -196,5 +198,5 @@ kommt zusätzlich eine gerenderte Sichtprüfung hinzu.
 
 ## Umsetzungsreihenfolge
 
-1. weitere Standardberichte und Diagrammtypen
+1. weitere fachliche Standardberichte
 2. gespeicherte Spaltenauswahl je Berichtsvorlage

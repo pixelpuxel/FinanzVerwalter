@@ -227,7 +227,7 @@ bei vollständig ausgeblendeten Tabellen ein gültiges Metadatenblatt.
 Ab Definitionsversion 4 speichert die Query zusätzlich die optionalen Felder
 `requireGermanTaxAssignment`, `visualization` und `chartMetric`. Fehlende
 Felder aus älteren Vorlagen bedeuten: kein Steuerfilter, Tabelle und Ausgaben.
-Erweitere `ReportGrouping` um `germanTaxLine` und ergänze den Katalog um den
+Erweitere `ReportGrouping` um `germanTaxLine` und `month` und ergänze den Katalog um den
 Standardbericht `Deutscher Steuerbericht`. Er läuft im aktuellen lokalen
 Kalenderjahr, expandiert Splits, verwirft Fakten ohne nichtleere deutsche
 Steuerzeile und gruppiert zuerst nach Steuerzeile, dann nach vollständigem
@@ -238,14 +238,16 @@ unter der Kategorie.
 Implementiere `ReportChartEngine` als reine Ableitung eines bereits
 berechneten `TransactionReportSnapshot`. Akzeptiere Einnahmen oder Ausgaben,
 verwende ausschließlich Detailgruppen und erzeuge eine `ReportChartSeries`
-je Währung. Sortiere deterministisch nach Betrag absteigend und bei Gleichstand
-nach Bezeichnung. Zeige standardmäßig höchstens zwölf Segmente: Bei mehr
-Werten bleiben elf sichtbar, alle übrigen werden mit exakter Minor-Unit-Summe
-und vereinigten Fakten-IDs zu `Weitere (n)` zusammengefasst. Addiere niemals
-verschiedene Währungen. Falls es bei ungruppierter Abfrage keine Detailgruppen
-gibt, leite je Währung einen Gesamtwert direkt aus den Snapshot-Summen ab.
+je Währung. Für Rangdiagramme sortiere deterministisch nach Betrag absteigend
+und bei Gleichstand nach Bezeichnung. Zeige dort standardmäßig höchstens zwölf
+Segmente: Bei mehr Werten bleiben elf sichtbar, alle übrigen werden mit
+exakter Minor-Unit-Summe und vereinigten Fakten-IDs zu `Weitere (n)`
+zusammengefasst. Zeitreihen werden dagegen nach Bezeichnung chronologisch und
+ohne Kürzung oder Restsegment ausgegeben. Addiere niemals verschiedene
+Währungen. Falls es bei ungruppierter Abfrage keine Detailgruppen gibt, leite
+je Währung einen Gesamtwert direkt aus den Snapshot-Summen ab.
 
-Das UI bietet Tabelle, Balken und Torte sowie Einnahmen oder Ausgaben als
+Das UI bietet Tabelle, Balken, Linie, Fläche und Torte sowie Einnahmen oder Ausgaben als
 Kennzahl. Verwende Swift Charts, formatiere sichtbare Summen über `Money`,
 beschrifte Segmente für VoiceOver und trenne mehrere Währungen horizontal in
 eigene Karten. Das Diagramm ergänzt die bestehende Tabelle; Filter,
@@ -253,7 +255,11 @@ Gruppentabelle, Fakten-Drill-down, CSV, HTML, XLSX, PDF und Systemdruck bleiben
 auf demselben unveränderlichen Snapshot. Teste Steuerfilter inklusive Splits,
 vollständigen Kategoriepfad, Vorlagen-Rückwärtskompatibilität, Roundtrip der
 Version-4-Felder, deterministische Top-N-Reihenfolge, exakte Restaggregation,
-Fakten-IDs und Währungstrennung.
+Fakten-IDs und Währungstrennung. Ergänze den Standardbericht `Monatlicher
+Cashflow`: aktuelles lokales Kalenderjahr, Gruppierung nach stabilem `yyyy-MM`,
+aufsteigende Zeitreihenfolge, Liniendarstellung und Ausgabenkennzahl. Ein Test
+mit mindestens 14 Monaten belegt, dass die Zeitreihe vollständig bleibt und
+exakt dieselbe Faktenmenge wie der Snapshot verwendet.
 
 `TransactionReportXLSXExporter` erzeugt ohne externe Bibliothek ein valides,
 deterministisches Open-XML-ZIP-Paket mit genau einem Blatt `Bericht`.
@@ -433,10 +439,11 @@ Für den Banking-Simulator gilt reproduzierbar:
 
 Für die Berichtswerkstatt gilt zusätzlich:
 
-- Definiere einen reinen, testbaren Katalog aus sechs buchungsbasierten
+- Definiere einen reinen, testbaren Katalog aus acht buchungsbasierten
   Standardberichten: Einnahmen/Ausgaben nach Kategorie, Einnahmen/Ausgaben
   nach Empfänger, Buchungsbericht, Cashflow nach Konto/Kategorie,
-  Kontobewegungen nach Konto/Empfänger sowie Kategorie/Klasse. Jede Definition
+  Kontobewegungen nach Konto/Empfänger, Kategorie/Klasse, monatlicher Cashflow
+  sowie deutscher Steuerbericht. Jede Definition
   liefert für das aktuelle lokale Kalenderjahr eine vollständige
   `TransactionReportQuery`; Jahresgrenzen müssen mit dem übergebenen Kalender
   und dessen Zeitzone berechnet werden.

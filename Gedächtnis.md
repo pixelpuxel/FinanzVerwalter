@@ -2482,3 +2482,40 @@ Rechtsberatung.
   `/quicken`-Thread 894. Wegen der nachweislich gesperrten macOS-Sitzung wurde
   transparent kein fingierter oder leerer Screenshot angehängt. Der exakte
   Zielzählerstand vor dem Versand beträgt 15.502.160 Tokens.
+
+## 07.08.2026 – Monatlicher Cashflow sowie Linien-/Flächendiagramme
+
+- `ReportGrouping.month` erzeugt stabile Monatsbezeichnungen im Format
+  `yyyy-MM`. Der achte buchungsbasierte Standardbericht `Monatlicher Cashflow`
+  verwendet das aktuelle lokale Kalenderjahr, chronologische Sortierung,
+  Liniendarstellung und die Ausgabenkennzahl; alle Einstellungen bleiben wie
+  bei den übrigen Presets vollständig editierbar.
+- Die Berichtswerkstatt bietet nun Tabelle, Balken, Linie, Fläche und Torte.
+  Linien und Flächen sortieren chronologisch und bleiben ungekürzt, damit auch
+  Verläufe über mehr als zwölf Monate keine Werte verlieren. Balken und Torte
+  behalten die centgenaue Top-N-Restaggregation. Alle Darstellungen leiten
+  sich weiterhin ausschließlich aus dem vorhandenen, währungsgetrennten
+  Snapshot ab.
+- Ein neuer Engine-Test erzeugt 14 Monate von Januar 2025 bis Februar 2026 und
+  belegt Reihenfolge, Vollständigkeit, exakte Minor-Unit-Summe, fehlendes
+  Restsegment sowie Identität der vereinigten Fakten-IDs mit dem Snapshot.
+  Der vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-MonthlyCharts-20260807-1334.xcresult` enthält 117 Tests:
+  116 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig
+  übersprungen, 0 Fehler und 0 erwartete Fehler. `git diff --check`, gezielte
+  Tests und der optimierte Release-Build sind ebenfalls grün.
+- Der streng signaturgeprüfte arm64-Release liegt unter
+  `build/DerivedData-MonthlyCharts-Release`. Sein ausführbarer Code hat
+  SHA-256
+  `ef617a912daafab1e269593c46f64609493d8529d0aa5a2959aa52e5bac6cade`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiterhin auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-monatsverlauf-20260807-1342.app` und
+  `build/FinanzVerwalter-user-vor-monatsverlauf-20260807-1342.app`.
+- Der echte Start läuft als Prozess 66151 direkt aus `/Applications`.
+  Datenintegrität `ok`, Schema 32, 97 Konten, 2.170 Buchungen, 782 Kategorien
+  und eine Berichtsvorlage blieben vor und nach Installation identisch. Die
+  macOS-Sitzung ist weiterhin nachweislich gesperrt; deshalb wurde kein
+  fingierter Screenshot erzeugt. Der exakte Zielzählerstand vor dieser
+  Dokumentation beträgt 15.672.744 Tokens.
