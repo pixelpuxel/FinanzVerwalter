@@ -1289,6 +1289,45 @@ Verhalten nicht. Alte JSON-Berichtsvorlagen ohne die optionalen Felder müssen
 weiter decodieren. Teste exakte UUID-Selektion, diakritischen Empfänger,
 Zukunftseinbeziehung und alten Nil-Roundtrip.
 
+# Reproduzierbarer Szenario- und Liquiditätsausbau
+
+Ergänze SQLite-Schema 35 um `forecast_scenarios` und
+`forecast_scenario_entries`. Ein Szenario besitzt UUID, Namen, Notiz,
+Aktivstatus, Erstell-/Änderungszeit und Version. Eine Position besitzt UUID,
+Szenario- und Konto-Fremdschlüssel, kalendarisches Datum, Namen,
+`Int64`-Minor-Units, Einbeziehungsstatus, Notiz, Zeiten und Version. Löschen
+eines Szenarios löscht seine Positionen per Fremdschlüssel-Kaskade; alle
+Speicher- und Löschvorgänge werden auditiert. Die Migration von Schema 34
+muss Konten und Buchungen unverändert erhalten und mit Integrität `ok` enden.
+
+Implementiere eine reine `LiquidityForecastEngine`, die für genau eine
+Währung Tages-, ISO-Wochen- oder Kalendermonatsintervalle bildet. Der
+Anfangsbestand besteht aus Eröffnungssalden und allen nicht stornierten,
+nicht erwarteten Buchungen vor dem Starttag. Innerhalb des Zeitraums werden
+reale Buchungen, vorgemerkte und erwartete Buchungen, nicht abgelehnte oder
+stornierte Zahlungsaufträge, aktive Dauerauftragsfälligkeiten, allgemeine
+Serientermine und aktivierte Szenariopositionen berücksichtigt. Gib je
+Intervall Anfang, Bewegung, Schluss, Minimum, Maximum und die enthaltenen
+Positionen samt Herkunft zurück.
+
+Verhindere Doppelzählung mit stabiler Priorität: reale Buchung vor
+Zahlungsauftrag vor Dauerauftrag vor allgemeinem Serientermin. Fasse nur
+Positionen mit exakt gleichem Konto, lokalem Kalendertag, Minor-Unit-Betrag
+und großschreibungs-/diakritikaunabhängig normalisierter Bezeichnung
+zusammen. Szenariopositionen sind bewusste additive Annahmen und werden nie
+dedupliziert. Abgelehnte/stornierte Aufträge, beendete/pausierte
+Daueraufträge, deaktivierte Szenariopositionen und stornierte Buchungen
+zählen nicht.
+
+Baue eine Szenarioverwaltung aus Master-Detail-Liste und Editor. Rechts
+stehen Intervall, 30/90/365-Tage-Horizont, Währung und Bereich `alle`,
+`Konto` oder `Kontengruppe`. Zeige Basis und gewähltes aktives Szenario mit
+Schlusssaldo, Minimum, Maximum, Anzahl unterdeckter Intervalle und
+Szenarioeffekt. Jede Detailzeile nennt Datum, Herkunft, Bezeichnung, Konto und
+Betrag. Betragseingaben müssen die Nachkommastellen der gewählten
+Kontowährung verwenden; ein Währungswechsel setzt eine unpassende
+Bereichsauswahl zurück.
+
 # Reproduzierbarer OFX-/QFX-Kontoauszugsimport
 
 Implementiere OFX/QFX ohne zusätzliche Abhängigkeit für zwei verbreitete

@@ -424,8 +424,24 @@ Rhythmus wird dabei vom neuen Datum aus mit derselben Frequenz fortgeführt;
 alle virtuellen Termine behalten dennoch ihre stabile ursprüngliche
 Herkunftskennung. Solche Änderungspunkte sind als `Serienänderungen`
 sichtbar, einzeln rücksetzbar und können weiterhin durch eine spätere
-Einzelausnahme übersteuert werden. Was-wäre-wenn-Szenarien sind noch nicht
-umgesetzt.
+Einzelausnahme übersteuert werden.
+
+Über `Szenarien` öffnet sich eine eigenständige Liquiditätsplanung. Benannte
+Was-wäre-wenn-Szenarien und ihre manuellen Positionen werden in der
+Finanzdatei gespeichert. Jede Position besitzt Konto, Datum, Bezeichnung,
+Betrag, Aktivschalter und Notiz. Die Berechnung ist täglich, wöchentlich oder
+monatlich sowie für alle Prognosekonten einer Währung, ein einzelnes Konto
+oder eine Kontengruppe verfügbar. Sie zeigt Anfang, Bewegung, Schluss,
+Minimum, Maximum und Unterdeckungen sowie den Unterschied zum Basisverlauf.
+
+Jede Zeile nennt ihre Herkunft: gebucht, vorgemerkt, erwartet,
+Zahlungsauftrag, Dauerauftrag, regelmäßiger Vorgang oder Szenario. Reale
+Buchungen, noch offene Terminüberweisungen, aktive Daueraufträge und
+allgemeine Serientermine werden anhand eines starken Schlüssels aus Konto,
+Kalendertag, Betrag und normalisierter Bezeichnung priorisiert dedupliziert.
+Reale Buchung geht vor Zahlungsauftrag, dieser vor Dauerauftrag und
+Serientermin. Explizite Szenarioannahmen bleiben absichtlich additiv. Konten
+verschiedener Währungen werden niemals zu einem Prognosesaldo addiert.
 
 ## Kategorien und Mehrwertsteuer
 

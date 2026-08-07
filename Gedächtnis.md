@@ -2836,3 +2836,29 @@ Rechtsberatung.
   `/quicken`-Thread 894 und erklärt transparent den wegen der gesperrten
   Sitzung fehlenden Screenshot. Der exakte Zielzählerstand nach dem Versand
   beträgt 16.696.712 Tokens.
+
+## 07.08.2026 – Persistente Liquiditätsszenarien
+
+- SQLite-Schema 35 speichert benannte, aktivierbare Szenarien und ihre
+  konto-, datums- und währungsbezogenen manuellen Positionen. Fremdschlüssel,
+  Kaskadenlöschung, Versionen und Audit schützen den Lebenszyklus; die
+  Migration 34→35 erhält bestehende Konten und Buchungen.
+- Die reine `LiquidityForecastEngine` berechnet Tages-, ISO-Wochen- und
+  Monatsintervalle für ein Konto, eine Kontengruppe oder alle offenen
+  Prognosekonten exakt einer Währung. Jedes Intervall enthält Anfang,
+  Bewegung, Schluss, Minimum, Maximum und alle ursächlichen Positionen.
+- Herkunft ist für gebuchte, vorgemerkte und erwartete Buchungen,
+  Zahlungsaufträge, Daueraufträge, allgemeine Serientermine und
+  Szenarioannahmen sichtbar. Reale Positionen haben bei identischem starken
+  Schlüssel Vorrang vor Zahlungsauftrag, Dauerauftrag und Serientermin;
+  Szenarioannahmen bleiben bewusst additiv.
+- Die Szenarioverwaltung bietet Basisvergleich, 30/90/365 Tage,
+  Tages-/Wochen-/Monatsintervall, Währungs- und Bereichsauswahl,
+  Schlusssaldo, Minimum, Maximum, Unterdeckungen und Szenarioeffekt. Die
+  Betragseingabe folgt den Nachkommastellen der gewählten Kontowährung.
+- Der vollständige Debug-Testlauf vom 07.08.2026 um 15:59 Uhr ist grün:
+  131 Tests bestanden, der private opt-in-QIF-Test wurde ohne gesetzten Pfad
+  planmäßig übersprungen, 0 Tests schlugen fehl. Er prüft unter anderem
+  Deduplizierung der Prognosequellen, Mehrwährungsschutz, Intervallgrenzen,
+  Persistenz/Audit/Kaskade und Migration 34→35. Release-, Installations- und
+  Produktivnachweise werden nach dem optimierten Build ergänzt.
