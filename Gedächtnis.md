@@ -2202,3 +2202,11 @@ Rechtsberatung.
 - Die macOS-Sitzung war weiterhin gesperrt und nicht automatisch entsperrbar.
   Deshalb wurde kein Screenshot vorgetäuscht. Der dokumentierte Tokenstand vor
   der Veröffentlichung beträgt exakt 13.816.237 Tokens.
+- Der Implementierungsstand wurde mit Commit
+  `8b1363ee1f231ee22db1ce9348c0f63ae6a0e0e8` (`XLSX und Berichtskopie
+  ergänzen`) auf `origin/agent/qif-mehrkontenimport` veröffentlicht. Der
+  bestehende Draft-PR #1 trägt nun den Titel `FinanzVerwalter: Konten,
+  Zahlungsverkehr, Berichte und XLSX` und verweist auf diesen Stand.
+- Ein Telegram-Zwischenstand wurde im gefundenen `/quicken`-Thread 894
+  veröffentlicht. Weil die macOS-Sitzung gesperrt war, wurde dabei
+  wahrheitsgemäß kein neuer Screenshot angehängt.
