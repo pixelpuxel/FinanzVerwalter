@@ -2599,6 +2599,227 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testScheduledFutureRevisionChangesCadencePersistsOverridesAndResets() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ year: Int, _ month: Int, _ day: Int) throws -> Date {
+            try XCTUnwrap(
+                calendar.date(
+                    from: DateComponents(year: year, month: month, day: day, hour: 12)
+                )
+            )
+        }
+
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Serienkonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let category = try XCTUnwrap(
+            context.store.categories().first { $0.kind == .expense }
+        )
+        let schedule = ScheduledTransaction(
+            id: UUID(), name: "Monatliche Miete", accountID: account.id,
+            payee: "Altvermieter", purpose: "Altmiete",
+            categoryID: category.id, amountMinor: -100_000, currency: "EUR",
+            nextDueDate: try date(2024, 1, 31),
+            endDate: try date(2024, 4, 30), frequency: .monthly,
+            action: .remind, reminderDays: 5, isActive: true
+        )
+        try context.store.saveScheduledTransaction(schedule)
+        let february = try date(2024, 2, 29)
+        let march = try date(2024, 3, 31)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        try context.store.saveScheduledTransactionException(
+            ScheduledTransactionException(
+                id: UUID(), scheduledTransactionID: schedule.id,
+                originalDueDate: february, effectiveDate: try date(2024, 3, 1),
+                payee: "Einmalig", purpose: "Wird ersetzt",
+                categoryID: category.id, amountMinor: -101_000,
+                disposition: .modified, note: "Einzelausnahme",
+                createdAt: now, updatedAt: now
+            )
+        )
+        let revisionID = UUID()
+        try context.store.saveScheduledTransactionRevision(
+            ScheduledTransactionRevision(
+                id: revisionID, scheduledTransactionID: schedule.id,
+                originalDueDate: february, effectiveDate: try date(2024, 3, 2),
+                payee: "Neuvermieter", purpose: "Neue Miete",
+                categoryID: nil, amountMinor: -120_000,
+                note: "Ab Februar angepasst", createdAt: now, updatedAt: now
+            )
+        )
+
+        XCTAssertEqual(try context.store.scheduledTransactionExceptions(), [])
+        XCTAssertEqual(
+            try sqliteScalar(
+                context.store.fileURL,
+                "SELECT COUNT(*) FROM audit_events WHERE entity_type='scheduled_transaction_exception' AND action='replaced_by_revision'"
+            ),
+            1
+        )
+        var revisions = try context.store.scheduledTransactionRevisions()
+        XCTAssertEqual(revisions.map(\.id), [revisionID])
+        let loaded = try XCTUnwrap(
+            context.store.scheduledTransactions().first { $0.id == schedule.id }
+        )
+        var occurrences = loaded.occurrences(
+            until: try date(2024, 5, 31), revisions: revisions,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            occurrences.map { calendar.dateComponents([.month, .day], from: $0.bookingDate) },
+            [
+                DateComponents(month: 1, day: 31),
+                DateComponents(month: 3, day: 2),
+                DateComponents(month: 4, day: 2),
+                DateComponents(month: 5, day: 2)
+            ]
+        )
+        XCTAssertEqual(occurrences.first?.payee, "Altvermieter")
+        XCTAssertTrue(occurrences.dropFirst().allSatisfy {
+            $0.payee == "Neuvermieter" && $0.purpose == "Neue Miete"
+                && $0.categoryID == nil && $0.amountMinor == -120_000
+        })
+        let revisedFirst = try XCTUnwrap(
+            occurrences.first { $0.bookingDate > (try? date(2024, 2, 1)) ?? .distantPast }
+        )
+        let identity = try XCTUnwrap(
+            ScheduledTransaction.occurrenceIdentity(from: revisedFirst.reference)
+        )
+        XCTAssertTrue(calendar.isDate(identity.originalDueDate, inSameDayAs: february))
+
+        let oneTimeReference = try XCTUnwrap(
+            occurrences.first {
+                guard let identity = ScheduledTransaction.occurrenceIdentity(
+                    from: $0.reference
+                ) else { return false }
+                return calendar.isDate(identity.originalDueDate, inSameDayAs: march)
+            }?.reference
+        )
+        try context.store.saveScheduledTransactionException(
+            ScheduledTransactionException(
+                id: UUID(), scheduledTransactionID: schedule.id,
+                originalDueDate: march, effectiveDate: try date(2024, 4, 5),
+                payee: "Einmaliger Vertreter", purpose: "Nur März",
+                categoryID: category.id, amountMinor: -130_000,
+                disposition: .modified, note: "Einmalig nach Serienänderung",
+                createdAt: now, updatedAt: now
+            )
+        )
+        let exceptions = try context.store.scheduledTransactionExceptions()
+        occurrences = loaded.occurrences(
+            until: try date(2024, 5, 31), exceptions: exceptions,
+            revisions: revisions, calendar: calendar
+        )
+        XCTAssertEqual(occurrences.first { $0.reference == oneTimeReference }?.payee, "Einmaliger Vertreter")
+        XCTAssertTrue(
+            calendar.isDate(
+                try XCTUnwrap(
+                    occurrences.first { $0.reference == oneTimeReference }?.bookingDate
+                ),
+                inSameDayAs: try date(2024, 4, 5)
+            )
+        )
+        XCTAssertEqual(occurrences.last?.payee, "Neuvermieter")
+        XCTAssertFalse(
+            loaded.occurrences(
+                until: try date(2024, 5, 31),
+                excludingReferences: [oneTimeReference],
+                exceptions: exceptions, revisions: revisions,
+                calendar: calendar
+            ).contains { $0.reference == oneTimeReference }
+        )
+
+        try context.store.saveScheduledTransactionRevision(
+            ScheduledTransactionRevision(
+                id: UUID(), scheduledTransactionID: schedule.id,
+                originalDueDate: february, effectiveDate: try date(2024, 3, 3),
+                payee: "Neuvermieter korrigiert", purpose: "Korrigiert",
+                categoryID: category.id, amountMinor: -121_000,
+                note: "Ersetzt", createdAt: now, updatedAt: now
+            )
+        )
+        revisions = try context.store.scheduledTransactionRevisions()
+        XCTAssertEqual(revisions.count, 1)
+        XCTAssertEqual(revisions.first?.id, revisionID)
+        XCTAssertEqual(revisions.first?.payee, "Neuvermieter korrigiert")
+
+        let secondRevisionID = UUID()
+        try context.store.saveScheduledTransactionRevision(
+            ScheduledTransactionRevision(
+                id: secondRevisionID, scheduledTransactionID: schedule.id,
+                originalDueDate: march, effectiveDate: try date(2024, 4, 10),
+                payee: "Dritter Vermieter", purpose: "Nochmals geändert",
+                categoryID: nil, amountMinor: -140_000,
+                note: "Zweiter Änderungspunkt", createdAt: now, updatedAt: now
+            )
+        )
+        XCTAssertEqual(try context.store.scheduledTransactionExceptions(), [])
+        revisions = try context.store.scheduledTransactionRevisions()
+        XCTAssertEqual(revisions.count, 2)
+        XCTAssertEqual(Set(revisions.map(\.id)), [revisionID, secondRevisionID])
+        occurrences = loaded.occurrences(
+            until: try date(2024, 5, 31), revisions: revisions,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            occurrences.map { calendar.dateComponents([.month, .day], from: $0.bookingDate) },
+            [
+                DateComponents(month: 1, day: 31),
+                DateComponents(month: 3, day: 3),
+                DateComponents(month: 4, day: 10),
+                DateComponents(month: 5, day: 10)
+            ]
+        )
+        XCTAssertTrue(occurrences.suffix(2).allSatisfy {
+            $0.payee == "Dritter Vermieter" && $0.amountMinor == -140_000
+        })
+        XCTAssertEqual(
+            try sqliteScalar(
+                context.store.fileURL,
+                "SELECT COUNT(*) FROM audit_events WHERE entity_type='scheduled_transaction_exception' AND action='replaced_by_revision'"
+            ),
+            2
+        )
+
+        XCTAssertThrowsError(
+            try context.store.saveScheduledTransactionRevision(
+                ScheduledTransactionRevision(
+                    id: UUID(), scheduledTransactionID: schedule.id,
+                    originalDueDate: try date(2024, 2, 15),
+                    effectiveDate: try date(2024, 2, 15), payee: "Ungültig",
+                    purpose: "Ungültig", categoryID: nil, amountMinor: 1,
+                    note: "", createdAt: now, updatedAt: now
+                )
+            )
+        )
+        XCTAssertEqual(try context.store.scheduledTransactionRevisions().count, 2)
+
+        try context.store.deleteScheduledTransactionRevision(
+            scheduledTransactionID: schedule.id, originalDueDate: march
+        )
+        XCTAssertEqual(try context.store.scheduledTransactionRevisions().map(\.id), [revisionID])
+
+        try context.store.deleteScheduledTransactionRevision(
+            scheduledTransactionID: schedule.id, originalDueDate: february
+        )
+        XCTAssertEqual(try context.store.scheduledTransactionRevisions(), [])
+        let reset = loaded.occurrences(
+            until: try date(2024, 4, 30),
+            exceptions: try context.store.scheduledTransactionExceptions(),
+            revisions: [], calendar: calendar
+        )
+        XCTAssertTrue(reset.contains {
+            calendar.isDate($0.bookingDate, inSameDayAs: february)
+                && $0.payee == schedule.payee
+        })
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testFiscalBudgetPersistsPlanAndCalculatesVarianceInMinorUnits() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -4549,7 +4770,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=34", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=35", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -4558,8 +4779,8 @@ final class FinanzVerwalterTests: XCTestCase {
             guard case let FinanceError.database(message) = error else {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
+            XCTAssertTrue(message.contains("Schema 35"))
             XCTAssertTrue(message.contains("Schema 34"))
-            XCTAssertTrue(message.contains("Schema 33"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         var statement: OpaquePointer?
@@ -4568,12 +4789,12 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 35)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
 
-    func testMigration32To33AddsEmptyScheduledExceptionsWithoutChangingSchedules() throws {
+    func testMigration32To34AddsEmptyScheduledChangesWithoutChangingSchedules() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "finanzverwalter-migration-32-33-\(UUID().uuidString)",
@@ -4617,7 +4838,66 @@ final class FinanzVerwalterTests: XCTestCase {
         let migrated = try SQLiteFinanceStore(fileURL: url)
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 33)
+        XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 34)
+        XCTAssertTrue(try migrated.integrityCheck())
+    }
+
+    func testMigration33To34AddsEmptyScheduledRevisionsWithoutChangingExceptions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-migration-33-34-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("migration.qdata")
+        var store: SQLiteFinanceStore? = try SQLiteFinanceStore(fileURL: url)
+        let account = FinanceAccount(
+            id: UUID(), name: "Migration", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try store?.saveAccount(account)
+        let schedule = ScheduledTransaction(
+            id: UUID(), name: "Bestehende Serie", accountID: account.id,
+            payee: "Empfänger", purpose: "Zweck", categoryID: nil,
+            amountMinor: -1_000, currency: "EUR", nextDueDate: Date(),
+            endDate: nil, frequency: .monthly, action: .remind,
+            reminderDays: 3, isActive: true
+        )
+        try store?.saveScheduledTransaction(schedule)
+        let exception = ScheduledTransactionException(
+            id: UUID(), scheduledTransactionID: schedule.id,
+            originalDueDate: schedule.nextDueDate,
+            effectiveDate: schedule.nextDueDate, payee: "Ausnahme",
+            purpose: "Bleibt", categoryID: nil, amountMinor: -2_000,
+            disposition: .modified, note: "Bestand", createdAt: Date(),
+            updatedAt: Date()
+        )
+        try store?.saveScheduledTransactionException(exception)
+        store?.close()
+        store = nil
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "DROP TABLE scheduled_transaction_revisions; PRAGMA user_version=33;",
+                nil, nil, nil
+            ),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
+        XCTAssertEqual(try migrated.scheduledTransactionExceptions().map(\.id), [exception.id])
+        XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 34)
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -4689,7 +4969,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 33)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4811,7 +5091,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 33)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
         sqlite3_finalize(statement)
     }
 
@@ -8305,7 +8585,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 33)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 34)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -8540,7 +8820,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.transactions().first?.id, value.id)
         XCTAssertEqual(try migrated.transactions().first?.amountMinor, -987)
         XCTAssertEqual(try migrated.attachments(entityType: .transaction, entityID: value.id), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 33)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 34)
         XCTAssertEqual(try sqliteScalar(url, "SELECT COUNT(*) FROM attachment_blobs"), 0)
         XCTAssertTrue(try migrated.integrityCheck())
     }

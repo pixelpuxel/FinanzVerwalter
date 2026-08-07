@@ -250,6 +250,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var bankingProgressText = ""
     @Published private(set) var scheduledTransactions: [ScheduledTransaction] = []
     @Published private(set) var scheduledTransactionExceptions: [ScheduledTransactionException] = []
+    @Published private(set) var scheduledTransactionRevisions: [ScheduledTransactionRevision] = []
     @Published private(set) var budgets: [FinanceBudget] = []
     @Published private(set) var paymentOrders: [PaymentOrder] = []
     @Published private(set) var directDebitOrders: [DirectDebitOrder] = []
@@ -1777,7 +1778,8 @@ final class FinanceAppStore: ObservableObject {
                 $0.occurrences(
                     until: end,
                     excludingReferences: existingReferences,
-                    exceptions: scheduledTransactionExceptions
+                    exceptions: scheduledTransactionExceptions,
+                    revisions: scheduledTransactionRevisions
                 )
             }
             .sorted {
@@ -1849,6 +1851,63 @@ final class FinanceAppStore: ObservableObject {
             statusText = value.disposition == .skipped
                 ? "Serienfälligkeit übersprungen"
                 : "Serienfälligkeit geändert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func scheduledTransactionRevision(
+        forReference reference: String,
+        startingExactly: Bool = false,
+        calendar: Calendar = .current
+    ) -> ScheduledTransactionRevision? {
+        guard let identity = ScheduledTransaction.occurrenceIdentity(from: reference) else {
+            return nil
+        }
+        let boundary = calendar.startOfDay(for: identity.originalDueDate)
+        let matches = scheduledTransactionRevisions.filter {
+            guard $0.scheduledTransactionID == identity.scheduledTransactionID else {
+                return false
+            }
+            let revisionDay = calendar.startOfDay(for: $0.originalDueDate)
+            return startingExactly ? revisionDay == boundary : revisionDay <= boundary
+        }
+        return matches.max {
+            let left = calendar.startOfDay(for: $0.originalDueDate)
+            let right = calendar.startOfDay(for: $1.originalDueDate)
+            return left == right ? $0.id.uuidString < $1.id.uuidString : left < right
+        }
+    }
+
+    func saveScheduledTransactionRevision(
+        _ value: ScheduledTransactionRevision
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.saveScheduledTransactionRevision(value)
+            try load()
+            statusText = "Serie ab gewählter Fälligkeit geändert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func resetScheduledTransactionRevision(
+        scheduledTransactionID: UUID,
+        originalDueDate: Date
+    ) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.deleteScheduledTransactionRevision(
+                scheduledTransactionID: scheduledTransactionID,
+                originalDueDate: originalDueDate
+            )
+            try load()
+            statusText = "Serienänderung ab gewählter Fälligkeit zurückgesetzt"
             return true
         } catch {
             present(error)
@@ -2777,6 +2836,7 @@ final class FinanceAppStore: ObservableObject {
         }
         scheduledTransactions = try repository.scheduledTransactions()
         scheduledTransactionExceptions = try repository.scheduledTransactionExceptions()
+        scheduledTransactionRevisions = try repository.scheduledTransactionRevisions()
         budgets = try repository.budgets()
         paymentOrders = try repository.paymentOrders()
         directDebitOrders = try repository.directDebitOrders()

@@ -916,6 +916,20 @@ struct ScheduledTransactionException: Identifiable, Hashable, Sendable {
     var updatedAt: Date
 }
 
+struct ScheduledTransactionRevision: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var scheduledTransactionID: UUID
+    var originalDueDate: Date
+    var effectiveDate: Date
+    var payee: String
+    var purpose: String
+    var categoryID: UUID?
+    var amountMinor: Int64
+    var note: String
+    var createdAt: Date
+    var updatedAt: Date
+}
+
 struct ScheduledTransaction: Identifiable, Hashable, Sendable {
     let id: UUID
     var name: String
@@ -936,6 +950,7 @@ struct ScheduledTransaction: Identifiable, Hashable, Sendable {
         until end: Date,
         excludingReferences: Set<String> = [],
         exceptions: [ScheduledTransactionException] = [],
+        revisions: [ScheduledTransactionRevision] = [],
         calendar: Calendar = .current
     ) -> [FinanceTransaction] {
         guard isActive else { return [] }
@@ -946,15 +961,44 @@ struct ScheduledTransaction: Identifiable, Hashable, Sendable {
         for exception in relevantExceptions where exceptionByDay[Self.dayKey(exception.originalDueDate, calendar: calendar)] == nil {
             exceptionByDay[Self.dayKey(exception.originalDueDate, calendar: calendar)] = exception
         }
-        let generationEnd = relevantExceptions.reduce(end) {
-            max($0, $1.originalDueDate)
+        let relevantRevisions = revisions
+            .filter { $0.scheduledTransactionID == id }
+            .sorted {
+                if $0.originalDueDate != $1.originalDueDate {
+                    return $0.originalDueDate < $1.originalDueDate
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+        var revisionByDay: [Int: ScheduledTransactionRevision] = [:]
+        for revision in relevantRevisions where revisionByDay[Self.dayKey(revision.originalDueDate, calendar: calendar)] == nil {
+            revisionByDay[Self.dayKey(revision.originalDueDate, calendar: calendar)] = revision
         }
+        let originalDates = relevantExceptions.map(\.originalDueDate)
+            + relevantRevisions.map(\.originalDueDate)
+        let latestOriginalDate = originalDates.max() ?? end
+        let backwardShiftDays = (relevantExceptions.map {
+            calendar.dateComponents([.day], from: $0.effectiveDate, to: $0.originalDueDate).day ?? 0
+        } + relevantRevisions.map {
+            calendar.dateComponents([.day], from: $0.effectiveDate, to: $0.originalDueDate).day ?? 0
+        }).max() ?? 0
+        let shiftedGenerationEnd = calendar.date(
+            byAdding: .day, value: max(0, backwardShiftDays), to: end
+        ) ?? end
+        let generationEnd = max(latestOriginalDate, shiftedGenerationEnd)
         var due = nextDueDate
+        var activeRevision: ScheduledTransactionRevision?
+        var revisedDueDate: Date?
         var values: [FinanceTransaction] = []
         var guardCount = 0
         while due <= generationEnd, due <= (endDate ?? generationEnd), guardCount < 1_000 {
+            if let revision = revisionByDay[Self.dayKey(due, calendar: calendar)] {
+                activeRevision = revision
+                revisedDueDate = revision.effectiveDate
+            } else if let previousRevisedDueDate = revisedDueDate {
+                revisedDueDate = frequency.next(after: previousRevisedDueDate, calendar: calendar)
+            }
             let exception = exceptionByDay[Self.dayKey(due, calendar: calendar)]
-            let effectiveDate = exception?.effectiveDate ?? due
+            let effectiveDate = exception?.effectiveDate ?? revisedDueDate ?? due
             let reference = occurrenceReference(for: due)
             guardCount += 1
             defer { due = frequency.next(after: due, calendar: calendar) }
@@ -965,10 +1009,12 @@ struct ScheduledTransaction: Identifiable, Hashable, Sendable {
             let value = FinanceTransaction(
                     id: UUID(), accountID: accountID,
                     bookingDate: effectiveDate, valueDate: effectiveDate,
-                    payee: exception?.payee ?? payee,
-                    purpose: exception?.purpose ?? purpose,
-                    categoryID: exception.map { $0.categoryID } ?? categoryID,
-                    amountMinor: exception?.amountMinor ?? amountMinor,
+                    payee: exception?.payee ?? activeRevision?.payee ?? payee,
+                    purpose: exception?.purpose ?? activeRevision?.purpose ?? purpose,
+                    categoryID: exception.map { $0.categoryID }
+                        ?? activeRevision.map { $0.categoryID } ?? categoryID,
+                    amountMinor: exception?.amountMinor
+                        ?? activeRevision?.amountMinor ?? amountMinor,
                     currency: currency, status: .expected,
                     memo: "Regelmäßig: \(name)",
                     reference: reference,

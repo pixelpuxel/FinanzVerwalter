@@ -6451,6 +6451,22 @@ struct CalendarForecastView: View {
         }
     }
 
+    private var visibleRevisions: [ScheduledTransactionRevision] {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        let end = calendar.date(byAdding: .day, value: forecastDays, to: Date()) ?? Date()
+        let includedSchedules = Set(store.scheduledTransactions.filter { schedule in
+            store.accounts.contains {
+                $0.id == schedule.accountID && $0.includeForecast && !$0.isClosed
+            }
+        }.map(\.id))
+        return store.scheduledTransactionRevisions.filter {
+            includedSchedules.contains($0.scheduledTransactionID)
+                && $0.originalDueDate >= start
+                && $0.originalDueDate <= end
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -6547,7 +6563,7 @@ struct CalendarForecastView: View {
                     }
                     .padding(10)
                     Divider()
-                    if occurrences.isEmpty && visibleExceptions.isEmpty {
+                    if occurrences.isEmpty && visibleExceptions.isEmpty && visibleRevisions.isEmpty {
                         ContentUnavailableView(
                             "Keine Termine im Zeitraum",
                             systemImage: "calendar",
@@ -6574,6 +6590,14 @@ struct CalendarForecastView: View {
                                                             .padding(.horizontal, 5)
                                                             .padding(.vertical, 2)
                                                             .background(.blue.opacity(0.12), in: Capsule())
+                                                    } else if store.scheduledTransactionRevision(
+                                                        forReference: value.reference
+                                                    ) != nil {
+                                                        Text("Serie geändert")
+                                                            .font(.caption2.bold())
+                                                            .padding(.horizontal, 5)
+                                                            .padding(.vertical, 2)
+                                                            .background(.purple.opacity(0.12), in: Capsule())
                                                     }
                                                 }
                                                 Text("\(store.accountName(value.accountID)) · \(value.memo)")
@@ -6630,6 +6654,30 @@ struct CalendarForecastView: View {
                                     }
                                 }
                             }
+                            if !visibleRevisions.isEmpty {
+                                Section("Serienänderungen") {
+                                    ForEach(visibleRevisions) { revision in
+                                        Button {
+                                            editedOccurrence = occurrenceRequest(for: revision)
+                                        } label: {
+                                            HStack {
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(scheduleName(revision.scheduledTransactionID))
+                                                    Text("Ab \(revision.originalDueDate.formatted(.dateTime.day().month().year()))")
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                                Spacer()
+                                                Text(Money(minorUnits: revision.amountMinor).formatted)
+                                                    .monospacedDigit()
+                                                    .foregroundStyle(.purple)
+                                            }
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -6654,7 +6702,12 @@ struct CalendarForecastView: View {
         }) else { return nil }
         return ScheduledOccurrenceEditRequest(
             schedule: schedule, originalDueDate: identity.originalDueDate,
-            exception: store.scheduledTransactionException(forReference: transaction.reference)
+            effectiveDate: transaction.bookingDate,
+            exception: store.scheduledTransactionException(forReference: transaction.reference),
+            inheritedRevision: store.scheduledTransactionRevision(forReference: transaction.reference),
+            startingRevision: store.scheduledTransactionRevision(
+                forReference: transaction.reference, startingExactly: true
+            )
         )
     }
 
@@ -6666,7 +6719,29 @@ struct CalendarForecastView: View {
         }) else { return nil }
         return ScheduledOccurrenceEditRequest(
             schedule: schedule, originalDueDate: exception.originalDueDate,
-            exception: exception
+            effectiveDate: exception.effectiveDate, exception: exception,
+            inheritedRevision: store.scheduledTransactionRevision(
+                forReference: schedule.occurrenceReference(for: exception.originalDueDate)
+            ),
+            startingRevision: store.scheduledTransactionRevision(
+                forReference: schedule.occurrenceReference(for: exception.originalDueDate),
+                startingExactly: true
+            )
+        )
+    }
+
+    private func occurrenceRequest(
+        for revision: ScheduledTransactionRevision
+    ) -> ScheduledOccurrenceEditRequest? {
+        guard let schedule = store.scheduledTransactions.first(where: {
+            $0.id == revision.scheduledTransactionID
+        }) else { return nil }
+        let reference = schedule.occurrenceReference(for: revision.originalDueDate)
+        return ScheduledOccurrenceEditRequest(
+            schedule: schedule, originalDueDate: revision.originalDueDate,
+            effectiveDate: revision.effectiveDate,
+            exception: store.scheduledTransactionException(forReference: reference),
+            inheritedRevision: revision, startingRevision: revision
         )
     }
 
@@ -6681,7 +6756,10 @@ private struct ScheduledOccurrenceEditRequest: Identifiable {
     }
     let schedule: ScheduledTransaction
     let originalDueDate: Date
+    let effectiveDate: Date
     let exception: ScheduledTransactionException?
+    let inheritedRevision: ScheduledTransactionRevision?
+    let startingRevision: ScheduledTransactionRevision?
 }
 
 private struct ScheduledOccurrenceEditor: View {
@@ -6694,21 +6772,27 @@ private struct ScheduledOccurrenceEditor: View {
     @State private var categoryID: UUID?
     @State private var amountText: String
     @State private var note: String
+    @State private var showFutureConfirmation = false
 
     init(request: ScheduledOccurrenceEditRequest) {
         self.request = request
         let value = request.exception
-        _effectiveDate = State(initialValue: value?.effectiveDate ?? request.originalDueDate)
-        _payee = State(initialValue: value?.payee ?? request.schedule.payee)
-        _purpose = State(initialValue: value?.purpose ?? request.schedule.purpose)
-        _categoryID = State(initialValue: value.map { $0.categoryID } ?? request.schedule.categoryID)
+        let inherited = request.inheritedRevision
+        _effectiveDate = State(initialValue: value?.effectiveDate ?? request.effectiveDate)
+        _payee = State(initialValue: value?.payee ?? inherited?.payee ?? request.schedule.payee)
+        _purpose = State(initialValue: value?.purpose ?? inherited?.purpose ?? request.schedule.purpose)
+        _categoryID = State(
+            initialValue: value.map { $0.categoryID }
+                ?? inherited.map { $0.categoryID } ?? request.schedule.categoryID
+        )
         _amountText = State(
             initialValue: Money(
-                minorUnits: value?.amountMinor ?? request.schedule.amountMinor,
+                minorUnits: value?.amountMinor
+                    ?? inherited?.amountMinor ?? request.schedule.amountMinor,
                 currency: request.schedule.currency
             ).editingString
         )
-        _note = State(initialValue: value?.note ?? "")
+        _note = State(initialValue: value?.note ?? request.startingRevision?.note ?? "")
     }
 
     var body: some View {
@@ -6751,16 +6835,35 @@ private struct ScheduledOccurrenceEditor: View {
                 Section {
                     Button("Diese Fälligkeit überspringen") { save(.skipped) }
                         .foregroundStyle(.orange)
+                    Button("Diesen und alle folgenden ändern") {
+                        showFutureConfirmation = true
+                    }
+                    .foregroundStyle(.purple)
                     if request.exception != nil {
-                        Button("Ausnahme zurücksetzen") { reset() }
+                        Button("Einzelausnahme zurücksetzen") { reset() }
+                    }
+                    if request.startingRevision != nil {
+                        Button("Serienänderung ab hier zurücksetzen") {
+                            resetFutureRevision()
+                        }
                     }
                 } footer: {
-                    Text("Die Serienvorlage und alle übrigen Fälligkeiten bleiben unverändert.")
+                    Text("Einzelausnahmen gelten nur für diesen Termin. Eine Serienänderung verwendet die neuen Werte ab diesem Termin und führt dieselbe Frequenz vom neuen Datum aus fort; die stabile Herkunftskennung bleibt erhalten.")
                 }
             }
             .formStyle(.grouped)
         }
-        .frame(width: 620, height: 610)
+        .frame(width: 620, height: 680)
+        .confirmationDialog(
+            "Diesen und alle folgenden Termine ändern?",
+            isPresented: $showFutureConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Ab diesem Termin ändern") { saveFutureRevision() }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Datum, Empfänger, Verwendungszweck, Kategorie und Betrag gelten ab diesem Termin für alle folgenden Fälligkeiten. Eine Einzelausnahme genau an diesem Termin wird ersetzt.")
+        }
     }
 
     private func save(_ disposition: ScheduledOccurrenceDisposition) {
@@ -6786,6 +6889,34 @@ private struct ScheduledOccurrenceEditor: View {
 
     private func reset() {
         if store.resetScheduledTransactionException(
+            scheduledTransactionID: request.schedule.id,
+            originalDueDate: request.originalDueDate
+        ) { dismiss() }
+    }
+
+    private func saveFutureRevision() {
+        do {
+            let amount = try Money(
+                parsing: amountText, currency: request.schedule.currency
+            ).minorUnits
+            let now = Date()
+            let revision = ScheduledTransactionRevision(
+                id: request.startingRevision?.id ?? UUID(),
+                scheduledTransactionID: request.schedule.id,
+                originalDueDate: request.originalDueDate,
+                effectiveDate: effectiveDate, payee: payee, purpose: purpose,
+                categoryID: categoryID, amountMinor: amount, note: note,
+                createdAt: request.startingRevision?.createdAt ?? now,
+                updatedAt: now
+            )
+            if store.saveScheduledTransactionRevision(revision) { dismiss() }
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func resetFutureRevision() {
+        if store.resetScheduledTransactionRevision(
             scheduledTransactionID: request.schedule.id,
             originalDueDate: request.originalDueDate
         ) { dismiss() }

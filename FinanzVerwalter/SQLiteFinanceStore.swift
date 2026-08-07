@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 33
+    static let currentSchemaVersion = 34
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -1768,6 +1768,34 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 33")
             }
         }
+        if version < 34 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_transaction_revisions (
+                        id TEXT PRIMARY KEY,
+                        scheduled_transaction_id TEXT NOT NULL
+                            REFERENCES scheduled_transactions(id) ON DELETE CASCADE,
+                        original_due_date TEXT NOT NULL,
+                        effective_date TEXT NOT NULL,
+                        payee TEXT NOT NULL DEFAULT '',
+                        purpose TEXT NOT NULL DEFAULT '',
+                        category_id TEXT REFERENCES categories(id),
+                        amount_minor INTEGER NOT NULL,
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(scheduled_transaction_id,original_due_date)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS scheduled_revisions_boundary ON scheduled_transaction_revisions(scheduled_transaction_id,original_due_date)"
+                )
+                try execute("PRAGMA user_version = 34")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2472,6 +2500,158 @@ final class SQLiteFinanceStore {
             )
             try audit(
                 entity: "scheduled_transaction_exception", id: exceptionID,
+                action: "delete", details: originalDay
+            )
+        }
+    }
+
+    func scheduledTransactionRevisions() throws -> [ScheduledTransactionRevision] {
+        var values: [ScheduledTransactionRevision] = []
+        try query(
+            """
+            SELECT id,scheduled_transaction_id,original_due_date,effective_date,
+                   payee,purpose,category_id,amount_minor,note,created_at,updated_at
+            FROM scheduled_transaction_revisions
+            ORDER BY original_due_date,scheduled_transaction_id,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let scheduledTransactionID = UUID(uuidString: Self.text(statement, 1)),
+                  let originalDueDate = Self.date(Self.text(statement, 2)),
+                  let effectiveDate = Self.date(Self.text(statement, 3)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 9)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 10))
+            else { return }
+            values.append(
+                ScheduledTransactionRevision(
+                    id: id, scheduledTransactionID: scheduledTransactionID,
+                    originalDueDate: originalDueDate, effectiveDate: effectiveDate,
+                    payee: Self.text(statement, 4), purpose: Self.text(statement, 5),
+                    categoryID: Self.optionalText(statement, 6).flatMap(UUID.init(uuidString:)),
+                    amountMinor: sqlite3_column_int64(statement, 7),
+                    note: Self.text(statement, 8), createdAt: createdAt,
+                    updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func saveScheduledTransactionRevision(
+        _ value: ScheduledTransactionRevision
+    ) throws {
+        guard let schedule = try scheduledTransactions().first(where: {
+            $0.id == value.scheduledTransactionID
+        }) else {
+            throw FinanceError.database("Der regelmäßige Vorgang existiert nicht mehr.")
+        }
+        guard isOccurrenceDate(value.originalDueDate, for: schedule) else {
+            throw FinanceError.database(
+                "Der Beginn der Serienänderung gehört nicht zu diesem regelmäßigen Vorgang."
+            )
+        }
+        let originalDay = Self.day(value.originalDueDate)
+        var existingPairID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_revisions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { existingPairID = UUID(uuidString: Self.text($0, 0)) }
+        var existingIDIdentity: (UUID, String)?
+        try query(
+            """
+            SELECT scheduled_transaction_id,original_due_date
+            FROM scheduled_transaction_revisions WHERE id=?
+            """,
+            [.text(value.id.uuidString)]
+        ) {
+            if let scheduleID = UUID(uuidString: Self.text($0, 0)) {
+                existingIDIdentity = (scheduleID, Self.text($0, 1))
+            }
+        }
+        if let existingIDIdentity,
+           existingIDIdentity.0 != value.scheduledTransactionID
+            || existingIDIdentity.1 != originalDay {
+            throw FinanceError.database("Die Serienänderung besitzt eine widersprüchliche Kennung.")
+        }
+        let storedID = existingPairID ?? value.id
+        var replacedExceptionID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_exceptions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { replacedExceptionID = UUID(uuidString: Self.text($0, 0)) }
+        let now = Self.timestamp(Date())
+        let createdAt = existingPairID == nil ? now : Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO scheduled_transaction_revisions(
+                    id,scheduled_transaction_id,original_due_date,effective_date,
+                    payee,purpose,category_id,amount_minor,note,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    effective_date=excluded.effective_date,payee=excluded.payee,
+                    purpose=excluded.purpose,category_id=excluded.category_id,
+                    amount_minor=excluded.amount_minor,note=excluded.note,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(storedID.uuidString),
+                    .text(value.scheduledTransactionID.uuidString),
+                    .text(originalDay), .text(Self.day(value.effectiveDate)),
+                    .text(value.payee), .text(value.purpose),
+                    value.categoryID.map { .text($0.uuidString) } ?? .null,
+                    .integer(value.amountMinor), .text(value.note),
+                    .text(createdAt), .text(now)
+                ]
+            )
+            try run(
+                """
+                DELETE FROM scheduled_transaction_exceptions
+                WHERE scheduled_transaction_id=? AND original_due_date=?
+                """,
+                [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+            )
+            if let replacedExceptionID {
+                try audit(
+                    entity: "scheduled_transaction_exception",
+                    id: replacedExceptionID, action: "replaced_by_revision",
+                    details: originalDay
+                )
+            }
+            try audit(
+                entity: "scheduled_transaction_revision", id: storedID,
+                action: "save", details: "\(schedule.name) · ab \(originalDay)"
+            )
+        }
+    }
+
+    func deleteScheduledTransactionRevision(
+        scheduledTransactionID: UUID,
+        originalDueDate: Date
+    ) throws {
+        let originalDay = Self.day(originalDueDate)
+        var revisionID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_revisions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { revisionID = UUID(uuidString: Self.text($0, 0)) }
+        guard let revisionID else { return }
+        try transaction {
+            try run(
+                "DELETE FROM scheduled_transaction_revisions WHERE id=?",
+                [.text(revisionID.uuidString)]
+            )
+            try audit(
+                entity: "scheduled_transaction_revision", id: revisionID,
                 action: "delete", details: originalDay
             )
         }
