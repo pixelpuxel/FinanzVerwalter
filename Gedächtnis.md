@@ -3037,3 +3037,10 @@ Rechtsberatung.
   gesetzlichen Regeln sind vorhanden; Personen, Aufträge und Nutzungen bleiben
   bis zur bewussten Eingabe leer. Exakter kumulativer Zielzählerstand nach
   Test, Release, Installation und Produktivprüfung: 18.368.754 Tokens.
+- Implementierung und Reproduktionsdokumentation wurden als Commit `e76d582`
+  auf `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub Draft-PR #1
+  nennt Schema 36, den 136-Test-Nachweis und den neuen Release-Hash; er ist
+  offen und konfliktfrei mergebar.
+- Telegram-Nachricht 1051 meldet denselben Stand im `/quicken`-Thread 894 und
+  erklärt ausdrücklich den wegen der gesperrten Sitzung fehlenden Screenshot.
+  Exakter kumulativer Zielzählerstand nach Veröffentlichung: 18.460.050 Tokens.
