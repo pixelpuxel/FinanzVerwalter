@@ -2374,3 +2374,51 @@ Rechtsberatung.
 - Telegram-Nachricht 1009 dokumentiert denselben Stand im gefundenen
   `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
   deshalb fehlenden Screenshot sowie den exakten Zielzählerstand 14.807.849.
+
+## 07.08.2026 – Verifizierter Anhangsexport und sichere Notizlinks
+
+- Die gemeinsame Anhangsoberfläche bietet nun in allen fünf Fachakten einen
+  offenen System-Speicherdialog. Der Backendpfad verifiziert den gespeicherten
+  BLOB vor dem Export erneut, schützt die Finanzdatei, erzwingt die passende
+  Originalendung und akzeptiert vorhandene Ziele nur nach ausdrücklicher
+  Ersetzungsfreigabe sowie nur als reguläre, nicht symbolische Datei.
+- Jeder Export entsteht zuerst als neue 0600-Staging-Datei im echten
+  Zielordner. Erst danach erfolgt Move oder Replace; Größe und SHA-256 des
+  fertigen Ziels werden nochmals geprüft. Inkonsistente Ergebnisse werden
+  entfernt, erfolgreiche Exporte mit Hash und Dateiname auditiert.
+- `SecureNoteLinkPolicy` erkennt Links im unveränderten Freitext, bietet aber
+  ausschließlich HTTPS mit Host und ohne eingebettete Zugangsdaten sowie
+  lokale `file:`-Ziele ohne entfernten Host als Aktionen an. HTTP, FTP und
+  Script-Schemata bleiben ohne Öffnungsaktion.
+- `SecureNoteView` ist in Buchungsnotiz, Konto-Beschreibung, Vertrags-,
+  Wertpapier- und Inventarnotiz eingebunden. Jeder Klick öffnet zunächst nur
+  einen Bestätigungsdialog. Die bestätigte Aktion prüft lokale Ziele erneut
+  als vorhandene reguläre, nicht symbolische und nicht ausführbare Datei;
+  Verzeichnisse, Pakete, Ausführungsrechte sowie bekannte Programm-, Skript-,
+  Shortcut- und Terminalendungen werden blockiert.
+- Der erste Exporttest deckte eine unzulässige Foundation-Kombination aus
+  atomarem Schreiben und `withoutOverwriting` auf. Da die Datei bereits ein
+  eindeutiges Staging-Ziel besitzt, wurde die widersprüchliche Option entfernt;
+  das atomare Move/Replace-Modell blieb erhalten. Der wiederholte gezielte
+  Export- und Linktest ist grün.
+- Der vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-SafeLinks-full.xcresult` enthält 114 Tests: 113
+  bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig übersprungen,
+  0 Fehler und 0 erwartete Fehler. Der saubere Debug-Build und
+  `git diff --check` sind ebenfalls ohne Befund.
+- Der optimierte arm64-Release unter `build/DerivedData-SafeLinks-Release`
+  wurde streng signaturgeprüft. Sein ausführbarer Code hat SHA-256
+  `fc868123b04d31582b6a0576ccd8b3860a7b02b128e918824b547d7bcb6df621`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiterhin auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-export-links-20260807-1305.app` und
+  `build/FinanzVerwalter-user-vor-export-links-20260807-1305.app`.
+- Der echte Start läuft als Prozess 62483. Vor und nach der Installation
+  blieben Integrität `ok`, Schema 32, 97 Konten, 2.170 Buchungen, 782
+  Kategorien sowie 0 Anhangs-BLOBs und 0 Anhangsverknüpfungen identisch.
+- Die sichtbare Abnahme wurde mit der installierten App erneut versucht. Die
+  macOS-Sitzung ist weiterhin gesperrt und kann nicht automatisch entsperrt
+  werden; deshalb wurde weder ein Klickergebnis noch ein Screenshot
+  vorgetäuscht. Der exakte Zielzählerstand vor Commit und Veröffentlichung
+  beträgt 15.158.044 Tokens.

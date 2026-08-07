@@ -155,12 +155,25 @@ Dieselbe Anhangsoberfläche steht außerdem im Editor eines bestehenden Kontos
 und in den Detailakten von Verträgen, Wertpapieren und Inventargegenständen
 bereit. Ein identischer Originalbeleg wird auch über diese verschiedenen
 Fachakten hinweg nur einmal gespeichert. Jeder Bereich besitzt einen stabilen
-Accessibility-Bezeichner und semantisch beschriftete Öffnen-/Entfernen-Aktionen.
+Accessibility-Bezeichner und semantisch beschriftete Öffnen-, Exportieren- und
+Entfernen-Aktionen. Der offene Export verwendet den Originaldateinamen im
+System-Speicherdialog, prüft den gespeicherten BLOB vor dem Schreiben erneut,
+schreibt über eine private 0600-Staging-Datei und ersetzt weder Dateien noch
+Symlinks ohne die ausdrückliche Systembestätigung. Dateiendung, Größe und
+SHA-256 werden auch am fertigen Exportziel geprüft.
 
 Beim Undo einer neu angelegten Buchung werden ihre Anhänge und nicht mehr
 referenzierte Inhalte gemeinsam entfernt. Wird eine gelöschte Buchung
-zurückgeholt, bleibt ihre Belegverknüpfung erhalten. OCR, sichere Notizlinks
-und ein offener Anhangsexport folgen noch.
+zurückgeholt, bleibt ihre Belegverknüpfung erhalten.
+
+Notizen in Buchungen, Konto-Beschreibungen, Verträgen, Wertpapieren und
+Inventargegenständen erkennen jetzt lokale `file:`-Links und HTTPS-Adressen.
+Sie öffnen niemals beim Anzeigen oder Bearbeiten. Jede Aktion verlangt eine
+eigene Bestätigung und validiert das Ziel unmittelbar danach erneut. Weblinks
+brauchen HTTPS, einen Host und dürfen keine eingebetteten Zugangsdaten tragen;
+lokale Ziele müssen vorhandene reguläre Dateien sein. Symlinks, Pakete,
+Verzeichnisse, ausführbare Rechte und bekannte Skript-/Programmendungen werden
+blockiert. OCR bleibt als optionaler Adapter noch offen.
 
 Kontoblatt, zweites Kontoblatt und Sammelkontoblatt besitzen stabile
 Accessibility-Bezeichner. VoiceOver erhält für jede dynamische Zelle den

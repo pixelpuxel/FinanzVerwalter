@@ -121,10 +121,10 @@ unterschiedlichen Splitpfade in stabiler Reihenfolge sichtbar.
 
 ## Aktueller verifizierter Meilenstein
 
-Migrationen 1 bis 29 sowie die in diesem Dokument beschriebenen lokalen
+Migrationen 1 bis 32 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungskerne sind implementiert. Die jüngste vollständige isolierte
-Abnahme umfasst 94 XCTest-Fälle: 93 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 114 XCTest-Fälle: 113 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
@@ -1420,3 +1420,42 @@ VoiceOver. Prüfe mit einem Integrationstest, dass derselbe Originalinhalt an
 allen vier zusätzlichen Zieltypen genau einen BLOB und vier getrennte Links
 erzeugt, je Fachakte korrekt geladen wird und nach Entfernung der letzten
 Referenz vollständig verschwindet.
+
+# Verifizierter offener Anhangsexport und sichere Notizlinks
+
+Erweitere die gemeinsame Anhangskomponente um `Exportieren …`. Verwende den
+macOS-Speicherdialog mit Originaldateiname und passendem Inhaltstyp. Behandle
+eine durch den Systemdialog bestätigte vorhandene Datei als ausdrückliche
+Ersetzungsfreigabe; überschreibe sonst niemals still.
+
+Lade den Exportinhalt ausschließlich über denselben internen Prüfpfad wie die
+Vorschau: Verknüpfung und BLOB müssen vorhanden sein, gespeicherte Bytezahl und
+SHA-256 müssen den Originalbytes entsprechen. Akzeptiere nur lokale Ziele mit
+derselben Dateiendung wie das Original (JPG/JPEG gelten als äquivalent) und
+niemals die Finanzdatei selbst. Der Zielordner muss ein echtes Verzeichnis
+sein. Ein vorhandenes Ziel muss eine reguläre, nicht symbolische Datei sein;
+Pakete und Verzeichnisse sind nicht ersetzbar.
+
+Schreibe in eine zufällig benannte neue Staging-Datei im Zielordner, setze
+0600 und verschiebe beziehungsweise ersetze sie erst abschließend. Prüfe am
+fertigen Ziel erneut Bytezahl und SHA-256; lösche ein inkonsistentes Ergebnis
+und protokolliere nur einen erfolgreichen Export mit Hash und Dateiname im
+Audit. Teste Neu-Export, 0600, stilles Überschreiben, ausdrücklich bestätigtes
+Ersetzen, falsche Endung, Symlinkziel, unverändertes Symlinkziel, manipulierten
+BLOB ohne Ausgabedatei und SQLite-Integrität.
+
+Implementiere für Freitextnotizen eine eigenständige
+`SecureNoteLinkPolicy`. Erkenne Links mit `NSDataDetector`, biete jedoch nur
+HTTPS-URLs mit Host und ohne eingebettete Zugangsdaten sowie lokale `file:`-
+URLs ohne entfernten Host als Aktionen an. Normale HTTP-/FTP-/Script-Schemata
+dürfen nicht als öffnbarer Button erscheinen.
+
+Zeige Links über eine gemeinsame `SecureNoteView` in Buchungsnotiz,
+Kontobeschreibung, Vertrag, Wertpapier und Inventar. Ein Klick darf nur einen
+Bestätigungsdialog öffnen. Erst die bestätigte Aktion validiert das Ziel
+erneut. Lokale Ziele müssen dann als reguläre, nicht symbolische,
+nicht ausführbare Datei existieren; blockiere Verzeichnisse, Pakete,
+ausführbare Rechte und bekannte Programm-, Skript-, Shortcut- und
+Terminalendungen. Übergib das Ziel erst danach an `NSWorkspace`. Teste
+Erkennung und Anzeige ohne URL-Abfrageparameter, HTTPS, lokale Datei, HTTP,
+FTP, URL-Zugangsdaten, ausführbares Skript und Symlink.

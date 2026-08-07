@@ -25,6 +25,12 @@ Regulärdatei, Symlinkstatus, Dateiname, Endung, Magic Bytes beziehungsweise
 UTF-8 und ein injizierbarer Scan-Hook werden vor dem atomaren Commit geprüft.
 Vor einer bestätigten externen Vorschau werden Größe und SHA-256 erneut
 verifiziert; die temporäre Datei erhält Rechte 0600 in einem Verzeichnis 0700.
+Ein offener Export prüft denselben gespeicherten BLOB, schreibt zunächst in
+eine neue 0600-Staging-Datei im Zielordner und verschiebt beziehungsweise
+ersetzt sie erst abschließend. Bestehende Dateien werden nur nach der
+Bestätigung des System-Speicherdialogs ersetzt; Symlinks, Pakete, Verzeichnisse,
+abweichende Endungen und die Finanzdatei selbst bleiben gesperrt. Größe und
+SHA-256 des fertigen Ziels werden erneut geprüft und der Export auditiert.
 
 ## Folgen
 
@@ -33,6 +39,8 @@ verifiziert; die temporäre Datei erhält Rechte 0600 in einem Verzeichnis 0700.
 - Ein korrupter oder manipulierter BLOB wird vor der Vorschau erkannt.
 - Eine gemeinsame Oberfläche unterstützt Auswahl und Drag-and-drop bei
   Buchungen, Konten, Verträgen, Wertpapieren und Inventargegenständen.
+- Dieselbe Oberfläche exportiert Originalbelege verifiziert und ohne
+  stilles Überschreiben an frei gewählte lokale Ziele.
 - OCR bleibt getrennt vom unveränderten Original vorgesehen, ist aber noch
   nicht implementiert.
 - Sehr große Belegbestände vergrößern die SQLite-Datei; die 50-MiB-Grenze und
