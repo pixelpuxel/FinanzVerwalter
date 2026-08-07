@@ -1368,3 +1368,43 @@ nächsten Undo-Eintrag neu. Teste vollständige Split-/Tag-Wiederherstellung,
 Erstellung, Bearbeitung, Löschung eines Umbuchungspaars, Verschieben,
 Massenorganisation, stale Snapshots, Einmaligkeit, 30→31-Migration und
 SQLite-Integrität.
+
+# Hashadressierte Beleganhänge für Buchungen
+
+Migriere Schema 31 atomar auf Schema 32. Lege `attachment_blobs` mit
+SHA-256-Primärschlüssel, MIME-Typ, positiver Bytezahl, Original-BLOB und
+Erstellungszeit sowie `attachment_links` mit UUID, Zieltyp, Ziel-ID,
+Blob-Fremdschlüssel, Originaldateiname, Quelle, getrenntem OCR-Text und
+Hinzufügezeit an. Erlaube als Zieltypen Konto, Buchung, Vertrag, Wertpapier und
+Inventar. Dedupliziere Inhalte global nach SHA-256, Verknüpfungen aber nach
+Ziel, Hash und Dateiname. Speichere Inhalt und Link in derselben
+SQLite-Transaktion und verifiziere bei einer Hashkollision zusätzlich MIME,
+Größe und vollständige Bytes. Da die BLOBs in derselben SQLite-Datei liegen,
+müssen Online- und Vor-Migrations-Sicherungen Belege ohne separaten
+Dateibaum vollständig enthalten.
+
+Validiere vor dem Lesen eine reguläre, nicht symbolische Datei zwischen einem
+Byte und 50 MiB sowie einen höchstens 255 UTF-8-Bytes langen Dateinamen ohne
+Steuerzeichen. Akzeptiere ausschließlich PDF, PNG, JPEG, TXT, CSV, QIF und XML.
+Prüfe bei Binärtypen die Magic Bytes und bei Texttypen NUL-Freiheit und
+gültiges UTF-8; die Endung allein genügt nicht. Rufe danach einen injizierbaren
+Virenscan-Hook auf. Jeder Fehler muss vor einem Datenbank-Commit enden.
+
+Der Editor einer bereits gespeicherten Buchung listet beliebig viele Anhänge
+mit Name, MIME und Größe. Er nimmt genau eine Datei über einen typgefilterten
+Dateidialog oder Drag-and-drop entgegen. Entfernen ist destruktiv zu
+bestätigen; der Blob wird nur gelöscht, wenn keine weitere Verknüpfung darauf
+zeigt. Öffnen verlangt eine gesonderte Bestätigung, lädt den BLOB, prüft Größe
+und SHA-256 erneut und schreibt erst dann eine Vorschau mit Verzeichnisrechten
+0700 und Dateirechten 0600 in den Benutzer-Cache. Übergib nur erlaubte Typen an
+die registrierte macOS-App; starte keine ausführbaren Typen.
+
+Integriere die Semantik in das allgemeine Buchungs-Undo: Wird die Erstellung
+einer Buchung rückgängig gemacht, entferne deren inzwischen ergänzte Links und
+danach verwaiste BLOBs atomar. Bei einer gelöschten Buchung bleiben Links zur
+Wiederherstellung erhalten und erscheinen nach dem Undo wieder. Teste
+Deduplizierung auf einem und mehreren Zielen, Metadaten und SHA-256,
+Backup-Roundtrip, Vorschauinhalt und 0600, Entfernung der letzten Referenz,
+unzulässige Endung, falsche Magic Bytes, Symlink, 50-MiB-Grenze, fehlendes
+Ziel, Scan-Abbruch ohne Teilwirkung, manipulierten gespeicherten Inhalt,
+31→32-Migration, Zukunftsschema, beide Undo-Randfälle und SQLite-Integrität.

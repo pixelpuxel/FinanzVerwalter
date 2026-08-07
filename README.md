@@ -131,6 +131,33 @@ unter dem gebuchten Betrag. Summen und Salden bleiben immer nach Währung
 getrennt; ohne explizite Umrechnungsregel werden verschiedene Währungen nicht
 addiert.
 
+## Beleganhänge an Buchungen
+
+Bei einer bereits gespeicherten Buchung verwaltet der Buchungseditor mehrere
+lokale Anhänge. Dateien können über `Datei hinzufügen …` oder per Drag-and-drop
+in den Abschnitt `Anhänge` übernommen werden. Zugelassen sind PDF, PNG, JPEG,
+TXT, CSV, QIF und XML bis jeweils 50 MB. Erweiterung und Dateisignatur
+beziehungsweise UTF-8-Inhalt werden vor jeder Ablage geprüft; symbolische
+Links, leere Dateien, ausführbare Typen und während des Lesens veränderte
+Dateien werden abgewiesen.
+
+Schema 32 speichert den Originalinhalt atomar und SHA-256-adressiert direkt in
+der Finanzdatei. Identische Inhalte belegen deshalb auch bei mehreren
+Buchungen nur einmal Speicher, während jede Verknüpfung ihren ursprünglichen
+Dateinamen, MIME-Typ, Größe, Quelle und Hinzufügezeitpunkt bewahrt. Dadurch
+enthalten manuelle und automatische SQLite-Sicherungen auch alle Belege. Vor
+dem Öffnen verlangt die Oberfläche eine Bestätigung, prüft Größe und SHA-256
+erneut und erzeugt erst dann eine nur für den Benutzer les- und schreibbare
+lokale Vorschau. Ein injizierbarer Scan-Hook kann den Import vor dem Commit
+abbrechen.
+
+Beim Undo einer neu angelegten Buchung werden ihre Anhänge und nicht mehr
+referenzierte Inhalte gemeinsam entfernt. Wird eine gelöschte Buchung
+zurückgeholt, bleibt ihre Belegverknüpfung erhalten. Oberflächen für Anhänge an
+Konten, Verträgen, Wertpapieren und Inventargegenständen, OCR und ein offener
+Anhangsexport folgen noch; das persistente Modell unterstützt diese Zieltypen
+bereits.
+
 Kontoblatt, zweites Kontoblatt und Sammelkontoblatt besitzen stabile
 Accessibility-Bezeichner. VoiceOver erhält für jede dynamische Zelle den
 Spaltentitel und den vollständigen Wert – insbesondere den ungekürzten

@@ -2263,3 +2263,57 @@ Rechtsberatung.
 - Telegram-Nachricht 1003 dokumentiert den Zwischenstand im `/quicken`-Thread
   894 mit dem exakten Tokenstand 14.155.197. Sie benennt transparent, dass
   wegen der gesperrten Sitzung kein neuer Screenshot angehängt werden konnte.
+
+## 07.08.2026 – Hashadressierte Beleganhänge an Buchungen
+
+- Nach dem allgemeinen Undo wurde der nächste offene P0-/Härtungs-Slice aus
+  Masterdatei und Anforderungsmatrix umgesetzt: produktive lokale
+  Beleganhänge zunächst im Buchungseditor.
+- Schema 32 ergänzt `attachment_blobs` und `attachment_links`. Originalbytes
+  liegen SHA-256-adressiert direkt in der Finanzdatei, identische Inhalte
+  werden global dedupliziert und Zielverknüpfungen bewahren Dateiname, MIME,
+  Größe, Quelle, Zeitpunkt und getrennten künftigen OCR-Text. Repositoryseitig
+  sind Konto, Buchung, Vertrag, Wertpapier und Inventar vorbereitet.
+- PDF, PNG, JPEG, TXT, CSV, QIF und XML bis 50 MiB werden anhand regulärer
+  Datei, Symlinkstatus, Dateiname, Dateisignatur beziehungsweise UTF-8 sowie
+  eines injizierbaren Scan-Hooks vor dem atomaren Commit validiert.
+  Ausführbare/unerlaubte Typen, falsche Magic Bytes, leere, übergroße oder
+  während des Lesens veränderte Dateien werden abgewiesen.
+- Der Buchungseditor listet mehrere Anhänge und übernimmt sie über Dateidialog
+  oder Drag-and-drop. Entfernen verlangt Bestätigung. Öffnen verlangt eine
+  zweite Bestätigung, verifiziert gespeicherte Größe und SHA-256 und erzeugt
+  erst dann eine Vorschau mit 0700/0600-Rechten.
+- Das Undo entfernt bei rückgängig gemachter Buchungserstellung inzwischen
+  angefügte Belege und verwaiste BLOBs. Eine gelöschte und anschließend
+  restaurierte Buchung erhält dagegen ihre erhaltene Belegverknüpfung zurück.
+- Fünf neue Integrationstests prüfen Deduplizierung, Metadaten,
+  Backup-Roundtrip, Vorschau und Rechte, Entfernung der letzten Referenz,
+  Eingabegrenzen, Scan-Abbruch, Manipulationserkennung, Migration und beide
+  Undo-Randfälle. Das endgültige vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-Attachments-full-final2.xcresult` enthält 111 Tests:
+  110 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig übersprungen,
+  0 Fehler und 0 erwartete Fehler.
+- ADR 0022 dokumentiert die bewusste SQLite-BLOB-Entscheidung. UI für Konten,
+  Verträge, Wertpapiere und Inventar, offener Anhangsexport, Notizlinks und OCR
+  bleiben ausdrücklich als nächste Lücken sichtbar.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-Attachments-Release` wurde streng signaturgeprüft. Sein
+  ausführbarer Code hat SHA-256
+  `02e364a64657da76ceec92505cac13e0e921bc35e1ee76cf31a277880faf05b4`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiterhin auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-anhaenge-20260807-1231.app` und
+  `build/FinanzVerwalter-user-vor-anhaenge-20260807-1231.app`.
+- Der echte Start läuft als Prozess 57996 und migrierte die Produktivdatei auf
+  Schema 32. Integrität `ok`, 97 Konten, 2.170 Buchungen und 782 Kategorien
+  blieben erhalten; neue Anhangstabellen sind erwartungsgemäß leer. Vorher
+  entstand die eigenständige Schema-31-Sicherung
+  `FinanzVerwalter-vor-Migration-v31-20260807-103031-672-F43B084A.qbackup`
+  mit SHA-256
+  `44fe9a80e922e986c795e3456c3d610d014b3622aa9a45b81c4a10291d215e56`,
+  Integrität `ok` und identischen Nutzdatenzählungen.
+- Die Computersteuerungs-Abnahme wurde mit der frisch installierten App erneut
+  versucht. Die macOS-Sitzung blieb gesperrt und konnte nicht automatisch
+  entsperrt werden; deshalb wurde kein Screenshot vorgetäuscht. Der exakte
+  Zielzählerstand vor Commit und Veröffentlichung beträgt 14.426.153 Tokens.
