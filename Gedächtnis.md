@@ -2210,3 +2210,50 @@ Rechtsberatung.
 - Ein Telegram-Zwischenstand wurde im gefundenen `/quicken`-Thread 894
   veröffentlicht. Weil die macOS-Sitzung gesperrt war, wurde dabei
   wahrheitsgemäß kein neuer Screenshot angehängt.
+
+## 07.08.2026 – Allgemeines konfliktgeschütztes Buchungs-Undo
+
+- Die externe Masterdatei und `docs/Anforderungsmatrix.md` wurden erneut
+  abgeglichen. Als nächster P0-Slice wurde das noch fehlende allgemeine
+  Buchungs-Undo vor den Anhängen umgesetzt.
+- Schema 31 ergänzt `transaction_undo_runs` mit monotoner Sequenz, UUID,
+  Titel, vollständigen Vorher-/Nachher-JSON-Snapshots, Buchungsanzahl sowie
+  Erstellungs- und einmaligem Undo-Zeitpunkt. Die Sequenz verhindert eine
+  falsche Reihenfolge mehrerer Änderungen innerhalb derselben Sekunde.
+- Manuelles Erstellen und Bearbeiten, Kontowechsel, gemeinsame Kategorie-/
+  Klassenorganisation, bestätigtes Löschen und Umbuchungserstellung schreiben
+  das Undo-Paket atomar mit der eigentlichen Mutation. Eine gelöschte
+  Umbuchungsseite erfasst und restauriert immer das vollständige Paar.
+- Vor dem Undo werden Buchungen, Tags, Splits und Split-Tags deterministisch
+  normalisiert und vollständig mit dem erwarteten Nachher-Snapshot verglichen.
+  Fehlende oder zwischenzeitlich geänderte Buchungen brechen ohne Teilwirkung
+  ab; abgeglichene Buchungen bleiben geschützt. Bei Erfolg werden Original-
+  IDs und die vollständige Split-, Steuer-, Bank- und Organisationsstruktur
+  restauriert, das Paket einmalig entwertet und die Aktion auditiert.
+- Das Kontoblatt zeigt für das jüngste Paket einen semantisch beschrifteten
+  `Rückgängig`-Button mit Titel, Anzahl, Bestätigung und verständlichem Hinweis
+  auf den Konfliktschutz.
+- Vier gezielte Undo-Tests und ein eigener 30→31-Migrationstest sind grün.
+  Der endgültige vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-Undo-full-final.xcresult`
+  enthält 106 Tests: 105 bestanden, der private opt-in-QIF-Test ohne Pfad
+  planmäßig übersprungen, 0 Fehler und 0 erwartete Fehler.
+- Der optimierte arm64-Release unter `build/DerivedData-Undo-Release` wurde
+  streng signaturgeprüft. Sein ausführbarer Code hat SHA-256
+  `ba065393e3a58adddc91481f352570ee7cdc703d8b39b01ee574a5bb7999f05c`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; die Vorgänger liegen
+  reversibel unter `build/FinanzVerwalter-vor-undo-20260807-1207.app` und
+  `build/FinanzVerwalter-user-vor-undo-20260807-1207.app`.
+- Der echte Start läuft als Prozess 54910 und migrierte die Produktivdatei
+  auf Schema 31. Integrität `ok` sowie 97 Konten, 2.170 Buchungen und 782
+  Kategorien blieben erhalten; vor der Migration entstand die eigenständige
+  Schema-30-Sicherung
+  `FinanzVerwalter-vor-Migration-v30-20260807-100736-010-9095D6E2.qbackup`
+  mit SHA-256
+  `71643e6aa34eb06b2a596265e399e75df4a7f19c4fd4812c32d4fb8fb55327c1`,
+  Integrität `ok` und identischen Nutzdatenzählungen.
+- Die Computersteuerungs-Abnahme wurde erneut versucht. Die macOS-Sitzung ist
+  weiterhin gesperrt und kann nicht automatisch entsperrt werden; deshalb
+  konnte der neue Schalter noch nicht sichtbar geklickt und kein wahrer neuer
+  Screenshot aufgenommen werden.

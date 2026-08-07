@@ -1330,3 +1330,41 @@ bisher ausgeschlossen. Migriere Schema 29 atomar auf Schema 30 und sichere
 vorher die unveränderte Schema-29-Datei. Teste JPY/KWD-Nachkommastellen,
 Kursrundlauf, Vorzeichen, Kontowährungszwang, atomare Transfers, Salden,
 Persistenz, Vorlagen, 29→30-Migration, Zukunftsschema und Integrität.
+
+# Reproduzierbares allgemeines Buchungs-Undo
+
+Migriere Schema 30 atomar auf Schema 31 und lege
+`transaction_undo_runs` mit monotoner Sequenz, stabiler UUID, Titel,
+vollständigem `before_json`, vollständigem `after_json`, Anzahl, Zeitstempel
+und einmaligem `undone_at` an. Codiere Arrays vollständiger
+`FinanceTransaction`-Snapshots mit sortierten Schlüsseln und Millisekunden-
+Datumswerten. Normalisiere vor dem Vergleich Buchungs-IDs, Tags,
+Splitreihenfolge und Split-Tags deterministisch. Speichere kein partielles
+Feld-Diff, weil auch Split-IDs, Steuerdaten, Bankmetadaten und beide Seiten
+einer Umbuchung exakt wiederherstellbar bleiben müssen.
+
+Erzeuge das Undo-Paket in derselben SQLite-Transaktion wie die fachliche
+Mutation. Erfasse manuelles Erstellen und Bearbeiten, Kontowechsel,
+Kategorie-/Klassen-Massenorganisation, bestätigtes Löschen und atomare
+Umbuchungserstellung. Bei Löschung einer einzelnen Transferseite umfasst der
+Vorher-Snapshot zwingend beide Seiten. Leere oder wirkungslose Änderungen
+erzeugen keinen Undo-Eintrag. Die jüngste aktive Änderung wird ausschließlich
+über die monotone Sequenz bestimmt, nicht über einen Zeitstempel mit möglicher
+Kollision.
+
+Vor dem Undo lade alle betroffenen Buchungen erneut und vergleiche ihren
+normalisierten vollständigen Zustand mit `after_json`. Fehlt, erscheint oder
+unterscheidet sich eine Seite, brich die gesamte Operation ohne Schreibzugriff
+ab. Schütze abgeglichene Buchungen zusätzlich. Lösche erst innerhalb einer
+Transaktion alle erwarteten Nachher-Seiten, schreibe dann sämtliche Vorher-
+Snapshots mit ihren ursprünglichen IDs zurück, markiere das Paket einmalig als
+verwendet und schreibe ein Auditereignis. Ein zweiter Aufruf desselben Pakets
+muss fehlschlagen.
+
+Zeige das jüngste Paket im Kontoblatt als semantisch beschrifteten
+`Rückgängig`-Button mit Titel und Buchungsanzahl. Verlange eine Bestätigung,
+erkläre den Konfliktschutz und lade nach Erfolg Buchungen, Salden und den
+nächsten Undo-Eintrag neu. Teste vollständige Split-/Tag-Wiederherstellung,
+Erstellung, Bearbeitung, Löschung eines Umbuchungspaars, Verschieben,
+Massenorganisation, stale Snapshots, Einmaligkeit, 30→31-Migration und
+SQLite-Integrität.

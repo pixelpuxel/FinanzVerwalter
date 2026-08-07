@@ -14,6 +14,7 @@ struct RegisterView: View {
     @State private var templateName = ""
     @State private var templateSource: FinanceTransaction?
     @State private var showDeleteConfirmation = false
+    @State private var showTransactionUndoConfirmation = false
     @State private var statusFilter: TransactionStatus?
     @State private var categoryFilter: RegisterCategoryFilter = .all
     @State private var tagFilterID: UUID?
@@ -126,6 +127,17 @@ struct RegisterView: View {
                 }
                 .frame(width: 220)
                 .accessibilityIdentifier("register.accountPicker")
+                if let undo = store.latestTransactionUndo {
+                    Button("Rückgängig", systemImage: "arrow.uturn.backward") {
+                        showTransactionUndoConfirmation = true
+                    }
+                    .help(
+                        "\(undo.title) (\(undo.transactionCount) Buchungen) konfliktgeschützt zurücknehmen"
+                    )
+                    .accessibilityLabel("Letzte Buchungsänderung rückgängig machen")
+                    .accessibilityValue(undo.title)
+                    .accessibilityIdentifier("register.transactionUndo")
+                }
                 if let account = store.selectedAccount {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text("Aktueller Saldo").font(.caption).foregroundStyle(.secondary)
@@ -558,6 +570,24 @@ struct RegisterView: View {
                 "Umbuchungen werden immer auf beiden Konten gelöscht. "
                     + "Abgeglichene Buchungen bleiben geschützt."
             )
+        }
+        .confirmationDialog(
+            "Letzte Buchungsänderung rückgängig machen?",
+            isPresented: $showTransactionUndoConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Rückgängig machen", role: .destructive) {
+                _ = store.undoLatestTransactionMutation()
+                selection.removeAll()
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            if let undo = store.latestTransactionUndo {
+                Text(
+                    "„\(undo.title)“ betrifft \(undo.transactionCount) Buchungen. "
+                        + "Zwischenzeitliche Änderungen brechen das gesamte Undo ab."
+                )
+            }
         }
     }
 

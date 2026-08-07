@@ -258,6 +258,16 @@ ein anderes offenes Konto derselben Währung möglich. Abgeglichene Buchungen
 und einzelne Umbuchungsseiten bleiben geschützt. Die Kontoänderung erfolgt
 atomar und wird in der Auditspur protokolliert.
 
+Nach Erstellen, Bearbeiten, Verschieben, gemeinsamer Kategorie-/Klassen-
+Änderung, Löschen oder Erstellen einer Umbuchung erscheint im Kontoblatt
+`Rückgängig`. FinanzVerwalter speichert dafür vor und nach der Änderung einen
+vollständigen, persistenten Buchungssnapshot. Ein Löschvorgang oder eine
+Umbuchung wird immer als gesamtes Paket wiederhergestellt. Vor dem Undo wird
+der aktuelle Zustand exakt mit dem erwarteten Nachher-Snapshot verglichen;
+fehlt eine Buchung, wurde sie erneut geändert oder ist sie inzwischen
+abgeglichen, wird keine einzige Teiländerung ausgeführt. Erfolgreiche Undo-
+Pakete sind einmalig und auditierbar.
+
 Direkt rechts neben dem Betrag steht der kontenweise laufende Saldo. Die
 Darstellung kann dauerhaft zwischen einer kompakten Einzeile und einer
 zweizeiligen Ansicht mit Wertstellung, Memo, Referenz und Tags umgeschaltet

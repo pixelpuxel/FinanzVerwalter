@@ -242,6 +242,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var transactionTemplates: [TransactionTemplate] = []
     @Published private(set) var categorizationRules: [CategorizationRule] = []
     @Published private(set) var latestRuleUndo: RuleUndoSummary?
+    @Published private(set) var latestTransactionUndo: TransactionUndoSummary?
     @Published private(set) var bankingConnections: [BankingConnection] = []
     @Published private(set) var bankingMappings: [BankingAccountMapping] = []
     @Published private(set) var bankingSyncRuns: [BankingSyncRun] = []
@@ -937,6 +938,24 @@ final class FinanceAppStore: ObservableObject {
             statusText = values.count == 1
                 ? "Buchung gelöscht"
                 : "\(values.count) Buchungen gelöscht"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func undoLatestTransactionMutation() -> Bool {
+        guard let repository, let latestTransactionUndo else { return false }
+        do {
+            let count = try repository.undoTransactionMutation(
+                id: latestTransactionUndo.id
+            )
+            try load()
+            statusText = count == 1
+                ? "Letzte Buchungsänderung rückgängig gemacht"
+                : "Letzte Änderung an \(count) Buchungen rückgängig gemacht"
             return true
         } catch {
             present(error)
@@ -2599,6 +2618,7 @@ final class FinanceAppStore: ObservableObject {
         transactionTemplates = try repository.transactionTemplates()
         categorizationRules = try repository.categorizationRules()
         latestRuleUndo = try repository.latestRuleUndo()
+        latestTransactionUndo = try repository.latestTransactionUndo()
         bankingConnections = try repository.bankingConnections()
         bankingMappings = try repository.bankingAccountMappings()
         bankingSyncRuns = try repository.bankingSyncRuns()

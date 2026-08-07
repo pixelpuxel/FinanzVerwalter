@@ -4260,7 +4260,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=31", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=32", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -4269,8 +4269,8 @@ final class FinanzVerwalterTests: XCTestCase {
             guard case let FinanceError.database(message) = error else {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
+            XCTAssertTrue(message.contains("Schema 32"))
             XCTAssertTrue(message.contains("Schema 31"))
-            XCTAssertTrue(message.contains("Schema 30"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         var statement: OpaquePointer?
@@ -4279,7 +4279,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 32)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4352,7 +4352,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 30)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -4474,7 +4474,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 30)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
         sqlite3_finalize(statement)
     }
 
@@ -7296,6 +7296,258 @@ final class FinanzVerwalterTests: XCTestCase {
         }
         XCTAssertEqual(Set(try context.store.transactions().map(\.id)), [booked.id, protected.id])
         XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testTransactionUndoRestoresCompleteEditAndThenUndoesCreation() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Undo-Konto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Undo-Kategorie",
+            kind: .expense, color: "blue", isActive: true
+        )
+        try context.store.saveCategory(category)
+        let tag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Undo-Klasse", color: "green",
+            description: "", isActive: true
+        )
+        try context.store.saveTag(tag)
+        let transactionID = UUID()
+        try context.store.saveTransaction(
+            FinanceTransaction(
+                id: transactionID, accountID: account.id,
+                bookingDate: Date(timeIntervalSince1970: 1_700_000_000),
+                valueDate: nil, payee: "Vorher", purpose: "Original",
+                categoryID: nil, amountMinor: -1_000, currency: "EUR",
+                status: .booked, memo: "Notiz", reference: "R-1",
+                transferID: nil, importFingerprint: nil,
+                splits: [
+                    FinanceSplit(
+                        id: UUID(), categoryID: category.id,
+                        amountMinor: -1_000, memo: "Split vorher", sortOrder: 0,
+                        tagIDs: [tag.id]
+                    )
+                ],
+                tagIDs: [tag.id]
+            )
+        )
+        let original = try XCTUnwrap(
+            context.store.transactions().first { $0.id == transactionID }
+        )
+        XCTAssertEqual(try context.store.latestTransactionUndo()?.title, "Buchung erstellt")
+
+        var edited = original
+        edited.payee = "Nachher"
+        edited.purpose = "Geändert"
+        edited.amountMinor = -1_250
+        edited.splits[0].amountMinor = -1_250
+        edited.splits[0].memo = "Split nachher"
+        try context.store.saveTransaction(edited)
+
+        let editUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(editUndo.title, "Buchung bearbeitet")
+        XCTAssertEqual(editUndo.transactionCount, 1)
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: editUndo.id), 1)
+        XCTAssertEqual(
+            try context.store.transactions().first { $0.id == transactionID },
+            original
+        )
+        XCTAssertThrowsError(
+            try context.store.undoTransactionMutation(id: editUndo.id)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("bereits verwendet"))
+        }
+
+        let creationUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(creationUndo.title, "Buchung erstellt")
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: creationUndo.id), 1)
+        XCTAssertTrue(try context.store.transactions().isEmpty)
+        XCTAssertNil(try context.store.latestTransactionUndo())
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testTransactionUndoRejectsStaleSnapshotWithoutPartialMutation() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Konfliktkonto", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        var value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "A", purpose: "Erstellt", categoryID: nil,
+            amountMinor: -100, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(value)
+        value = try XCTUnwrap(context.store.transactions().first)
+        value.purpose = "Erste Änderung"
+        try context.store.saveTransaction(value)
+        let staleUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        value = try XCTUnwrap(context.store.transactions().first)
+        value.purpose = "Zweite Änderung"
+        try context.store.saveTransaction(value)
+
+        XCTAssertThrowsError(
+            try context.store.undoTransactionMutation(id: staleUndo.id)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("vollständig abgebrochen"))
+        }
+        XCTAssertEqual(try context.store.transactions().first?.purpose, "Zweite Änderung")
+        XCTAssertEqual(try context.store.latestTransactionUndo()?.title, "Buchung bearbeitet")
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testTransactionUndoRestoresDeletedTransferPairAtomically() throws {
+        let context = try TestDatabase()
+        let source = FinanceAccount(
+            id: UUID(), name: "Quelle", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        let destination = FinanceAccount(
+            id: UUID(), name: "Ziel", institution: "", type: .savings,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(source)
+        try context.store.saveAccount(destination)
+        try context.store.createTransfer(
+            from: source, to: destination, amountMinor: 5_000,
+            date: Date(timeIntervalSince1970: 1_700_000_000), purpose: "Umbuchung"
+        )
+        let pair = try context.store.transactions().sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        XCTAssertEqual(pair.count, 2)
+        try context.store.deleteTransaction(id: pair[0].id)
+        XCTAssertTrue(try context.store.transactions().isEmpty)
+
+        let deletionUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(deletionUndo.title, "2 Buchungen gelöscht")
+        XCTAssertEqual(deletionUndo.transactionCount, 2)
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: deletionUndo.id), 2)
+        XCTAssertEqual(
+            try context.store.transactions().sorted { $0.id.uuidString < $1.id.uuidString },
+            pair
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testTransactionUndoHandlesMoveAndBulkOrganization() throws {
+        let context = try TestDatabase()
+        let source = FinanceAccount(
+            id: UUID(), name: "A", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 0
+        )
+        let destination = FinanceAccount(
+            id: UUID(), name: "B", institution: "", type: .cash,
+            currency: "EUR", openingBalanceMinor: 0, isHidden: false,
+            isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(source)
+        try context.store.saveAccount(destination)
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Organisation",
+            kind: .expense, color: "orange", isActive: true
+        )
+        try context.store.saveCategory(category)
+        let value = FinanceTransaction(
+            id: UUID(), accountID: source.id, bookingDate: .now,
+            valueDate: nil, payee: "Test", purpose: "", categoryID: nil,
+            amountMinor: -100, currency: "EUR", status: .booked, memo: "",
+            reference: "", transferID: nil, importFingerprint: nil, splits: []
+        )
+        try context.store.saveTransaction(value)
+        try context.store.moveTransaction(id: value.id, toAccountID: destination.id)
+        let moveUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(moveUndo.title, "Buchung verschoben")
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: moveUndo.id), 1)
+        XCTAssertEqual(try context.store.transactions().first?.accountID, source.id)
+
+        _ = try context.store.bulkUpdateTransactionCategory(
+            ids: [value.id], categoryID: category.id
+        )
+        XCTAssertEqual(try context.store.transactions().first?.categoryID, category.id)
+        let bulkUndo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(bulkUndo.title, "Buchung organisiert")
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: bulkUndo.id), 1)
+        XCTAssertNil(try context.store.transactions().first?.categoryID)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testMigration30To31AddsPersistentTransactionUndoWithoutChangingBookings() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-migration-30-31-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.qdata")
+        let account = FinanceAccount(
+            id: UUID(), name: "Schema-30-Konto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: nil, payee: "Bestand", purpose: "Unverändert",
+            categoryID: nil, amountMinor: -321, currency: "EUR",
+            status: .booked, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        var initial: SQLiteFinanceStore? = try SQLiteFinanceStore(fileURL: url)
+        try initial?.saveAccount(account)
+        try initial?.saveTransaction(value)
+        initial?.close()
+        initial = nil
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "DROP TABLE transaction_undo_runs; PRAGMA user_version=30;",
+                nil, nil, nil
+            ),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        XCTAssertEqual(try migrated.transactions().first?.id, value.id)
+        XCTAssertEqual(try migrated.transactions().first?.amountMinor, -321)
+        XCTAssertNil(try migrated.latestTransactionUndo())
+        var edited = try XCTUnwrap(migrated.transactions().first)
+        edited.purpose = "Nach Migration"
+        try migrated.saveTransaction(edited)
+        XCTAssertEqual(try migrated.latestTransactionUndo()?.title, "Buchung bearbeitet")
+        XCTAssertTrue(try migrated.integrityCheck())
+        migrated.close()
+
+        XCTAssertEqual(
+            sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil),
+            SQLITE_OK
+        )
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 31)
+        sqlite3_finalize(statement)
+        sqlite3_close(database)
     }
 }
 

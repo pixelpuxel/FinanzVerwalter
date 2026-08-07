@@ -331,6 +331,13 @@ struct FinanceTransaction: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+struct TransactionUndoSummary: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let title: String
+    let transactionCount: Int
+    let createdAt: Date
+}
+
 struct TransactionTemplateSplit: Codable, Equatable, Sendable {
     var categoryID: UUID?
     var amountMinor: Int64

@@ -3,7 +3,7 @@ import Foundation
 import SQLite3
 
 final class SQLiteFinanceStore {
-    static let currentSchemaVersion = 30
+    static let currentSchemaVersion = 31
     private var database: OpaquePointer?
     private var transactionDepth = 0
     let fileURL: URL
@@ -1672,6 +1672,28 @@ final class SQLiteFinanceStore {
                     "ALTER TABLE transactions ADD COLUMN exchange_rate_scaled INTEGER CHECK(exchange_rate_scaled IS NULL OR exchange_rate_scaled>0)"
                 )
                 try execute("PRAGMA user_version = 30")
+            }
+        }
+        if version < 31 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS transaction_undo_runs (
+                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        before_json TEXT NOT NULL,
+                        after_json TEXT NOT NULL,
+                        transaction_count INTEGER NOT NULL CHECK(transaction_count > 0),
+                        created_at TEXT NOT NULL,
+                        undone_at TEXT
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS transaction_undo_runs_active ON transaction_undo_runs(undone_at,sequence DESC)"
+                )
+                try execute("PRAGMA user_version = 31")
             }
         }
     }
@@ -6006,9 +6028,173 @@ final class SQLiteFinanceStore {
         }
     }
 
+    private func normalizedUndoTransactions(
+        _ values: [FinanceTransaction]
+    ) -> [FinanceTransaction] {
+        values.map { value in
+            var value = value
+            value.tagIDs.sort { $0.uuidString < $1.uuidString }
+            value.splits.sort {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            for index in value.splits.indices {
+                value.splits[index].tagIDs.sort { $0.uuidString < $1.uuidString }
+            }
+            return value
+        }.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func transactionSnapshots(
+        ids: Set<UUID>,
+        transferIDs: Set<UUID> = []
+    ) throws -> [FinanceTransaction] {
+        normalizedUndoTransactions(
+            try transactions().filter {
+                ids.contains($0.id)
+                    || $0.transferID.map(transferIDs.contains) == true
+            }
+        )
+    }
+
+    private func encodeUndoTransactions(
+        _ values: [FinanceTransaction]
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        let data = try encoder.encode(normalizedUndoTransactions(values))
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw FinanceError.database("Das Buchungs-Undo konnte nicht codiert werden.")
+        }
+        return text
+    }
+
+    private func decodeUndoTransactions(_ text: String) throws -> [FinanceTransaction] {
+        guard let data = text.data(using: .utf8) else {
+            throw FinanceError.database("Das Buchungs-Undo ist beschädigt.")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        do {
+            return normalizedUndoTransactions(
+                try decoder.decode([FinanceTransaction].self, from: data)
+            )
+        } catch {
+            throw FinanceError.database("Das Buchungs-Undo ist beschädigt.")
+        }
+    }
+
+    private func recordTransactionUndo(
+        title: String,
+        before: [FinanceTransaction],
+        after: [FinanceTransaction],
+        now: String
+    ) throws {
+        let transactionCount = Set((before + after).map(\.id)).count
+        guard transactionCount > 0,
+              normalizedUndoTransactions(before) != normalizedUndoTransactions(after)
+        else { return }
+        try run(
+            """
+            INSERT INTO transaction_undo_runs(
+                id,title,before_json,after_json,transaction_count,created_at
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            [
+                .text(UUID().uuidString), .text(title),
+                .text(try encodeUndoTransactions(before)),
+                .text(try encodeUndoTransactions(after)),
+                .integer(Int64(transactionCount)), .text(now)
+            ]
+        )
+    }
+
+    func latestTransactionUndo() throws -> TransactionUndoSummary? {
+        var result: TransactionUndoSummary?
+        try query(
+            """
+            SELECT id,title,transaction_count,created_at
+            FROM transaction_undo_runs
+            WHERE undone_at IS NULL
+            ORDER BY sequence DESC LIMIT 1
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 3))
+            else { return }
+            result = TransactionUndoSummary(
+                id: id,
+                title: Self.text(statement, 1),
+                transactionCount: Int(sqlite3_column_int64(statement, 2)),
+                createdAt: createdAt
+            )
+        }
+        return result
+    }
+
+    @discardableResult
+    func undoTransactionMutation(id: UUID) throws -> Int {
+        var beforeJSON: String?
+        var afterJSON: String?
+        var title = ""
+        try query(
+            """
+            SELECT title,before_json,after_json
+            FROM transaction_undo_runs
+            WHERE id=? AND undone_at IS NULL
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            title = Self.text(statement, 0)
+            beforeJSON = Self.text(statement, 1)
+            afterJSON = Self.text(statement, 2)
+        }
+        guard let beforeJSON, let afterJSON else {
+            throw FinanceError.database("Das Buchungs-Undo fehlt oder wurde bereits verwendet.")
+        }
+        let before = try decodeUndoTransactions(beforeJSON)
+        let after = try decodeUndoTransactions(afterJSON)
+        let affectedIDs = Set((before + after).map(\.id))
+        let current = try transactionSnapshots(ids: affectedIDs)
+        guard current == after else {
+            throw FinanceError.database(
+                "Mindestens eine Buchung wurde nach „\(title)“ geändert. Das Undo wurde vollständig abgebrochen."
+            )
+        }
+        guard current.allSatisfy({ $0.status != .reconciled }) else {
+            throw FinanceError.protectedTransaction
+        }
+
+        let now = Self.timestamp(Date())
+        try transaction {
+            for transactionID in affectedIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try run("DELETE FROM transactions WHERE id=?", [.text(transactionID.uuidString)])
+            }
+            for value in before {
+                try writeTransaction(value, now: now, computeFingerprint: false)
+            }
+            try run(
+                "UPDATE transaction_undo_runs SET undone_at=? WHERE id=? AND undone_at IS NULL",
+                [.text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Das Buchungs-Undo wurde parallel verändert.")
+            }
+            try audit(
+                entity: "transaction-undo",
+                id: id,
+                action: "undo",
+                details: "\(title);\(affectedIDs.count) Buchungen"
+            )
+        }
+        return affectedIDs.count
+    }
+
     func saveTransaction(_ value: FinanceTransaction) throws {
         try value.validate()
         try validateVATReferences(value)
+        let before = try transactionSnapshots(ids: [value.id])
         var existingStatus: String?
         try query("SELECT status FROM transactions WHERE id=?", [.text(value.id.uuidString)]) {
             existingStatus = Self.text($0, 0)
@@ -6019,6 +6205,13 @@ final class SQLiteFinanceStore {
         let now = Self.timestamp(Date())
         try transaction {
             try writeTransaction(value, now: now)
+            let after = try transactionSnapshots(ids: [value.id])
+            try recordTransactionUndo(
+                title: before.isEmpty ? "Buchung erstellt" : "Buchung bearbeitet",
+                before: before,
+                after: after,
+                now: now
+            )
             try audit(entity: "transaction", id: value.id, action: "save", details: value.purpose)
         }
     }
@@ -6058,6 +6251,7 @@ final class SQLiteFinanceStore {
                     "Quell- und Zielkonto sind identisch."
                 )
             }
+            let before = try transactionSnapshots(ids: [id])
 
             var destinationCurrency: String?
             var destinationClosed = true
@@ -6094,6 +6288,13 @@ final class SQLiteFinanceStore {
                     "Die Buchung konnte nicht verschoben werden."
                 )
             }
+            let after = try transactionSnapshots(ids: [id])
+            try recordTransactionUndo(
+                title: "Buchung verschoben",
+                before: before,
+                after: after,
+                now: now
+            )
             try audit(
                 entity: "transaction",
                 id: id,
@@ -6184,6 +6385,7 @@ final class SQLiteFinanceStore {
             throw FinanceError.protectedBulkEdit
         }
 
+        let before = try transactionSnapshots(ids: ids)
         let now = Self.timestamp(Date())
         try transaction {
             for value in selected {
@@ -6232,6 +6434,15 @@ final class SQLiteFinanceStore {
                     ].joined(separator: ";")
                 )
             }
+            let after = try transactionSnapshots(ids: ids)
+            try recordTransactionUndo(
+                title: selected.count == 1
+                    ? "Buchung organisiert"
+                    : "\(selected.count) Buchungen organisiert",
+                before: before,
+                after: after,
+                now: now
+            )
         }
         let totals = Dictionary(grouping: selected, by: \.currency)
             .mapValues { values in values.reduce(Int64.zero) { $0 + $1.amount } }
@@ -6276,6 +6487,9 @@ final class SQLiteFinanceStore {
                 throw FinanceError.protectedTransaction
             }
         }
+        let transferIDs = Set(selected.compactMap(\.transferID))
+        let before = try transactionSnapshots(ids: ids, transferIDs: transferIDs)
+        let now = Self.timestamp(Date())
         try transaction {
             var deletedTransfers = Set<UUID>()
             for value in selected {
@@ -6307,6 +6521,14 @@ final class SQLiteFinanceStore {
                     )
                 }
             }
+            try recordTransactionUndo(
+                title: before.count == 1
+                    ? "Buchung gelöscht"
+                    : "\(before.count) Buchungen gelöscht",
+                before: before,
+                after: [],
+                now: now
+            )
         }
     }
 
@@ -6393,6 +6615,15 @@ final class SQLiteFinanceStore {
             )
             try writeTransaction(sourceValue, now: now)
             try writeTransaction(destinationValue, now: now)
+            let after = try transactionSnapshots(
+                ids: [sourceValue.id, destinationValue.id]
+            )
+            try recordTransactionUndo(
+                title: "Umbuchung erstellt",
+                before: [],
+                after: after,
+                now: now
+            )
             let details = isForeignCurrency
                 ? "\(purpose); \(Money(minorUnits: sourceAmount, currency: source.currency).editingString) \(source.currency) → \(Money(minorUnits: destinationAmount, currency: destination.currency).editingString) \(destination.currency)"
                 : purpose
