@@ -582,6 +582,15 @@ Steuerzuordnung und eine optionale US-Steuerzeile. MwSt.-Schlüssel werden
 unter `Einstellungen › MwSt.-Schlüssel` frei definiert; auch mehrere
 inhaltlich verschiedene Schlüssel mit 0 % bleiben eigenständige Datensätze.
 
+Die Kategorieverwaltung durchsucht Name, vollständigen Hierarchiepfad,
+Beschreibung, Art sowie deutsche und US-Steuerzuordnung gemeinsam. Die Suche
+ignoriert Groß-/Kleinschreibung und Diakritika, kombiniert mehrere Wörter und
+erhält alle benötigten Oberkategorien im Baum. Inaktive Kategorien lassen sich
+ausblenden; eine inaktive Oberkategorie bleibt dennoch als notwendiger Pfad zu
+einer passenden aktiven Unterkategorie sichtbar. Bei Suchtreffern steht der
+vollständige Pfad platzsparend in einer zweiten, einzeilig gekürzten Zeile und
+vollständig im Hilfetext.
+
 Bei normalen Buchungen kann die Steuer automatisch aus dem Bruttobetrag oder
 über einen ausdrücklich eingegebenen Steuerbetrag ermittelt werden. Der
 Editor zeigt Brutto, Netto und Steuer vor dem Speichern. Splitzeilen besitzen

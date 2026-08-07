@@ -5413,6 +5413,91 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testCategoryHierarchyFilterFindsFullPathsAndKeepsRequiredAncestors() {
+        let realEstate = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Immobilien",
+            kind: .expense, color: "blue", isActive: true
+        )
+        let apartment = FinanceCategory(
+            id: UUID(), parentID: realEstate.id, name: "Wohnung Köln",
+            kind: .expense, color: "blue", isActive: true
+        )
+        var propertyTax = FinanceCategory(
+            id: UUID(), parentID: apartment.id, name: "Grundsteuer",
+            kind: .expense, color: "orange", isActive: true
+        )
+        propertyTax.description = "Kommunale Abgabe"
+        propertyTax.germanTaxLine = "Anlage V"
+        let inactiveLeaf = FinanceCategory(
+            id: UUID(), parentID: apartment.id, name: "Alter Leerstand",
+            kind: .expense, color: "gray", isActive: false
+        )
+        let inactiveParent = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Frühere Immobilie",
+            kind: .expense, color: "gray", isActive: false
+        )
+        let activeReserve = FinanceCategory(
+            id: UUID(), parentID: inactiveParent.id, name: "Rücklage",
+            kind: .expense, color: "green", isActive: true
+        )
+        let categories = [
+            realEstate, apartment, propertyTax, inactiveLeaf,
+            inactiveParent, activeReserve
+        ]
+
+        XCTAssertEqual(
+            CategoryHierarchyFilter.path(
+                for: propertyTax, categories: categories
+            ),
+            "Immobilien:Wohnung Köln:Grundsteuer"
+        )
+        XCTAssertEqual(
+            CategoryHierarchyFilter.visibleIDs(
+                categories: categories,
+                searchText: "immobilien koln grundsteuer",
+                includeInactive: false
+            ),
+            [realEstate.id, apartment.id, propertyTax.id]
+        )
+        XCTAssertEqual(
+            CategoryHierarchyFilter.visibleIDs(
+                categories: categories,
+                searchText: "kommunale anlage v",
+                includeInactive: false
+            ),
+            [realEstate.id, apartment.id, propertyTax.id]
+        )
+        XCTAssertEqual(
+            CategoryHierarchyFilter.visibleIDs(
+                categories: categories,
+                searchText: "rucklage",
+                includeInactive: false
+            ),
+            [inactiveParent.id, activeReserve.id]
+        )
+        XCTAssertFalse(
+            CategoryHierarchyFilter.visibleIDs(
+                categories: categories,
+                searchText: "leerstand",
+                includeInactive: false
+            ).contains(inactiveLeaf.id)
+        )
+        XCTAssertTrue(
+            CategoryHierarchyFilter.visibleIDs(
+                categories: categories,
+                searchText: "leerstand",
+                includeInactive: true
+            ).isSuperset(of: [realEstate.id, apartment.id, inactiveLeaf.id])
+        )
+        XCTAssertTrue(
+            CategoryHierarchyFilter.visibleIDs(
+                categories: categories,
+                searchText: "nicht vorhanden",
+                includeInactive: true
+            ).isEmpty
+        )
+    }
+
     @MainActor
     func testRegisterCategoryDisplayUsesCompletePathAndAllSplitPaths() throws {
         let context = try TestDatabase()

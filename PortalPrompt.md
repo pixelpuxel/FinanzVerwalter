@@ -228,6 +228,19 @@ erlaube nur Eltern derselben Einnahmen-/Ausgabenart. In allen Auswahlfeldern
 und Kontoblattspalten ist der vollständige Pfad
 (`Oberkategorie › Unterkategorie`) anzuzeigen.
 
+Ergänze die Kategorieverwaltung um eine deterministische Baumfilterung. Zerlege
+den normalisierten Suchtext an Leerraum und verlange, dass jedes Token in der
+gemeinsamen Suchfläche aus vollständigem Kategoriepfad, Beschreibung,
+Kategorieart, deutscher Steuerzeile und US-Steuerzeile vorkommt. Normalisiere
+mit deutscher Locale case-, diakritika- und breitenunabhängig. Nimm zu jedem
+Treffer sämtliche Ahnen in die sichtbare ID-Menge auf, damit der Baumweg nicht
+abbricht. Ein Schalter blendet inaktive Treffer aus; inaktive Ahnen aktiver
+Treffer bleiben als notwendige Struktur sichtbar. Zeige bei aktiver Suche den
+vollständigen Pfad als kompakte zweite Zeile mit ungekürztem Hilfetext und für
+eine leere Treffermenge einen erklärenden Leerzustand. Teste tiefe Pfade,
+Mehrwortsuche, Diakritika, Metadaten, inaktive Blätter und inaktive Ahnen als
+reine Logik ohne UI-Abhängigkeit.
+
 Das Kontoblatt berechnet einen laufenden Saldo getrennt je Konto und Währung.
 Beginne mit dem Eröffnungssaldo, sortiere nach Buchungsdatum und UUID und
 ignoriere stornierte Beträge. Zeige `Saldo` unmittelbar rechts von `Betrag`.

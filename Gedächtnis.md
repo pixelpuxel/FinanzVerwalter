@@ -3909,3 +3909,36 @@ Rechtsberatung.
   894. Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein
   neuer Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem
   Versand: 23.121.029 Tokens.
+
+## 08.08.2026 – Pfadbasierte Kategoriehierarchiesuche
+
+- Die Kategorieverwaltung durchsucht Name, vollständigen Pfad, Beschreibung,
+  Kategorieart sowie deutsche und US-Steuerzuordnung. Mehrere Suchwörter
+  werden als UND-Bedingung ausgewertet; Groß-/Kleinschreibung, Diakritika und
+  Zeichenbreite werden ignoriert. Alle Ahnen eines Treffers bleiben sichtbar,
+  damit tiefe Kategoriepfade im Baum nicht auseinanderfallen.
+- `Inaktive anzeigen` filtert inaktive Treffer. Eine inaktive Oberkategorie
+  bleibt als notwendiger Pfad sichtbar, wenn eine aktive Unterkategorie passt.
+  Während einer Suche zeigt jede Trefferzeile den vollständigen Pfad kompakt
+  in einer zweiten Zeile und ungekürzt im Hilfetext. Eine leere Treffermenge
+  besitzt einen erklärenden Leerzustand.
+- ADR 0045 dokumentiert die Entscheidung. Der neue reine Logiktest deckt tiefe
+  Immobilienpfade, Mehrwortsuche, `Köln`/`koln`, `Rücklage`/`rucklage`,
+  Beschreibung, Steuerzeile, inaktive Blätter und inaktive Ahnen ab.
+- Der finale vollständige Lauf unter
+  `build/TestResults/CategorySearch-full-final-20260808-0050.xcresult`
+  umfasst 167 Tests: 165 bestanden, 2 ausdrücklich opt-in übersprungen,
+  0 Fehler und 0 erwartete Fehler.
+- Der native arm64-Release unter `build/DerivedData-CategorySearch-Product`
+  wurde erfolgreich gebaut, lokal ad-hoc signiert und streng geprüft. Die
+  ausführbare Datei hat SHA-256
+  `1be3a0b7254c1e780d5561a22ab67d0c43f24cab6d174f59fc8f8f53edceadfb`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0048-category-search/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0048-category-search/Meine Finanzen.qdata`.
+  Beide installierten Apps sind bytegleich, der Schreibtisch-Link zeigt auf
+  `/Applications`, Finder wurde auf die App gelenkt und Prozess 65253 läuft
+  daraus. Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  jeweils 97 Konten, 2.170 Buchungen und 782 Kategorien; die Produktivdatei
+  hat keine Fremdschlüsselverletzung.

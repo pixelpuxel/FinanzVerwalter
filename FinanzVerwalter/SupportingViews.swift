@@ -5714,10 +5714,75 @@ private struct VATCodeEditor: View {
     }
 }
 
+enum CategoryHierarchyFilter {
+    static func visibleIDs(
+        categories: [FinanceCategory],
+        searchText: String,
+        includeInactive: Bool
+    ) -> Set<UUID> {
+        let byID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let tokens = normalized(searchText)
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        var visible = Set<UUID>()
+        for category in categories where includeInactive || category.isActive {
+            let searchable = normalized(
+                [
+                    path(for: category, byID: byID), category.description,
+                    category.kind.title, category.germanTaxLine, category.usTaxLine
+                ].joined(separator: " ")
+            )
+            guard tokens.allSatisfy(searchable.contains) else { continue }
+            var currentID: UUID? = category.id
+            var visited = Set<UUID>()
+            while let id = currentID, visited.insert(id).inserted {
+                visible.insert(id)
+                currentID = byID[id]?.parentID
+            }
+        }
+        return visible
+    }
+
+    static func path(
+        for category: FinanceCategory,
+        categories: [FinanceCategory]
+    ) -> String {
+        path(
+            for: category,
+            byID: Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        )
+    }
+
+    private static func path(
+        for category: FinanceCategory,
+        byID: [UUID: FinanceCategory]
+    ) -> String {
+        var names = [category.name]
+        var parentID = category.parentID
+        var visited = Set<UUID>([category.id])
+        while let id = parentID,
+              visited.insert(id).inserted,
+              let parent = byID[id] {
+            names.append(parent.name)
+            parentID = parent.parentID
+        }
+        return names.reversed().joined(separator: ":")
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "de_DE")
+        )
+    }
+}
+
 struct CategoriesView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selectedID: UUID?
     @State private var editedCategory: FinanceCategory?
+    @State private var searchText = ""
+    @State private var includeInactive = true
 
     private var selected: FinanceCategory? {
         store.categories.first { $0.id == selectedID }
@@ -5727,6 +5792,16 @@ struct CategoriesView: View {
             if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+    private var visibleIDs: Set<UUID> {
+        CategoryHierarchyFilter.visibleIDs(
+            categories: store.categories,
+            searchText: searchText,
+            includeInactive: includeInactive
+        )
+    }
+    private var visibleRoots: [FinanceCategory] {
+        roots.filter { visibleIDs.contains($0.id) }
     }
 
     var body: some View {
@@ -5766,13 +5841,63 @@ struct CategoriesView: View {
                 .disabled(selected == nil)
             }
             .padding(14)
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField(
+                    "Name, vollständiger Pfad, Beschreibung oder Steuerzuordnung",
+                    text: $searchText
+                )
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("categorySearchField")
+                if !searchText.isEmpty {
+                    Button("Suche leeren", systemImage: "xmark.circle.fill") {
+                        searchText = ""
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                }
+                Toggle("Inaktive anzeigen", isOn: $includeInactive)
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("categoryIncludeInactiveToggle")
+                    .help(
+                        "Blendet inaktive Kategorien ein. Inaktive Oberkategorien "
+                            + "bleiben als Pfad sichtbar, wenn darunter eine aktive "
+                            + "Kategorie gefunden wird."
+                    )
+                Text("\(visibleIDs.count) von \(store.categories.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(
+                        "\(visibleIDs.count) von \(store.categories.count) Kategorien sichtbar"
+                    )
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
             Divider()
             HSplitView {
                 List(selection: $selectedID) {
+                    if visibleRoots.isEmpty {
+                        ContentUnavailableView(
+                            "Keine Kategorien gefunden",
+                            systemImage: "magnifyingglass",
+                            description: Text(
+                                includeInactive
+                                    ? "Ändere den Suchtext."
+                                    : "Ändere den Suchtext oder zeige inaktive Kategorien an."
+                            )
+                        )
+                        .listRowSeparator(.hidden)
+                    }
                     ForEach(CategoryKind.allCases, id: \.self) { kind in
                         Section(kind.title) {
-                            ForEach(roots.filter { $0.kind == kind }) { category in
-                                CategoryTreeRows(category: category, selectedID: $selectedID)
+                            ForEach(visibleRoots.filter { $0.kind == kind }) { category in
+                                CategoryTreeRows(
+                                    category: category,
+                                    selectedID: $selectedID,
+                                    visibleIDs: visibleIDs,
+                                    showFullPath: !searchText.isEmpty
+                                )
                             }
                         }
                     }
@@ -5796,7 +5921,12 @@ struct CategoriesView: View {
             }
         }
         .onAppear {
-            if selectedID == nil { selectedID = roots.first?.id }
+            if selectedID == nil { selectedID = visibleRoots.first?.id }
+        }
+        .onChange(of: visibleIDs) {
+            if let selectedID, !visibleIDs.contains(selectedID) {
+                self.selectedID = visibleRoots.first?.id
+            }
         }
         .sheet(item: $editedCategory) { CategoryEditor(category: $0) }
     }
@@ -5919,9 +6049,13 @@ private struct CategoryTreeRows: View {
     @EnvironmentObject private var store: FinanceAppStore
     let category: FinanceCategory
     @Binding var selectedID: UUID?
+    let visibleIDs: Set<UUID>
+    let showFullPath: Bool
 
     private var children: [FinanceCategory] {
-        store.categories.filter { $0.parentID == category.id }.sorted {
+        store.categories.filter {
+            $0.parentID == category.id && visibleIDs.contains($0.id)
+        }.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
@@ -5933,7 +6067,12 @@ private struct CategoryTreeRows: View {
         } else {
             DisclosureGroup {
                 ForEach(children) { child in
-                    CategoryTreeRows(category: child, selectedID: $selectedID)
+                    CategoryTreeRows(
+                        category: child,
+                        selectedID: $selectedID,
+                        visibleIDs: visibleIDs,
+                        showFullPath: showFullPath
+                    )
                         .padding(.leading, 8)
                 }
             } label: {
@@ -5949,7 +6088,16 @@ private struct CategoryTreeRows: View {
             Circle()
                 .fill(categoryColor(category.color))
                 .frame(width: 8, height: 8)
-            Text(category.name)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(category.name)
+                if showFullPath {
+                    Text(store.categoryPath(category.id))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(store.categoryPath(category.id))
+                }
+            }
             if !category.isActive {
                 Text("Inaktiv")
                     .font(.caption2)
