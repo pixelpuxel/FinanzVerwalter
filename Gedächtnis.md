@@ -2723,6 +2723,58 @@ Rechtsberatung.
 - Implementierung und Tests wurden als Commit `07f006d`, die reproduzierbare
   Dokumentation als Commit `b67acb0` angelegt. Die macOS-Sitzung ist weiterhin
   nachweislich gesperrt; deshalb wurde kein fingierter Screenshot erzeugt.
+
+## 07.08.2026 – Monats-, Wochen- und Listenansicht im Finanzkalender
+
+- `Kalender & Prognose` bietet jetzt die drei segmentierten Ansichten `Monat`,
+  `Woche` und `Liste`. Monat und Woche beginnen am Montag. Das Monatsraster
+  umfasst alle berührten Wochen einschließlich sichtbar abgeschwächter
+  Randtage; eine Woche besitzt exakt sieben Tage. `Heute` sowie Vor-/Zurück-
+  Navigation wechseln den fokussierten Zeitraum.
+- Reale Buchungen und die bereits deduplizierten virtuellen Serientermine
+  werden für das Raster zusammengeführt, ohne ihre Persistenz zu verändern.
+  Eine Legende und dieselben Farben in jeder Zelle unterscheiden regelmäßig,
+  erwartet, vorgemerkt, gebucht und storniert. Bestätigte und abgeglichene
+  Buchungen gehören dabei bewusst zur Klasse `Gebucht`; virtuelle Termine
+  bleiben aus der bestehenden Oberfläche einzeln bearbeitbar.
+- Konto-, Kategorie- und Klassen-/Tag-Filter sind kombinierbar. Kategorie und
+  Klasse erscheinen als vollständiger Hierarchiepfad; ein gewählter
+  Oberknoten schließt alle Nachfahren ein. Direkte Zuordnungen und sämtliche
+  Splitzeilen werden geprüft. Kalenderzellen, Hilfetexte und
+  Accessibility-Beschriftungen behalten Konto, vollständigen Kategoriepfad,
+  Status, Datum und Betrag bei.
+- Die reine `FinanceCalendarLayout`-Logik sowie die Statusklassifikation sind
+  ohne Oberfläche testbar. Die neuen Tests decken Februar 2024 mit 29
+  Monatstagen und Randtagen vom 29.01. bis 03.03., die Woche vom 29.12.2025
+  bis 04.01.2026, Monats- und Wochenverschiebung über den Jahreswechsel sowie
+  alle Transaktionsstatus ab.
+- Das Result-Bundle
+  `/tmp/FinanzVerwalterCalendarDD/Logs/Test/Test-FinanzVerwalter-2026.08.07_15-21-14-+0200.xcresult`
+  enthält 127 Tests: 126 bestanden, der private opt-in-QIF-Test ohne Pfad
+  planmäßig übersprungen, 0 Fehler und 0 erwartete Fehler. Der Debug-Build,
+  gezielte Kalenderlauf, vollständige Suite, `git diff --check` und der
+  optimierte arm64-Release-Build sind grün.
+- Der streng signaturgeprüfte Release liegt unter
+  `build/DerivedData-FinanceCalendar-Release`. Sein ausführbarer Code hat
+  SHA-256
+  `31bfa45b704a46df32ca3322179feb5454c180e80a95f9b076e80d2fe0fd6c6d`.
+  Identische Kopien sind unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  auf die Systeminstallation. Die Vorgänger sind reversibel unter
+  `build/FinanzVerwalter-vor-finanzkalender-20260807-1527.app` und
+  `build/FinanzVerwalter-user-vor-finanzkalender-20260807-1527.app` erhalten.
+- Der echte Start läuft als Prozess 81296 direkt aus `/Applications`. Die
+  produktive Datei blieb auf Schema 34 und besitzt Integrität `ok`; 97 Konten,
+  2.170 Buchungen, 782 Kategorien, eine Berichtsvorlage und jeweils 0 Serien,
+  Einzelausnahmen und Serienrevisionen sind unverändert. Es gab keine
+  Datenmigration.
+- Die Implementierung samt Tests wurde als Commit `406e9c4` angelegt. Die
+  macOS-Sitzung ist weiterhin nachweislich gesperrt
+  (`CGSSessionScreenIsLocked=true`); deshalb wurde kein irreführender oder
+  fingierter App-Screenshot erzeugt. Direktes Kalender-Drag-and-drop und
+  Was-wäre-wenn-Szenarien bleiben gemäß Anforderungsmatrix offen.
+- Der exakte kumulative Zielzählerstand nach Installation und Produktivprüfung
+  beträgt 16.922.518 Tokens.
   Der exakte Zielzählerstand vor dieser Dokumentation beträgt 16.682.116
   Tokens.
 - GitHub Draft-PR #1 wurde konfliktfrei mit Head `4ed8485`, dem

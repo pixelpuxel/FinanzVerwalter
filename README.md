@@ -393,6 +393,16 @@ Monatsende-Semantik. Der prognostizierte Saldo beginnt beim realen Bestand
 und berücksichtigt anschließend erwartete Buchungen sowie noch nicht
 materialisierte Serientermine.
 
+Die Ansicht lässt sich zwischen Liste, Monat und Woche umschalten. Monat und
+Woche beginnen am Montag, füllen Randtage vollständig auf und bleiben über
+Schaltmonat und Jahreswechsel korrekt. Gebuchte, vorgemerkte, erwartete,
+regelmäßige und stornierte Vorgänge besitzen eine eigene Farbe samt Legende.
+Konto, vollständiger Kategoriepfad und vollständiger Klassen-/Tag-Pfad sind
+kombinierbar filterbar; bei einem Oberknoten werden seine Unterkategorien oder
+Unterklassen mit einbezogen. Kategorien und Klassen in Splitzeilen zählen
+ebenfalls. `Heute` und die Pfeiltasten navigieren deterministisch durch den
+gewählten Zeitraum.
+
 Eine einzelne Serieninstanz kann über ihren stabilen Ursprungstermin
 geändert oder übersprungen werden. Datum, Empfänger, Verwendungszweck,
 Kategorie und Betrag der geänderten Instanz werden dauerhaft als Ausnahme
@@ -406,8 +416,8 @@ Rhythmus wird dabei vom neuen Datum aus mit derselben Frequenz fortgeführt;
 alle virtuellen Termine behalten dennoch ihre stabile ursprüngliche
 Herkunftskennung. Solche Änderungspunkte sind als `Serienänderungen`
 sichtbar, einzeln rücksetzbar und können weiterhin durch eine spätere
-Einzelausnahme übersteuert werden. Wochenansicht, Drag-and-drop und Szenarien
-sind noch nicht umgesetzt.
+Einzelausnahme übersteuert werden. Direktes Drag-and-drop im Kalender und
+Was-wäre-wenn-Szenarien sind noch nicht umgesetzt.
 
 ## Kategorien und Mehrwertsteuer
 

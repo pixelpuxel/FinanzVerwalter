@@ -355,6 +355,23 @@ Für Serientermine gilt reproduzierbar:
 - Der Prognosesaldo beginnt mit Eröffnungssaldo plus nicht stornierter,
   nicht erwarteter Buchungen bis heute und addiert erwartete sowie noch
   virtuelle Serientermine bis zum jeweiligen Stichtag.
+- Biete Liste, Monat und Woche als segmentierte Kalenderansichten an. Erzeuge
+  Monat und Woche mit einem auf Montag beginnenden gregorianischen Kalender
+  und mindestens vier Tagen in der ersten ISO-Woche. Eine Woche hat exakt
+  sieben Zellen; ein Monat wird vom Montag der ersten berührten Woche bis zum
+  Sonntag der letzten berührten Woche auf 35 oder 42 Zellen aufgefüllt.
+- Führe reale Buchungen und noch nicht materialisierte Serientermine nur für
+  die Kalenderdarstellung zusammen. Klassifiziere virtuelle Serientermine als
+  `regelmäßig`, echte Statuswerte `expected` als `erwartet`, `pending` als
+  `vorgemerkt`, `booked`/`cleared`/`reconciled` als `gebucht` und `cancelled`
+  als `storniert`. Jede Klasse hat eine konsistente Farbe, sichtbare Legende
+  und vollständige Accessibility-Beschriftung.
+- Filtere Kalender und Serienliste kombinierbar nach Konto, Kategorie und
+  Klasse/Tag. Zeige Kategorie und Klasse immer als vollständigen Pfad. Ein
+  gewählter Hierarchieknoten schließt alle Nachfahren ein; direkte Felder und
+  alle Splitzeilen müssen beim Kategorie- und Klassenfilter geprüft werden.
+- Navigation über vorherigen Zeitraum, `Heute` und nächsten Zeitraum muss
+  Monats-, Schaltjahres- und Jahresgrenzen deterministisch erhalten.
 
 Für Budgets gilt reproduzierbar:
 
