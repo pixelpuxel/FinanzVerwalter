@@ -775,9 +775,13 @@ SEPA-Core-Lastschriften verwenden ein offenes EUR-Gläubigerkonto, eine
 aktive Empfänger-Bankverbindung und ein aktives unterschriebenes Mandat.
 Gläubiger- und Schuldnerdaten, Mandatsreferenz, Unterschriftsdatum,
 Sequenztyp, Fälligkeit, Betrag, Verwendungszweck und End-to-End-ID werden beim
-Anlegen unveränderlich eingefroren. Nach doppelter Bestätigung durchläuft der
-lokale Simulator dieselbe sichere Statusmaschine; eine Annahme erzeugt genau
-eine vorgemerkte Gutschrift. Entwürfe können lokal als
+Anlegen unveränderlich eingefroren. Dabei werden die EPC-Längen-, BIC- und
+Slashregeln bereits vor dem Speichern geprüft. Ein freier oder noch nicht
+eingereichter Einzelauftrag kann nach eigener Bestätigung abgebrochen werden;
+der unveränderliche Schnappschuss und sein Auditverlauf bleiben erhalten und
+es entsteht keine Buchung. Nach doppelter Bestätigung durchläuft der lokale
+Simulator dieselbe sichere Statusmaschine; eine Annahme erzeugt genau eine
+vorgemerkte Gutschrift. Entwürfe können lokal als
 `pain.008.001.08` nach dem datierten Regelpaket `EPC-SDD-CORE-2025-V1.1`
 exportiert werden. Es findet keine echte Bankübermittlung statt.
 
@@ -791,7 +795,10 @@ Erzeugung vorgemerkter Buchungen erfolgen für den gesamten Sammler atomar;
 Einzelaktionen auf enthaltenen Aufträgen sind gesperrt. Der lokale Export
 schreibt ein gemeinsames `pain.001.001.09` beziehungsweise
 `pain.008.001.08` mit `BtchBookg`, Kontrollsumme und allen Positionen und
-sendet weiterhin keine Daten an eine Bank.
+sendet weiterhin keine Daten an eine Bank. Ein freier oder noch nicht
+eingereichter Sammler lässt sich nur nach Bestätigung abbrechen; Sammler und
+alle Mitglieder wechseln atomar nach `cancelled`, bleiben auditiert erhalten
+und erzeugen keine Teilbuchung.
 
 Bankseitige Zahlungsstatusberichte können lokal als streng geprüftes
 `pain.002.001.10` importiert werden. Vor dem Commit zeigt FinanzVerwalter jede

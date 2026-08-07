@@ -3467,12 +3467,64 @@ final class FinanzVerwalterTests: XCTestCase {
             idempotencyKey: "direct-debit-member-42-2026-08",
             bankReference: "", createdAt: now, updatedAt: now
         )
+        var invalid = order
+        invalid.debtorBIC = "FALSCH"
+        invalid.idempotencyKey = "invalid-direct-debit-bic"
+        XCTAssertThrowsError(try context.store.createDirectDebitOrder(invalid))
+        invalid = order
+        invalid.endToEndID = "/UNZULAESSIG"
+        invalid.idempotencyKey = "invalid-direct-debit-slash"
+        XCTAssertThrowsError(try context.store.createDirectDebitOrder(invalid))
+        invalid = order
+        invalid.mandateReference = String(repeating: "M", count: 36)
+        invalid.idempotencyKey = "invalid-direct-debit-mandate"
+        XCTAssertThrowsError(try context.store.createDirectDebitOrder(invalid))
         try context.store.createDirectDebitOrder(order)
         XCTAssertThrowsError(try context.store.createDirectDebitOrder(order)) {
             XCTAssertEqual($0 as? FinanceError, .duplicateDirectDebitOrder)
         }
         let stored = try XCTUnwrap(context.store.directDebitOrders().first)
         XCTAssertEqual(stored, order)
+
+        let cancelledOrder = DirectDebitOrder(
+            id: UUID(), creditorAccountID: order.creditorAccountID,
+            debtorPayeeID: order.debtorPayeeID,
+            debtorBankAccountID: order.debtorBankAccountID,
+            mandateID: order.mandateID,
+            creditorName: order.creditorName, creditorID: order.creditorID,
+            creditorIBAN: order.creditorIBAN, creditorBIC: order.creditorBIC,
+            debtorName: order.debtorName, debtorIBAN: order.debtorIBAN,
+            debtorBIC: order.debtorBIC, amountMinor: 4_251,
+            currency: order.currency, collectionDate: order.collectionDate,
+            purpose: "Bewusst abgebrochener Einzug",
+            endToEndID: "ABBRUCH-2026-08",
+            mandateReference: order.mandateReference,
+            mandateSignedOn: order.mandateSignedOn,
+            sequenceType: order.sequenceType, status: .draft,
+            idempotencyKey: "cancelled-direct-debit", bankReference: "",
+            createdAt: now, updatedAt: now
+        )
+        try context.store.createDirectDebitOrder(cancelledOrder)
+        try context.store.transitionDirectDebitOrder(
+            id: cancelledOrder.id, to: .cancelled
+        )
+        XCTAssertEqual(
+            try context.store.directDebitOrders().first {
+                $0.id == cancelledOrder.id
+            }?.status,
+            .cancelled
+        )
+        XCTAssertEqual(
+            try context.store.transactions().filter {
+                $0.reference == "direct-debit:\(cancelledOrder.id.uuidString)"
+            }.count,
+            0
+        )
+        XCTAssertThrowsError(
+            try context.store.transitionDirectDebitOrder(
+                id: cancelledOrder.id, to: .initiated
+            )
+        )
 
         var tampered = order
         tampered = DirectDebitOrder(
@@ -3522,7 +3574,9 @@ final class FinanzVerwalterTests: XCTestCase {
         mandate.sequenceType = .final
         try context.store.saveSEPAMandate(mandate)
         XCTAssertEqual(
-            try context.store.directDebitOrders().first?.sequenceType,
+            try context.store.directDebitOrders().first {
+                $0.id == order.id
+            }?.sequenceType,
             .recurring,
             "Ein bestehender Auftrag behält den Mandatsschnappschuss."
         )
@@ -3532,7 +3586,9 @@ final class FinanzVerwalterTests: XCTestCase {
         ] {
             try context.store.transitionDirectDebitOrder(id: order.id, to: status)
         }
-        let accepted = try XCTUnwrap(context.store.directDebitOrders().first)
+        let accepted = try XCTUnwrap(
+            context.store.directDebitOrders().first { $0.id == order.id }
+        )
         XCTAssertEqual(accepted.status, .accepted)
         XCTAssertTrue(accepted.bankReference.hasPrefix("SIM-DD-"))
         let materialized = try context.store.transactions().filter {
@@ -3787,6 +3843,72 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(materialized.reduce(Int64.zero) { $0 + $1.amountMinor }, -3_000)
         XCTAssertThrowsError(
             try context.store.transitionPaymentBatch(id: batch.id, to: .submitted)
+        )
+
+        let cancellationOrders = [
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Abbruch Eins", iban: "DE12500105170648489890",
+                bic: "INGDDEFFXXX", amountMinor: 400, currency: "EUR",
+                executionDate: executionDate, purpose: "Nicht senden eins",
+                endToEndID: "CANCEL-BATCH-1", status: .draft,
+                idempotencyKey: "cancel-batch-payment-1", bankReference: "",
+                createdAt: createdAt.addingTimeInterval(10),
+                updatedAt: createdAt.addingTimeInterval(10)
+            ),
+            PaymentOrder(
+                id: UUID(), accountID: account.id, type: .sepaCreditTransfer,
+                recipientName: "Abbruch Zwei", iban: "DE75512108001245126199",
+                bic: "", amountMinor: 500, currency: "EUR",
+                executionDate: executionDate, purpose: "Nicht senden zwei",
+                endToEndID: "CANCEL-BATCH-2", status: .draft,
+                idempotencyKey: "cancel-batch-payment-2", bankReference: "",
+                createdAt: createdAt.addingTimeInterval(11),
+                updatedAt: createdAt.addingTimeInterval(11)
+            )
+        ]
+        for order in cancellationOrders {
+            try context.store.createPaymentOrder(order)
+        }
+        let cancellationMemberIDs = cancellationOrders.map(\.id).sorted {
+            $0.uuidString < $1.uuidString
+        }
+        let cancellationBatch = PaymentBatch(
+            id: UUID(), name: "Bewusst abgebrochener Sammler",
+            kind: .creditTransfer, accountID: account.id,
+            requestedDate: executionDate, status: .draft,
+            idempotencyKey: "cancelled-credit-batch", bankReference: "",
+            memberOrderIDs: cancellationMemberIDs, createdAt: createdAt,
+            updatedAt: createdAt
+        )
+        try context.store.createPaymentBatch(cancellationBatch)
+        try context.store.transitionPaymentBatch(
+            id: cancellationBatch.id, to: .cancelled
+        )
+        XCTAssertEqual(
+            try context.store.paymentBatches().first {
+                $0.id == cancellationBatch.id
+            }?.status,
+            .cancelled
+        )
+        XCTAssertEqual(
+            Set(try context.store.paymentOrders().filter {
+                cancellationMemberIDs.contains($0.id)
+            }.map(\.status)),
+            [.cancelled]
+        )
+        XCTAssertEqual(
+            try context.store.transactions().filter {
+                cancellationMemberIDs.map {
+                    "payment:\($0.uuidString)"
+                }.contains($0.reference)
+            }.count,
+            0
+        )
+        XCTAssertThrowsError(
+            try context.store.transitionPaymentBatch(
+                id: cancellationBatch.id, to: .initiated
+            )
         )
         XCTAssertTrue(try context.store.integrityCheck())
     }

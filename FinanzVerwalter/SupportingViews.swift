@@ -10807,6 +10807,7 @@ private struct PaymentBatchDetail: View {
     @EnvironmentObject private var store: FinanceAppStore
     let batch: PaymentBatch
     @State private var confirmInitiation = false
+    @State private var confirmCancellation = false
     @State private var authorizationCode = ""
     @State private var showExporter = false
     @State private var exportDocument = Pain001Document(data: Data())
@@ -10959,6 +10960,16 @@ private struct PaymentBatchDetail: View {
                     + " werden gemeinsam vorbereitet. Dies ist ausschließlich eine lokale Simulation."
             )
         }
+        .alert("SEPA-Sammler abbrechen?", isPresented: $confirmCancellation) {
+            Button("Nicht abbrechen", role: .cancel) {}
+            Button("Sammler abbrechen", role: .destructive) {
+                _ = store.transitionPaymentBatch(batch, to: .cancelled)
+            }
+        } message: {
+            Text(
+                "Der Sammler und alle \(batch.memberOrderIDs.count) enthaltenen Aufträge bleiben mit ihrem Auditverlauf erhalten und werden gemeinsam abgebrochen."
+            )
+        }
         .fileExporter(
             isPresented: $showExporter,
             document: exportDocument,
@@ -11027,10 +11038,15 @@ private struct PaymentBatchDetail: View {
     private var actionArea: some View {
         switch batch.status {
         case .draft:
-            Button("Gemeinsame Einreichung vorbereiten …") {
-                confirmInitiation = true
+            HStack {
+                Button("Gemeinsame Einreichung vorbereiten …") {
+                    confirmInitiation = true
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Sammler abbrechen …", role: .destructive) {
+                    confirmCancellation = true
+                }
             }
-            .buttonStyle(.borderedProminent)
         case .initiated:
             Button("Bank-Challenge simulieren") {
                 _ = store.transitionPaymentBatch(batch, to: .challengeReceived)
@@ -11056,6 +11072,9 @@ private struct PaymentBatchDetail: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                Button("Sammler abbrechen …", role: .destructive) {
+                    confirmCancellation = true
+                }
             }
         case .submitted:
             VStack(alignment: .leading, spacing: 8) {
@@ -11846,6 +11865,7 @@ private struct DirectDebitOrderDetail: View {
     @EnvironmentObject private var store: FinanceAppStore
     let order: DirectDebitOrder
     @State private var confirmInitiation = false
+    @State private var confirmCancellation = false
     @State private var authorizationCode = ""
     @State private var showPain008Exporter = false
     @State private var pain008Document = Pain001Document(data: Data())
@@ -11985,6 +12005,16 @@ private struct DirectDebitOrderDetail: View {
                 "Von \(order.debtorName) werden \(Money(minorUnits: order.amountMinor).formatted) eingezogen. Dies ist ausschließlich eine lokale Simulation."
             )
         }
+        .alert("Lastschrift abbrechen?", isPresented: $confirmCancellation) {
+            Button("Nicht abbrechen", role: .cancel) {}
+            Button("Auftrag abbrechen", role: .destructive) {
+                _ = store.transitionDirectDebit(order, to: .cancelled)
+            }
+        } message: {
+            Text(
+                "Der Lastschriftauftrag bleibt mit seinem unveränderlichen Schnappschuss und Auditverlauf erhalten, kann aber nicht mehr eingereicht werden."
+            )
+        }
         .fileExporter(
             isPresented: $showPain008Exporter,
             document: pain008Document,
@@ -12028,10 +12058,15 @@ private struct DirectDebitOrderDetail: View {
         } else {
             switch order.status {
         case .draft:
-            Button("Einreichung vorbereiten …") {
-                confirmInitiation = true
+            HStack {
+                Button("Einreichung vorbereiten …") {
+                    confirmInitiation = true
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Lastschrift abbrechen …", role: .destructive) {
+                    confirmCancellation = true
+                }
             }
-            .buttonStyle(.borderedProminent)
         case .initiated:
             Button("Bank-Challenge simulieren") {
                 _ = store.transitionDirectDebit(order, to: .challengeReceived)
@@ -12057,6 +12092,9 @@ private struct DirectDebitOrderDetail: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                Button("Lastschrift abbrechen …", role: .destructive) {
+                    confirmCancellation = true
+                }
             }
         case .submitted:
             VStack(alignment: .leading, spacing: 8) {

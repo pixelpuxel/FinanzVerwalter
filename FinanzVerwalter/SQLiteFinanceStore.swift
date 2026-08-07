@@ -6440,6 +6440,50 @@ final class SQLiteFinanceStore {
 
     func createDirectDebitOrder(_ value: DirectDebitOrder) throws {
         try value.validate()
+        let textFields = [
+            ("Gläubigername", value.creditorName, 140),
+            ("Zahlername", value.debtorName, 140),
+            ("Verwendungszweck", value.purpose, 140),
+            ("End-to-End-ID", value.endToEndID, 35),
+            ("Mandatsreferenz", value.mandateReference, 35)
+        ]
+        for (label, rawValue, maximum) in textFields {
+            let normalized = rawValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !normalized.isEmpty, normalized.count <= maximum else {
+                throw FinanceError.invalidDirectDebit(
+                    "\(label) muss ausgefüllt sein und darf höchstens \(maximum) Zeichen enthalten."
+                )
+            }
+        }
+        for bic in [value.creditorBIC, value.debtorBIC] {
+            let normalized = bic.trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+            guard normalized.isEmpty || normalized.range(
+                of: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$",
+                options: .regularExpression
+            ) != nil else {
+                throw FinanceError.invalidDirectDebit(
+                    "Eine BIC muss 8 oder 11 gültige Zeichen enthalten."
+                )
+            }
+        }
+        for (label, identifier) in [
+            ("End-to-End-ID", value.endToEndID),
+            ("Mandatsreferenz", value.mandateReference),
+            ("Gläubiger-ID", value.creditorID)
+        ] {
+            let normalized = identifier.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !normalized.hasPrefix("/"), !normalized.hasSuffix("/"),
+                  !normalized.contains("//") else {
+                throw FinanceError.invalidDirectDebit(
+                    "\(label) darf nicht mit / beginnen oder enden und kein // enthalten."
+                )
+            }
+        }
         guard value.status == .draft else {
             throw FinanceError.invalidDirectDebit(
                 "Neue Lastschriften müssen als unveränderter Entwurf beginnen."

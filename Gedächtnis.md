@@ -3619,3 +3619,51 @@ Rechtsberatung.
 - Telegram-Nachricht 1097 meldet denselben Stand im `/quicken`-Thread 894.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 21.617.845 Tokens.
+
+## 08.08.2026 – Einheitlicher Abbruch für Lastschriften und SEPA-Sammler
+
+- Einzelne, nicht gebündelte SEPA-Core-Lastschriften besitzen in `draft` und
+  `awaiting_user` jetzt eine eigene bestätigungspflichtige Abbruchaktion. Sie
+  löscht nichts, verändert den eingefrorenen Konto-/Zahler-/Mandatsschnappschuss
+  nicht und erzeugt keine Buchung. Der terminale Auftrag kann nicht erneut
+  eingereicht werden.
+- Überweisungs- und Lastschriftsammler besitzen dieselbe sichtbare Aktion. Das
+  vorhandene Repository bewegt Sammler und sämtliche geordneten Mitglieder
+  atomar nach `cancelled`; ein abweichender Mitgliedsstatus verwirft den ganzen
+  Vorgang. Es entstehen weder Einzel- noch Teilbuchungen.
+- Lastschriftentwürfe werden beim Speichern zusätzlich gegen Namen und Zweck
+  bis 140 Zeichen, End-to-End-ID und Mandatsreferenz bis 35 Zeichen, beide
+  optionale BICs und die SEPA-Slashregeln geprüft. Die Prüfung liegt bewusst
+  im Persistenz-Gate, sodass der bestehende `pain.008`-Exporter weiterhin seine
+  präzisen typisierten Exportfehler liefert.
+- Der gezielte Release-Lauf unter
+  `build/TestResults/PaymentCancellation-targeted3-20260807-2350.xcresult`
+  bestand mit 3 von 3 Tests. Er deckt Lastschriftanlage und -abbruch,
+  atomaren Sammlerabbruch ohne Buchung sowie den unveränderten pain.008-
+  Fehlervertrag ab.
+- Die finale vollständige Release-Regression unter
+  `build/TestResults/PaymentCancellation-release-full-final-20260807-2358.xcresult`
+  umfasst 156 Tests: 155 bestanden, 1 privater opt-in-Real-QIF-Test ohne
+  temporären Pfad erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0
+  erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-PaymentCancellation-Product` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `332f7de344b7f6c9bc8f602a2e2563f915d16e8db2eb788fac9c840e5a735ad7`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Schreibtisch-Link zeigt auf `/Applications/FinanzVerwalter.app`.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0004-payment-cancellation/`. Die per SQLite
+  konsistent erzeugte Produktionssicherung liegt unter
+  `build/ProductionBackups/20260808-0004-payment-cancellation/Meine Finanzen.qdata`.
+  Nach dem Austausch läuft Prozess 50339 direkt aus `/Applications`.
+  Produktivdatei und Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien; die
+  Produktivdatei enthält 0 Überweisungen, Lastschriften und Sammler. Die
+  private echte QIF-Datei wurde weder kopiert noch in Git aufgenommen.
+- Die Computersteuerung konnte die neue Oberfläche nicht sichtbar bedienen
+  oder fotografieren, weil die macOS-Sitzung weiterhin gesperrt ist. Die
+  Sperre wurde nicht umgangen. Exakter kumulativer Zielzählerstand nach
+  Umsetzung, Regression, Release, Installation, Produktivprüfung und diesem
+  Prüfversuch: 21.848.037 Tokens.

@@ -184,7 +184,7 @@ private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
 unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
 Die installierte ausführbare Datei besitzt SHA-256
-`bb456b23900245f91f9668fd3d7b990520f8283d4d9f8f76efbbbad279bb78ed`.
+`332f7de344b7f6c9bc8f602a2e2563f915d16e8db2eb788fac9c840e5a735ad7`.
 Details und der ehrliche Nachweis der wegen der gesperrten macOS-Sitzung noch
 ausstehenden sichtbaren Abnahme stehen in `Gedächtnis.md`.
 
@@ -661,6 +661,11 @@ Für SEPA-Core-Lastschriften gilt reproduzierbar:
   Annahme materialisiert atomar genau eine positive vorgemerkte Buchung mit
   stabiler Kennung `direct-debit:<Auftrags-UUID>`. TAN/Freigabecode bleiben
   ausschließlich kurzlebiger UI-Zustand.
+- Prüfe beim Anlegen zusätzlich Namen und Verwendungszweck bis 140 Zeichen,
+  End-to-End-ID und Mandatsreferenz bis 35 Zeichen, beide optionalen BICs und
+  die SEPA-Slashregeln. Biete für `draft` und `awaiting_user` einen getrennt
+  bestätigten Abbruch nach `cancelled`; der Schnappschuss bleibt unverändert,
+  wird nicht gelöscht und materialisiert keine Buchung.
 - Exportiere nur Entwürfe lokal als `pain.008.001.08`. Kapsle Namespace,
   Wirksamkeit ab 05.10.2025 und Quellenkennung in
   `Pain008RulePackage.epc2025` (`EPC-SDD-CORE-2025-V1.1`). Schreibe CORE,
@@ -691,6 +696,10 @@ Für Sammelüberweisungen und Sammellastschriften gilt reproduzierbar:
   Mitglieder. Bei Annahme entstehen pro Mitglied genau einmal vorgemerkte
   Buchungen mit `payment:<UUID>` beziehungsweise `direct-debit:<UUID>`;
   Teilzustände und Teilbuchungen sind unzulässig.
+- Biete in `draft` und `awaiting_user` einen ausdrücklich bestätigten Abbruch
+  des gesamten Sammlers. Sammler und sämtliche Mitglieder müssen innerhalb
+  derselben SQLite-Transaktion nach `cancelled` wechseln; kein Mitglied darf
+  gelöscht, einzeln weitergeschaltet oder als Buchung materialisiert werden.
 - Zeige im vierten Zahlungsverkehrssegment Art, Anzahl, Gesamtsumme, Konto,
   Termin, unveränderliche geordnete Positionen und Statuspfad. Verlange vor
   der Simulation Zusammenfassungs- und Ausführungsbestätigung; ein
