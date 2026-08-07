@@ -494,7 +494,16 @@ struct AccountsView: View {
                 }
                 TableColumn("Gruppe") { Text(store.accountGroupName($0.groupID)) }
                 TableColumn("Institut", value: \.institution)
-                TableColumn("Typ") { Text($0.type.title) }
+                TableColumn("Typ") { account in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(account.type.title)
+                        if !account.subtype.isEmpty {
+                            Text(account.subtype)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 TableColumn("Währung", value: \.currency).width(75)
                 TableColumn("Saldo") { account in
                     Text(
@@ -631,6 +640,7 @@ struct AccountsView: View {
     private func close(_ account: FinanceAccount) {
         var updated = account
         updated.isClosed = true
+        updated.closingDate = Calendar.current.startOfDay(for: Date())
         if store.saveAccount(updated) {
             accountPendingClosure = nil
             if !showHidden {
@@ -643,6 +653,7 @@ struct AccountsView: View {
     private func reopen(_ account: FinanceAccount) {
         var updated = account
         updated.isClosed = false
+        updated.closingDate = nil
         _ = store.saveAccount(updated)
     }
 
@@ -714,14 +725,21 @@ struct AccountEditorView: View {
     @State private var descriptionText: String
     @State private var institution: String
     @State private var type: AccountType
+    @State private var subtype: String
     @State private var currency: String
     @State private var groupID: UUID?
+    @State private var linkedAccountID: UUID?
     @State private var openingBalance: String
     @State private var hasOpeningDate: Bool
     @State private var openingDate: Date
+    @State private var hasOpeningBalanceDate: Bool
+    @State private var openingBalanceDate: Date
+    @State private var hasClosingDate: Bool
+    @State private var closingDate: Date
     @State private var creditLimit: String
     @State private var iban: String
     @State private var bic: String
+    @State private var bankCode: String
     @State private var accountNumberMasked: String
     @State private var ownerName: String
     @State private var isOnline: Bool
@@ -739,18 +757,29 @@ struct AccountEditorView: View {
         _descriptionText = State(initialValue: account?.description ?? "")
         _institution = State(initialValue: account?.institution ?? "")
         _type = State(initialValue: account?.type ?? .checking)
+        _subtype = State(initialValue: account?.subtype ?? "")
         _currency = State(initialValue: account?.currency ?? "EUR")
         _groupID = State(initialValue: account?.groupID)
+        _linkedAccountID = State(initialValue: account?.linkedAccountID)
         _openingBalance = State(
             initialValue: Money(minorUnits: account?.openingBalanceMinor ?? 0).editingString
         )
         _hasOpeningDate = State(initialValue: account?.openingDate != nil)
         _openingDate = State(initialValue: account?.openingDate ?? Date())
+        _hasOpeningBalanceDate = State(
+            initialValue: account?.openingBalanceDate != nil
+        )
+        _openingBalanceDate = State(
+            initialValue: account?.openingBalanceDate ?? account?.openingDate ?? Date()
+        )
+        _hasClosingDate = State(initialValue: account?.closingDate != nil)
+        _closingDate = State(initialValue: account?.closingDate ?? Date())
         _creditLimit = State(
             initialValue: Money(minorUnits: account?.creditLimitMinor ?? 0).editingString
         )
         _iban = State(initialValue: account?.iban ?? "")
         _bic = State(initialValue: account?.bic ?? "")
+        _bankCode = State(initialValue: account?.bankCode ?? "")
         _accountNumberMasked = State(initialValue: account?.accountNumberMasked ?? "")
         _ownerName = State(initialValue: account?.ownerName ?? "")
         _isOnline = State(initialValue: account?.isOnline ?? false)
@@ -782,13 +811,21 @@ struct AccountEditorView: View {
                     Picker("Kontotyp", selection: $type) {
                         ForEach(AccountType.allCases) { Text($0.title).tag($0) }
                     }
+                    TextField("Kontountertyp", text: $subtype)
                     TextField("Währung", text: $currency)
                     TextField("Kontoinhaber", text: $ownerName)
+                    Picker("Zugeordnetes Gegenkonto", selection: $linkedAccountID) {
+                        Text("Keines").tag(UUID?.none)
+                        ForEach(store.accounts.filter { $0.id != account?.id }) {
+                            Text($0.name).tag(UUID?.some($0.id))
+                        }
+                    }
                 }
                 Section("Bankdaten") {
                     TextField("Institut", text: $institution)
                     TextField("IBAN", text: $iban)
                     TextField("BIC", text: $bic)
+                    TextField("Bankleitzahl (BLZ)", text: $bankCode)
                     TextField("Kontonummer (maskiert)", text: $accountNumberMasked)
                     Toggle("Onlinekonto", isOn: $isOnline)
                     if let account {
@@ -807,8 +844,24 @@ struct AccountEditorView: View {
                     if hasOpeningDate {
                         DatePicker("Eröffnungsdatum", selection: $openingDate, displayedComponents: .date)
                     }
+                    Toggle("Stichtag des Eröffnungssaldos", isOn: $hasOpeningBalanceDate)
+                    if hasOpeningBalanceDate {
+                        DatePicker(
+                            "Saldo-Stichtag", selection: $openingBalanceDate,
+                            displayedComponents: .date
+                        )
+                    }
                     Toggle("Konto ausgeblendet", isOn: $isHidden)
                     Toggle("Konto geschlossen", isOn: $isClosed)
+                    if isClosed {
+                        Toggle("Schließdatum festlegen", isOn: $hasClosingDate)
+                        if hasClosingDate {
+                            DatePicker(
+                                "Schließdatum", selection: $closingDate,
+                                displayedComponents: .date
+                            )
+                        }
+                    }
                 }
                 Section("Einbeziehung") {
                     Toggle("Im Vermögen berücksichtigen", isOn: $includeNetWorth)
@@ -867,7 +920,13 @@ struct AccountEditorView: View {
                             includeForecast: includeForecast,
                             lastSyncAt: account?.lastSyncAt,
                             lastBankBalanceMinor: account?.lastBankBalanceMinor,
-                            syncStatus: isOnline ? (account?.syncStatus ?? .ready) : .offline
+                            syncStatus: isOnline ? (account?.syncStatus ?? .ready) : .offline,
+                            subtype: subtype,
+                            bankCode: bankCode,
+                            openingBalanceDate: hasOpeningBalanceDate
+                                ? openingBalanceDate : nil,
+                            closingDate: isClosed && hasClosingDate ? closingDate : nil,
+                            linkedAccountID: linkedAccountID
                         )
                         if store.saveAccount(value) { dismiss() }
                     } catch {
@@ -882,7 +941,7 @@ struct AccountEditorView: View {
             }
         }
         .padding(24)
-        .frame(width: 640, height: 760)
+        .frame(width: 680, height: 820)
         .onAppear {
             if account == nil, groupID == nil {
                 groupID = store.accountGroups.first {

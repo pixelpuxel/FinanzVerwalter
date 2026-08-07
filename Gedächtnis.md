@@ -3728,3 +3728,50 @@ Rechtsberatung.
 - Telegram-Nachricht 1109 meldet denselben Stand im `/quicken`-Thread 894.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter Zielzählerstand der Nachricht: 22.284.553 Tokens.
+
+## 08.08.2026 – Vollständige Kontostammdaten in Schema 39
+
+- Schema 39 ergänzt jedes Konto additiv um Kontountertyp, deutsche BLZ,
+  separaten Stichtag des Eröffnungssaldos, Schließdatum und ein optionales
+  zugeordnetes Verrechnungs-/Anlage-/Darlehens-/Gegenkonto. Die
+  Selbst-Fremdschlüsselbeziehung setzt sich bei einer späteren Kontolöschung
+  auf `NULL` und besitzt einen Index.
+- Die Persistenz akzeptiert nur leere oder achtstellige numerische BLZ,
+  begrenzt den Untertyp auf 80 UTF-8-Bytes ohne Steuerzeichen, schützt vor
+  Selbst- und Phantomverknüpfung und validiert die chronologische Reihenfolge
+  von Eröffnung, Saldo-Stichtag und Schließung.
+- Der erste Produktivstart traf unmittelbar nach dem Beenden der alten App
+  noch auf deren auslaufende SQLite-Verbindung und brach die Migration ohne
+  Teilwirkung ab. Ein sauberer Neustart migrierte vollständig. Daraufhin wurde
+  für jede Verbindung ein Busy-Timeout von fünf Sekunden ergänzt, damit ein
+  solches kurzes Freigabefenster künftig automatisch überbrückt wird.
+- Der Kontoeditor bietet alle fünf Felder. Die Kontenübersicht zeigt den
+  Untertyp; direktes Schließen setzt den heutigen Tag, Wiederöffnen entfernt
+  ihn. Untertyp, BLZ und beide neuen Datumsfelder sind global durchsuchbar.
+- Der gezielte Lauf unter
+  `build/TestResults/AccountMasterData-targeted-20260807-233017.xcresult`
+  bestand mit 3 von 3 Tests. Migration 38→39, vollständiger Rundlauf,
+  Suche, Schutzregeln, Zukunftsschema und Integrität sind abgedeckt.
+- Die vollständige Regression unter
+  `build/TestResults/AccountMasterData-full-20260807-233114.xcresult`
+  umfasst 160 Tests: 158 bestanden, 2 opt-in-Läufe übersprungen, 0 Fehler und
+  0 erwartete Fehler.
+- Nach Ergänzung des fünfsekündigen SQLite-Busy-Timeouts bestand die finale
+  vollständige Regression unter
+  `build/TestResults/AccountMasterData-busytimeout-full-20260807-233750.xcresult`
+  erneut mit 160 Tests: 158 bestanden, 2 opt-in-Läufe übersprungen, 0 Fehler
+  und 0 erwartete Fehler.
+- Der finale native arm64-Release unter
+  `build/DerivedData-AccountMasterData-Product` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `96381a8706f3cb99f9b7e01880d75cf56cfd115f662998bdb326dc82434c7cc9`.
+- Die unmittelbar vorherige Installation liegt wiederherstellbar unter
+  `build/InstallBackups/20260807-2342-account-masterdata-final/`; die
+  konsistente Schema-39-Sicherung liegt unter
+  `build/ProductionBackups/20260807-2342-account-masterdata-final/Meine Finanzen.qdata`.
+  Beide installierten Apps sind bytegleich, der Schreibtisch-Link zeigt auf
+  `/Applications`, und Prozess 57847 läuft aus dieser Installation.
+  Produktivdatei und Sicherung melden Integrität `ok`; die Produktivdatei hat
+  keine Fremdschlüsselverletzung, Schema 39, alle fünf neuen Kontospalten und
+  unverändert 97 Konten, 2.170 Buchungen, 782 Kategorien sowie 0
+  Überweisungen, Lastschriften und Sammler.

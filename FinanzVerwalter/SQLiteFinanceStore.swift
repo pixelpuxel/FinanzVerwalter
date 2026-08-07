@@ -5,7 +5,7 @@ import SQLite3
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 38
+    static let currentSchemaVersion = 39
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -28,6 +28,11 @@ final class SQLiteFinanceStore {
             nil
         ) == SQLITE_OK else {
             throw FinanceError.database("Die Finanzdatei konnte nicht geöffnet werden.")
+        }
+        guard sqlite3_busy_timeout(database, 5_000) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Die Wartezeit für eine vorübergehend belegte Finanzdatei konnte nicht gesetzt werden."
+            )
         }
         try execute("PRAGMA foreign_keys = ON")
         try execute("PRAGMA journal_mode = WAL")
@@ -2063,6 +2068,41 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 38")
             }
         }
+        if version < 39 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(accounts)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("subtype") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"
+                    )
+                }
+                if !columns.contains("bank_code") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN bank_code TEXT NOT NULL DEFAULT ''"
+                    )
+                }
+                if !columns.contains("opening_balance_date") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN opening_balance_date TEXT"
+                    )
+                }
+                if !columns.contains("closing_date") {
+                    try execute("ALTER TABLE accounts ADD COLUMN closing_date TEXT")
+                }
+                if !columns.contains("linked_account_id") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN linked_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS accounts_linked_account ON accounts(linked_account_id)"
+                )
+                try execute("PRAGMA user_version = 39")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -2088,7 +2128,8 @@ final class SQLiteFinanceStore {
             SELECT id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,
                    short_name,description,group_id,iban,bic,account_number_masked,owner_name,
                    opening_date,credit_limit_minor,is_online,include_net_worth,include_budget,
-                   include_reports,include_forecast,last_sync_at,last_bank_balance_minor,sync_status
+                   include_reports,include_forecast,last_sync_at,last_bank_balance_minor,sync_status,
+                   subtype,bank_code,opening_balance_date,closing_date,linked_account_id
             FROM accounts ORDER BY sort_order,name COLLATE NOCASE
             """
         ) { statement in
@@ -2126,7 +2167,12 @@ final class SQLiteFinanceStore {
                     lastBankBalanceMinor: sqlite3_column_type(statement, 24) == SQLITE_NULL
                         ? nil
                         : sqlite3_column_int64(statement, 24),
-                    syncStatus: syncStatus
+                    syncStatus: syncStatus,
+                    subtype: Self.text(statement, 26),
+                    bankCode: Self.text(statement, 27),
+                    openingBalanceDate: Self.optionalText(statement, 28).flatMap(Self.date),
+                    closingDate: Self.optionalText(statement, 29).flatMap(Self.date),
+                    linkedAccountID: Self.optionalText(statement, 30).flatMap(UUID.init(uuidString:))
                 )
             )
         }
@@ -7491,9 +7537,41 @@ final class SQLiteFinanceStore {
         if !normalizedIBAN.isEmpty, !IBANValidator.isValid(normalizedIBAN) {
             throw FinanceError.invalidIBAN
         }
+        let subtype = account.subtype.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard subtype.utf8.count <= 80,
+              subtype.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else {
+            throw FinanceError.database("Der Kontountertyp ist ungültig oder länger als 80 Zeichen.")
+        }
+        let bankCode = account.bankCode.filter { !$0.isWhitespace }
+        guard bankCode.isEmpty
+                || (bankCode.count == 8 && bankCode.allSatisfy(\.isNumber)) else {
+            throw FinanceError.database("Die deutsche Bankleitzahl muss aus genau acht Ziffern bestehen.")
+        }
+        guard account.closingDate == nil || account.isClosed else {
+            throw FinanceError.database("Ein Schließdatum ist nur für ein geschlossenes Konto zulässig.")
+        }
+        if let openingDate = account.openingDate,
+           let balanceDate = account.openingBalanceDate,
+           balanceDate < openingDate {
+            throw FinanceError.database("Der Eröffnungssaldo-Stichtag darf nicht vor der Kontoeröffnung liegen.")
+        }
+        let firstOpeningDate = account.openingBalanceDate ?? account.openingDate
+        if let firstOpeningDate, let closingDate = account.closingDate,
+           closingDate < firstOpeningDate {
+            throw FinanceError.database("Das Schließdatum darf nicht vor der Kontoeröffnung liegen.")
+        }
+        guard account.linkedAccountID != account.id else {
+            throw FinanceError.database("Ein Konto kann nicht mit sich selbst verknüpft werden.")
+        }
         if let groupID = account.groupID,
            try !accountGroups().contains(where: { $0.id == groupID }) {
             throw FinanceError.database("Die Kontengruppe existiert nicht.")
+        }
+        if let linkedAccountID = account.linkedAccountID,
+           try !accounts().contains(where: { $0.id == linkedAccountID }) {
+            throw FinanceError.database("Das zugeordnete Gegenkonto existiert nicht.")
         }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
@@ -7505,9 +7583,10 @@ final class SQLiteFinanceStore {
                     is_hidden,is_closed,sort_order,created_at,updated_at,short_name,description,
                     group_id,iban,bic,account_number_masked,owner_name,opening_date,
                     credit_limit_minor,is_online,include_net_worth,include_budget,include_reports,
-                    include_forecast,last_sync_at,last_bank_balance_minor,sync_status
+                    include_forecast,last_sync_at,last_bank_balance_minor,sync_status,
+                    subtype,bank_code,opening_balance_date,closing_date,linked_account_id
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,institution=excluded.institution,
                     type=excluded.type,currency=excluded.currency,opening_balance_minor=excluded.opening_balance_minor,
                     is_hidden=excluded.is_hidden,is_closed=excluded.is_closed,sort_order=excluded.sort_order,
@@ -7520,6 +7599,10 @@ final class SQLiteFinanceStore {
                     include_forecast=excluded.include_forecast,last_sync_at=excluded.last_sync_at,
                     last_bank_balance_minor=excluded.last_bank_balance_minor,
                     sync_status=excluded.sync_status,
+                    subtype=excluded.subtype,bank_code=excluded.bank_code,
+                    opening_balance_date=excluded.opening_balance_date,
+                    closing_date=excluded.closing_date,
+                    linked_account_id=excluded.linked_account_id,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
@@ -7539,7 +7622,10 @@ final class SQLiteFinanceStore {
                     .integer(account.includeForecast ? 1 : 0),
                     account.lastSyncAt.map { .text(Self.timestamp($0)) } ?? .null,
                     account.lastBankBalanceMinor.map(SQLiteValue.integer) ?? .null,
-                    .text(account.syncStatus.rawValue)
+                    .text(account.syncStatus.rawValue), .text(subtype), .text(bankCode),
+                    account.openingBalanceDate.map { .text(Self.day($0)) } ?? .null,
+                    account.closingDate.map { .text(Self.day($0)) } ?? .null,
+                    account.linkedAccountID.map { .text($0.uuidString) } ?? .null
                 ]
             )
             try audit(entity: "account", id: account.id, action: "save", details: name)

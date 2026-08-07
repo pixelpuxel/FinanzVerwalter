@@ -134,6 +134,11 @@ struct FinanceAccount: Identifiable, Hashable, Sendable {
     var lastSyncAt: Date? = nil
     var lastBankBalanceMinor: Int64? = nil
     var syncStatus: AccountSyncStatus = .offline
+    var subtype: String = ""
+    var bankCode: String = ""
+    var openingBalanceDate: Date? = nil
+    var closingDate: Date? = nil
+    var linkedAccountID: UUID? = nil
 }
 
 struct AccountClosureImpact: Equatable, Sendable {

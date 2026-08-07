@@ -1899,3 +1899,31 @@ Millisekunden und einen Standardbericht unter 2 Sekunden. Protokolliere die
 Messwerte als XCTest-Aktivität. Die bereits vorhandene Nutzerabfrage gegen
 100.000 fertig indexierte Dokumente muss weiterhin unter 100 Millisekunden
 bleiben.
+
+# Vollständige Kontostammdaten und datiertes Schließen
+
+Migriere Schema 38 atomar auf 39. Ergänze Konten additiv um einen frei
+bezeichenbaren Untertyp, deutsche Bankleitzahl, eigenen Stichtag des
+Eröffnungssaldos, Schließdatum und eine optionale Selbst-Fremdschlüssel-
+Zuordnung zu einem Verrechnungs-, Anlage-, Darlehens- oder Gegenkonto. Der
+Fremdschlüssel verwendet `ON DELETE SET NULL` und einen Index. Bestandskonten
+behalten alle Werte; neue Felder migrieren leer beziehungsweise `NULL`.
+Setze auf jeder SQLite-Verbindung einen Busy-Timeout von fünf Sekunden, damit
+eine kurz auslaufende Vorgängerinstanz die Migration nicht unnötig abbricht,
+ohne dauerhafte Konkurrenz zu verschweigen.
+
+Trimme den Untertyp, begrenze ihn auf 80 UTF-8-Bytes und verbiete
+Steuerzeichen. Normalisiere Leerzeichen aus der BLZ und akzeptiere nur leer
+oder genau acht Ziffern. Ein Schließdatum darf nur bei geschlossenem Konto
+stehen. Der Saldo-Stichtag darf nicht vor der Kontoeröffnung liegen, das
+Schließdatum nicht vor dem ersten Eröffnungs-/Saldo-Stichtag. Das zugeordnete
+Konto muss in derselben Finanzdatei existieren und darf nicht das Konto selbst
+sein.
+
+Zeige alle Felder im Kontoeditor und den Untertyp zusätzlich in der
+Kontenübersicht. Der bestätigte direkte Schließen-Ablauf setzt den heutigen
+Kalendertag; Wiederöffnen entfernt das Datum. Nimm Untertyp, BLZ,
+Saldo-Stichtag und Schließdatum in die globale Kontenblattsuche auf. Teste
+38→39-Migration mit unverändertem Bestandskonto, vollständigen Rundlauf,
+Suchtext, ungültige BLZ, Selbst-/Fremdreferenz, Datumsfolgen,
+Zukunftsschema-Schutz und SQLite-Integrität.

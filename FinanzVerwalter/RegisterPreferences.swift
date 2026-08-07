@@ -267,6 +267,7 @@ struct RegisterSearchIndex: Equatable, Sendable {
         var fields = [
             account.name, account.shortName, account.institution,
             account.description, account.type.title, account.type.rawValue,
+            account.subtype, account.bankCode,
             account.currency, groupName ?? "", account.iban, account.bic,
             account.accountNumberMasked, account.ownerName,
             account.syncStatus.title, account.syncStatus.rawValue,
@@ -290,6 +291,12 @@ struct RegisterSearchIndex: Equatable, Sendable {
         }
         if let openingDate = account.openingDate {
             fields.append(contentsOf: dateFields(openingDate))
+        }
+        if let openingBalanceDate = account.openingBalanceDate {
+            fields.append(contentsOf: dateFields(openingBalanceDate))
+        }
+        if let closingDate = account.closingDate {
+            fields.append(contentsOf: dateFields(closingDate))
         }
         if let lastSyncAt = account.lastSyncAt {
             fields.append(contentsOf: dateFields(lastSyncAt))

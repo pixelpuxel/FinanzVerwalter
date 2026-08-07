@@ -68,6 +68,14 @@ wieder öffnen. Vor dem bestätigten Schließen werden der aktuelle Saldo und
 verknüpfte aktive Serien-, Dauer- und offene Zahlungsaufträge genannt;
 vorhandene Buchungen bleiben erhalten.
 
+Schema 39 ergänzt die vollständigen Kontostammdaten um einen frei
+bezeichenbaren Untertyp, eine validierte achtstellige deutsche BLZ, einen vom
+Eröffnungsdatum unabhängigen Stichtag des Eröffnungssaldos, ein optionales
+Schließdatum und ein zugeordnetes Verrechnungs-, Anlage-, Darlehens- oder
+Gegenkonto. Das Gegenkonto muss vorhanden und vom bearbeiteten Konto
+verschieden sein. Schließen setzt im direkten Übersichtsablauf den heutigen
+Tag; Wiederöffnen entfernt das Schließdatum.
+
 ## QIF-Import
 
 Einzelne Kontoblätter und vollständige Mehrkontenpakete werden unterschieden.
