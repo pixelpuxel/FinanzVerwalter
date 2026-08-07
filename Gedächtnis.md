@@ -2937,3 +2937,11 @@ Rechtsberatung.
   gesperrt; deshalb war keine ehrliche sichtbare UI-Abnahme oder ein aktueller
   Screenshot möglich. Exakter kumulativer Zielzählerstand nach Test, Release,
   Installation und Produktivprüfung: 17.643.074 Tokens.
+- Implementierung, Test und Reproduktionsdokumentation sind als Commit
+  `5ee967b` auf `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub
+  Draft-PR #1 nennt nun den 133-Test-Nachweis, den neuen Release-Hash und die
+  Kontenschnellaktionen; er ist offen, konfliktfrei und mergebar.
+- Telegram-Nachricht 1045 meldet denselben verifizierten Stand im
+  `/quicken`-Thread 894 und erklärt ausdrücklich den wegen der gesperrten
+  Sitzung fehlenden Screenshot. Exakter kumulativer Zielzählerstand nach
+  Telegram-, GitHub- und Prozessprüfung: 17.666.801 Tokens.
