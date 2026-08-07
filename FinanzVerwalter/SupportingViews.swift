@@ -6447,6 +6447,12 @@ private struct CalendarDisplayEntry: Identifiable {
     }
 }
 
+private struct CalendarMoveRequest: Identifiable {
+    var id: String { "\(entry.id):\(Int(destination.timeIntervalSince1970))" }
+    let entry: CalendarDisplayEntry
+    let destination: Date
+}
+
 struct CalendarForecastView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var editedSchedule: ScheduledTransaction?
@@ -6457,6 +6463,8 @@ struct CalendarForecastView: View {
     @State private var selectedAccountID: UUID?
     @State private var selectedCategoryID: UUID?
     @State private var selectedTagID: UUID?
+    @State private var pendingMove: CalendarMoveRequest?
+    @State private var moveErrorMessage = ""
 
     private var occurrences: [FinanceTransaction] {
         store.forecastOccurrences(days: forecastDays).filter(matchesFilters)
@@ -6659,6 +6667,34 @@ struct CalendarForecastView: View {
         }
         .sheet(item: $editedOccurrence) { request in
             ScheduledOccurrenceEditor(request: request)
+        }
+        .alert(
+            "Prognosetermin verschieben?",
+            isPresented: Binding(
+                get: { pendingMove != nil },
+                set: { if !$0 { pendingMove = nil } }
+            ),
+            presenting: pendingMove
+        ) { request in
+            Button("Verschieben") { applyCalendarMove(request) }
+            Button("Abbrechen", role: .cancel) { pendingMove = nil }
+        } message: { request in
+            Text(
+                "„\(entryTitle(request.entry.transaction))“ wird vom "
+                    + "\(request.entry.transaction.bookingDate.formatted(.dateTime.day().month().year())) auf den "
+                    + "\(request.destination.formatted(.dateTime.day().month().year())) verschoben."
+            )
+        }
+        .alert(
+            "Termin nicht verschiebbar",
+            isPresented: Binding(
+                get: { !moveErrorMessage.isEmpty },
+                set: { if !$0 { moveErrorMessage = "" } }
+            )
+        ) {
+            Button("OK", role: .cancel) { moveErrorMessage = "" }
+        } message: {
+            Text(moveErrorMessage)
         }
     }
 
@@ -6875,26 +6911,7 @@ struct CalendarForecastView: View {
                 }
             }
             ForEach(Array(entries.prefix(visibleLimit))) { entry in
-                Button { openCalendarEntry(entry) } label: {
-                    HStack(spacing: 4) {
-                        Circle().fill(entry.kind.color).frame(width: 6, height: 6)
-                        Text(entryTitle(entry.transaction))
-                            .lineLimit(1)
-                        Spacer(minLength: 2)
-                        Text(Money(minorUnits: entry.transaction.amountMinor).formatted)
-                            .monospacedDigit()
-                    }
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 3)
-                    .background(entry.kind.color.opacity(0.11), in: RoundedRectangle(cornerRadius: 4))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("\(entry.kind.title): \(store.accountName(entry.transaction.accountID)) · \(store.transactionCategoryPath(entry.transaction))")
-                .accessibilityLabel(
-                    "\(entry.kind.title), \(entryTitle(entry.transaction)), \(Money(minorUnits: entry.transaction.amountMinor).formatted), \(day.date.formatted(.dateTime.day().month().year()))"
-                )
+                calendarEntryButton(entry, day: day)
             }
             if entries.count > visibleLimit {
                 Text("+ \(entries.count - visibleLimit) weitere")
@@ -6914,6 +6931,48 @@ struct CalendarForecastView: View {
                 )
         }
         .opacity(day.isInFocusedPeriod ? 1 : 0.62)
+        .dropDestination(for: String.self) { identifiers, _ in
+            guard let identifier = identifiers.first else { return false }
+            return prepareCalendarMove(entryID: identifier, to: day.date)
+        }
+    }
+
+    @ViewBuilder
+    private func calendarEntryButton(
+        _ entry: CalendarDisplayEntry,
+        day: FinanceCalendarDay
+    ) -> some View {
+        if canMoveCalendarEntry(entry) {
+            calendarEntryButtonBase(entry, day: day)
+                .draggable(entry.id)
+        } else {
+            calendarEntryButtonBase(entry, day: day)
+        }
+    }
+
+    private func calendarEntryButtonBase(
+        _ entry: CalendarDisplayEntry,
+        day: FinanceCalendarDay
+    ) -> some View {
+        Button { openCalendarEntry(entry) } label: {
+            HStack(spacing: 4) {
+                Circle().fill(entry.kind.color).frame(width: 6, height: 6)
+                Text(entryTitle(entry.transaction)).lineLimit(1)
+                Spacer(minLength: 2)
+                Text(Money(minorUnits: entry.transaction.amountMinor).formatted)
+                    .monospacedDigit()
+            }
+            .font(.caption2)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(entry.kind.color.opacity(0.11), in: RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(entry.kind.title): \(store.accountName(entry.transaction.accountID)) · \(store.transactionCategoryPath(entry.transaction))")
+        .accessibilityLabel(
+            "\(entry.kind.title), \(entryTitle(entry.transaction)), \(Money(minorUnits: entry.transaction.amountMinor).formatted), \(day.date.formatted(.dateTime.day().month().year()))"
+        )
     }
 
     private func revisionBadge(_ title: String, color: Color) -> some View {
@@ -6958,6 +7017,63 @@ struct CalendarForecastView: View {
     private func openCalendarEntry(_ entry: CalendarDisplayEntry) {
         guard entry.kind == .recurring else { return }
         editedOccurrence = occurrenceRequest(for: entry.transaction)
+    }
+
+    private func canMoveCalendarEntry(_ entry: CalendarDisplayEntry) -> Bool {
+        entry.kind == .recurring
+            || (entry.transaction.status == .expected
+                && entry.transaction.transferID == nil)
+    }
+
+    private func prepareCalendarMove(entryID: String, to destination: Date) -> Bool {
+        guard let entry = calendarEntries.first(where: { $0.id == entryID }) else {
+            return false
+        }
+        do {
+            if entry.kind == .recurring {
+                _ = try FinanceCalendarMovePolicy.movedRecurringException(
+                    for: entry.transaction,
+                    existing: store.scheduledTransactionException(
+                        forReference: entry.transaction.reference
+                    ),
+                    to: destination
+                )
+            } else {
+                _ = try FinanceCalendarMovePolicy.movedExpectedTransaction(
+                    entry.transaction, to: destination
+                )
+            }
+            pendingMove = CalendarMoveRequest(entry: entry, destination: destination)
+            return true
+        } catch {
+            moveErrorMessage = error.localizedDescription
+            return true
+        }
+    }
+
+    private func applyCalendarMove(_ request: CalendarMoveRequest) {
+        defer { pendingMove = nil }
+        do {
+            if request.entry.kind == .recurring {
+                let exception = try FinanceCalendarMovePolicy.movedRecurringException(
+                    for: request.entry.transaction,
+                    existing: store.scheduledTransactionException(
+                        forReference: request.entry.transaction.reference
+                    ),
+                    to: request.destination
+                )
+                _ = store.saveScheduledTransactionException(exception)
+            } else {
+                let transaction = try FinanceCalendarMovePolicy.movedExpectedTransaction(
+                    request.entry.transaction, to: request.destination
+                )
+                if store.saveSplitTransaction(transaction) {
+                    store.statusText = "Prognosetermin verschoben"
+                }
+            }
+        } catch {
+            moveErrorMessage = error.localizedDescription
+        }
     }
 
     private func matchesFilters(_ transaction: FinanceTransaction) -> Bool {

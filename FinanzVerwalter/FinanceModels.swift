@@ -996,6 +996,102 @@ enum FinanceCalendarLayout {
     }
 }
 
+enum FinanceCalendarMoveError: LocalizedError, Equatable {
+    case unsupportedStatus
+    case linkedTransfer
+    case pastDestination
+    case sameDay
+    case invalidRecurringReference
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedStatus:
+            "Nur erwartete oder regelmäßige Prognosetermine lassen sich verschieben."
+        case .linkedTransfer:
+            "Eine verknüpfte Umbuchung kann nicht im Finanzkalender verschoben werden."
+        case .pastDestination:
+            "Ein Prognosetermin kann nicht in die Vergangenheit verschoben werden."
+        case .sameDay:
+            "Quell- und Zieldatum sind identisch."
+        case .invalidRecurringReference:
+            "Der regelmäßige Vorgang besitzt keine gültige Herkunftskennung."
+        }
+    }
+}
+
+enum FinanceCalendarMovePolicy {
+    static func movedExpectedTransaction(
+        _ transaction: FinanceTransaction,
+        to destination: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> FinanceTransaction {
+        guard transaction.status == .expected else {
+            throw FinanceCalendarMoveError.unsupportedStatus
+        }
+        guard transaction.transferID == nil else {
+            throw FinanceCalendarMoveError.linkedTransfer
+        }
+        let target = try validatedDestination(
+            destination, source: transaction.bookingDate, now: now, calendar: calendar
+        )
+        var result = transaction
+        let valueDateFollowedBooking = transaction.valueDate.map {
+            calendar.isDate($0, inSameDayAs: transaction.bookingDate)
+        } ?? true
+        result.bookingDate = target
+        if valueDateFollowedBooking { result.valueDate = target }
+        return result
+    }
+
+    static func movedRecurringException(
+        for transaction: FinanceTransaction,
+        existing: ScheduledTransactionException?,
+        to destination: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> ScheduledTransactionException {
+        guard let identity = ScheduledTransaction.occurrenceIdentity(
+            from: transaction.reference
+        ) else {
+            throw FinanceCalendarMoveError.invalidRecurringReference
+        }
+        let target = try validatedDestination(
+            destination, source: transaction.bookingDate, now: now, calendar: calendar
+        )
+        return ScheduledTransactionException(
+            id: existing?.id ?? UUID(),
+            scheduledTransactionID: identity.scheduledTransactionID,
+            originalDueDate: identity.originalDueDate,
+            effectiveDate: target,
+            payee: transaction.payee,
+            purpose: transaction.purpose,
+            categoryID: transaction.categoryID,
+            amountMinor: transaction.amountMinor,
+            disposition: .modified,
+            note: existing?.note ?? "Im Finanzkalender verschoben",
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+        )
+    }
+
+    private static func validatedDestination(
+        _ destination: Date,
+        source: Date,
+        now: Date,
+        calendar: Calendar
+    ) throws -> Date {
+        let target = calendar.startOfDay(for: destination)
+        guard target >= calendar.startOfDay(for: now) else {
+            throw FinanceCalendarMoveError.pastDestination
+        }
+        guard !calendar.isDate(target, inSameDayAs: source) else {
+            throw FinanceCalendarMoveError.sameDay
+        }
+        return target
+    }
+}
+
 enum ScheduledOccurrenceDisposition: String, Codable, CaseIterable, Sendable {
     case modified
     case skipped

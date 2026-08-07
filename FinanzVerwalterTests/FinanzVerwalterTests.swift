@@ -9093,6 +9093,97 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testFinanceCalendarMoveValidatesExpectedTransactionsAndDates() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        func date(_ day: Int, hour: Int = 12) throws -> Date {
+            try XCTUnwrap(calendar.date(from: DateComponents(
+                year: 2026, month: 8, day: day, hour: hour
+            )))
+        }
+        var transaction = FinanceTransaction(
+            id: UUID(), accountID: UUID(), bookingDate: try date(10),
+            valueDate: try date(10), payee: "Plan", purpose: "Prognose",
+            categoryID: nil, amountMinor: -1_250, currency: "EUR",
+            status: .expected, memo: "", reference: "", transferID: nil,
+            importFingerprint: nil, splits: []
+        )
+        let moved = try FinanceCalendarMovePolicy.movedExpectedTransaction(
+            transaction, to: try date(14), now: try date(7), calendar: calendar
+        )
+        XCTAssertEqual(moved.id, transaction.id)
+        XCTAssertEqual(moved.bookingDate, try date(14, hour: 0))
+        XCTAssertEqual(moved.valueDate, try date(14, hour: 0))
+
+        transaction.valueDate = try date(11)
+        let customValueDate = try FinanceCalendarMovePolicy.movedExpectedTransaction(
+            transaction, to: try date(15), now: try date(7), calendar: calendar
+        )
+        XCTAssertEqual(customValueDate.valueDate, try date(11))
+
+        transaction.status = .booked
+        XCTAssertThrowsError(try FinanceCalendarMovePolicy.movedExpectedTransaction(
+            transaction, to: try date(16), now: try date(7), calendar: calendar
+        )) { XCTAssertEqual($0 as? FinanceCalendarMoveError, .unsupportedStatus) }
+        transaction.status = .expected
+        transaction.transferID = UUID()
+        XCTAssertThrowsError(try FinanceCalendarMovePolicy.movedExpectedTransaction(
+            transaction, to: try date(16), now: try date(7), calendar: calendar
+        )) { XCTAssertEqual($0 as? FinanceCalendarMoveError, .linkedTransfer) }
+        transaction.transferID = nil
+        XCTAssertThrowsError(try FinanceCalendarMovePolicy.movedExpectedTransaction(
+            transaction, to: try date(6), now: try date(7), calendar: calendar
+        )) { XCTAssertEqual($0 as? FinanceCalendarMoveError, .pastDestination) }
+        XCTAssertThrowsError(try FinanceCalendarMovePolicy.movedExpectedTransaction(
+            transaction, to: try date(10), now: try date(7), calendar: calendar
+        )) { XCTAssertEqual($0 as? FinanceCalendarMoveError, .sameDay) }
+    }
+
+    func testFinanceCalendarMoveCreatesStableRecurringException() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        func date(_ day: Int) throws -> Date {
+            try XCTUnwrap(calendar.date(from: DateComponents(
+                year: 2026, month: 8, day: day, hour: 12
+            )))
+        }
+        let scheduleID = UUID()
+        let source = try date(10)
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: UUID(), bookingDate: source, valueDate: source,
+            payee: "Miete", purpose: "August", categoryID: UUID(),
+            amountMinor: -80_000, currency: "EUR", status: .expected, memo: "",
+            reference: "schedule:\(scheduleID.uuidString):\(source.timeIntervalSince1970)",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        let created = try FinanceCalendarMovePolicy.movedRecurringException(
+            for: transaction, existing: nil, to: try date(13),
+            now: try date(7), calendar: calendar
+        )
+        XCTAssertEqual(created.scheduledTransactionID, scheduleID)
+        XCTAssertEqual(created.originalDueDate, source)
+        XCTAssertEqual(created.effectiveDate, calendar.startOfDay(for: try date(13)))
+        XCTAssertEqual(created.disposition, .modified)
+        XCTAssertEqual(created.payee, transaction.payee)
+        XCTAssertEqual(created.amountMinor, transaction.amountMinor)
+
+        let updated = try FinanceCalendarMovePolicy.movedRecurringException(
+            for: transaction, existing: created, to: try date(14),
+            now: try date(8), calendar: calendar
+        )
+        XCTAssertEqual(updated.id, created.id)
+        XCTAssertEqual(updated.createdAt, created.createdAt)
+        XCTAssertEqual(updated.note, created.note)
+        XCTAssertEqual(updated.effectiveDate, calendar.startOfDay(for: try date(14)))
+
+        var invalid = transaction
+        invalid.reference = "manuell"
+        XCTAssertThrowsError(try FinanceCalendarMovePolicy.movedRecurringException(
+            for: invalid, existing: nil, to: try date(14),
+            now: try date(7), calendar: calendar
+        )) { XCTAssertEqual($0 as? FinanceCalendarMoveError, .invalidRecurringReference) }
+    }
+
     func testSecureNoteLinksPermitOnlyConfirmedHTTPSAndSafeRegularLocalFiles() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
