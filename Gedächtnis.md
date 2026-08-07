@@ -2618,3 +2618,7 @@ Rechtsberatung.
   Dokumentation als Commit `5b8fb30` auf
   `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 enthält den
   121-Test-Nachweis, Release-Hash und die weiterhin offenen Masterpunkte.
+- Telegram-Nachricht 1024 dokumentiert denselben Stand im gefundenen
+  `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
+  deshalb fehlenden Screenshot. Der exakte Zielzählerstand nach dem Versand
+  beträgt 16.114.449 Tokens.
