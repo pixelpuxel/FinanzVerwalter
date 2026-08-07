@@ -4034,3 +4034,10 @@ Rechtsberatung.
   und Datenbankintegrität sind hingegen direkt geprüft.
 - Exakter kumulativer Zielzählerstand nach Installation und Start:
   24.021.145 Tokens.
+- Implementierung, Test, ADR und Reproduktionsdokumentation wurden als Commit
+  `311fbc7` auf `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub
+  Draft-PR #1 zeigt denselben Head und ist mergebar.
+- Telegram-Nachricht 1139 meldet den geprüften Stand im `/quicken`-Thread 894.
+  Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
+  Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
+  24.039.428 Tokens.
