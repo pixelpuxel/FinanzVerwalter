@@ -2033,3 +2033,9 @@ Rechtsberatung.
   wegen der erneut gesperrten macOS-Sitzung nicht möglich und wird nicht
   vorgetäuscht; Prozess-, Release- und Echtdatensicherung sind unabhängig
   davon nachgewiesen.
+- Implementierung, Tests, ADR und Dokumentation wurden als Commit `15462ec`
+  auf `agent/qif-mehrkontenimport` gepusht. Draft-PR 1 enthält den vollständigen
+  Sicherungs-, Test-, Release- und Echtdatenstand und meldet `CLEAN`.
+- Telegram-Nachricht 994 wurde im Projektthread 894 (`/quicken`) mit dem
+  exakten Messwert von 13.021.148 Tokens veröffentlicht. Wegen der bestätigten
+  Bildschirmsperre wurde ausdrücklich kein neuer Screenshot vorgetäuscht.
