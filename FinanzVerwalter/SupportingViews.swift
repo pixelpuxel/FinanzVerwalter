@@ -1550,6 +1550,7 @@ struct ReconciliationView: View {
 
 struct ExternalReportWindow: View {
     @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismissWindow) private var dismissWindow
     let request: ReportWindowRequest?
 
     var body: some View {
@@ -1567,7 +1568,10 @@ struct ExternalReportWindow: View {
                 } else if let query = try? request.decodedQuery() {
                     ReportsView(
                         launchQuery: query,
-                        launchTitle: request.title
+                        launchTitle: request.title,
+                        onIntegrateIntoMainWindow: { query, title in
+                            integrateIntoMainWindow(query: query, title: title)
+                        }
                     )
                 } else {
                     ContentUnavailableView(
@@ -1589,12 +1593,33 @@ struct ExternalReportWindow: View {
         .navigationTitle(request?.title ?? "Auswertung")
         .accessibilityIdentifier("externalReportWindow")
     }
+
+    private func integrateIntoMainWindow(
+        query: TransactionReportQuery,
+        title: String
+    ) {
+        guard let request,
+              request.belongs(to: store.currentFinanceFileURL) else { return }
+        NotificationCenter.default.post(
+            name: .openTransactionReport,
+            object: TransactionReportLaunchRequest(
+                title: title,
+                query: query
+            )
+        )
+        dismissWindow(value: request)
+        DispatchQueue.main.async {
+            MainWindowCoordinator.shared.activate()
+        }
+        store.statusText = "Auswertung ins Hauptfenster übernommen"
+    }
 }
 
 struct ReportsView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.openWindow) private var openWindow
     let launchQuery: TransactionReportQuery?
+    let onIntegrateIntoMainWindow: ((TransactionReportQuery, String) -> Void)?
     @State private var launchTitle: String?
     @State private var period: ReportPeriodPreset = .all
     @State private var customStart = Calendar.current.date(
@@ -1658,9 +1683,11 @@ struct ReportsView: View {
 
     init(
         launchQuery: TransactionReportQuery?,
-        launchTitle: String? = nil
+        launchTitle: String? = nil,
+        onIntegrateIntoMainWindow: ((TransactionReportQuery, String) -> Void)? = nil
     ) {
         self.launchQuery = launchQuery
+        self.onIntegrateIntoMainWindow = onIntegrateIntoMainWindow
         _launchTitle = State(initialValue: launchTitle)
     }
 
@@ -1715,6 +1742,18 @@ struct ReportsView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
+                    if let onIntegrateIntoMainWindow {
+                        Button(
+                            "Ins Hauptfenster",
+                            systemImage: "arrow.down.left.and.arrow.up.right"
+                        ) {
+                            onIntegrateIntoMainWindow(query, activeReportTitle)
+                        }
+                        .help("Diese Auswertung im Hauptfenster weiterbearbeiten")
+                        .accessibilityIdentifier(
+                            "integrateExternalReportIntoMainWindow"
+                        )
+                    }
                     Text("\(snapshot.facts.count) Auswertungspositionen")
                         .font(.headline)
                     Text(

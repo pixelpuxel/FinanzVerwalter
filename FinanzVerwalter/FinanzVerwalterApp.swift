@@ -46,6 +46,7 @@ struct FinanzVerwalterApp: App {
             RootView()
                 .environmentObject(store)
                 .background(ContextualShortcutMonitorHost())
+                .background(MainWindowRegistrationHost())
                 .preferredColorScheme(
                     AppearanceMode(rawValue: appearanceMode)?.colorScheme ?? .light
                 )
@@ -182,6 +183,12 @@ struct FinanzVerwalterApp: App {
             ExternalReportWindow(request: request.wrappedValue)
                 .environmentObject(store)
                 .background(ContextualShortcutMonitorHost())
+                .background(
+                    WindowFrameAutosaveHost(
+                        name: request.wrappedValue?.frameAutosaveName
+                            ?? "FinanzVerwalter.Auswertung.Leer"
+                    )
+                )
                 .preferredColorScheme(
                     AppearanceMode(rawValue: appearanceMode)?.colorScheme ?? .light
                 )
@@ -270,6 +277,60 @@ struct FinanzVerwalterApp: App {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         prepareForFinanceFileChange()
         _ = store.closeFinanceFile()
+    }
+}
+
+@MainActor
+final class MainWindowCoordinator {
+    static let shared = MainWindowCoordinator()
+    weak var window: NSWindow?
+
+    func activate() {
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+struct MainWindowRegistrationHost: NSViewRepresentable {
+    final class HostView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window {
+                MainWindowCoordinator.shared.window = window
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> HostView { HostView() }
+    func updateNSView(_ nsView: HostView, context: Context) {}
+}
+
+struct WindowFrameAutosaveHost: NSViewRepresentable {
+    final class HostView: NSView {
+        var autosaveName = ""
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyAutosaveName()
+        }
+
+        func applyAutosaveName() {
+            guard !autosaveName.isEmpty, let window else { return }
+            window.setFrameAutosaveName(autosaveName)
+        }
+    }
+
+    let name: String
+
+    func makeNSView(context: Context) -> HostView {
+        let view = HostView()
+        view.autosaveName = name
+        return view
+    }
+
+    func updateNSView(_ nsView: HostView, context: Context) {
+        nsView.autosaveName = name
+        nsView.applyAutosaveName()
     }
 }
 

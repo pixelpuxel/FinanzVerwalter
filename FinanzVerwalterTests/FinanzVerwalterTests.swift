@@ -6634,6 +6634,10 @@ final class FinanzVerwalterTests: XCTestCase {
 
         XCTAssertEqual(request.title, "Immobilienbericht")
         XCTAssertEqual(try request.decodedQuery(), query)
+        XCTAssertEqual(
+            request.frameAutosaveName,
+            "FinanzVerwalter.Auswertung.\(request.id.uuidString.lowercased())"
+        )
         XCTAssertTrue(request.belongs(to: fileURL.standardizedFileURL))
         XCTAssertFalse(
             request.belongs(
@@ -6666,6 +6670,17 @@ final class FinanzVerwalterTests: XCTestCase {
                 financeFileURL: fileURL,
                 query: query
             ).id
+        )
+
+        let launch = TransactionReportLaunchRequest(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000471")!,
+            title: "  Immobilienbericht  ",
+            query: query
+        )
+        XCTAssertEqual(launch.title, "Immobilienbericht")
+        XCTAssertEqual(launch.query, query)
+        XCTAssertNil(
+            TransactionReportLaunchRequest(title: " \n ", query: query).title
         )
     }
 

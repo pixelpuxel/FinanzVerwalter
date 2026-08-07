@@ -90,6 +90,8 @@ struct RootView: View {
     @State private var showReconciliation = false
     @State private var newTransactionStartsWithSplits = false
     @State private var reportLaunchQuery: TransactionReportQuery?
+    @State private var reportLaunchTitle: String?
+    @State private var reportLaunchID = UUID()
     @FocusState private var searchIsFocused: Bool
 
     var body: some View {
@@ -201,14 +203,24 @@ struct RootView: View {
             showTransfer = false
             showReconciliation = false
             reportLaunchQuery = nil
+            reportLaunchTitle = nil
+            reportLaunchID = UUID()
             selectedSection = .cockpit
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .openTransactionReport)
         ) { notification in
-            guard let query = notification.object as? TransactionReportQuery
-            else { return }
-            reportLaunchQuery = query
+            if let request = notification.object as? TransactionReportLaunchRequest {
+                reportLaunchQuery = request.query
+                reportLaunchTitle = request.title
+                reportLaunchID = request.id
+            } else if let query = notification.object as? TransactionReportQuery {
+                reportLaunchQuery = query
+                reportLaunchTitle = nil
+                reportLaunchID = UUID()
+            } else {
+                return
+            }
             selectedSection = .reports
         }
         .onReceive(
@@ -330,7 +342,12 @@ struct RootView: View {
         case .payments: PaymentsView()
         case .calendar: CalendarForecastView()
         case .budget: BudgetView()
-        case .reports: ReportsView(launchQuery: reportLaunchQuery)
+        case .reports:
+            ReportsView(
+                launchQuery: reportLaunchQuery,
+                launchTitle: reportLaunchTitle
+            )
+            .id(reportLaunchID)
         case .taxAllowances: TaxAllowancesView()
         case .investments: InvestmentsView()
         case .assets: AssetsView()

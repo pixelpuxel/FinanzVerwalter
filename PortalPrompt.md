@@ -2078,3 +2078,26 @@ nicht auf den neuen Bestand angewandt werden; zeige stattdessen den erwarteten
 Dateipfad und einen klaren Sperrhinweis. Eine beschädigte oder inkompatible
 Query erhält einen eigenen Fehlerzustand. Teste Query-Rundlauf, Pfadbindung,
 Nil-/Fremddatei, eindeutige Fenster-UUIDs und den vollständigen App-Build.
+
+# Berichtsfenster wieder integrieren und Geometrie sichern
+
+Jedes externe buchungsbasierte Berichtsfenster erhält in der Toolbar die
+Aktion `Ins Hauptfenster`. Übergib die aktuell im Fenster bearbeitete Query
+und den sichtbaren Titel als typisierten `TransactionReportLaunchRequest` per
+App-interner Notification. Normalisiere einen leeren Titel zu `nil` und gib
+jedem Launch eine frische UUID, damit auch eine inhaltlich identische Abfrage
+die Hauptansicht sicher neu initialisiert.
+
+Die Hauptansicht akzeptiert sowohl den neuen typisierten Launch als auch die
+bisherigen direkten `TransactionReportQuery`-Aufrufe aus dem Kontenblatt. Sie
+wechselt zu `Auswertungen`, rekonstruiert `ReportsView` anhand der Launch-ID
+und bewahrt einen mitgegebenen Titel. Nach erfolgreicher Übergabe wird das
+Außenfenster geschlossen und das registrierte Hauptfenster aktiv in den
+Vordergrund geholt. Bei gesperrter Fremddatei oder beschädigter Query bleibt
+die Aktion deaktiviert.
+
+Registriere das Hauptfenster über einen transparenten `NSViewRepresentable`-
+Host. Gib jedem externen Fenster einen stabilen, aus seiner UUID abgeleiteten
+AppKit-Frame-Autosave-Namen, damit macOS Position und Größe dieser konkreten
+Fensteridentität speichert und wiederherstellt. Teste Titelnormalisierung,
+verlustfreie Query-Übergabe und die deterministische Autosave-ID.

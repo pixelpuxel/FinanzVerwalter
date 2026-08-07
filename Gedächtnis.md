@@ -4041,3 +4041,42 @@ Rechtsberatung.
   Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
   Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
   24.039.428 Tokens.
+
+## 08.08.2026 – Berichtsfenster reintegrieren und Geometrie sichern
+
+- Ein externes buchungsbasiertes Berichtsfenster besitzt nun die Aktion
+  `Ins Hauptfenster`. Sie überträgt nicht den ursprünglichen Snapshot, sondern
+  die aktuell im Außenfenster bearbeitete Query und den sichtbaren Titel über
+  einen typisierten `TransactionReportLaunchRequest` mit frischer UUID.
+- `RootView` akzeptiert den neuen Launch rückwärtskompatibel neben direkten
+  Query-Aufrufen aus Kontenblättern, wechselt zu `Auswertungen` und baut die
+  Berichtswerkstatt anhand der Launch-ID zuverlässig neu auf. Anschließend
+  schließt das Außenfenster und das registrierte Hauptfenster wird aktiviert.
+  Fremddatei- oder beschädigte Fenster bleiben für die Übernahme gesperrt.
+- Transparente AppKit-Hosts registrieren das Hauptfenster und vergeben je
+  Berichtsfenster-UUID einen stabilen Frame-Autosave-Namen. Position und Größe
+  können damit durch macOS pro konkreter Fensteridentität restauriert werden.
+  ADR 0048 dokumentiert die Entscheidung.
+- Der gezielte Test unter
+  `build/TestResults/ReportReintegration-targeted-20260808-0143.xcresult`
+  prüft Pfadbindung, Query-Rundlauf, beschädigte Query, eindeutige UUID,
+  Titelnormalisierung und deterministische Geometrie-ID. Der vollständige Lauf
+  unter `build/TestResults/ReportReintegration-full-20260808-0143.xcresult`
+  umfasst 172 Tests: 170 bestanden, 2 ausdrücklich opt-in übersprungen, 0
+  Fehler und 0 erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-ReportReintegration-Product` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `ca08f3d1f840cc17d6188e97f0f8211d74834b02c4f179f9456fe15a293ff209`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0147-report-reintegration/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0147-report-reintegration/Meine Finanzen.qdata`.
+  Beide installierten Apps sind bytegleich, der Desktop-Link zeigt auf
+  `/Applications`, Finder wurde auf die App gelenkt und Prozess 72662 läuft
+  daraus. Die Produktivdatei meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung, Schema 39 und unverändert 97 Konten, 2.170
+  Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  daher wird keine sichtbare UI-Abnahme oder ein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand nach Installation: 24.209.039 Tokens.

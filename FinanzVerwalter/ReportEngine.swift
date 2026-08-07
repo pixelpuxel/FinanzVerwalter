@@ -267,6 +267,27 @@ struct ReportWindowRequest: Codable, Hashable, Identifiable, Sendable {
     func belongs(to financeFileURL: URL?) -> Bool {
         financeFileURL?.standardizedFileURL.path == financeFilePath
     }
+
+    var frameAutosaveName: String {
+        "FinanzVerwalter.Auswertung.\(id.uuidString.lowercased())"
+    }
+}
+
+struct TransactionReportLaunchRequest: Equatable, Sendable {
+    let id: UUID
+    let title: String?
+    let query: TransactionReportQuery
+
+    init(
+        id: UUID = UUID(),
+        title: String? = nil,
+        query: TransactionReportQuery
+    ) {
+        self.id = id
+        let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.title = normalizedTitle?.isEmpty == false ? normalizedTitle : nil
+        self.query = query
+    }
 }
 
 struct SavedReportTemplate: Identifiable, Equatable, Sendable {

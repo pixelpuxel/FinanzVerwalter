@@ -677,6 +677,13 @@ gleichzeitig unabhängig gefiltert, gruppiert, gedruckt und exportiert werden.
 Das Fenster ist an den kanonischen Pfad der Finanzdatei gebunden. Nach einem
 Dateiwechsel zeigt es einen eindeutigen Sperrhinweis, statt dieselbe Query
 unbemerkt auf einen anderen Datenbestand anzuwenden.
+Über `Ins Hauptfenster` wird die vollständige aktuelle Query samt Titel wieder
+in die Berichtswerkstatt der Hauptnavigation übernommen. Auch identische
+Abfragen erhalten dabei eine neue Launch-Identität, sodass SwiftUI den Zustand
+zuverlässig neu aufbaut. Das Außenfenster schließt anschließend und das
+Hauptfenster wird in den Vordergrund geholt. Jedes Außenfenster besitzt zudem
+einen UUID-basierten AppKit-Autosave-Namen; macOS speichert und restauriert
+damit Position und Größe dieser konkreten Fensteridentität.
 
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile
