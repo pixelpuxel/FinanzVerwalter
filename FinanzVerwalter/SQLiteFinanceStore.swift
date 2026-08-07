@@ -2226,6 +2226,12 @@ final class SQLiteFinanceStore {
         guard (1...12).contains(value.startMonth) else {
             throw FinanceError.database("Der Startmonat ist ungültig.")
         }
+        let nameKey = Self.budgetNameKey(value.name)
+        guard try !budgets().contains(where: {
+            $0.id != value.id && Self.budgetNameKey($0.name) == nameKey
+        }) else {
+            throw FinanceError.database("Ein Budget mit diesem Namen existiert bereits.")
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -2274,34 +2280,179 @@ final class SQLiteFinanceStore {
         return values
     }
 
+    func budgetLines(budgetID: UUID) throws -> [BudgetLine] {
+        var values: [BudgetLine] = []
+        try query(
+            """
+            SELECT id,category_id,year,month,planned_minor,rollover_positive,rollover_negative
+            FROM budget_lines WHERE budget_id=? ORDER BY year,month,category_id
+            """,
+            [.text(budgetID.uuidString)]
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let categoryID = UUID(uuidString: Self.text($0, 1))
+            else { return }
+            values.append(BudgetLine(
+                id: id, budgetID: budgetID, categoryID: categoryID,
+                year: Int(sqlite3_column_int($0, 2)),
+                month: Int(sqlite3_column_int($0, 3)),
+                plannedMinor: sqlite3_column_int64($0, 4),
+                rolloverPositive: sqlite3_column_int($0, 5) != 0,
+                rolloverNegative: sqlite3_column_int($0, 6) != 0
+            ))
+        }
+        return values
+    }
+
     func saveBudgetLine(_ value: BudgetLine) throws {
         guard (1...12).contains(value.month) else {
             throw FinanceError.database("Der Budgetmonat ist ungültig.")
         }
         let now = Self.timestamp(Date())
         try transaction {
-            try run(
-                """
-                INSERT INTO budget_lines(
-                    id,budget_id,category_id,year,month,planned_minor,
-                    rollover_positive,rollover_negative,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(budget_id,category_id,year,month) DO UPDATE SET
-                    planned_minor=excluded.planned_minor,
-                    rollover_positive=excluded.rollover_positive,
-                    rollover_negative=excluded.rollover_negative,
-                    updated_at=excluded.updated_at,version=version+1
-                """,
-                [
-                    .text(value.id.uuidString), .text(value.budgetID.uuidString),
-                    .text(value.categoryID.uuidString), .integer(Int64(value.year)),
-                    .integer(Int64(value.month)), .integer(value.plannedMinor),
-                    .integer(value.rolloverPositive ? 1 : 0),
-                    .integer(value.rolloverNegative ? 1 : 0), .text(now), .text(now)
-                ]
-            )
+            try upsertBudgetLine(value, timestamp: now)
             try audit(entity: "budget_line", id: value.id, action: "save", details: "\(value.year)-\(value.month)")
         }
+    }
+
+    func saveBudgetLines(_ values: [BudgetLine]) throws {
+        guard !values.isEmpty else { return }
+        guard values.allSatisfy({ (1...12).contains($0.month) }) else {
+            throw FinanceError.database("Mindestens ein Budgetmonat ist ungültig.")
+        }
+        let keys = values.map { "\($0.budgetID)|\($0.categoryID)|\($0.year)|\($0.month)" }
+        guard Set(keys).count == keys.count else {
+            throw FinanceError.database("Ein Budgetmonat wurde mehrfach übergeben.")
+        }
+        let budgetIDs = Set(values.map(\.budgetID))
+        guard budgetIDs.count == 1, let budgetID = budgetIDs.first,
+              try scalarInt("SELECT COUNT(*) FROM budgets WHERE id=?", [.text(budgetID.uuidString)]) == 1
+        else {
+            throw FinanceError.database("Die Budgetzeilen gehören nicht zu genau einem vorhandenen Budget.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            for value in values {
+                try upsertBudgetLine(value, timestamp: now)
+                try audit(
+                    entity: "budget_line", id: value.id, action: "save",
+                    details: "\(value.year)-\(value.month)"
+                )
+            }
+        }
+    }
+
+    func duplicateBudget(
+        sourceID: UUID,
+        target: FinanceBudget,
+        calendar: Calendar = .current
+    ) throws {
+        guard let source = try budgets().first(where: { $0.id == sourceID }) else {
+            throw FinanceError.database("Das Ausgangsbudget existiert nicht mehr.")
+        }
+        guard sourceID != target.id else {
+            throw FinanceError.database("Das Zielbudget benötigt eine neue Kennung.")
+        }
+        guard !target.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...12).contains(target.startMonth) else {
+            throw FinanceError.database("Name oder Geschäftsjahresbeginn ist ungültig.")
+        }
+        let targetNameKey = Self.budgetNameKey(target.name)
+        guard try !budgets().contains(where: {
+            $0.id == target.id || Self.budgetNameKey($0.name) == targetNameKey
+        }) else {
+            throw FinanceError.database("Das Zielbudget oder sein Name existiert bereits.")
+        }
+        let sourceLines = try budgetLines(budgetID: sourceID)
+        let sourceMonths = source.months(calendar: calendar)
+        let targetMonths = target.months(calendar: calendar)
+        let sourceIndex = Dictionary(uniqueKeysWithValues: sourceMonths.enumerated().map {
+            (BudgetPlanningEngine.monthKey($0.element, calendar: calendar), $0.offset)
+        })
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO budgets(
+                    id,finance_file_id,name,start_year,start_month,currency,is_active,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(target.id.uuidString), .text(info.id.uuidString), .text(target.name),
+                    .integer(Int64(target.startYear)), .integer(Int64(target.startMonth)),
+                    .text(target.currency), .integer(target.isActive ? 1 : 0),
+                    .text(now), .text(now)
+                ]
+            )
+            for line in sourceLines {
+                let key = String(format: "%04d-%02d", line.year, line.month)
+                guard let index = sourceIndex[key], targetMonths.indices.contains(index) else {
+                    continue
+                }
+                let components = calendar.dateComponents([.year, .month], from: targetMonths[index])
+                guard let year = components.year, let month = components.month else { continue }
+                try upsertBudgetLine(BudgetLine(
+                    id: UUID(), budgetID: target.id, categoryID: line.categoryID,
+                    year: year, month: month, plannedMinor: line.plannedMinor,
+                    rolloverPositive: line.rolloverPositive,
+                    rolloverNegative: line.rolloverNegative
+                ), timestamp: now)
+            }
+            try audit(
+                entity: "budget", id: target.id, action: "duplicate",
+                details: "\(source.name) → \(target.name)"
+            )
+        }
+    }
+
+    func deleteBudget(id: UUID) throws {
+        guard let budget = try budgets().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Das Budget existiert nicht mehr.")
+        }
+        let lineCount = try scalarInt(
+            "SELECT COUNT(*) FROM budget_lines WHERE budget_id=?", [.text(id.uuidString)]
+        )
+        try transaction {
+            try run("DELETE FROM budgets WHERE id=?", [.text(id.uuidString)])
+            try audit(
+                entity: "budget", id: id, action: "delete",
+                details: "\(budget.name); \(lineCount) Monatswerte"
+            )
+        }
+    }
+
+    private func upsertBudgetLine(_ value: BudgetLine, timestamp: String) throws {
+        try run(
+            """
+            INSERT INTO budget_lines(
+                id,budget_id,category_id,year,month,planned_minor,
+                rollover_positive,rollover_negative,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(budget_id,category_id,year,month) DO UPDATE SET
+                planned_minor=excluded.planned_minor,
+                rollover_positive=excluded.rollover_positive,
+                rollover_negative=excluded.rollover_negative,
+                updated_at=excluded.updated_at,version=version+1
+            """,
+            [
+                .text(value.id.uuidString), .text(value.budgetID.uuidString),
+                .text(value.categoryID.uuidString), .integer(Int64(value.year)),
+                .integer(Int64(value.month)), .integer(value.plannedMinor),
+                .integer(value.rolloverPositive ? 1 : 0),
+                .integer(value.rolloverNegative ? 1 : 0), .text(timestamp), .text(timestamp)
+            ]
+        )
+    }
+
+    private static func budgetNameKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "de_DE")
+            )
     }
 
     func paymentOrders() throws -> [PaymentOrder] {

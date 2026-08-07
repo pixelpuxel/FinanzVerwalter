@@ -4927,6 +4927,225 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(snapshot.actualIncomeMinor, 25_000)
     }
 
+    func testBudgetPlanningRollsPositiveAndOptionallyNegativeBalances() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let budget = FinanceBudget(
+            id: UUID(), name: "Roll-over 2025", startYear: 2025,
+            startMonth: 1, currency: "EUR", isActive: true
+        )
+        let account = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Freizeit", kind: .expense,
+            color: "#000000", isActive: true
+        )
+        func line(_ month: Int, negative: Bool) -> BudgetLine {
+            BudgetLine(
+                id: UUID(), budgetID: budget.id, categoryID: category.id,
+                year: 2025, month: month, plannedMinor: 10_000,
+                rolloverPositive: true, rolloverNegative: negative
+            )
+        }
+        func transaction(_ month: Int, amount: Int64) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(), accountID: account.id,
+                bookingDate: calendar.date(from: DateComponents(
+                    year: 2025, month: month, day: 10, hour: 12
+                ))!,
+                valueDate: nil, payee: "", purpose: "", categoryID: category.id,
+                amountMinor: amount, currency: "EUR", status: .booked,
+                memo: "", reference: "", transferID: nil,
+                importFingerprint: nil, splits: []
+            )
+        }
+        let transactions = [transaction(1, amount: -7_500), transaction(2, amount: -15_000)]
+        let allBalances = BudgetPlanningEngine.snapshot(
+            budget: budget,
+            lines: [line(1, negative: true), line(2, negative: true), line(3, negative: true)],
+            transactions: transactions, accounts: [account], categories: [category],
+            tags: [], calendar: calendar
+        )
+        let january = try XCTUnwrap(allBalances.rows.first { $0.monthKey == "2025-01" })
+        XCTAssertEqual(january.basePlannedMinor, 10_000)
+        XCTAssertEqual(january.actualMinor, 7_500)
+        XCTAssertEqual(january.balanceMinor, 2_500)
+        XCTAssertEqual(january.rolloverOutMinor, 2_500)
+        let february = try XCTUnwrap(allBalances.rows.first { $0.monthKey == "2025-02" })
+        XCTAssertEqual(february.rolloverInMinor, 2_500)
+        XCTAssertEqual(february.effectivePlannedMinor, 12_500)
+        XCTAssertEqual(february.balanceMinor, -2_500)
+        XCTAssertEqual(february.rolloverOutMinor, -2_500)
+        let march = try XCTUnwrap(allBalances.rows.first { $0.monthKey == "2025-03" })
+        XCTAssertEqual(march.rolloverInMinor, -2_500)
+        XCTAssertEqual(march.effectivePlannedMinor, 7_500)
+        XCTAssertEqual(allBalances.rolloverReserve(after: "2025-02"), -2_500)
+
+        let positiveOnly = BudgetPlanningEngine.snapshot(
+            budget: budget,
+            lines: [line(1, negative: false), line(2, negative: false),
+                    line(3, negative: false)],
+            transactions: transactions, accounts: [account], categories: [category],
+            tags: [], calendar: calendar
+        )
+        let positiveFebruary = try XCTUnwrap(
+            positiveOnly.rows.first { $0.monthKey == "2025-02" }
+        )
+        XCTAssertEqual(positiveFebruary.balanceMinor, -2_500)
+        XCTAssertEqual(positiveFebruary.rolloverOutMinor, 0)
+        XCTAssertEqual(
+            positiveOnly.rows.first { $0.monthKey == "2025-03" }?.rolloverInMinor, 0
+        )
+
+        let inheritedMode = BudgetPlanningEngine.snapshot(
+            budget: budget, lines: [line(1, negative: false)],
+            transactions: [transaction(1, amount: -7_500)],
+            accounts: [account], categories: [category], tags: [], calendar: calendar
+        )
+        XCTAssertEqual(
+            inheritedMode.rows.first { $0.monthKey == "2025-02" }?.rolloverInMinor, 2_500
+        )
+        XCTAssertEqual(
+            inheritedMode.rows.first { $0.monthKey == "2025-03" }?.rolloverInMinor, 2_500,
+            "Eine Kategorie-Roll-over-Einstellung gilt vorwärts, auch ohne leere Monatszeilen."
+        )
+        XCTAssertEqual(
+            inheritedMode.rows.first { $0.monthKey == "2025-03" }?.rolloverMode,
+            .positiveOnly
+        )
+
+        let februaryReport = BudgetReportEngine.snapshot(
+            budget: budget, query: BudgetReportQuery(monthKeys: ["2025-02"]),
+            lines: [line(1, negative: true), line(2, negative: true), line(3, negative: true)],
+            transactions: transactions, accounts: [account], categories: [category],
+            tags: [], calendar: calendar
+        )
+        let reportRow = try XCTUnwrap(februaryReport.rows.first)
+        XCTAssertEqual(reportRow.plannedMinor, 10_000)
+        XCTAssertEqual(reportRow.rolloverMinor, 2_500)
+        XCTAssertEqual(reportRow.effectivePlannedMinor, 12_500)
+        XCTAssertEqual(reportRow.actualMinor, 15_000)
+        XCTAssertEqual(reportRow.varianceMinor, 2_500)
+        XCTAssertEqual(februaryReport.rolloverReserveMinor, -2_500)
+        let csv = ComparisonReportCSVExporter.budgetData(
+            snapshot: februaryReport,
+            metadata: ComparisonReportExportMetadata(
+                title: "Budgettest", currentLabel: "Februar 2025",
+                referenceLabel: "Plan gegenüber Ist",
+                generatedAt: Date(timeIntervalSince1970: 0)
+            )
+        )
+        let csvText = try XCTUnwrap(String(data: csv, encoding: .utf8))
+        XCTAssertTrue(csvText.contains(
+            "Freizeit;Ausgabe;100,00;25,00;125,00;150,00;25,00;120,00;EUR"
+        ))
+        XCTAssertTrue(csvText.contains("Roll-over-Reserve;;;;-25,00;;;;EUR"))
+        let pdf = try ComparisonReportPDFExporter.budgetData(
+            snapshot: februaryReport,
+            metadata: ComparisonReportExportMetadata(
+                title: "Budgettest", currentLabel: "Februar 2025",
+                referenceLabel: "Plan gegenüber Ist",
+                generatedAt: Date(timeIntervalSince1970: 0)
+            ),
+            orientation: .landscape
+        )
+        let pdfDocument = try XCTUnwrap(PDFDocument(data: pdf))
+        let pdfText = (0..<pdfDocument.pageCount)
+            .compactMap { pdfDocument.page(at: $0)?.string }
+            .joined(separator: "\n")
+        XCTAssertTrue(pdfText.contains("Budgettest"))
+        XCTAssertTrue(pdfText.contains("Freizeit"))
+        XCTAssertTrue(pdfText.contains("Roll-over-Reserve"))
+        XCTAssertTrue(pdfText.contains("125,00 €"))
+    }
+
+    func testBudgetYearBatchDuplicateRenameAndDeleteAreAtomic() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        let context = try TestDatabase()
+        let category = try XCTUnwrap(
+            context.store.categories().first { $0.name == "Lebensmittel" }
+        )
+        var source = FinanceBudget(
+            id: UUID(), name: "Haushalt 2025/26", startYear: 2025,
+            startMonth: 7, currency: "EUR", isActive: true
+        )
+        try context.store.saveBudget(source)
+        let sourceMonths = source.months(calendar: calendar)
+        let sourceLines = sourceMonths.enumerated().map { index, month -> BudgetLine in
+            let components = calendar.dateComponents([.year, .month], from: month)
+            return BudgetLine(
+                id: UUID(), budgetID: source.id, categoryID: category.id,
+                year: components.year!, month: components.month!,
+                plannedMinor: Int64(index + 1) * 1_000,
+                rolloverPositive: true, rolloverNegative: index.isMultiple(of: 2)
+            )
+        }
+        try context.store.saveBudgetLines(sourceLines)
+        XCTAssertEqual(try context.store.budgetLines(budgetID: source.id).count, 12)
+
+        let duplicateLine = sourceLines[0]
+        XCTAssertThrowsError(try context.store.saveBudgetLines([
+            duplicateLine,
+            BudgetLine(
+                id: UUID(), budgetID: source.id, categoryID: category.id,
+                year: duplicateLine.year, month: duplicateLine.month,
+                plannedMinor: 99_999, rolloverPositive: false, rolloverNegative: false
+            )
+        ]))
+        XCTAssertEqual(
+            try context.store.budgetLines(
+                budgetID: source.id, year: duplicateLine.year, month: duplicateLine.month
+            ).first?.plannedMinor,
+            1_000
+        )
+
+        source.name = "Haushalt – überarbeitet"
+        try context.store.saveBudget(source)
+        XCTAssertEqual(try context.store.budgets().first?.name, source.name)
+        let conflicting = FinanceBudget(
+            id: UUID(), name: source.name.uppercased(), startYear: 2026,
+            startMonth: 1, currency: "EUR", isActive: true
+        )
+        XCTAssertThrowsError(try context.store.saveBudget(conflicting))
+        XCTAssertEqual(try context.store.budgets().count, 1)
+
+        let target = FinanceBudget(
+            id: UUID(), name: "Haushalt 2026/27", startYear: 2026,
+            startMonth: 10, currency: "EUR", isActive: true
+        )
+        try context.store.duplicateBudget(
+            sourceID: source.id, target: target, calendar: calendar
+        )
+        let copied = try context.store.budgetLines(budgetID: target.id)
+        XCTAssertEqual(copied.count, 12)
+        XCTAssertEqual(copied.first?.year, 2026)
+        XCTAssertEqual(copied.first?.month, 10)
+        XCTAssertEqual(copied.first?.plannedMinor, 1_000)
+        XCTAssertEqual(copied.last?.year, 2027)
+        XCTAssertEqual(copied.last?.month, 9)
+        XCTAssertEqual(copied.last?.plannedMinor, 12_000)
+        XCTAssertTrue(Set(copied.map(\.id)).isDisjoint(with: Set(sourceLines.map(\.id))))
+        XCTAssertThrowsError(try context.store.duplicateBudget(
+            sourceID: source.id,
+            target: FinanceBudget(
+                id: UUID(), name: target.name, startYear: 2028,
+                startMonth: 1, currency: "EUR", isActive: true
+            ),
+            calendar: calendar
+        ))
+        XCTAssertEqual(try context.store.budgets().count, 2)
+
+        try context.store.deleteBudget(id: target.id)
+        XCTAssertEqual(try context.store.budgets(), [source])
+        XCTAssertTrue(try context.store.budgetLines(budgetID: target.id).isEmpty)
+        XCTAssertEqual(try context.store.budgetLines(budgetID: source.id).count, 12)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testComparisonCSVAndPDFAreDeterministicAndMultipage() throws {
         let rows = (0..<80).map { index in
             PeriodComparisonRow(

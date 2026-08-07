@@ -276,8 +276,23 @@ Für Budgets gilt reproduzierbar:
 - Ein Monatsplan ist pro Budget, Kategorie, Jahr und Monat eindeutig.
 - Planwerte sind editierbare positive Minor-Units; das Ist wird ausschließlich
   aus nicht stornierten, nicht als Transfer verknüpften Buchungen berechnet.
-- Ausgabenabweichung ist `Plan - abs(Ist)`, Einnahmenabweichung ist
-  `Ist - Plan`.
+- Der wirksame Plan eines Monats ist `Basisplan + eingehender Übertrag`.
+  Ausgaben-Ist wird als positiver Verbrauch dargestellt; Einnahmen-Ist als
+  positiver Zufluss. Der Monatssaldo ist bei Ausgaben `wirksamer Plan - Ist`
+  und bei Einnahmen `Ist - wirksamer Plan`.
+- Roll-over besitzt die Modi `aus`, `nur positive Salden` und `positive und
+  negative Salden`. Die zuletzt gesetzte Betriebsart gilt innerhalb einer
+  Kategorie für Folgemonate weiter, auch wenn dort keine eigene Planzeile
+  existiert. Der ausgehende Übertrag ist je nach Modus null, `max(Saldo, 0)`
+  oder der vollständige Saldo; er wird im nächsten Geschäftsmonat zum
+  Basisplan addiert. Die Reserve ist die Summe aller ausgehenden Überträge.
+- Speichere Jahreswerte für eine Kategorie als atomaren Zwölfmonats-Batch.
+  Leere/mehrdeutige Budgetnamen sowie Unicode-, Groß-/Kleinschreibungs- und
+  Diakritikvarianten bestehender Namen werden abgewiesen. Eine Budgetkopie
+  überträgt alle zwölf Monatspositionen relativ zum neuen Geschäftsjahresstart
+  mit frischen Zeilen-IDs und unveränderten Roll-over-Modi. Umbenennen und
+  Löschen sind atomar; Löschen entfernt nur Budget und Planzeilen, nie die
+  zugrunde liegenden Buchungen.
 - Erfüllungsgrade werden dezimal berechnet und explizit auf ganze Prozent
   gerundet; Geldbeträge bleiben weiterhin frei von IEEE-754-Floats.
 
@@ -401,8 +416,10 @@ Für die Berichtswerkstatt gilt zusätzlich:
   `includeBudget = true` aus, ignoriere Stornos und Umbuchungen und expandiere
   Splits ohne Doppelzählung. Verwende nur direkte Kategorieanteile, damit
   Elternkategorien nicht zusätzlich summiert werden. Zeige den vollständigen
-  Kategoriepfad, Einnahme/Ausgabe, Plan, Ist, Abweichung und Zielerreichung;
-  Plan und Ist sind fachlich positive Beträge, die Abweichung ist `Ist - Plan`.
+  Kategoriepfad, Einnahme/Ausgabe, Basisplan, eingehenden Übertrag, wirksamen
+  Plan, Ist, Abweichung und Zielerreichung. Plan und Ist sind fachlich positive
+  Beträge; verwende dieselbe Saldoformel wie in der Budgetplanung und gib die
+  ausgehende Roll-over-Reserve des Berichtszeitraums gesondert aus.
   Optional bleiben leere Plan-/Ist-Zeilen sichtbar. Drill-down-IDs dürfen nur
   die jeweilige Kategoriezeile enthalten.
 - Zeit- und Budgetvergleich erzeugen deterministisches Semikolon-CSV,

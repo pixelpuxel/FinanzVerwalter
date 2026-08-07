@@ -782,8 +782,12 @@ struct BudgetStatusRow: Identifiable, Hashable, Sendable {
     let line: BudgetLine?
     let plannedMinor: Int64
     let actualMinor: Int64
+    var rolloverMinor: Int64 = 0
+    var rolloverOutMinor: Int64 = 0
+    var rolloverMode: BudgetRolloverMode = .none
 
     var id: UUID { category.id }
+    var basePlannedMinor: Int64 { line?.plannedMinor ?? plannedMinor }
     var varianceMinor: Int64 {
         category.kind == .income
             ? actualMinor - plannedMinor
@@ -805,6 +809,35 @@ struct BudgetStatusRow: Identifiable, Hashable, Sendable {
             )
             .intValue
     }
+}
+
+enum BudgetRolloverMode: String, CaseIterable, Identifiable, Sendable {
+    case none
+    case positiveOnly
+    case positiveAndNegative
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .none: "Kein Übertrag"
+        case .positiveOnly: "Nur positive Reste"
+        case .positiveAndNegative: "Positive und negative Reste"
+        }
+    }
+
+    init(line: BudgetLine?) {
+        if line?.rolloverNegative == true {
+            self = .positiveAndNegative
+        } else if line?.rolloverPositive == true {
+            self = .positiveOnly
+        } else {
+            self = .none
+        }
+    }
+
+    var rolloverPositive: Bool { self != .none }
+    var rolloverNegative: Bool { self == .positiveAndNegative }
 }
 
 enum PaymentType: String, Codable, CaseIterable, Identifiable, Sendable {

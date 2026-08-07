@@ -244,15 +244,7 @@ final class FinanceAppStore: ObservableObject {
               let budget = budgets.first(where: { $0.id == budgetID })
         else { return nil }
         do {
-            let lines = try budget.months(calendar: calendar).flatMap { month -> [BudgetLine] in
-                let components = calendar.dateComponents([.year, .month], from: month)
-                guard let year = components.year, let monthValue = components.month else {
-                    return []
-                }
-                return try repository.budgetLines(
-                    budgetID: budgetID, year: year, month: monthValue
-                )
-            }
+            let lines = try repository.budgetLines(budgetID: budgetID)
             return BudgetReportEngine.snapshot(
                 budget: budget, query: query, lines: lines,
                 transactions: transactions, accounts: accounts,
@@ -1467,45 +1459,39 @@ final class FinanceAppStore: ObservableObject {
     }
 
     func budgetStatusRows(budgetID: UUID, month: Date) -> [BudgetStatusRow] {
-        guard let repository else { return [] }
-        let components = Calendar.current.dateComponents([.year, .month], from: month)
-        guard let year = components.year, let monthValue = components.month else { return [] }
+        guard let planning = budgetPlanningSnapshot(budgetID: budgetID) else { return [] }
+        let monthKey = BudgetPlanningEngine.monthKey(month)
+        let categoriesByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        return planning.rows(monthKey: monthKey).compactMap { row in
+            categoriesByID[row.categoryID].map { category in
+                BudgetStatusRow(
+                    category: category, line: row.line,
+                    plannedMinor: row.effectivePlannedMinor,
+                    actualMinor: row.actualMinor,
+                    rolloverMinor: row.rolloverInMinor,
+                    rolloverOutMinor: row.rolloverOutMinor,
+                    rolloverMode: row.rolloverMode
+                )
+            }
+        }
+    }
+
+    func budgetPlanningSnapshot(
+        budgetID: UUID,
+        calendar: Calendar = .current
+    ) -> BudgetPlanningSnapshot? {
+        guard let repository,
+              let budget = budgets.first(where: { $0.id == budgetID })
+        else { return nil }
         do {
-            let lines = try repository.budgetLines(
-                budgetID: budgetID, year: year, month: monthValue
+            return BudgetPlanningEngine.snapshot(
+                budget: budget, lines: try repository.budgetLines(budgetID: budgetID),
+                transactions: transactions, accounts: accounts,
+                categories: categories, tags: tags, calendar: calendar
             )
-            let linesByCategory = Dictionary(uniqueKeysWithValues: lines.map { ($0.categoryID, $0) })
-            let interval = Calendar.current.dateInterval(of: .month, for: month)
-            let includedAccounts = Set(
-                accounts.filter { $0.includeBudget && !$0.isClosed }.map(\.id)
-            )
-            return categories
-                .filter { $0.isActive && $0.kind != .transfer }
-                .map { category in
-                    let actual = transactions
-                        .filter {
-                            $0.categoryID == category.id
-                                && includedAccounts.contains($0.accountID)
-                                && $0.status != .cancelled
-                                && interval?.contains($0.bookingDate) == true
-                                && $0.transferID == nil
-                        }
-                        .reduce(Int64.zero) { $0 + $1.amountMinor }
-                    let line = linesByCategory[category.id]
-                    return BudgetStatusRow(
-                        category: category, line: line,
-                        plannedMinor: line?.plannedMinor ?? 0, actualMinor: actual
-                    )
-                }
-                .sorted {
-                    if $0.category.kind != $1.category.kind {
-                        return $0.category.kind.rawValue < $1.category.kind.rawValue
-                    }
-                    return $0.category.name.localizedCaseInsensitiveCompare($1.category.name) == .orderedAscending
-                }
         } catch {
             present(error)
-            return []
+            return nil
         }
     }
 
@@ -1532,6 +1518,7 @@ final class FinanceAppStore: ObservableObject {
                     rolloverPositive: rolloverPositive, rolloverNegative: rolloverNegative
                 )
             )
+            try load()
             statusText = "Budgetwert gespeichert"
             return true
         } catch {
@@ -1540,14 +1527,98 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
-    func budgetTransactions(categoryID: UUID, month: Date) -> [FinanceTransaction] {
-        guard let interval = Calendar.current.dateInterval(of: .month, for: month) else { return [] }
-        return transactions.filter {
-            $0.categoryID == categoryID
-                && $0.status != .cancelled
-                && $0.transferID == nil
-                && interval.contains($0.bookingDate)
+    func saveBudgetYear(
+        budgetID: UUID,
+        categoryID: UUID,
+        amounts: [Date: Int64],
+        rolloverMode: BudgetRolloverMode,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard let repository,
+              let budget = budgets.first(where: { $0.id == budgetID }),
+              budget.months(calendar: calendar).allSatisfy({ amounts[$0] != nil })
+        else { return false }
+        do {
+            let existing = Dictionary(uniqueKeysWithValues:
+                try repository.budgetLines(budgetID: budgetID)
+                    .filter { $0.categoryID == categoryID }
+                    .map { (String(format: "%04d-%02d", $0.year, $0.month), $0) }
+            )
+            let lines = try budget.months(calendar: calendar).map { month -> BudgetLine in
+                let components = calendar.dateComponents([.year, .month], from: month)
+                guard let year = components.year, let monthValue = components.month,
+                      let amount = amounts[month] else {
+                    throw FinanceError.database("Ein Jahresbudgetwert ist unvollständig.")
+                }
+                let key = String(format: "%04d-%02d", year, monthValue)
+                return BudgetLine(
+                    id: existing[key]?.id ?? UUID(), budgetID: budgetID,
+                    categoryID: categoryID, year: year, month: monthValue,
+                    plannedMinor: abs(amount),
+                    rolloverPositive: rolloverMode.rolloverPositive,
+                    rolloverNegative: rolloverMode.rolloverNegative
+                )
+            }
+            try repository.saveBudgetLines(lines)
+            try load()
+            statusText = "Jahreswerte gespeichert"
+            return true
+        } catch {
+            present(error)
+            return false
         }
+    }
+
+    func duplicateBudget(
+        sourceID: UUID,
+        name: String,
+        startYear: Int,
+        startMonth: Int,
+        calendar: Calendar = .current
+    ) -> UUID? {
+        guard let repository,
+              let source = budgets.first(where: { $0.id == sourceID })
+        else { return nil }
+        let target = FinanceBudget(
+            id: UUID(), name: name, startYear: startYear, startMonth: startMonth,
+            currency: source.currency, isActive: true
+        )
+        do {
+            try repository.duplicateBudget(sourceID: sourceID, target: target, calendar: calendar)
+            try load()
+            statusText = "Budget „\(target.name)“ angelegt"
+            return target.id
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func deleteBudget(id: UUID) -> Bool {
+        guard let repository else { return false }
+        do {
+            try repository.deleteBudget(id: id)
+            try load()
+            statusText = "Budget gelöscht"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    func budgetTransactions(
+        budgetID: UUID, categoryID: UUID, month: Date
+    ) -> [FinanceTransaction] {
+        guard let planning = budgetPlanningSnapshot(budgetID: budgetID) else { return [] }
+        let monthKey = BudgetPlanningEngine.monthKey(month)
+        let factIDs = planning.rows.first {
+            $0.categoryID == categoryID && $0.monthKey == monthKey
+        }?.factIDs ?? []
+        let transactionIDs = Set(planning.facts.filter { factIDs.contains($0.id) }.map(\.transactionID))
+        return transactions.filter { transactionIDs.contains($0.id) }
+            .sorted { $0.bookingDate == $1.bookingDate ? $0.id.uuidString < $1.id.uuidString
+                : $0.bookingDate < $1.bookingDate }
     }
 
     func createPaymentOrder(

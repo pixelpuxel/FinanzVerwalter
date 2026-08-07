@@ -191,8 +191,6 @@ Rechtsberatung.
   einzelne Serienausnahmen und automatische Materialisierung
 - OFX-/camt-Import sowie offene JSON-Gesamtexporte
 - mehrere frei wählbare Finanzdateien
-- Budgetkopie/-umbenennung/-löschung, Jahreswerte, Roll-over-Reserve und
-  Budgetberichte
 - Monats-/Wochen-Kalender, Drag-and-drop und Was-wäre-wenn-Szenarien
 - read-only Banking-Adapter, Umsatz-/Saldoabruf, FinTS/PSD2-Kontakte,
   Daueraufträge, Lastschriften, Sammelaufträge und ISO-20022-Dateiformate
@@ -1936,3 +1934,46 @@ Rechtsberatung.
   Funktions-, Test-, Release-, Datenbank- und GitHub-Stand sowie dem exakten
   Messwert von 12.312.056 Tokens veröffentlicht. Wegen der bestätigten
   Bildschirmsperre wurde kein Screenshot angehängt oder vorgetäuscht.
+
+## 2026-08-07 – Vollständige Budgetplanung und installiertes Release
+
+- `BudgetPlanningEngine` bildet für jedes frei beginnende Geschäftsjahr zwölf
+  Monatspositionen und vollständige Kategoriepfade. Er berechnet Basisplan,
+  eingehenden Übertrag, verfügbaren Plan, splitkorrektes Ist, Monatssaldo und
+  ausgehenden Übertrag ausschließlich aus offenen budgetfähigen Konten in der
+  Budgetwährung. Stornos und Umbuchungen bleiben ausgeschlossen.
+- Roll-over kann ausgeschaltet, nur für positive Salden oder für positive und
+  negative Salden aktiviert werden. Die zuletzt gesetzte Betriebsart gilt für
+  Folgemonate derselben Kategorie fort, selbst wenn dort keine Planzeile
+  gespeichert ist. Eine neue explizite Monatszeile kann den Modus ändern.
+- Die Budgetoberfläche zeigt Basisplan, Übertrag, verfügbaren Plan, Ist, Saldo,
+  Zielerreichung und Reserve. Der Jahreseditor speichert zwölf Monatswerte
+  atomar. Budgets lassen sich Unicode-sicher eindeutig umbenennen, mit allen
+  zwölf relativen Monatspositionen kopieren, als Folgejahr ableiten oder samt
+  Planzeilen löschen; Buchungen werden beim Löschen nicht verändert.
+- Der Budgetbericht verwendet denselben Snapshot für Oberfläche, Drill-down,
+  deterministisches Semikolon-CSV, A4-PDF und Systemdruck. Die neuen Spalten
+  und die Roll-over-Reserve sind auch im PDF-Test textuell nachgewiesen.
+- Der finale Result-Bundle liegt unter
+  `/tmp/FinanzVerwalter-FullTests-BudgetPlanning-Final-20260807-1002.xcresult`:
+  92 Tests, 91 bestanden, der private opt-in-QIF-Test ohne konfigurierten Pfad
+  planmäßig übersprungen, 0 Fehler und 0 erwartete Fehler.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-BudgetPlanning-Release` ist streng signaturgeprüft. Sein
+  ausführbarer Code hat SHA-256
+  `3be65b81b4ccf15613bd3098a23732d5416e92ce96b03eb54d8eef51b1ecc4d5`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; die vorherigen Bundles
+  sind reversibel unter `build/FinanzVerwalter-vor-budgetplanung-20260807-1006.app`
+  und `build/FinanzVerwalter-user-vor-budgetplanung-20260807-1006.app` archiviert.
+- Die App wurde sichtbar im Light Mode geöffnet, die Budgetnavigation per
+  Accessibility-Baum geprüft und in
+  `build/Screenshots/08-budget-release-20260807.jpeg` dokumentiert. Da in der
+  Produktivdatei noch kein Budget existiert, zeigt die Aufnahme bewusst den
+  geprüften Leerzustand mit der Aktion `Neu`; es wurden keine Testbudgets in
+  echte Nutzerdaten geschrieben.
+- Die Produktivdatei blieb vor und nach Installation bytegleich bei SHA-256
+  `a50877f038a9f4c18d119633dc7daa8f2464aad2369eb45df970e2a173d104f9`.
+  Schema 29 meldet Integrität `ok`, 97 Konten, 2.170 Buchungen und 782
+  Kategorien. Der Fensterfuß zeigt 559 Buchungen für die aktuelle UI-Sicht;
+  dies ist nicht die Gesamtzahl der Datenbank.

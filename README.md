@@ -390,8 +390,14 @@ und beide Zeiträume besitzen einen eigenen Buchungs-Drill-down.
 zwölfmonatiges Geschäftsjahr oder einen einzelnen Monat aus. Es berücksichtigt
 nur offene, budgetfähige Konten in der Budgetwährung und löst Splitbuchungen
 ohne Doppelzählung auf. Vollständige Kategoriepfade, Einnahmen-/Ausgabenart,
-Plan, Ist, Abweichung und Zielerreichung bleiben in Bildschirm, CSV,
-mehrseitigem PDF und direktem Druck identisch.
+Basisplan, Übertrag, verfügbarer Plan, Ist, Abweichung und Zielerreichung
+bleiben in Bildschirm, CSV, mehrseitigem PDF und direktem Druck identisch.
+Positive Restbeträge und auf Wunsch auch Überschreitungen können monatlich
+weitergetragen werden; die Ansicht weist außerdem die Roll-over-Reserve aus.
+Über `Jahreswerte` lassen sich alle zwölf Monatswerte einer Kategorie in einem
+Schritt bearbeiten. Budgets können umbenannt, vollständig in ein anderes
+Geschäftsjahr kopiert, als Folgejahr abgeleitet oder samt ihrer Planzeilen
+gelöscht werden; vorhandene Buchungen bleiben beim Löschen unangetastet.
 
 ## Zahlungsverkehr
 

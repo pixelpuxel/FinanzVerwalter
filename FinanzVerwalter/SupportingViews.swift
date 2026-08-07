@@ -2290,11 +2290,14 @@ private struct BudgetComparisonReportView: View {
                                      snapshot.budget.currency)
                     comparisonMetric("Einnahmen Ist", snapshot.actualIncomeMinor,
                                      snapshot.budget.currency)
-                    comparisonMetric("Ausgaben Plan", snapshot.plannedExpenseMinor,
+                    comparisonMetric("Ausgaben verfügbar", snapshot.effectiveExpenseMinor,
                                      snapshot.budget.currency)
                     comparisonMetric("Ausgaben Ist", snapshot.actualExpenseMinor,
                                      snapshot.budget.currency,
-                                     warning: snapshot.actualExpenseMinor > snapshot.plannedExpenseMinor)
+                                     warning: snapshot.actualExpenseMinor > snapshot.effectiveExpenseMinor)
+                    comparisonMetric("Roll-over-Reserve", snapshot.rolloverReserveMinor,
+                                     snapshot.budget.currency,
+                                     warning: snapshot.rolloverReserveMinor < 0)
                 }
                 .padding(10)
                 Divider()
@@ -2306,14 +2309,20 @@ private struct BudgetComparisonReportView: View {
                             Text($0.kind == .income ? "Einnahme" : "Ausgabe")
                         }.width(90)
                         TableColumn("Plan") { row in amount(row.plannedMinor, row.currency) }
-                            .width(125)
+                            .width(105)
+                        TableColumn("Übertrag") { row in
+                            amount(row.rolloverMinor, row.currency)
+                        }.width(105)
+                        TableColumn("Verfügbar") { row in
+                            amount(row.effectivePlannedMinor, row.currency)
+                        }.width(105)
                         TableColumn("Ist") { row in amount(row.actualMinor, row.currency) }
-                            .width(125)
+                            .width(105)
                         TableColumn("Abweichung") { row in
                             amount(row.varianceMinor, row.currency)
                                 .foregroundStyle(row.varianceMinor > 0 && row.kind == .expense
                                     ? Color.red : Color.primary)
-                        }.width(125)
+                        }.width(105)
                         TableColumn("Zielerreichung") { row in
                             Text(percent(row.completionBasisPoints))
                                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -2347,7 +2356,7 @@ private struct BudgetComparisonReportView: View {
                 )
             }
         }
-        .frame(minWidth: 1_100, minHeight: 720)
+        .frame(minWidth: 1_280, minHeight: 720)
         .fileExporter(
             isPresented: $showCSVExporter, document: csvDocument,
             contentType: .commaSeparatedText, defaultFilename: filename
@@ -5099,6 +5108,10 @@ struct BudgetView: View {
     @State private var selectedMonth = Date()
     @State private var showNewBudget = false
     @State private var editedRow: BudgetStatusRow?
+    @State private var editedBudget: FinanceBudget?
+    @State private var annualBudget: FinanceBudget?
+    @State private var copyRequest: BudgetCopyRequest?
+    @State private var showDeleteConfirmation = false
 
     private var budget: FinanceBudget? {
         store.budgets.first { $0.id == selectedBudgetID }
@@ -5114,7 +5127,14 @@ struct BudgetView: View {
     }
 
     private var actualTotal: Int64 {
-        abs(rows.filter { $0.category.kind == .expense }.reduce(0) { $0 + $1.actualMinor })
+        rows.filter { $0.category.kind == .expense }.reduce(0) { $0 + $1.actualMinor }
+    }
+
+    private var rolloverReserve: Int64 {
+        guard let selectedBudgetID else { return 0 }
+        return store.budgetPlanningSnapshot(budgetID: selectedBudgetID)?.rolloverReserve(
+            after: BudgetPlanningEngine.monthKey(selectedMonth)
+        ) ?? 0
     }
 
     var body: some View {
@@ -5146,6 +5166,29 @@ struct BudgetView: View {
                     Label("Neu", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
+                if let budget {
+                    Menu {
+                        Button("Jahreswerte …", systemImage: "calendar") {
+                            annualBudget = budget
+                        }
+                        Button("Umbenennen …", systemImage: "pencil") {
+                            editedBudget = budget
+                        }
+                        Divider()
+                        Button("Duplizieren …", systemImage: "plus.square.on.square") {
+                            copyRequest = BudgetCopyRequest(source: budget, derivesNextYear: false)
+                        }
+                        Button("Folgejahr ableiten …", systemImage: "calendar.badge.plus") {
+                            copyRequest = BudgetCopyRequest(source: budget, derivesNextYear: true)
+                        }
+                        Divider()
+                        Button("Budget löschen …", systemImage: "trash", role: .destructive) {
+                            showDeleteConfirmation = true
+                        }
+                    } label: {
+                        Label("Aktionen", systemImage: "ellipsis.circle")
+                    }
+                }
             }
             .padding(12)
             Divider()
@@ -5164,14 +5207,21 @@ struct BudgetView: View {
                         value: Money(minorUnits: plannedTotal - actualTotal).formatted,
                         warning: actualTotal > plannedTotal
                     )
+                    BudgetMetric(
+                        title: "Roll-over-Reserve",
+                        value: Money(minorUnits: rolloverReserve).formatted,
+                        warning: rolloverReserve < 0
+                    )
                 }
                 .padding(12)
                 Divider()
                 HStack {
                     Text("Kategorie").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Plan").frame(width: 120, alignment: .trailing)
-                    Text("Ist").frame(width: 120, alignment: .trailing)
-                    Text("Abweichung").frame(width: 120, alignment: .trailing)
+                    Text("Basisplan").frame(width: 105, alignment: .trailing)
+                    Text("Übertrag").frame(width: 105, alignment: .trailing)
+                    Text("Verfügbar").frame(width: 105, alignment: .trailing)
+                    Text("Ist").frame(width: 105, alignment: .trailing)
+                    Text("Saldo").frame(width: 105, alignment: .trailing)
                     Text("%").frame(width: 70, alignment: .trailing)
                 }
                 .font(.caption.bold())
@@ -5184,18 +5234,23 @@ struct BudgetView: View {
                     } label: {
                         HStack {
                             Label(
-                                row.category.name,
+                                store.categoryPath(row.category.id),
                                 systemImage: row.category.kind == .income
                                     ? "arrow.down.circle" : "arrow.up.circle"
                             )
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(Money(minorUnits: row.basePlannedMinor).formatted)
+                                .frame(width: 105, alignment: .trailing)
+                            Text(Money(minorUnits: row.rolloverMinor).formatted)
+                                .foregroundStyle(row.rolloverMinor < 0 ? .red : .secondary)
+                                .frame(width: 105, alignment: .trailing)
                             Text(Money(minorUnits: row.plannedMinor).formatted)
-                                .frame(width: 120, alignment: .trailing)
-                            Text(Money(minorUnits: abs(row.actualMinor)).formatted)
-                                .frame(width: 120, alignment: .trailing)
+                                .frame(width: 105, alignment: .trailing)
+                            Text(Money(minorUnits: row.actualMinor).formatted)
+                                .frame(width: 105, alignment: .trailing)
                             Text(Money(minorUnits: row.varianceMinor).formatted)
                                 .foregroundStyle(row.varianceMinor < 0 ? .red : .green)
-                                .frame(width: 120, alignment: .trailing)
+                                .frame(width: 105, alignment: .trailing)
                             Text(row.completionPercent.map { "\($0) %" } ?? "—")
                                 .frame(width: 70, alignment: .trailing)
                         }
@@ -5224,8 +5279,11 @@ struct BudgetView: View {
             }
         }
         .sheet(isPresented: $showNewBudget) {
-            BudgetEditor()
+            BudgetEditor(budget: nil)
         }
+        .sheet(item: $editedBudget) { BudgetEditor(budget: $0) }
+        .sheet(item: $annualBudget) { BudgetYearEditor(budget: $0) }
+        .sheet(item: $copyRequest) { BudgetCopyEditor(request: $0) }
         .sheet(item: $editedRow) { row in
             if let selectedBudgetID {
                 BudgetLineEditor(
@@ -5233,7 +5291,26 @@ struct BudgetView: View {
                 )
             }
         }
+        .confirmationDialog(
+            "Budget „\(budget?.name ?? "")“ wirklich löschen?",
+            isPresented: $showDeleteConfirmation, titleVisibility: .visible
+        ) {
+            Button("Budget und Monatswerte löschen", role: .destructive) {
+                if let selectedBudgetID, store.deleteBudget(id: selectedBudgetID) {
+                    self.selectedBudgetID = store.budgets.first?.id
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Die Buchungen bleiben erhalten. Nur das Budget und seine Planwerte werden gelöscht.")
+        }
     }
+}
+
+private struct BudgetCopyRequest: Identifiable {
+    let id = UUID()
+    let source: FinanceBudget
+    let derivesNextYear: Bool
 }
 
 private struct BudgetMetric: View {
@@ -5258,20 +5335,33 @@ private struct BudgetMetric: View {
 private struct BudgetEditor: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: FinanceAppStore
-    @State private var name = "Neues Budget"
-    @State private var startYear = Calendar.current.component(.year, from: Date())
-    @State private var startMonth = 1
+    let budget: FinanceBudget?
+    @State private var name: String
+    @State private var startYear: Int
+    @State private var startMonth: Int
+    @State private var isActive: Bool
+
+    init(budget: FinanceBudget?) {
+        self.budget = budget
+        _name = State(initialValue: budget?.name ?? "Neues Budget")
+        _startYear = State(initialValue:
+            budget?.startYear ?? Calendar.current.component(.year, from: Date()))
+        _startMonth = State(initialValue: budget?.startMonth ?? 1)
+        _isActive = State(initialValue: budget?.isActive ?? true)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Budget anlegen").font(.title2.bold())
+                Text(budget == nil ? "Budget anlegen" : "Budget umbenennen")
+                    .font(.title2.bold())
                 Spacer()
                 Button("Abbrechen") { dismiss() }
-                Button("Anlegen") {
+                Button(budget == nil ? "Anlegen" : "Speichern") {
                     let value = FinanceBudget(
-                        id: UUID(), name: name, startYear: startYear,
-                        startMonth: startMonth, currency: "EUR", isActive: true
+                        id: budget?.id ?? UUID(), name: name, startYear: startYear,
+                        startMonth: startMonth, currency: budget?.currency ?? "EUR",
+                        isActive: isActive
                     )
                     if store.saveBudget(value) { dismiss() }
                 }
@@ -5282,18 +5372,211 @@ private struct BudgetEditor: View {
             Divider()
             Form {
                 TextField("Name", text: $name)
-                Stepper("Startjahr: \(startYear)", value: $startYear, in: 1900...2200)
-                Picker("Erster Monat des Geschäftsjahres", selection: $startMonth) {
-                    ForEach(1...12, id: \.self) { month in
-                        Text(
-                            Calendar.current.monthSymbols[month - 1]
-                        ).tag(month)
+                if budget == nil {
+                    Stepper("Startjahr: \(startYear)", value: $startYear, in: 1900...2200)
+                    Picker("Erster Monat des Geschäftsjahres", selection: $startMonth) {
+                        ForEach(1...12, id: \.self) { month in
+                            Text(Calendar.current.monthSymbols[month - 1]).tag(month)
+                        }
                     }
+                } else {
+                    LabeledContent("Geschäftsjahr", value:
+                        "\(Calendar.current.monthSymbols[startMonth - 1]) \(startYear)")
                 }
+                Toggle("Aktiv", isOn: $isActive)
             }
             .formStyle(.grouped)
         }
         .frame(width: 520, height: 300)
+    }
+}
+
+private struct BudgetCopyEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    let request: BudgetCopyRequest
+    @State private var name: String
+    @State private var startYear: Int
+    @State private var startMonth: Int
+
+    init(request: BudgetCopyRequest) {
+        self.request = request
+        let year = request.source.startYear + (request.derivesNextYear ? 1 : 0)
+        _name = State(initialValue: request.derivesNextYear
+            ? "\(request.source.name) \(year)"
+            : "\(request.source.name) – Kopie")
+        _startYear = State(initialValue: year)
+        _startMonth = State(initialValue: request.source.startMonth)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text(request.derivesNextYear ? "Folgejahr ableiten" : "Budget duplizieren")
+                        .font(.title2.bold())
+                    Text("Alle zwölf Monatswerte und Roll-over-Einstellungen werden kopiert.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Kopie anlegen") {
+                    if store.duplicateBudget(
+                        sourceID: request.source.id, name: name,
+                        startYear: startYear, startMonth: startMonth
+                    ) != nil { dismiss() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(14)
+            Divider()
+            Form {
+                TextField("Name", text: $name)
+                Stepper("Startjahr: \(startYear)", value: $startYear, in: 1900...2200)
+                Picker("Erster Monat des Geschäftsjahres", selection: $startMonth) {
+                    ForEach(1...12, id: \.self) { month in
+                        Text(Calendar.current.monthSymbols[month - 1]).tag(month)
+                    }
+                }
+                LabeledContent("Währung", value: request.source.currency.uppercased())
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 580, height: 350)
+    }
+}
+
+private struct BudgetYearEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: FinanceAppStore
+    let budget: FinanceBudget
+    @State private var categoryID: UUID?
+    @State private var amountTexts = Array(repeating: "0,00", count: 12)
+    @State private var rolloverMode = BudgetRolloverMode.none
+
+    private var categories: [FinanceCategory] {
+        store.categories.filter { $0.isActive && $0.isBudgetable && $0.kind != .transfer }
+            .sorted { store.categoryPath($0.id).localizedCaseInsensitiveCompare(
+                store.categoryPath($1.id)) == .orderedAscending }
+    }
+
+    private var planningRows: [BudgetPlanningMonthRow] {
+        guard let categoryID else { return [] }
+        return store.budgetPlanningSnapshot(budgetID: budget.id)?.rows
+            .filter { $0.categoryID == categoryID }
+            .sorted { $0.month < $1.month } ?? []
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Jahreswerte").font(.title2.bold())
+                    Text("\(budget.name) · zwölf Monate ab \(businessYearStart)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Jahr speichern") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(categoryID == nil)
+            }
+            .padding(14)
+            Divider()
+            HStack {
+                Picker("Kategorie", selection: $categoryID) {
+                    Text("Kategorie wählen").tag(UUID?.none)
+                    ForEach(categories) { category in
+                        Text(store.categoryPath(category.id)).tag(UUID?.some(category.id))
+                    }
+                }
+                .frame(maxWidth: 420)
+                Picker("Roll-over", selection: $rolloverMode) {
+                    ForEach(BudgetRolloverMode.allCases) { Text($0.title).tag($0) }
+                }
+                .frame(width: 250)
+                Spacer()
+                Button("Ersten Wert auf alle Monate") {
+                    guard let first = amountTexts.first else { return }
+                    amountTexts = Array(repeating: first, count: 12)
+                }
+            }
+            .padding(12)
+            Divider()
+            HStack {
+                Text("Monat").frame(width: 150, alignment: .leading)
+                Text("Basisplan").frame(width: 130, alignment: .trailing)
+                Text("Ist").frame(width: 130, alignment: .trailing)
+                Text("Übertrag hinein").frame(width: 130, alignment: .trailing)
+                Text("Verfügbar").frame(width: 130, alignment: .trailing)
+                Text("Saldo").frame(width: 130, alignment: .trailing)
+            }
+            .font(.caption.bold()).foregroundStyle(.secondary)
+            .padding(.horizontal, 16).frame(height: 30)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(budget.months().enumerated()), id: \.offset) { index, month in
+                        let row = planningRows.indices.contains(index) ? planningRows[index] : nil
+                        HStack {
+                            Text(month, format: .dateTime.month(.wide).year())
+                                .frame(width: 150, alignment: .leading)
+                            TextField("0,00", text: Binding(
+                                get: { amountTexts[index] },
+                                set: { amountTexts[index] = $0 }
+                            ))
+                            .multilineTextAlignment(.trailing).frame(width: 130)
+                            Text(Money(minorUnits: row?.actualMinor ?? 0).formatted)
+                                .frame(width: 130, alignment: .trailing)
+                            Text(Money(minorUnits: row?.rolloverInMinor ?? 0).formatted)
+                                .frame(width: 130, alignment: .trailing)
+                            Text(Money(minorUnits: row?.effectivePlannedMinor ?? 0).formatted)
+                                .frame(width: 130, alignment: .trailing)
+                            Text(Money(minorUnits: row?.balanceMinor ?? 0).formatted)
+                                .foregroundStyle((row?.balanceMinor ?? 0) < 0 ? .red : .green)
+                                .frame(width: 130, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 16).frame(height: 34)
+                        Divider()
+                    }
+                }
+            }
+        }
+        .frame(width: 930, height: 610)
+        .onAppear {
+            categoryID = categoryID ?? categories.first?.id
+            loadCategory()
+        }
+        .onChange(of: categoryID) { loadCategory() }
+    }
+
+    private var businessYearStart: String {
+        budget.months().first?.formatted(.dateTime.month(.wide).year()) ?? "—"
+    }
+
+    private func loadCategory() {
+        let rows = planningRows
+        amountTexts = (0..<12).map { index in
+            Money(minorUnits: rows.indices.contains(index) ? rows[index].basePlannedMinor : 0)
+                .editingString
+        }
+        rolloverMode = rows.first?.rolloverMode ?? .none
+    }
+
+    private func save() {
+        guard let categoryID else { return }
+        do {
+            let months = budget.months()
+            let values = try Dictionary(uniqueKeysWithValues: months.enumerated().map { index, month in
+                (month, try Money(parsing: amountTexts[index], currency: budget.currency).minorUnits)
+            })
+            if store.saveBudgetYear(
+                budgetID: budget.id, categoryID: categoryID,
+                amounts: values, rolloverMode: rolloverMode
+            ) { dismiss() }
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -5304,16 +5587,14 @@ private struct BudgetLineEditor: View {
     let month: Date
     let row: BudgetStatusRow
     @State private var amountText: String
-    @State private var rolloverPositive: Bool
-    @State private var rolloverNegative: Bool
+    @State private var rolloverMode: BudgetRolloverMode
 
     init(budgetID: UUID, month: Date, row: BudgetStatusRow) {
         self.budgetID = budgetID
         self.month = month
         self.row = row
-        _amountText = State(initialValue: Money(minorUnits: row.plannedMinor).editingString)
-        _rolloverPositive = State(initialValue: row.line?.rolloverPositive ?? false)
-        _rolloverNegative = State(initialValue: row.line?.rolloverNegative ?? false)
+        _amountText = State(initialValue: Money(minorUnits: row.basePlannedMinor).editingString)
+        _rolloverMode = State(initialValue: row.rolloverMode)
     }
 
     var body: some View {
@@ -5329,8 +5610,9 @@ private struct BudgetLineEditor: View {
                 Button("Plan speichern") {
                     if store.saveBudgetAmount(
                         budgetID: budgetID, categoryID: row.category.id, month: month,
-                        amount: amountText, rolloverPositive: rolloverPositive,
-                        rolloverNegative: rolloverNegative
+                        amount: amountText,
+                        rolloverPositive: rolloverMode.rolloverPositive,
+                        rolloverNegative: rolloverMode.rolloverNegative
                     ) { dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -5340,15 +5622,28 @@ private struct BudgetLineEditor: View {
             Form {
                 Section("Plan") {
                     TextField("Monatsbetrag", text: $amountText)
-                    Toggle("Positiven Rest übertragen", isOn: $rolloverPositive)
-                    Toggle("Negativen Rest übertragen", isOn: $rolloverNegative)
+                    Picker("Roll-over", selection: $rolloverMode) {
+                        ForEach(BudgetRolloverMode.allCases) { Text($0.title).tag($0) }
+                    }
+                    LabeledContent(
+                        "Übertrag aus Vormonat",
+                        value: Money(minorUnits: row.rolloverMinor).formatted
+                    )
+                    LabeledContent(
+                        "Verfügbar einschließlich Übertrag",
+                        value: Money(minorUnits: row.plannedMinor).formatted
+                    )
                 }
                 Section("Ist – aus Buchungen, nicht editierbar") {
-                    if store.budgetTransactions(categoryID: row.category.id, month: month).isEmpty {
+                    if store.budgetTransactions(
+                        budgetID: budgetID, categoryID: row.category.id, month: month
+                    ).isEmpty {
                         Text("Keine Buchungen in diesem Monat")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(store.budgetTransactions(categoryID: row.category.id, month: month)) { value in
+                        ForEach(store.budgetTransactions(
+                            budgetID: budgetID, categoryID: row.category.id, month: month
+                        )) { value in
                             LabeledContent(
                                 value.payee.isEmpty ? value.purpose : value.payee,
                                 value: Money(minorUnits: value.amountMinor).formatted

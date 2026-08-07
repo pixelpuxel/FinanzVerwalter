@@ -250,6 +250,170 @@ enum PeriodComparisonEngine {
     }
 }
 
+struct BudgetPlanningMonthRow: Identifiable, Equatable, Sendable {
+    var id: String { "\(categoryID.uuidString)|\(monthKey)" }
+    let categoryID: UUID
+    let categoryPath: String
+    let kind: CategoryKind
+    let month: Date
+    let monthKey: String
+    let line: BudgetLine?
+    let rolloverMode: BudgetRolloverMode
+    let basePlannedMinor: Int64
+    let rolloverInMinor: Int64
+    let effectivePlannedMinor: Int64
+    let actualMinor: Int64
+    let balanceMinor: Int64
+    let rolloverOutMinor: Int64
+    let factIDs: Set<String>
+}
+
+struct BudgetPlanningSnapshot: Equatable, Sendable {
+    let budget: FinanceBudget
+    let months: [Date]
+    let rows: [BudgetPlanningMonthRow]
+    let facts: [TransactionReportFact]
+
+    func rows(monthKey: String) -> [BudgetPlanningMonthRow] {
+        rows.filter { $0.monthKey == monthKey }
+    }
+
+    func rolloverReserve(after monthKey: String) -> Int64 {
+        rows(monthKey: monthKey).reduce(Int64.zero) { $0 + $1.rolloverOutMinor }
+    }
+}
+
+enum BudgetPlanningEngine {
+    static func snapshot(
+        budget: FinanceBudget,
+        lines: [BudgetLine],
+        transactions: [FinanceTransaction],
+        accounts: [FinanceAccount],
+        categories: [FinanceCategory],
+        tags: [FinanceTag],
+        calendar: Calendar = .current
+    ) -> BudgetPlanningSnapshot {
+        let months = budget.months(calendar: calendar)
+        guard let first = months.first, let last = months.last else {
+            return BudgetPlanningSnapshot(budget: budget, months: [], rows: [], facts: [])
+        }
+        let accountIDs = Set(accounts.filter {
+            $0.includeBudget && !$0.isClosed
+                && $0.currency.caseInsensitiveCompare(budget.currency) == .orderedSame
+        }.map(\.id))
+        let from = calendar.startOfDay(for: first)
+        let through = calendar.date(
+            byAdding: .month, value: 1,
+            to: calendar.dateInterval(of: .month, for: last)?.start ?? last
+        )?.addingTimeInterval(-0.001) ?? last
+        let report = TransactionReportEngine.snapshot(
+            query: TransactionReportQuery(
+                dateFrom: from, dateThrough: through, accountIDs: accountIDs,
+                statuses: Set(TransactionStatus.allCases.filter { $0 != .cancelled }),
+                currencies: [budget.currency.uppercased()], includeTransfers: false,
+                expandSplits: true, grouping: .category, sort: .labelAscending
+            ),
+            transactions: transactions.filter { accountIDs.contains($0.accountID) },
+            accounts: accounts, categories: categories, tags: tags
+        )
+        let categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        var lineByKey: [String: BudgetLine] = [:]
+        for line in lines.filter({ $0.budgetID == budget.id }).sorted(by: {
+            $0.id.uuidString < $1.id.uuidString
+        }) {
+            lineByKey[key(categoryID: line.categoryID, year: line.year, month: line.month)] = line
+        }
+        let factsByKey = Dictionary(grouping: report.facts.compactMap { fact -> (String, TransactionReportFact)? in
+            guard let categoryID = fact.categoryID else { return nil }
+            let components = calendar.dateComponents([.year, .month], from: fact.bookingDate)
+            guard let year = components.year, let month = components.month else { return nil }
+            return (key(categoryID: categoryID, year: year, month: month), fact)
+        }, by: { $0.0 }).mapValues { $0.map(\.1) }
+
+        var result: [BudgetPlanningMonthRow] = []
+        for category in categories.filter({
+            $0.isActive && $0.isBudgetable && $0.kind != .transfer
+        }) {
+            var rollover = Int64.zero
+            var rolloverMode = BudgetRolloverMode.none
+            for month in months {
+                let components = calendar.dateComponents([.year, .month], from: month)
+                guard let year = components.year, let monthValue = components.month else { continue }
+                let line = lineByKey[key(
+                    categoryID: category.id, year: year, month: monthValue
+                )]
+                if line != nil {
+                    rolloverMode = BudgetRolloverMode(line: line)
+                }
+                let facts = factsByKey[key(
+                    categoryID: category.id, year: year, month: monthValue
+                ), default: []]
+                let signedActual = facts.reduce(Int64.zero) { $0 + $1.amountMinor }
+                let actual = category.kind == .expense ? -signedActual : signedActual
+                let base = line?.plannedMinor ?? 0
+                let effective = category.kind == .expense ? base + rollover : base - rollover
+                let balance = category.kind == .expense
+                    ? effective - actual
+                    : actual - effective
+                let rolloverOut: Int64
+                if balance > 0, rolloverMode.rolloverPositive {
+                    rolloverOut = balance
+                } else if balance < 0, rolloverMode.rolloverNegative {
+                    rolloverOut = balance
+                } else {
+                    rolloverOut = 0
+                }
+                result.append(BudgetPlanningMonthRow(
+                    categoryID: category.id,
+                    categoryPath: hierarchyPath(category.id, categoriesByID: categoryByID),
+                    kind: category.kind, month: month,
+                    monthKey: monthKey(month, calendar: calendar), line: line,
+                    rolloverMode: rolloverMode,
+                    basePlannedMinor: base, rolloverInMinor: rollover,
+                    effectivePlannedMinor: effective, actualMinor: actual,
+                    balanceMinor: balance, rolloverOutMinor: rolloverOut,
+                    factIDs: Set(facts.map(\.id))
+                ))
+                rollover = rolloverOut
+            }
+        }
+        return BudgetPlanningSnapshot(
+            budget: budget, months: months,
+            rows: result.sorted {
+                if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
+                let path = $0.categoryPath.localizedCaseInsensitiveCompare($1.categoryPath)
+                return path == .orderedSame ? $0.month < $1.month : path == .orderedAscending
+            },
+            facts: report.facts
+        )
+    }
+
+    static func monthKey(_ date: Date, calendar: Calendar = .current) -> String {
+        let components = calendar.dateComponents([.year, .month], from: date)
+        return String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
+    }
+
+    private static func key(categoryID: UUID, year: Int, month: Int) -> String {
+        "\(categoryID.uuidString)|\(String(format: "%04d-%02d", year, month))"
+    }
+
+    private static func hierarchyPath(
+        _ id: UUID, categoriesByID: [UUID: FinanceCategory]
+    ) -> String {
+        guard let category = categoriesByID[id] else { return "Nicht zugeordnet" }
+        var names = [category.name]
+        var current = category.parentID
+        var visited = Set([id])
+        while let currentID = current,
+              visited.insert(currentID).inserted,
+              let parent = categoriesByID[currentID] {
+            names.insert(parent.name, at: 0)
+            current = parent.parentID
+        }
+        return names.joined(separator: " › ")
+    }
+}
+
 struct BudgetReportQuery: Equatable, Sendable {
     var monthKeys: Set<String> = []
     var includeZeroRows = false
@@ -262,8 +426,11 @@ struct BudgetReportRow: Identifiable, Equatable, Sendable {
     let kind: CategoryKind
     let currency: String
     let plannedMinor: Int64
+    let rolloverMinor: Int64
+    let effectivePlannedMinor: Int64
     let actualMinor: Int64
     let varianceMinor: Int64
+    let rolloverOutMinor: Int64
     let completionBasisPoints: Int64?
     let factIDs: Set<String>
 }
@@ -289,6 +456,26 @@ struct BudgetReportSnapshot: Equatable, Sendable {
     var actualExpenseMinor: Int64 {
         rows.filter { $0.kind == .expense }.reduce(0) { $0 + $1.actualMinor }
     }
+
+    var rolloverIncomeMinor: Int64 {
+        rows.filter { $0.kind == .income }.reduce(0) { $0 + $1.rolloverMinor }
+    }
+
+    var rolloverExpenseMinor: Int64 {
+        rows.filter { $0.kind == .expense }.reduce(0) { $0 + $1.rolloverMinor }
+    }
+
+    var effectiveIncomeMinor: Int64 {
+        rows.filter { $0.kind == .income }.reduce(0) { $0 + $1.effectivePlannedMinor }
+    }
+
+    var effectiveExpenseMinor: Int64 {
+        rows.filter { $0.kind == .expense }.reduce(0) { $0 + $1.effectivePlannedMinor }
+    }
+
+    var rolloverReserveMinor: Int64 {
+        rows.reduce(0) { $0 + $1.rolloverOutMinor }
+    }
 }
 
 enum BudgetReportEngine {
@@ -306,59 +493,36 @@ enum BudgetReportEngine {
         let includedMonths = query.monthKeys.isEmpty
             ? allMonths
             : allMonths.filter { query.monthKeys.contains(monthKey($0, calendar: calendar)) }
-        guard let first = includedMonths.first, let last = includedMonths.last else {
+        guard !includedMonths.isEmpty else {
             return BudgetReportSnapshot(budget: budget, includedMonths: [], rows: [], facts: [])
         }
-        let from = calendar.startOfDay(for: first)
-        let through = calendar.date(
-            byAdding: .month, value: 1,
-            to: calendar.dateInterval(of: .month, for: last)?.start ?? last
-        )?.addingTimeInterval(-0.001) ?? last
         let monthKeys = Set(includedMonths.map { monthKey($0, calendar: calendar) })
-        let accountIDs = Set(accounts.filter {
-            $0.includeBudget && !$0.isClosed
-                && $0.currency.caseInsensitiveCompare(budget.currency) == .orderedSame
-        }.map(\.id))
-        let report = TransactionReportEngine.snapshot(
-            query: TransactionReportQuery(
-                dateFrom: from, dateThrough: through, accountIDs: accountIDs,
-                statuses: Set(TransactionStatus.allCases.filter { $0 != .cancelled }),
-                currencies: [budget.currency.uppercased()], includeTransfers: false,
-                expandSplits: true, grouping: .category, sort: .labelAscending
-            ),
-            transactions: transactions.filter { accountIDs.contains($0.accountID) },
-            accounts: accounts,
-            categories: categories, tags: tags
+        let planning = BudgetPlanningEngine.snapshot(
+            budget: budget, lines: lines, transactions: transactions,
+            accounts: accounts, categories: categories, tags: tags, calendar: calendar
         )
-        let categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
-        let factsByCategory = Dictionary(grouping: report.facts.compactMap { fact in
-            fact.categoryID.map { ($0, fact) }
-        }, by: { $0.0 }).mapValues { $0.map(\.1) }
-        let plannedByCategory = Dictionary(grouping: lines.filter {
-            $0.budgetID == budget.id
-                && monthKeys.contains(String(format: "%04d-%02d", $0.year, $0.month))
-        }, by: \.categoryID).mapValues { values in
-            values.reduce(Int64.zero) { $0 + $1.plannedMinor }
-        }
-        let rows = categories.compactMap { category -> BudgetReportRow? in
-            guard category.isActive, category.isBudgetable, category.kind != .transfer else {
-                return nil
-            }
-            let facts = factsByCategory[category.id, default: []]
-            let signedActual = facts.reduce(Int64.zero) { $0 + $1.amountMinor }
-            let actual = category.kind == .expense ? abs(signedActual) : signedActual
-            let planned = plannedByCategory[category.id] ?? 0
-            guard query.includeZeroRows || planned != 0 || actual != 0 else { return nil }
-            let variance = actual - planned
+        let rowsByCategory = Dictionary(grouping: planning.rows.filter {
+            monthKeys.contains($0.monthKey)
+        }, by: \.categoryID)
+        let rows = rowsByCategory.values.compactMap { monthRows -> BudgetReportRow? in
+            let values = monthRows.sorted { $0.month < $1.month }
+            guard let first = values.first, let last = values.last else { return nil }
+            let planned = values.reduce(Int64.zero) { $0 + $1.basePlannedMinor }
+            let actual = values.reduce(Int64.zero) { $0 + $1.actualMinor }
+            let rollover = first.rolloverInMinor
+            let effective = first.kind == .expense ? planned + rollover : planned - rollover
+            guard query.includeZeroRows || planned != 0 || actual != 0
+                    || rollover != 0 || last.rolloverOutMinor != 0 else { return nil }
+            let variance = actual - effective
             return BudgetReportRow(
-                categoryID: category.id,
-                categoryPath: hierarchyPath(category.id, categoriesByID: categoryByID),
-                kind: category.kind, currency: budget.currency.uppercased(),
-                plannedMinor: planned, actualMinor: actual,
-                varianceMinor: variance,
-                completionBasisPoints: planned == 0
-                    ? nil : roundedBasisPoints(numerator: actual, denominator: planned),
-                factIDs: Set(facts.map(\.id))
+                categoryID: first.categoryID, categoryPath: first.categoryPath,
+                kind: first.kind, currency: budget.currency.uppercased(),
+                plannedMinor: planned, rolloverMinor: rollover,
+                effectivePlannedMinor: effective, actualMinor: actual,
+                varianceMinor: variance, rolloverOutMinor: last.rolloverOutMinor,
+                completionBasisPoints: effective == 0
+                    ? nil : roundedBasisPoints(numerator: actual, denominator: effective),
+                factIDs: values.reduce(into: Set<String>()) { $0.formUnion($1.factIDs) }
             )
         }
         .sorted {
@@ -367,13 +531,12 @@ enum BudgetReportEngine {
                 == .orderedAscending
         }
         return BudgetReportSnapshot(
-            budget: budget, includedMonths: includedMonths, rows: rows, facts: report.facts
+            budget: budget, includedMonths: includedMonths, rows: rows, facts: planning.facts
         )
     }
 
     static func monthKey(_ date: Date, calendar: Calendar = .current) -> String {
-        let components = calendar.dateComponents([.year, .month], from: date)
-        return String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
+        BudgetPlanningEngine.monthKey(date, calendar: calendar)
     }
 
     private static func roundedBasisPoints(numerator: Int64, denominator: Int64) -> Int64 {
@@ -387,21 +550,6 @@ enum BudgetReportEngine {
         ).int64Value
     }
 
-    private static func hierarchyPath(
-        _ id: UUID, categoriesByID: [UUID: FinanceCategory]
-    ) -> String {
-        guard let category = categoriesByID[id] else { return "Nicht zugeordnet" }
-        var names = [category.name]
-        var current = category.parentID
-        var visited = Set([id])
-        while let currentID = current,
-              visited.insert(currentID).inserted,
-              let parent = categoriesByID[currentID] {
-            names.insert(parent.name, at: 0)
-            current = parent.parentID
-        }
-        return names.joined(separator: " › ")
-    }
 }
 
 struct ComparisonReportExportMetadata: Equatable, Sendable {
@@ -441,27 +589,34 @@ enum ComparisonReportCSVExporter {
     ) -> Data {
         var lines = metadataLines(metadata)
         lines.append("")
-        lines.append(csv(["Kategorie", "Art", "Plan", "Ist", "Abweichung",
-                          "Zielerreichung %", "Währung"]))
+        lines.append(csv(["Kategorie", "Art", "Plan", "Übertrag", "Verfügbar", "Ist",
+                          "Abweichung", "Zielerreichung %", "Währung"]))
         lines.append(contentsOf: snapshot.rows.map { row in
             csv([row.categoryPath, row.kind == .income ? "Einnahme" : "Ausgabe",
-                 decimal(row.plannedMinor), decimal(row.actualMinor),
+                 decimal(row.plannedMinor), decimal(row.rolloverMinor),
+                 decimal(row.effectivePlannedMinor), decimal(row.actualMinor),
                  decimal(row.varianceMinor), percent(row.completionBasisPoints), row.currency])
         })
         lines.append("")
-        lines.append(csv(["Gesamtsumme", "Art", "Plan", "Ist", "Abweichung",
-                          "Zielerreichung %", "Währung"]))
+        lines.append(csv(["Gesamtsumme", "Art", "Plan", "Übertrag", "Verfügbar", "Ist",
+                          "Abweichung", "Zielerreichung %", "Währung"]))
         lines.append(csv([
             "Gesamt", "Einnahmen", decimal(snapshot.plannedIncomeMinor),
+            decimal(snapshot.rolloverIncomeMinor), decimal(snapshot.effectiveIncomeMinor),
             decimal(snapshot.actualIncomeMinor),
-            decimal(snapshot.actualIncomeMinor - snapshot.plannedIncomeMinor), "",
+            decimal(snapshot.actualIncomeMinor - snapshot.effectiveIncomeMinor), "",
             snapshot.budget.currency.uppercased()
         ]))
         lines.append(csv([
             "Gesamt", "Ausgaben", decimal(snapshot.plannedExpenseMinor),
+            decimal(snapshot.rolloverExpenseMinor), decimal(snapshot.effectiveExpenseMinor),
             decimal(snapshot.actualExpenseMinor),
-            decimal(snapshot.actualExpenseMinor - snapshot.plannedExpenseMinor), "",
+            decimal(snapshot.actualExpenseMinor - snapshot.effectiveExpenseMinor), "",
             snapshot.budget.currency.uppercased()
+        ]))
+        lines.append(csv([
+            "Roll-over-Reserve", "", "", "", decimal(snapshot.rolloverReserveMinor),
+            "", "", "", snapshot.budget.currency.uppercased()
         ]))
         return data(lines)
     }
@@ -528,20 +683,29 @@ enum ComparisonReportPDFExporter {
         try data(
             rows: snapshot.rows.map { row in
                 [row.categoryPath, row.kind == .income ? "Einnahme" : "Ausgabe",
-                 money(row.plannedMinor, row.currency), money(row.actualMinor, row.currency),
-                 money(row.varianceMinor, row.currency), percent(row.completionBasisPoints),
-                 row.currency]
+                 money(row.plannedMinor, row.currency), money(row.rolloverMinor, row.currency),
+                 money(row.effectivePlannedMinor, row.currency),
+                 money(row.actualMinor, row.currency), money(row.varianceMinor, row.currency),
+                 percent(row.completionBasisPoints), row.currency]
             } + [
                 ["Gesamt", "Einnahmen", money(snapshot.plannedIncomeMinor, snapshot.budget.currency),
+                 money(snapshot.rolloverIncomeMinor, snapshot.budget.currency),
+                 money(snapshot.effectiveIncomeMinor, snapshot.budget.currency),
                  money(snapshot.actualIncomeMinor, snapshot.budget.currency),
-                 money(snapshot.actualIncomeMinor - snapshot.plannedIncomeMinor,
+                 money(snapshot.actualIncomeMinor - snapshot.effectiveIncomeMinor,
                        snapshot.budget.currency), "", snapshot.budget.currency.uppercased()],
                 ["Gesamt", "Ausgaben", money(snapshot.plannedExpenseMinor, snapshot.budget.currency),
+                 money(snapshot.rolloverExpenseMinor, snapshot.budget.currency),
+                 money(snapshot.effectiveExpenseMinor, snapshot.budget.currency),
                  money(snapshot.actualExpenseMinor, snapshot.budget.currency),
-                 money(snapshot.actualExpenseMinor - snapshot.plannedExpenseMinor,
-                       snapshot.budget.currency), "", snapshot.budget.currency.uppercased()]
+                 money(snapshot.actualExpenseMinor - snapshot.effectiveExpenseMinor,
+                       snapshot.budget.currency), "", snapshot.budget.currency.uppercased()],
+                ["Roll-over-Reserve", "", "", "",
+                 money(snapshot.rolloverReserveMinor, snapshot.budget.currency),
+                 "", "", "", snapshot.budget.currency.uppercased()]
             ],
-            headers: ["Kategorie", "Art", "Plan", "Ist", "Abweichung", "%", "Währung"],
+            headers: ["Kategorie", "Art", "Plan", "Übertrag", "Verfügbar", "Ist",
+                      "Abweichung", "%", "Währung"],
             metadata: metadata, orientation: orientation
         )
     }
