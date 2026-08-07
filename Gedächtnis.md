@@ -2325,3 +2325,45 @@ Rechtsberatung.
 - Telegram-Nachricht 1007 dokumentiert denselben Stand im gefundenen
   `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
   deshalb fehlenden Screenshot sowie den exakten Zielzählerstand 14.448.428.
+
+## 07.08.2026 – Gemeinsame Anhangsoberfläche für alle geforderten Fachakten
+
+- Die bisher buchungsspezifische SwiftUI-Darstellung wurde ohne Änderung des
+  geprüften Schema-32-Speichers in `AttachmentManagerView` zusammengeführt.
+  Dateiliste, Metadaten, Drag-and-drop, Dateiauswahl, Typinformation,
+  Bestätigung, SHA-256-Vorschau und Entfernen verwenden dadurch in allen
+  Fachmodulen exakt denselben Ablauf.
+- Die Komponente ist nun im Buchungseditor, im Editor eines bestehenden
+  Kontos, in der Vertragsdetailakte, in der Wertpapierdetailakte und in der
+  Inventardetailakte eingebunden. Sie lädt beim Zielwechsel neu und entfernt
+  veraltete Dialogziele. Zieltyp und UUID bilden einen stabilen AX-Identifier;
+  Öffnen und Entfernen enthalten für VoiceOver den vollständigen Dateinamen.
+- Ein neuer Integrationstest hängt denselben Originalbeleg gleichzeitig an
+  Konto, Vertrag, Wertpapier und Inventargegenstand. Er belegt vier getrennte,
+  korrekt ladbare Fachverknüpfungen bei genau einem BLOB und die physische
+  Entfernung erst nach Löschung der letzten Referenz.
+- Der vollständige Result-Bundle
+  `/tmp/FinanzVerwalter-AllAttachments-full-final.xcresult` enthält 112 Tests:
+  111 bestanden, der private opt-in-QIF-Test ohne Pfad planmäßig übersprungen,
+  0 Fehler und 0 erwartete Fehler. Debug-Build und `git diff --check` sind
+  ebenfalls ohne Befund.
+- Damit sind die im Master genannten Anhangsoberflächen für Konto, Buchung,
+  Vertrag, Wertpapier und Inventar vorhanden. Offene Anhänge-Themen sind jetzt
+  der offene Export, sichere Notizlinks und optionales OCR.
+- Der optimierte arm64-Release unter
+  `build/DerivedData-AllAttachments-Release` wurde streng signaturgeprüft.
+  Sein ausführbarer Code hat SHA-256
+  `e0fb32ec7dee787781d7801d3b944afc62861ec19052cc2639401c4d874b026d`.
+  Derselbe Stand ist unter `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` installiert; der Desktop-Link zeigt
+  weiterhin auf die Systeminstallation. Die Vorgänger liegen reversibel unter
+  `build/FinanzVerwalter-vor-alle-anhaenge-20260807-1245.app` und
+  `build/FinanzVerwalter-user-vor-alle-anhaenge-20260807-1245.app`.
+- Der echte Start läuft als Prozess 60755. Vor und nach der Installation
+  blieben Integrität `ok`, Schema 32, 97 Konten, 2.170 Buchungen, 782
+  Kategorien sowie 0 Anhangs-BLOBs und 0 Anhangsverknüpfungen identisch.
+- Die sichtbare Abnahme wurde mit der installierten App erneut versucht. Die
+  macOS-Sitzung ist weiterhin gesperrt und kann nicht automatisch entsperrt
+  werden; deshalb wurde weder ein Klickergebnis noch ein Screenshot
+  vorgetäuscht. Der exakte Zielzählerstand vor Commit und Veröffentlichung
+  beträgt 14.780.957 Tokens.

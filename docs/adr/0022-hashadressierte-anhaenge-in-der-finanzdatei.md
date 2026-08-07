@@ -31,8 +31,8 @@ verifiziert; die temporäre Datei erhält Rechte 0600 in einem Verzeichnis 0700.
 - SQLite-Online- und Vor-Migrations-Sicherungen enthalten alle Originalbelege.
 - Derselbe Inhalt belegt auch bei mehreren Zielobjekten nur einmal Speicher.
 - Ein korrupter oder manipulierter BLOB wird vor der Vorschau erkannt.
-- Die Buchungsoberfläche unterstützt Auswahl und Drag-and-drop bereits; die
-  Oberflächen für weitere Zieltypen verwenden später dasselbe Repository.
+- Eine gemeinsame Oberfläche unterstützt Auswahl und Drag-and-drop bei
+  Buchungen, Konten, Verträgen, Wertpapieren und Inventargegenständen.
 - OCR bleibt getrennt vom unveränderten Original vorgesehen, ist aber noch
   nicht implementiert.
 - Sehr große Belegbestände vergrößern die SQLite-Datei; die 50-MiB-Grenze und

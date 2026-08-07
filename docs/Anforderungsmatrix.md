@@ -28,11 +28,11 @@ fertigen Funktionsbereich.
 | P1 | Budgets | Erfüllt für lokalen Kern | Mehrere Budgets und freie Geschäftsjahre; atomare Jahreswerte; Basisplan, positiver oder positiver/negativer monatlicher Roll-over, verfügbarer Plan, Ist, Saldo und Reserve; splitkorrekter Drill-down; vollständige Kategoriepfade; Kopie, Folgejahr, Umbenennung und sicheres Löschen; identischer Plan/Ist-Bericht in Oberfläche, CSV, mehrseitigem PDF und Druck |
 | P1 | Wertpapiere und Depots | Teilweise | Stammdaten, Mikroeinheiten, FIFO-Lots, Allokation und Kurse; weitere Transaktionen, Lotmethoden, Performance und Import fehlen |
 | P1 | Kredite und Vermögen | Teilweise | Versionierte Zinsen, Sondertilgung, Tilgungsplan, Werte und Nettoanteil; automatische Ratensplits, Ist-Abgleich und Szenarien fehlen |
-| P1 | Verträge und Inventar | Teilweise | Stammdaten, Fristen, Kosten und Werte; der produktive Anhangsspeicher unterstützt diese Zieltypen im Repository, aber Verwaltungsoberfläche, Erinnerungsjobs und Export fehlen |
+| P1 | Verträge und Inventar | Teilweise | Stammdaten, Fristen, Kosten und Werte sowie produktive, sichere Mehrfachanhänge mit Dateiauswahl und Drag-and-drop in beiden Detailakten; Erinnerungsjobs und offener Export fehlen |
 | P1 | Freistellungsaufträge | Offen | Datenmodell, gesetzliche Regelpakete, Kontenzuordnung und Nutzung fehlen |
 | P2 | Planner, Sparziele, Vermietung, Geschäft | Offen | Optionale Module dürfen P0/P1 nicht blockieren |
 | Härtung | Mehrwährungen | Teilweise | Original- und Kontobetrag, ISO-Währungen, fester achtstelliger Kurs, ISO-Nachkommastellen, Banker's-Rundung, währungskorrekte Umbuchungen und getrennte Summen sind implementiert; historische Kursreihen, automatische Kursanbieter und frei definierbare Berichtsumrechnung fehlen |
-| Härtung | Anhänge/OCR | Teilweise | Schema 32: atomarer SHA-256-Store mit Deduplizierung, erlaubten Typen/Signaturprüfung, 50-MB-Grenze, Symlinkschutz, Scan-Hook, Backup-Roundtrip, Integritätsprüfung vor bestätigter Öffnung und UI/Drag-and-drop für Buchungen; UI für Konto/Vertrag/Wertpapier/Inventar, OCR, Notizlinks und offener Export fehlen |
+| Härtung | Anhänge/OCR | Teilweise | Schema 32: atomarer SHA-256-Store mit fachaktenübergreifender Deduplizierung, erlaubten Typen/Signaturprüfung, 50-MB-Grenze, Symlinkschutz, Scan-Hook, Backup-Roundtrip und Integritätsprüfung vor bestätigter Öffnung; gemeinsame UI mit Dateiauswahl, Drag-and-drop und semantischen Aktionen für Buchung, Konto, Vertrag, Wertpapier und Inventar vorhanden; OCR, Notizlinks und offener Export fehlen |
 | Härtung | Security/Privacy | Teilweise | Lokal, keine Telemetrie, keine TAN-Persistenz; Datenbankverschlüsselung, Keychain-Konzept, Sperre und Threat Model fehlen |
 | Härtung | Referenzdatensatz/Performance | Offen | Demo ist klein; 100.000-Buchungen-Ziele sind nicht gemessen |
 | Härtung | Accessibility/E2E | Teilweise | Stabile AX-Identifier und semantische Werte für Kontoblattfilter, Saldo, Haupt-/zweite-/Sammeltabelle, vollständige Zellwerte und getrennte Tabaktionen; der Kontextmonitor schützt Texteingabe und gibt Eingabe/Escape ohne Dialog frei; vollständige sichtbare Tastatur-, VoiceOver- und UI-Testabdeckung fehlt |
@@ -44,8 +44,7 @@ fertigen Funktionsbereich.
 
 1. Vollständige Kontoblatt- und neue Sicherungs-/Fremdwährungsdialoge per Tastatur,
    Accessibility und sichtbarer UI nach manuellem Entsperren abnehmen.
-2. Anhangsoberflächen für Konto, Vertrag, Wertpapier und Inventar sowie offenen
-   Export und optionales OCR ergänzen.
+2. Offenen Anhangsexport, sichere Notizlinks und optionales OCR ergänzen.
 3. Weitere fachliche Standardberichte und Diagramme ergänzen.
 4. Produktive FinTS-/PSD2-Adapter erst nach geklärter Provider-, Lizenz-,
    SCA-, Datenschutz- und Sicherheitsarchitektur.

@@ -7828,6 +7828,75 @@ final class FinanzVerwalterTests: XCTestCase {
         )
         XCTAssertTrue(try context.store.integrityCheck())
     }
+
+    func testSameAttachmentBlobLinksToAccountContractSecurityAndInventory() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Dokumentkonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let security = Security(
+            id: UUID(), name: "Dokumentwertpapier", shortName: "DOK",
+            isin: "", wkn: "", ticker: "DOK", type: .stock,
+            currency: "EUR", exchange: "Xetra", priceDecimals: 2,
+            allowsShort: false, isActive: true, note: ""
+        )
+        let contract = FinanceContract(
+            id: UUID(), provider: "Dokumentanbieter", contractNumber: "A-1",
+            name: "Dokumentvertrag", type: .insurance, startDate: .now,
+            initialTermMonths: 12, renewalMonths: 12,
+            cancellationNoticeDays: 30, amountMinor: 1_000,
+            frequency: .monthly, accountID: account.id, categoryID: nil,
+            reminderDays: 14, note: "", isActive: true
+        )
+        let inventory = InventoryItem(
+            id: UUID(), name: "Dokumentgegenstand", category: .electronics,
+            room: "Büro", purchaseDate: .now, purchasePriceMinor: 10_000,
+            currentValueMinor: 8_000, insuranceValueMinor: 10_000,
+            retailer: "", serialNumber: "DOK-1", warrantyEnd: nil,
+            note: "", isActive: true
+        )
+        try context.store.saveAccount(account)
+        try context.store.saveSecurity(security)
+        try context.store.saveContract(contract)
+        try context.store.saveInventoryItem(inventory)
+        let source = context.directory.appendingPathComponent("gemeinsam.txt")
+        let payload = Data("Ein Original für vier Fachakten".utf8)
+        try payload.write(to: source)
+
+        let targets: [(AttachmentEntityType, UUID)] = [
+            (.account, account.id),
+            (.contract, contract.id),
+            (.security, security.id),
+            (.inventory, inventory.id)
+        ]
+        var linked: [FinanceAttachment] = []
+        for (entityType, entityID) in targets {
+            linked.append(
+                try context.store.addAttachment(
+                    from: source, to: entityType, entityID: entityID
+                )
+            )
+            let values = try context.store.attachments(
+                entityType: entityType, entityID: entityID
+            )
+            XCTAssertEqual(values.count, 1)
+            XCTAssertEqual(values.first?.entityType, entityType)
+            XCTAssertEqual(values.first?.entityID, entityID)
+            XCTAssertEqual(values.first?.sha256, SHA256.hash(data: payload).hexString)
+        }
+        XCTAssertEqual(Set(linked.map(\.sha256)).count, 1)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"), 1)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_links"), 4)
+
+        for attachment in linked {
+            try context.store.removeAttachment(id: attachment.id)
+        }
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_blobs"), 0)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "SELECT COUNT(*) FROM attachment_links"), 0)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
 }
 
 private extension Digest {

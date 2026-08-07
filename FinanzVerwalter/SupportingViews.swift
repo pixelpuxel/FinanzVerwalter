@@ -3,6 +3,155 @@ import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct AttachmentManagerView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    let entityType: AttachmentEntityType
+    let entityID: UUID
+    var emptyText = "Noch keine Anhänge"
+    var icon = "paperclip"
+
+    @State private var attachments: [FinanceAttachment] = []
+    @State private var showImporter = false
+    @State private var pendingOpen: FinanceAttachment?
+    @State private var pendingRemoval: FinanceAttachment?
+    @State private var confirmOpen = false
+    @State private var confirmRemoval = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if attachments.isEmpty {
+                Label(emptyText, systemImage: icon)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(attachments) { attachment in
+                    HStack(spacing: 10) {
+                        Image(systemName: icon)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(attachment.fileName)
+                                .lineLimit(1)
+                            Text(
+                                "\(attachment.mimeType) · \(ByteCountFormatter.string(fromByteCount: attachment.byteCount, countStyle: .file))"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Öffnen") {
+                            pendingOpen = attachment
+                            confirmOpen = true
+                        }
+                        .accessibilityLabel("Anhang \(attachment.fileName) öffnen")
+                        Button(role: .destructive) {
+                            pendingRemoval = attachment
+                            confirmRemoval = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .help("Anhang entfernen")
+                        .accessibilityLabel("Anhang \(attachment.fileName) entfernen")
+                    }
+                }
+            }
+            Button("Datei hinzufügen …", systemImage: "paperclip.badge.plus") {
+                showImporter = true
+            }
+            Text(
+                "Erlaubt: PDF, PNG, JPEG, TXT, CSV, QIF und XML bis 50 MB. "
+                    + "Dateien können auch hierher gezogen werden; vor dem Öffnen wird SHA-256 erneut geprüft."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier(
+            "attachments.\(entityType.rawValue).\(entityID.uuidString)"
+        )
+        .contentShape(Rectangle())
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            return importAttachment(url)
+        }
+        .onAppear(perform: reload)
+        .onChange(of: entityID) {
+            pendingOpen = nil
+            pendingRemoval = nil
+            reload()
+        }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: allowedAttachmentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                _ = importAttachment(url)
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        .confirmationDialog(
+            "Anhang sicher öffnen?",
+            isPresented: $confirmOpen,
+            titleVisibility: .visible
+        ) {
+            Button("Nach SHA-256-Prüfung öffnen") {
+                guard let pendingOpen,
+                      let url = store.attachmentPreviewURL(pendingOpen) else { return }
+                NSWorkspace.shared.open(url)
+                self.pendingOpen = nil
+            }
+            Button("Abbrechen", role: .cancel) { pendingOpen = nil }
+        } message: {
+            if let pendingOpen {
+                Text(
+                    "„\(pendingOpen.fileName)“ wird als lokale Vorschau an die für diesen Dateityp registrierte App übergeben."
+                )
+            }
+        }
+        .confirmationDialog(
+            "Anhang wirklich entfernen?",
+            isPresented: $confirmRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Anhang entfernen", role: .destructive) {
+                guard let pendingRemoval else { return }
+                if store.removeAttachment(pendingRemoval) {
+                    attachments.removeAll { $0.id == pendingRemoval.id }
+                }
+                self.pendingRemoval = nil
+            }
+            Button("Abbrechen", role: .cancel) { pendingRemoval = nil }
+        } message: {
+            if let pendingRemoval {
+                Text("„\(pendingRemoval.fileName)“ wird aus dieser Finanzdatei entfernt.")
+            }
+        }
+    }
+
+    private var allowedAttachmentTypes: [UTType] {
+        ["pdf", "png", "jpg", "jpeg", "txt", "csv", "qif", "xml"]
+            .map {
+                UTType(filenameExtension: $0)
+                    ?? UTType(importedAs: "de.pixelpuxel.attachment.\($0)")
+            }
+    }
+
+    private func reload() {
+        attachments = store.attachments(
+            entityType: entityType, entityID: entityID
+        )
+    }
+
+    private func importAttachment(_ url: URL) -> Bool {
+        guard store.addAttachment(
+            from: url, to: entityType, entityID: entityID
+        ) else { return false }
+        reload()
+        return true
+    }
+}
+
 struct CockpitView: View {
     @EnvironmentObject private var store: FinanceAppStore
 
@@ -416,6 +565,16 @@ struct AccountEditorView: View {
                     Toggle("Im Budget berücksichtigen", isOn: $includeBudget)
                     Toggle("In Berichten berücksichtigen", isOn: $includeReports)
                     Toggle("In der Prognose berücksichtigen", isOn: $includeForecast)
+                }
+                if let account {
+                    Section("Dokumente") {
+                        AttachmentManagerView(
+                            entityType: .account,
+                            entityID: account.id,
+                            emptyText: "Noch keine Kontodokumente",
+                            icon: "doc.text"
+                        )
+                    }
                 }
             }
             HStack {
@@ -9373,6 +9532,15 @@ struct InvestmentsView: View {
                                 }
                                 .font(.caption)
                             }
+                            GroupBox("Dokumente") {
+                                AttachmentManagerView(
+                                    entityType: .security,
+                                    entityID: selectedSecurity.id,
+                                    emptyText: "Noch keine Wertpapierdokumente",
+                                    icon: "doc.text"
+                                )
+                            }
+                            .padding(.top, 6)
                         }
                         .padding(12)
                     }
@@ -10404,11 +10572,12 @@ struct ContractsView: View {
                     }
                 }
                 GroupBox("Dokumente") {
-                    Label(
-                        "Dokumentmetadaten sind vorbereitet; die sichere Dateiauswahl folgt im Anhangsmodul.",
-                        systemImage: "paperclip"
+                    AttachmentManagerView(
+                        entityType: .contract,
+                        entityID: contract.id,
+                        emptyText: "Noch keine Vertragsdokumente",
+                        icon: "doc.text"
                     )
-                    .foregroundStyle(.secondary)
                 }
             }
             .padding(20)
@@ -10653,11 +10822,12 @@ struct InventoryView: View {
                     }
                 }
                 GroupBox("Fotos & Belege") {
-                    Label(
-                        "Anhangsmetadaten sind vorbereitet; die sichere Dateiauswahl folgt im Anhangsmodul.",
-                        systemImage: "photo.on.rectangle"
+                    AttachmentManagerView(
+                        entityType: .inventory,
+                        entityID: item.id,
+                        emptyText: "Noch keine Fotos oder Belege",
+                        icon: "photo.on.rectangle"
                     )
-                    .foregroundStyle(.secondary)
                 }
             }
             .padding(20)

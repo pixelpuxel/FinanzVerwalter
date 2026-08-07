@@ -151,12 +151,16 @@ erneut und erzeugt erst dann eine nur für den Benutzer les- und schreibbare
 lokale Vorschau. Ein injizierbarer Scan-Hook kann den Import vor dem Commit
 abbrechen.
 
+Dieselbe Anhangsoberfläche steht außerdem im Editor eines bestehenden Kontos
+und in den Detailakten von Verträgen, Wertpapieren und Inventargegenständen
+bereit. Ein identischer Originalbeleg wird auch über diese verschiedenen
+Fachakten hinweg nur einmal gespeichert. Jeder Bereich besitzt einen stabilen
+Accessibility-Bezeichner und semantisch beschriftete Öffnen-/Entfernen-Aktionen.
+
 Beim Undo einer neu angelegten Buchung werden ihre Anhänge und nicht mehr
 referenzierte Inhalte gemeinsam entfernt. Wird eine gelöschte Buchung
-zurückgeholt, bleibt ihre Belegverknüpfung erhalten. Oberflächen für Anhänge an
-Konten, Verträgen, Wertpapieren und Inventargegenständen, OCR und ein offener
-Anhangsexport folgen noch; das persistente Modell unterstützt diese Zieltypen
-bereits.
+zurückgeholt, bleibt ihre Belegverknüpfung erhalten. OCR, sichere Notizlinks
+und ein offener Anhangsexport folgen noch.
 
 Kontoblatt, zweites Kontoblatt und Sammelkontoblatt besitzen stabile
 Accessibility-Bezeichner. VoiceOver erhält für jede dynamische Zelle den

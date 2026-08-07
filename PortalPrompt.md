@@ -1408,3 +1408,15 @@ Backup-Roundtrip, Vorschauinhalt und 0600, Entfernung der letzten Referenz,
 unzulässige Endung, falsche Magic Bytes, Symlink, 50-MiB-Grenze, fehlendes
 Ziel, Scan-Abbruch ohne Teilwirkung, manipulierten gespeicherten Inhalt,
 31→32-Migration, Zukunftsschema, beide Undo-Randfälle und SQLite-Integrität.
+
+Extrahiere die Anhangszeilen anschließend in eine gemeinsame SwiftUI-
+Komponente. Verwende sie unverändert im Editor einer bestehenden Buchung und
+eines bestehenden Kontos sowie in den Detailakten eines ausgewählten Vertrags,
+Wertpapiers und Inventargegenstands. Die Komponente lädt beim Erscheinen und
+bei einem Zielwechsel neu, verwirft dabei ausstehende Öffnen-/Löschziele und
+besitzt einen stabilen Accessibility-Bezeichner aus Zieltyp und UUID.
+Beschrifte Öffnen und Entfernen jeweils mit dem vollständigen Dateinamen für
+VoiceOver. Prüfe mit einem Integrationstest, dass derselbe Originalinhalt an
+allen vier zusätzlichen Zieltypen genau einen BLOB und vier getrennte Links
+erzeugt, je Fachakte korrekt geladen wird und nach Entfernung der letzten
+Referenz vollständig verschwindet.
