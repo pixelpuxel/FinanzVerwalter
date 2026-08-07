@@ -57,6 +57,67 @@ enum AutomaticBackupPreferences {
     }
 }
 
+enum FinanceFilePreferences {
+    static let lastFilePathKey = "lastFinanceFilePath"
+    static let recentFilePathsKey = "recentFinanceFilePaths"
+
+    static func lastFileURL(from defaults: UserDefaults = .standard) -> URL? {
+        guard let path = defaults.string(forKey: lastFilePathKey), !path.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: path).standardizedFileURL
+    }
+
+    static func recentFileURLs(
+        from defaults: UserDefaults = .standard,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        let paths = defaults.stringArray(forKey: recentFilePathsKey) ?? []
+        var seen = Set<String>()
+        return paths.compactMap { path in
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard seen.insert(url.path).inserted,
+                  isRegularDirectFile(url, fileManager: fileManager)
+            else { return nil }
+            return url
+        }
+    }
+
+    static func record(
+        _ url: URL,
+        in defaults: UserDefaults = .standard
+    ) -> [URL] {
+        let normalized = url.standardizedFileURL
+        let existing = recentFileURLs(from: defaults).filter {
+            $0.path != normalized.path
+        }
+        let recent = Array(([normalized] + existing).prefix(10))
+        defaults.set(normalized.path, forKey: lastFilePathKey)
+        defaults.set(recent.map(\.path), forKey: recentFilePathsKey)
+        return recent
+    }
+
+    static func validatedName(_ rawName: String) -> String? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.utf8.count <= 120,
+              name.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else { return nil }
+        return name
+    }
+
+    static func isRegularDirectFile(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard fileManager.fileExists(atPath: url.path) else { return false }
+        let values = try? url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        return values?.isRegularFile == true && values?.isSymbolicLink != true
+    }
+}
+
 enum AutomaticBackupManager {
     static let filePrefix = "FinanzVerwalter-Autosicherung-"
 
@@ -284,12 +345,21 @@ final class FinanceAppStore: ObservableObject {
     @Published var isBusy = false
     @Published private(set) var automaticBackupStatusText = "Autosicherung noch nicht geprüft"
     @Published private(set) var registerSearchIndex = RegisterSearchIndex.empty
+    @Published private(set) var recentFinanceFileURLs: [URL] = []
 
     private var repository: SQLiteFinanceStore?
     private var registerSearchIndexTask: Task<Void, Never>?
     private var registerSearchIndexGeneration = UUID()
+    private let preferences: UserDefaults
 
-    init(repository: SQLiteFinanceStore? = nil) {
+    init(
+        repository: SQLiteFinanceStore? = nil,
+        preferences: UserDefaults = .standard
+    ) {
+        self.preferences = preferences
+        recentFinanceFileURLs = FinanceFilePreferences.recentFileURLs(
+            from: preferences
+        )
         let arguments = ProcessInfo.processInfo.arguments
         let isReferenceDemo = arguments.contains("-reference-demo")
         let isDemo = arguments.contains("-demo") || isReferenceDemo
@@ -317,7 +387,13 @@ final class FinanceAppStore: ObservableObject {
                     )
                 self.repository = try SQLiteFinanceStore(fileURL: testHostURL)
             } else {
-                self.repository = try SQLiteFinanceStore()
+                let remembered = FinanceFilePreferences.lastFileURL(
+                    from: preferences
+                )
+                let target = remembered.flatMap { url in
+                    FinanceFilePreferences.isRegularDirectFile(url) ? url : nil
+                } ?? SQLiteFinanceStore.defaultFileURL()
+                self.repository = try SQLiteFinanceStore(fileURL: target)
             }
             try load()
             if isDemo, accounts.isEmpty {
@@ -331,10 +407,130 @@ final class FinanceAppStore: ObservableObject {
             if shouldRunAutomaticBackup {
                 _ = createAutomaticBackup()
             }
+            if repository == nil, !isDemo,
+               ProcessInfo.processInfo.environment[
+                   "XCTestConfigurationFilePath"
+               ] == nil,
+               let fileURL = self.repository?.fileURL {
+                recentFinanceFileURLs = FinanceFilePreferences.record(
+                    fileURL, in: preferences
+                )
+            }
         } catch {
             self.repository = nil
             errorMessage = error.localizedDescription
             statusText = "Finanzdatei konnte nicht geöffnet werden"
+        }
+    }
+
+    var currentFinanceFileURL: URL? { repository?.fileURL }
+
+    @discardableResult
+    func openFinanceFile(at rawURL: URL) -> Bool {
+        let url = rawURL.standardizedFileURL
+        guard url.pathExtension.lowercased() == "qdata" else {
+            errorMessage = "Finanzdateien müssen die Endung .qdata besitzen."
+            return false
+        }
+        do {
+            let values = try url.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw FinanceError.database(
+                    "Die gewählte Finanzdatei ist keine reguläre, direkte Datei."
+                )
+            }
+            if repository?.fileURL.standardizedFileURL.path == url.path {
+                try load()
+                errorMessage = nil
+                statusText = "Finanzdatei aktualisiert: \(url.lastPathComponent)"
+                return true
+            }
+            let candidate = try SQLiteFinanceStore(fileURL: url)
+            return switchFinanceFile(
+                to: candidate,
+                successText: "Finanzdatei geöffnet: \(url.lastPathComponent)"
+            )
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func createFinanceFile(at rawURL: URL, name rawName: String) -> Bool {
+        let url = rawURL.standardizedFileURL
+        guard url.pathExtension.lowercased() == "qdata" else {
+            errorMessage = "Neue Finanzdateien müssen die Endung .qdata besitzen."
+            return false
+        }
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = "Am gewählten Ort existiert bereits eine Datei."
+            return false
+        }
+        guard let name = FinanceFilePreferences.validatedName(rawName) else {
+            errorMessage = "Der Name der Finanzdatei fehlt, enthält Steuerzeichen oder ist länger als 120 Zeichen."
+            return false
+        }
+        do {
+            let parentValues = try url.deletingLastPathComponent().resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            )
+            guard parentValues.isDirectory == true,
+                  parentValues.isSymbolicLink != true else {
+                throw FinanceError.database(
+                    "Der Zielordner ist kein regulärer, direkter Ordner."
+                )
+            }
+            let candidate = try SQLiteFinanceStore(fileURL: url)
+            do {
+                try candidate.renameFinanceFile(name)
+                return switchFinanceFile(
+                    to: candidate,
+                    successText: "Neue Finanzdatei angelegt: \(url.lastPathComponent)"
+                )
+            } catch {
+                candidate.close()
+                throw error
+            }
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    private func switchFinanceFile(
+        to candidate: SQLiteFinanceStore,
+        successText: String
+    ) -> Bool {
+        guard let previous = repository else {
+            candidate.close()
+            return false
+        }
+        guard createAutomaticBackup(force: true) != nil else {
+            candidate.close()
+            return false
+        }
+        repository = candidate
+        selectedAccountID = nil
+        searchText = ""
+        do {
+            try load()
+            previous.close()
+            recentFinanceFileURLs = FinanceFilePreferences.record(
+                candidate.fileURL, in: preferences
+            )
+            errorMessage = nil
+            statusText = successText
+            NotificationCenter.default.post(name: .financeFileDidChange, object: nil)
+            return true
+        } catch {
+            repository = previous
+            candidate.close()
+            try? load()
+            present(error)
+            return false
         }
     }
 

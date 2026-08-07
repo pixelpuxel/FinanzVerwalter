@@ -50,6 +50,15 @@ Der normale Start verwendet die lokale Finanzdatei:
 
 `~/Library/Application Support/FinanzVerwalter/Meine Finanzen.qdata`
 
+Über `Ablage › Neue Finanzdatei …` (`⇧⌘N`) und
+`Ablage › Finanzdatei öffnen …` (`⌘O`) können mehrere vollständig getrennte
+`.qdata`-Dateien geführt werden. Vor jedem Wechsel sichert FinanzVerwalter die
+aktuelle Datei per SQLite-Online-Backup, schließt offene Editoren und lädt den
+neuen Datenbestand vollständig. Das Menü „Zuletzt verwendete Finanzdateien“
+merkt höchstens zehn vorhandene Dateien; beim nächsten normalen Start wird die
+zuletzt verwendete reguläre Datei geöffnet. Symlinks, falsche Dateiendungen,
+beschädigte Dateien und vorhandene Ziele beim Neuanlegen werden abgewiesen.
+
 Der opt-in-Leistungstest erweitert denselben Datensatz auf 100.000 Buchungen.
 Lege dafür ausschließlich für den Test die Datei
 `/tmp/finanzverwalter-run-large-performance-tests` an und starte gezielt

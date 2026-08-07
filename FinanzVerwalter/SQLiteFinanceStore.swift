@@ -2121,6 +2121,29 @@ final class SQLiteFinanceStore {
         return result
     }
 
+    func renameFinanceFile(_ rawName: String) throws {
+        guard let name = FinanceFilePreferences.validatedName(rawName) else {
+            throw FinanceError.database(
+                "Der Name der Finanzdatei fehlt, enthält Steuerzeichen oder ist länger als 120 Zeichen."
+            )
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                "UPDATE finance_files SET name=?,updated_at=?,version=version+1 WHERE id=?",
+                [.text(name), .text(now), .text(info.id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Der Finanzdatei-Kopf konnte nicht aktualisiert werden.")
+            }
+            try audit(
+                entity: "finance-file", id: info.id,
+                action: "rename", details: name
+            )
+        }
+    }
+
     func accounts() throws -> [FinanceAccount] {
         var values: [FinanceAccount] = []
         try query(

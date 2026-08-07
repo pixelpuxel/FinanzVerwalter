@@ -1927,3 +1927,34 @@ Saldo-Stichtag und Schließdatum in die globale Kontenblattsuche auf. Teste
 38→39-Migration mit unverändertem Bestandskonto, vollständigen Rundlauf,
 Suchtext, ungültige BLZ, Selbst-/Fremdreferenz, Datumsfolgen,
 Zukunftsschema-Schutz und SQLite-Integrität.
+
+# Mehrere unabhängige Finanzdateien
+
+Ergänze native Ablagebefehle für `Neue Finanzdatei …` mit `⇧⌘N`,
+`Finanzdatei öffnen …` mit `⌘O` und ein dynamisches Menü der höchstens zehn
+zuletzt verwendeten Dateien. Finanzdateien tragen zwingend die Endung
+`.qdata`. Öffne nur vorhandene reguläre, nicht symbolische Dateien. Beim
+Neuanlegen muss das Ziel fehlen und sein Elternordner ein reales, nicht
+symbolisches Verzeichnis sein; erzeuge niemals einen stillen Ersatz.
+
+Validiere den vom Dateinamen abgeleiteten Anzeigenamen vor dem Anlegen:
+getrimmt, nicht leer, höchstens 120 UTF-8-Bytes und ohne Steuerzeichen. Vor
+jedem Wechsel ist eine erzwungene SQLite-Online-Sicherung der bisherigen
+Datei Pflicht. Konstruiere und migriere die neue Repository-Instanz zunächst
+als Kandidat. Erst danach ersetze die aktive Referenz, lade sämtliche
+publizierten Sammlungen neu, verwerfe Kontoauswahl und Suche, schließe offene
+Editoren und schließe die alte Verbindung. Falls Öffnen oder Laden scheitert,
+bleiben alte Repository-Instanz, Daten und Auswahl der aktiven Datei erhalten.
+
+Speichere den kanonischen Pfad der zuletzt erfolgreichen Datei und eine
+deduplizierte MRU-Liste mit höchstens zehn noch vorhandenen Dateien in
+`UserDefaults`. Öffne beim normalen Start die zuletzt verwendete Datei nur,
+wenn sie weiterhin eine reguläre direkte Datei ist; verwende andernfalls die
+Standarddatei. Demo- und Teststarts verändern diese Präferenz nicht. Zeige im
+Statusbereich den Namen und als Hilfetext den vollständigen Pfad.
+
+Teste mit zwei realen temporären SQLite-Dateien, dass Konten strikt getrennt
+bleiben, Wechsel in beide Richtungen, Dateikopf, MRU-Reihenfolge und erzwungene
+Sicherung funktionieren. Teste außerdem beschädigte Datei, Symlink, falsche
+Endung, vorhandenes Neuziel und ungültigen Namen; bei allen Fehlern muss der
+ursprüngliche Datenbestand aktiv und unverändert bleiben.

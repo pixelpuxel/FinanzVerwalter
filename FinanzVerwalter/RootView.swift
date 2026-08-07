@@ -140,6 +140,7 @@ struct RootView: View {
             Divider()
             HStack {
                 Label(store.fileInfo?.name ?? "Keine Finanzdatei", systemImage: "internaldrive")
+                    .help(store.currentFinanceFileURL?.path ?? "")
                 Spacer()
                 Text("\(store.filteredTransactions.count) Buchungen")
                 Divider().frame(height: 14)
@@ -193,6 +194,14 @@ struct RootView: View {
             showNewTransaction = false
             showTransfer = false
             showReconciliation = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .financeFileDidChange)) { _ in
+            showNewAccount = false
+            showNewTransaction = false
+            showTransfer = false
+            showReconciliation = false
+            reportLaunchQuery = nil
+            selectedSection = .cockpit
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .openTransactionReport)

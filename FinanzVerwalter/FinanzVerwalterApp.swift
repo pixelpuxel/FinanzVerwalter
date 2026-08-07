@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case light
@@ -79,6 +80,28 @@ struct FinanzVerwalterApp: App {
                     shortcuts.binding(for: .newTransaction).key.equivalent,
                     modifiers: shortcuts.binding(for: .newTransaction).eventModifiers
                 )
+                Divider()
+                Button("Neue Finanzdatei …") {
+                    createFinanceFile()
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Finanzdatei öffnen …") {
+                    openFinanceFile()
+                }
+                .keyboardShortcut("o", modifiers: .command)
+                Menu("Zuletzt verwendete Finanzdateien") {
+                    if store.recentFinanceFileURLs.isEmpty {
+                        Text("Keine zuletzt verwendeten Dateien")
+                    } else {
+                        ForEach(store.recentFinanceFileURLs, id: \.path) { url in
+                            Button(url.lastPathComponent) {
+                                prepareForFinanceFileChange()
+                                _ = store.openFinanceFile(at: url)
+                            }
+                            .help(url.path)
+                        }
+                    }
+                }
             }
             CommandMenu("Finanzen") {
                 Button("Suchen") {
@@ -141,6 +164,43 @@ struct FinanzVerwalterApp: App {
             }
         }
     }
+
+    private var financeFileType: UTType {
+        UTType(filenameExtension: "qdata") ?? .data
+    }
+
+    private func prepareForFinanceFileChange() {
+        NotificationCenter.default.post(name: .cancelCurrentEditor, object: nil)
+    }
+
+    private func openFinanceFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Finanzdatei öffnen"
+        panel.prompt = "Öffnen"
+        panel.allowedContentTypes = [financeFileType]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        prepareForFinanceFileChange()
+        _ = store.openFinanceFile(at: url)
+    }
+
+    private func createFinanceFile() {
+        let panel = NSSavePanel()
+        panel.title = "Neue Finanzdatei anlegen"
+        panel.prompt = "Anlegen"
+        panel.allowedContentTypes = [financeFileType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Neue Finanzen.qdata"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "qdata" {
+            url.appendPathExtension("qdata")
+        }
+        let displayName = url.deletingPathExtension().lastPathComponent
+        prepareForFinanceFileChange()
+        _ = store.createFinanceFile(at: url, name: displayName)
+    }
 }
 
 extension Notification.Name {
@@ -172,5 +232,8 @@ extension Notification.Name {
     )
     static let openAccountBanking = Notification.Name(
         "FinanzVerwalter.openAccountBanking"
+    )
+    static let financeFileDidChange = Notification.Name(
+        "FinanzVerwalter.financeFileDidChange"
     )
 }
