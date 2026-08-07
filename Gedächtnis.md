@@ -2422,3 +2422,11 @@ Rechtsberatung.
   werden; deshalb wurde weder ein Klickergebnis noch ein Screenshot
   vorgetäuscht. Der exakte Zielzählerstand vor Commit und Veröffentlichung
   beträgt 15.158.044 Tokens.
+- Implementierung und Tests wurden als Commit `5a04e2b`, die reproduzierbare
+  Dokumentation als Commit `3ee19d7` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 trägt nun
+  den Titel `FinanzVerwalter: Konten, Zahlungsverkehr, Berichte, Undo und
+  sichere Belege` und enthält den 114-Test- sowie Release-Nachweis.
+- Telegram-Nachricht 1011 dokumentiert denselben Stand im gefundenen
+  `/quicken`-Thread 894. Sie nennt transparent die gesperrte Sitzung und den
+  deshalb fehlenden Screenshot sowie den exakten Zielzählerstand 15.175.982.
