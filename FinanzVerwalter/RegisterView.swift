@@ -54,6 +54,10 @@ struct RegisterView: View {
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
     @AppStorage("registerF3FieldV1")
     private var f3FieldRaw = RegisterF3Field.payee.rawValue
+    @AppStorage("registerSortColumnV1")
+    private var sortColumnRaw = RegisterColumn.date.rawValue
+    @AppStorage("registerSortAscendingV1")
+    private var sortAscending = true
     @AppStorage("registerQuickEntryVisibleV1")
     private var showQuickEntry = true
 
@@ -92,7 +96,7 @@ struct RegisterView: View {
     }
 
     private var visibleTransactions: [FinanceTransaction] {
-        store.filteredTransactions.filter { transaction in
+        let filtered = store.filteredTransactions.filter { transaction in
             let statusMatches = statusFilter == nil || transaction.status == statusFilter
             let categoryMatches: Bool
             switch categoryFilter {
@@ -117,6 +121,31 @@ struct RegisterView: View {
                 customEnd: customEnd
             )
         }
+        let runningBalances = store.runningBalances(
+            accountID: store.selectedAccountID
+        )
+        let labels = Dictionary(uniqueKeysWithValues: filtered.map { value in
+            (
+                value.id,
+                RegisterSortLabels(
+                    account: store.accountName(value.accountID),
+                    category: store.transactionCategoryPath(value),
+                    tags: value.tagIDs.map(store.tagPath)
+                        .sorted {
+                            $0.localizedCaseInsensitiveCompare($1)
+                                == .orderedAscending
+                        }
+                        .joined(separator: ", ")
+                )
+            )
+        })
+        return RegisterSorter.sorted(
+            filtered,
+            by: RegisterColumn(rawValue: sortColumnRaw) ?? .date,
+            ascending: sortAscending,
+            runningBalances: runningBalances,
+            labels: labels
+        )
     }
 
     var body: some View {
@@ -221,6 +250,50 @@ struct RegisterView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 175)
                 .accessibilityIdentifier("register.rowMode")
+                Menu {
+                    Picker(
+                        "Sortieren nach",
+                        selection: Binding(
+                            get: {
+                                RegisterColumn(rawValue: sortColumnRaw) ?? .date
+                            },
+                            set: {
+                                sortColumnRaw = $0.rawValue
+                                selectedSavedViewID = nil
+                            }
+                        )
+                    ) {
+                        ForEach(RegisterColumn.allCases) { column in
+                            Text(column.title).tag(column)
+                        }
+                    }
+                    Divider()
+                    Picker(
+                        "Richtung",
+                        selection: Binding(
+                            get: { sortAscending },
+                            set: {
+                                sortAscending = $0
+                                selectedSavedViewID = nil
+                            }
+                        )
+                    ) {
+                        Text("Aufsteigend").tag(true)
+                        Text("Absteigend").tag(false)
+                    }
+                } label: {
+                    Label(
+                        "Sortierung",
+                        systemImage: sortAscending
+                            ? "arrow.up.arrow.down.square"
+                            : "arrow.down.arrow.up.square"
+                    )
+                }
+                .help(
+                    "Sortiert nach \((RegisterColumn(rawValue: sortColumnRaw) ?? .date).title) "
+                        + (sortAscending ? "aufsteigend" : "absteigend")
+                )
+                .accessibilityIdentifier("register.sortMenu")
                 registerViewMenu
                 transactionTemplateMenu
                 registerOutputMenu(runningBalances: runningBalances)
@@ -488,7 +561,7 @@ struct RegisterView: View {
                     .font(.title2.bold())
                 Text(
                     "Gespeichert werden Konto, Filter, Zeitraum, Zeilenmodus "
-                        + "und die sichtbaren Spalten."
+                        + "Sortierung und die sichtbaren Spalten."
                 )
                 .foregroundStyle(.secondary)
                 TextField("Name der Ansicht", text: $savedViewName)
@@ -1408,7 +1481,9 @@ struct RegisterView: View {
             customStart: customStart,
             customEnd: customEnd,
             rowModeRawValue: rowMode.rawValue,
-            visibleColumns: visibleColumns
+            visibleColumns: visibleColumns,
+            sortColumnRawValue: sortColumnRaw,
+            sortAscending: sortAscending
         )
         var values = savedViews.filter { $0.id != id }
         values.append(view)
@@ -1448,6 +1523,10 @@ struct RegisterView: View {
         customEnd = view.customEnd
         rowMode = RegisterRowMode(rawValue: view.rowModeRawValue) ?? .single
         visibleColumns = view.visibleColumns
+        sortColumnRaw = RegisterColumn(
+            rawValue: view.sortColumnRawValue ?? ""
+        )?.rawValue ?? RegisterColumn.date.rawValue
+        sortAscending = view.sortAscending ?? true
         selectedSavedViewID = view.id
         selection.removeAll()
     }

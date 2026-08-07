@@ -76,6 +76,103 @@ enum RegisterAccessibility {
     }
 }
 
+struct RegisterSortLabels: Equatable, Sendable {
+    var account: String
+    var category: String
+    var tags: String
+}
+
+enum RegisterSorter {
+    static func sorted(
+        _ transactions: [FinanceTransaction],
+        by column: RegisterColumn,
+        ascending: Bool,
+        runningBalances: [UUID: Int64],
+        labels: [UUID: RegisterSortLabels]
+    ) -> [FinanceTransaction] {
+        transactions.sorted { left, right in
+            let comparison = compare(
+                left,
+                right,
+                column: column,
+                runningBalances: runningBalances,
+                labels: labels
+            )
+            if comparison != .orderedSame {
+                return ascending
+                    ? comparison == .orderedAscending
+                    : comparison == .orderedDescending
+            }
+            if left.bookingDate != right.bookingDate {
+                return left.bookingDate < right.bookingDate
+            }
+            return left.id.uuidString < right.id.uuidString
+        }
+    }
+
+    private static func compare(
+        _ left: FinanceTransaction,
+        _ right: FinanceTransaction,
+        column: RegisterColumn,
+        runningBalances: [UUID: Int64],
+        labels: [UUID: RegisterSortLabels]
+    ) -> ComparisonResult {
+        switch column {
+        case .date:
+            compare(left.bookingDate, right.bookingDate)
+        case .valueDate:
+            compare(
+                left.valueDate ?? left.bookingDate,
+                right.valueDate ?? right.bookingDate
+            )
+        case .reference:
+            compare(left.reference, right.reference)
+        case .status:
+            compare(statusRank(left.status), statusRank(right.status))
+        case .payee:
+            compare(left.payee, right.payee)
+        case .purpose:
+            compare(left.purpose, right.purpose)
+        case .category:
+            compare(labels[left.id]?.category ?? "", labels[right.id]?.category ?? "")
+        case .tags:
+            compare(labels[left.id]?.tags ?? "", labels[right.id]?.tags ?? "")
+        case .account:
+            compare(labels[left.id]?.account ?? "", labels[right.id]?.account ?? "")
+        case .amount:
+            compare(left.amountMinor, right.amountMinor)
+        case .balance:
+            compare(
+                runningBalances[left.id] ?? 0,
+                runningBalances[right.id] ?? 0
+            )
+        }
+    }
+
+    private static func compare<T: Comparable>(
+        _ left: T, _ right: T
+    ) -> ComparisonResult {
+        if left < right { return .orderedAscending }
+        if left > right { return .orderedDescending }
+        return .orderedSame
+    }
+
+    private static func compare(
+        _ left: String, _ right: String
+    ) -> ComparisonResult {
+        left.compare(
+            right,
+            options: [.caseInsensitive, .diacriticInsensitive, .numeric],
+            range: nil,
+            locale: Locale(identifier: "de_DE")
+        )
+    }
+
+    private static func statusRank(_ status: TransactionStatus) -> Int {
+        TransactionStatus.allCases.firstIndex(of: status) ?? Int.max
+    }
+}
+
 enum RegisterClipboard {
     static func tsv(
         transaction: FinanceTransaction,
@@ -235,6 +332,8 @@ struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var customEnd: Date
     var rowModeRawValue: String
     var visibleColumns: Set<RegisterColumn>
+    var sortColumnRawValue: String? = nil
+    var sortAscending: Bool? = nil
 }
 
 struct SavedCombinedRegisterView: Identifiable, Codable, Equatable, Sendable {

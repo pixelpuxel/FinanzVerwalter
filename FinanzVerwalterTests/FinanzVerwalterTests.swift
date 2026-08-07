@@ -7712,7 +7712,9 @@ final class FinanzVerwalterTests: XCTestCase {
             customStart: Date(timeIntervalSince1970: 1_704_067_200),
             customEnd: Date(timeIntervalSince1970: 1_735_603_199),
             rowModeRawValue: "twoLines",
-            visibleColumns: columns
+            visibleColumns: columns,
+            sortColumnRawValue: RegisterColumn.category.rawValue,
+            sortAscending: false
         )
         let encodedViews = try RegisterPreferencesCodec.encodeViews([view])
         let restored = try XCTUnwrap(
@@ -7726,9 +7728,153 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(restored.periodRawValue, view.periodRawValue)
         XCTAssertEqual(restored.rowModeRawValue, view.rowModeRawValue)
         XCTAssertEqual(restored.visibleColumns, columns)
+        XCTAssertEqual(restored.sortColumnRawValue, RegisterColumn.category.rawValue)
+        XCTAssertEqual(restored.sortAscending, false)
+        XCTAssertNil(
+            RegisterPreferencesCodec.decodeViews(oldViews).first?.sortColumnRawValue
+        )
+        XCTAssertNil(
+            RegisterPreferencesCodec.decodeViews(oldViews).first?.sortAscending
+        )
         XCTAssertTrue(
             RegisterPreferencesCodec.decodeViews("{nicht-json").isEmpty
         )
+    }
+
+    func testRegisterSorterUsesCompleteLabelsAmountsBalancesAndStableTies() throws {
+        let accountID = UUID()
+        func transaction(
+            id: String,
+            day: TimeInterval,
+            payee: String,
+            amount: Int64,
+            status: TransactionStatus
+        ) -> FinanceTransaction {
+            FinanceTransaction(
+                id: UUID(uuidString: id)!,
+                accountID: accountID,
+                bookingDate: Date(timeIntervalSince1970: day),
+                valueDate: nil,
+                payee: payee,
+                purpose: "",
+                categoryID: nil,
+                amountMinor: amount,
+                currency: "EUR",
+                status: status,
+                memo: "",
+                reference: "",
+                transferID: nil,
+                importFingerprint: nil,
+                splits: []
+            )
+        }
+        let berlin = transaction(
+            id: "00000000-0000-0000-0000-000000000001",
+            day: 300,
+            payee: "Ärztehaus 10",
+            amount: -5_000,
+            status: .booked
+        )
+        let hamburg = transaction(
+            id: "00000000-0000-0000-0000-000000000002",
+            day: 200,
+            payee: "Ärztehaus 2",
+            amount: -15_000,
+            status: .cleared
+        )
+        let travel = transaction(
+            id: "00000000-0000-0000-0000-000000000003",
+            day: 100,
+            payee: "Bahn",
+            amount: 20_000,
+            status: .pending
+        )
+        let secondBerlin = transaction(
+            id: "00000000-0000-0000-0000-000000000004",
+            day: 400,
+            payee: "Ärztehaus 10",
+            amount: -5_000,
+            status: .booked
+        )
+        let values = [berlin, hamburg, travel, secondBerlin]
+        let labels: [UUID: RegisterSortLabels] = [
+            berlin.id: .init(
+                account: "Giro", category: "Immobilien › Berlin › Grundsteuer",
+                tags: "Steuer › Haus"
+            ),
+            hamburg.id: .init(
+                account: "Giro", category: "Immobilien › Hamburg › Grundsteuer",
+                tags: "Steuer › Haus"
+            ),
+            travel.id: .init(
+                account: "Karte", category: "Reisen › Bahn", tags: "Urlaub"
+            ),
+            secondBerlin.id: .init(
+                account: "Giro", category: "Immobilien › Berlin › Grundsteuer",
+                tags: "Steuer › Haus"
+            )
+        ]
+        let balances: [UUID: Int64] = [
+            berlin.id: 10_000,
+            hamburg.id: 5_000,
+            travel.id: 25_000,
+            secondBerlin.id: 30_000
+        ]
+
+        XCTAssertEqual(
+            RegisterSorter.sorted(
+                values, by: .category, ascending: true,
+                runningBalances: balances, labels: labels
+            ).map(\.id),
+            [berlin.id, secondBerlin.id, hamburg.id, travel.id]
+        )
+        XCTAssertEqual(
+            RegisterSorter.sorted(
+                values, by: .payee, ascending: true,
+                runningBalances: balances, labels: labels
+            ).map(\.id),
+            [hamburg.id, berlin.id, secondBerlin.id, travel.id]
+        )
+        XCTAssertEqual(
+            RegisterSorter.sorted(
+                values, by: .amount, ascending: false,
+                runningBalances: balances, labels: labels
+            ).map(\.id),
+            [travel.id, berlin.id, secondBerlin.id, hamburg.id]
+        )
+        XCTAssertEqual(
+            RegisterSorter.sorted(
+                values, by: .balance, ascending: true,
+                runningBalances: balances, labels: labels
+            ).map(\.id),
+            [hamburg.id, berlin.id, travel.id, secondBerlin.id]
+        )
+        XCTAssertEqual(
+            RegisterSorter.sorted(
+                values, by: .date, ascending: false,
+                runningBalances: balances, labels: labels
+            ).map(\.id),
+            [secondBerlin.id, berlin.id, hamburg.id, travel.id]
+        )
+        XCTAssertEqual(
+            RegisterSorter.sorted(
+                values, by: .status, ascending: true,
+                runningBalances: balances, labels: labels
+            ).map(\.id),
+            [travel.id, berlin.id, secondBerlin.id, hamburg.id]
+        )
+        for column in RegisterColumn.allCases {
+            let first = RegisterSorter.sorted(
+                values, by: column, ascending: true,
+                runningBalances: balances, labels: labels
+            ).map(\.id)
+            let second = RegisterSorter.sorted(
+                Array(values.reversed()), by: column, ascending: true,
+                runningBalances: balances, labels: labels
+            ).map(\.id)
+            XCTAssertEqual(first, second, "Instabile Sortierung für \(column.title)")
+            XCTAssertEqual(Set(first), Set(values.map(\.id)))
+        }
     }
 
     func testRegisterF3SelectionUsesConfiguredTransactionField() throws {

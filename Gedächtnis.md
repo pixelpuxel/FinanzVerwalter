@@ -3291,3 +3291,48 @@ Rechtsberatung.
   Wegen der gesperrten Sitzung wurde transparent kein neuer Screenshot
   behauptet. Exakter kumulativer Zielzählerstand der Nachricht:
   20.112.344 Tokens.
+
+## 07.08.2026 – stabile Kontoblatt-Sortierung bei chronologischem Saldo
+
+- Das Einzelkontoblatt besitzt nun ein persistentes Menü `Sortierung` für
+  auf- und absteigende Reihenfolge über alle elf Standardfelder: Datum,
+  Wertstellung, Belegnummer, Status, Empfänger, Verwendungszweck,
+  vollständiger Kategoriepfad, vollständige Klassen-/Tagpfade, Konto, Betrag
+  und Saldo. Deutsche Texte werden case- und diakritikaunabhängig sowie
+  natürlich numerisch mit `de_DE` verglichen. Gleichstände löst die Engine
+  unabhängig von der Eingabereihenfolge über Buchungsdatum und UUID auf.
+- Laufende Salden werden vor der sichtbaren Sortierung weiterhin fachlich
+  chronologisch je Konto berechnet und bleiben als Eigenschaft ihrer Buchung
+  erhalten. Eine Sortierung nach Kategorie, Betrag oder Saldo verfälscht
+  deshalb keinen historischen Kontostand. CSV, PDF und Druck verwenden die
+  bereits sortierte sichtbare Reihenfolge.
+- Benannte Kontoblattansichten speichern Spalte und Richtung in zwei neuen
+  optionalen Feldern. Alte JSON-Ansichten ohne diese Felder decodieren
+  weiterhin und öffnen Datum aufsteigend. ADR 0034 dokumentiert Entscheidung,
+  Folgen und die bewusst noch offene anklickbare Tabellenkopfsteuerung.
+- Die gezielte Abnahme unter
+  `build/TestResults/RegisterSort-final-targeted-20260807-2035.xcresult`
+  bestand beide Sortier-/Kompatibilitätstests. Die vollständige Regression
+  unter `build/TestResults/RegisterSort-full-20260807-2047.xcresult` umfasst
+  151 Tests: 150 bestanden, 1 privater opt-in-Real-QIF-Test ohne temporären
+  Pfad erwartungsgemäß übersprungen, 0 fehlgeschlagen und 0 erwartete Fehler.
+- Der optimierte native arm64-Release unter
+  `build/DerivedData-RegisterSort-Release` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `24d68f98e1e36f47abc57d6b59975f93666e7ece4017ef76e3f8d5a376419c19`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich installiert; der
+  Desktop-Link zeigt weiterhin auf `/Applications/FinanzVerwalter.app`.
+- Die Vorgängerinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260807-2016-register-sort/`. Eine mit SQLite
+  konsistent erzeugte und danach geprüfte Produktionssicherung liegt unter
+  `build/ProductionBackups/20260807-2016-register-sort/Meine Finanzen.qdata`.
+- Nach dem Austausch läuft Prozess 33402 direkt aus `/Applications`. Die
+  Produktivdatei und ihre Sicherung melden Integrität `ok`, Schema 38 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien; die
+  Produktivdatei enthält weiterhin 0 Serienbuchungen. Die private echte
+  QIF-Datei wurde weder kopiert noch in Git aufgenommen.
+- Die Computersteuerung konnte die installierte Oberfläche nicht sichtbar
+  prüfen oder fotografieren, weil die macOS-Sitzung weiterhin gesperrt ist;
+  die Sperre wurde nicht umgangen. Exakter kumulativer Zielzählerstand nach
+  Test, Release, Installation und Produktivprüfung: 20.248.475 Tokens.

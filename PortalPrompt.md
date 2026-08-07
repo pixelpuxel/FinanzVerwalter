@@ -120,6 +120,20 @@ persistenter Undo-Momentaufnahme. Geschlossene oder fehlende Konten sowie
 ungültige Beträge dürfen keine Teilmutation erzeugen. Komplexe Buchungen
 bleiben im vollständigen Dialog.
 
+Sortiere das Einzelkontoblatt auf- oder absteigend nach jeder
+`RegisterColumn`: Datum, Wertstellung, Belegnummer, Status, Empfänger,
+Verwendungszweck, vollständigem Kategoriepfad, vollständigen Klassen-/Tags,
+Konto, Betrag und Saldo. Verwende für deutsche Texte eine
+diakritikaunabhängige, case-insensitive und numerische `de_DE`-Sortierung.
+Gleiche Primärwerte werden stets nach Buchungsdatum und UUID stabil
+aufgelöst; das Ergebnis darf nicht von der Eingabereihenfolge abhängen.
+Berechne laufende Salden weiterhin ausschließlich chronologisch je Konto und
+sortiere danach nur die fertigen Zeilen, damit eine Kategorie- oder
+Betragssortierung den fachlichen Saldo einer Buchung nicht verändert.
+Persistiere Spalte und Richtung in den lokalen Einstellungen und optional in
+benannten Kontoblattansichten. Alte Ansichten ohne diese optionalen Felder
+werden als Datum aufsteigend geöffnet.
+
 Für die direkte Ausgabe von Einzel- und Sammelkontoblättern gilt
 reproduzierbar: Erzeuge genau einen unveränderlichen `RegisterPrintSnapshot`
 aus der aktuellen Sichtmenge, der gewählten Spaltenreihenfolge, den
@@ -151,11 +165,13 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 150 XCTest-Fälle: 149 bestanden, der private opt-in-Real-QIF-
+Abnahme umfasst 151 XCTest-Fälle: 150 bestanden, der private opt-in-Real-QIF-
 Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
 private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
 Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
 unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
+Die installierte ausführbare Datei besitzt SHA-256
+`24d68f98e1e36f47abc57d6b59975f93666e7ece4017ef76e3f8d5a376419c19`.
 Details und Screenshots stehen in `Gedächtnis.md`.
 
 Migration 11 ergänzt `account_groups` und erweitert `accounts` um Kurzname,
