@@ -3992,3 +3992,8 @@ Rechtsberatung.
   Oberflächenabnahme und ein neuer Screenshot waren nicht möglich, weil die
   macOS-Sitzung weiterhin gesperrt ist; die laufende App wurde nicht fälschlich
   als sichtbar geprüft dokumentiert.
+- Implementierung, Tests, ADR und Reproduktionsdokumentation wurden als Commit
+  `f72bd36` auf `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub
+  Draft-PR #1 zeigt denselben Head und ist mergebar.
+- Telegram-Nachricht 1136 meldet den Stand im `/quicken`-Thread 894. Exakter
+  kumulativer Zielzählerstand vor dem Versand: 23.764.027 Tokens.
