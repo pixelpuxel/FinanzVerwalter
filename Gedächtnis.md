@@ -4777,3 +4777,10 @@ Rechtsberatung.
   782 Kategorien.
 - Exakter kumulativer Zielzählerstand nach Release und Installation:
   28.448.023 Tokens.
+- Die Umsetzung wurde als Commit `ad9e29d` auf
+  `agent/qif-mehrkontenimport` veröffentlicht und Draft-PR #1 um Querymodell,
+  Ausgabekonsistenz, Tests und Release-Nachweis ergänzt.
+- Telegram-Nachricht 1205 dokumentiert den Stand im `/quicken`-Thread 894.
+  Die gesperrte Sitzung verhindert weiterhin einen echten neuen Screenshot.
+- Exakter kumulativer Zielzählerstand nach GitHub- und Telegram-Übergabe:
+  28.465.317 Tokens.
