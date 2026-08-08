@@ -4373,3 +4373,47 @@ Rechtsberatung.
 - Telegram-Nachricht 1162 meldet den Stand im `/quicken`-Thread 894. Wegen der
   gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 25.573.695 Tokens.
+
+## 08.08.2026 – Umbuchungen im Kontenblatt atomar bearbeiten
+
+- Der vollständige erneute Abgleich mit dem 1.401-zeiligen Master-Prompt hat
+  als P0-Lücke ergeben, dass vorhandene Transferzeilen aus dem Kontenblatt in
+  den allgemeinen Einzelbuchungseditor gelangen konnten. `Bearbeiten`,
+  Doppelklick und die zweite Kontoblattansicht leiten Transferseiten nun in
+  einen eigenen, semantisch gekennzeichneten Paar-Editor.
+- Der Editor hält Quell- und Zielkonto fest und ändert Datum,
+  Verwendungszweck und beide Beträge in genau einer SQLite-Transaktion. Bei
+  Fremdwährungen werden gegenseitige Originalbeträge und beide reziproken
+  achtstelligen Kurse neu berechnet. Transaktions- und Transfer-IDs bleiben
+  stabil; Empfängernamen werden aus dem Gegenkonto aktualisiert.
+- `saveTransaction` weist vorhandene und neu übergebene Transferidentitäten
+  hart ab. Unvollständige Paare, Null- und Überlaufbeträge, geschlossene
+  Konten sowie abgeglichene Seiten führen ohne Teilschreibzugriff zum Fehler.
+  Die vollständige Paaränderung erzeugt ein gemeinsames Audit- und
+  konfliktgeschütztes Zwei-Seiten-Undo. ADR 0055 hält diese Invariante fest.
+- Die gezielten Tests für EUR-Paaränderung, Einzelpfadsperre, Überlaufschutz,
+  gemeinsames Undo und Fremdwährungskurse bestehen. Der finale vollständige
+  Lauf unter
+  `build/TestResults/TransferEdit-final-full-20260808-0406.xcresult` umfasst
+  177 Tests: 175 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und
+  0 erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-TransferEdit-Product` wurde erfolgreich gebaut, lokal
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `2de338702ce685a2ee6102de993c2d2d732e7a7d8be8549d0c15aacd888e2306`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0342-transfer-edit/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0342-transfer-edit/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch. Der Desktop-Link
+  zeigt weiterhin auf `/Applications`; Finder wurde auf die App gelenkt und
+  Prozess 86470 läuft aus der systemweiten Installation. Light Mode ist aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  deshalb wird keine sichtbare UI-Abnahme und kein neuer Screenshot
+  behauptet. Exakter kumulativer Zielzählerstand nach Installation:
+  25.818.864 Tokens.
+- Die Implementierung ist im Commit `54c8a72` festgehalten. Release-, GitHub-
+  und Telegram-Nachweis werden anschließend separat veröffentlicht.
