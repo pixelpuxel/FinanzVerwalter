@@ -2098,10 +2098,31 @@ und lehne unbekannte neuere Schemata ab. Nach dem Assistenten müssen alle
 gültigen Zeilen unverändert das vorhandene gestufte Import-Matching mit
 Datumsfenster, Einzelfallentscheidung und atomarem Commit durchlaufen.
 
+Ergänze einen portablen Einzelprofil-Austausch mit der Dateiendung
+`.fvimportprofil`. Die JSON-Wurzel enthält exakt Formatkennung,
+Formatversion und ein Profil; Konten, Buchungen, lokale Pfade oder
+Zugangsdaten dürfen nicht enthalten sein. Begrenze Eingaben vor dem Decoding
+auf 256 KiB und akzeptiere ausschließlich die bekannten Wurzel-, Profil- und
+Mappingfelder. Prüfe Formatkennung/-version, Profilschema, druckbaren
+getrimmten Namen bis 100 Zeichen, Revision, Dezimal-/Tausenderzeichen und
+Spaltenindizes von 0 bis 4095. Ein unbekanntes Feld oder zusätzliche
+JSON-Struktur ist ein Fehler.
+
+Exportiere die aktuell sichtbaren Regeln über den nativen macOS-Dateidialog.
+Beim Import wird ein identisches Profil dedupliziert. Gleiche UUID oder ein
+normalisiert gleicher Name öffnen einen Konfliktdialog mit den bewussten
+Alternativen „Vorhandenes Profil ersetzen“ und „Als Kopie importieren“.
+Kopieren erzeugt UUID, Revision 1 und einen kollisionsfreien Namenszusatz.
+Wenn UUID und Name zu zwei verschiedenen vorhandenen Profilen gehören, darf
+Ersetzen niemals beide löschen; weise es ab und verweise auf die Kopie.
+
 Teste mindestens automatische Erkennung mit Umlaut-Headern, Windows-1252,
 US-Zahlen/Datum, Soll/Haben, mehrzeilige Felder, vollständige Kategoriepfade,
 Dateien ohne Kopfzeile, unbekannte Kategorien, zeilengenaue Fehler,
 Profilrevision, JSON-Rundlauf und Zukunftsschema-Ablehnung.
+Teste zusätzlich Austausch-Rundlauf und Datenminimierung, Größen-/Struktur-
+und Feldablehnung, identische Profile, UUID-/Namenskonflikt, eindeutiges
+Ersetzen, verlustfreie Kopie und den doppelten Konflikt gegen zwei Profile.
 
 # Unabhängige Berichtsfenster
 

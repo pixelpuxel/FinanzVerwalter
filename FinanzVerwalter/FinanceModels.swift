@@ -938,7 +938,38 @@ struct CSVImportInspection: Equatable, Sendable {
     let rowCount: Int
 }
 
+struct CSVImportProfileExchangeEnvelope: Codable, Equatable, Sendable {
+    static let formatIdentifier =
+        "de.pixelpuxel.finanzverwalter.csv-import-profile"
+    static let formatVersion = 1
+
+    let format: String
+    let formatVersion: Int
+    let profile: CSVImportProfile
+
+    init(profile: CSVImportProfile) {
+        self.format = Self.formatIdentifier
+        self.formatVersion = Self.formatVersion
+        self.profile = profile
+    }
+}
+
+enum CSVImportProfileExchangeConflict: Equatable, Sendable {
+    case none
+    case identical
+    case identifier(CSVImportProfile)
+    case name(CSVImportProfile)
+}
+
+enum CSVImportProfileMergeStrategy: Equatable, Sendable {
+    case automatic
+    case replace
+    case copy
+}
+
 enum CSVImportProfileLibrary {
+    static let maximumExchangeBytes = 256 * 1_024
+
     static func upserting(
         _ profile: CSVImportProfile,
         into profiles: [CSVImportProfile]
@@ -970,6 +1001,192 @@ enum CSVImportProfileLibrary {
             )
         }
         return decoded
+    }
+
+    static func encodeExchange(_ profile: CSVImportProfile) throws -> Data {
+        try validateExchangeProfile(profile)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(CSVImportProfileExchangeEnvelope(profile: profile))
+    }
+
+    static func decodeExchange(_ data: Data) throws -> CSVImportProfile {
+        guard data.count <= maximumExchangeBytes else {
+            throw FinanceError.invalidCSVImport(
+                "Die Profildatei ist größer als 256 KiB."
+            )
+        }
+        try validateExchangeJSONStructure(data)
+        let envelope: CSVImportProfileExchangeEnvelope
+        do {
+            envelope = try JSONDecoder().decode(
+                CSVImportProfileExchangeEnvelope.self,
+                from: data
+            )
+        } catch {
+            throw FinanceError.invalidCSVImport(
+                "Die Profildatei ist kein gültiges FinanzVerwalter-Profil."
+            )
+        }
+        guard envelope.format == CSVImportProfileExchangeEnvelope.formatIdentifier else {
+            throw FinanceError.invalidCSVImport(
+                "Die Formatkennung der Profildatei ist unbekannt."
+            )
+        }
+        guard envelope.formatVersion == CSVImportProfileExchangeEnvelope.formatVersion else {
+            throw FinanceError.invalidCSVImport(
+                "Diese Version der Profildatei wird nicht unterstützt."
+            )
+        }
+        try validateExchangeProfile(envelope.profile)
+        return envelope.profile
+    }
+
+    static func conflict(
+        for profile: CSVImportProfile,
+        in profiles: [CSVImportProfile]
+    ) -> CSVImportProfileExchangeConflict {
+        if let existing = profiles.first(where: { $0.id == profile.id }) {
+            return existing == profile ? .identical : .identifier(existing)
+        }
+        let normalizedName = normalizedProfileName(profile.name)
+        if let existing = profiles.first(where: {
+            normalizedProfileName($0.name) == normalizedName
+        }) {
+            return .name(existing)
+        }
+        return .none
+    }
+
+    static func merging(
+        _ profile: CSVImportProfile,
+        into profiles: [CSVImportProfile],
+        strategy: CSVImportProfileMergeStrategy = .automatic
+    ) throws -> [CSVImportProfile] {
+        try validateExchangeProfile(profile)
+        let conflict = conflict(for: profile, in: profiles)
+        switch (conflict, strategy) {
+        case (.identical, _):
+            return profiles
+        case (.none, _):
+            return sorted(profiles + [profile])
+        case (_, .automatic):
+            throw FinanceError.invalidCSVImport(
+                "Ein Profil mit derselben Kennung oder demselben Namen ist bereits vorhanden."
+            )
+        case (.identifier(let existing), .replace):
+            let retained = profiles.filter { $0.id != existing.id }
+            guard !retained.contains(where: {
+                normalizedProfileName($0.name)
+                    == normalizedProfileName(profile.name)
+            }) else {
+                throw FinanceError.invalidCSVImport(
+                    "Kennung und Name kollidieren mit zwei verschiedenen Profilen. Importieren Sie das Profil als Kopie."
+                )
+            }
+            return sorted(retained + [profile])
+        case (.name(let existing), .replace):
+            return sorted(profiles.filter { $0.id != existing.id } + [profile])
+        case (_, .copy):
+            var copy = profile
+            copy.id = UUID()
+            copy.revision = 1
+            copy.name = availableCopyName(for: profile.name, in: profiles)
+            return sorted(profiles + [copy])
+        }
+    }
+
+    private static func validateExchangeProfile(
+        _ profile: CSVImportProfile
+    ) throws {
+        let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 100,
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else {
+            throw FinanceError.invalidCSVImport(
+                "Der Profilname muss 1 bis 100 druckbare Zeichen enthalten."
+            )
+        }
+        guard profile.name == name else {
+            throw FinanceError.invalidCSVImport(
+                "Der Profilname darf nicht mit Leerzeichen beginnen oder enden."
+            )
+        }
+        guard profile.schema == CSVImportProfile.schemaVersion else {
+            throw FinanceError.invalidCSVImport(
+                "Das Profil verwendet eine nicht unterstützte Version."
+            )
+        }
+        guard (1...1_000_000).contains(profile.revision) else {
+            throw FinanceError.invalidCSVImport(
+                "Die Profilrevision liegt außerhalb des gültigen Bereichs."
+            )
+        }
+        guard [",", "."].contains(profile.decimalSeparator),
+              ["", ",", "."].contains(profile.thousandsSeparator),
+              profile.decimalSeparator != profile.thousandsSeparator
+        else {
+            throw FinanceError.invalidCSVImport(
+                "Dezimal- und Tausenderzeichen sind ungültig."
+            )
+        }
+        let supportedFields = Set(CSVImportField.allCases.map(\.rawValue))
+        guard profile.mappings.count <= supportedFields.count,
+              profile.mappings.keys.allSatisfy(supportedFields.contains),
+              profile.mappings.values.allSatisfy({ (0...4_095).contains($0) })
+        else {
+            throw FinanceError.invalidCSVImport(
+                "Die Feldzuordnung enthält unbekannte Felder oder ungültige Spalten."
+            )
+        }
+    }
+
+    private static func validateExchangeJSONStructure(_ data: Data) throws {
+        guard let root = try? JSONSerialization.jsonObject(with: data),
+              let object = root as? [String: Any],
+              Set(object.keys) == Set(["format", "formatVersion", "profile"]),
+              let profile = object["profile"] as? [String: Any],
+              Set(profile.keys) == Set([
+                  "id", "name", "schema", "revision", "encoding", "separator",
+                  "hasHeader", "dateFormat", "decimalSeparator",
+                  "thousandsSeparator", "amountMode", "mappings"
+              ]),
+              profile["mappings"] is [String: Any]
+        else {
+            throw FinanceError.invalidCSVImport(
+                "Die Profildatei enthält eine unerwartete Struktur."
+            )
+        }
+    }
+
+    private static func normalizedProfileName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private static func availableCopyName(
+        for name: String,
+        in profiles: [CSVImportProfile]
+    ) -> String {
+        let base = String(name.prefix(90))
+        let names = Set(profiles.map { normalizedProfileName($0.name) })
+        for number in 1...9_999 {
+            let suffix = number == 1 ? " (Import)" : " (Import \(number))"
+            let candidate = String(base.prefix(100 - suffix.count)) + suffix
+            if !names.contains(normalizedProfileName(candidate)) {
+                return candidate
+            }
+        }
+        return "Importiertes Profil \(UUID().uuidString.prefix(8))"
+    }
+
+    private static func sorted(_ profiles: [CSVImportProfile]) -> [CSVImportProfile] {
+        profiles.sorted {
+            let comparison = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return comparison == .orderedSame
+                ? $0.id.uuidString < $1.id.uuidString
+                : comparison == .orderedAscending
+        }
     }
 }
 

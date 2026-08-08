@@ -6366,6 +6366,13 @@ private extension UTType {
             importedAs: "org.openxmlformats.spreadsheetml.sheet",
             conformingTo: .zip
         )
+
+    static let finanzVerwalterCSVImportProfile =
+        UTType(filenameExtension: "fvimportprofil")
+        ?? UTType(
+            exportedAs: "de.pixelpuxel.finanzverwalter.csv-import-profile",
+            conformingTo: .json
+        )
 }
 
 private struct ReportXLSXDocument: FileDocument {
@@ -7086,6 +7093,14 @@ private struct CSVImportProfileAssistant: View {
     @State private var selectedProfileID: UUID?
     @State private var inspection: CSVImportInspection?
     @State private var inspectionError = ""
+    @State private var showProfileExporter = false
+    @State private var profileDocument = CSVImportProfileDocument(data: Data())
+    @State private var showProfileImporter = false
+    @State private var pendingImportedProfile: CSVImportProfile?
+    @State private var profileConflictMessage = ""
+    @State private var showProfileConflict = false
+    @State private var profileExchangeMessage = ""
+    @State private var showProfileExchangeMessage = false
 
     init(
         data: Data,
@@ -7184,8 +7199,21 @@ private struct CSVImportProfileAssistant: View {
                                     }
                                     .disabled(selectedProfileID == nil)
                                 }
+                                HStack {
+                                    Button("Profil exportieren …", systemImage: "square.and.arrow.up") {
+                                        exportProfile()
+                                    }
+                                    .disabled(
+                                        profile.name.trimmingCharacters(
+                                            in: .whitespacesAndNewlines
+                                        ).isEmpty
+                                    )
+                                    Button("Profil importieren …", systemImage: "square.and.arrow.down") {
+                                        showProfileImporter = true
+                                    }
+                                }
                                 Text(
-                                    "Profile werden versioniert lokal gespeichert und enthalten keine Buchungsdaten."
+                                    "Profile werden versioniert lokal gespeichert. Austauschdateien enthalten ausschließlich Importregeln, keine Konten oder Buchungsdaten."
                                 )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -7382,6 +7410,44 @@ private struct CSVImportProfileAssistant: View {
                     ? "." : ","
             }
         }
+        .fileExporter(
+            isPresented: $showProfileExporter,
+            document: profileDocument,
+            contentType: .finanzVerwalterCSVImportProfile,
+            defaultFilename: profileExportFilename
+        ) { result in
+            if case .failure(let error) = result {
+                presentProfileExchangeMessage(error.localizedDescription)
+            }
+        }
+        .fileImporter(
+            isPresented: $showProfileImporter,
+            allowedContentTypes: [.finanzVerwalterCSVImportProfile, .json]
+        ) { result in
+            importProfile(from: result)
+        }
+        .confirmationDialog(
+            "Profilkonflikt",
+            isPresented: $showProfileConflict,
+            titleVisibility: .visible
+        ) {
+            Button("Vorhandenes Profil ersetzen") {
+                mergePendingProfile(using: .replace)
+            }
+            Button("Als Kopie importieren") {
+                mergePendingProfile(using: .copy)
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingImportedProfile = nil
+            }
+        } message: {
+            Text(profileConflictMessage)
+        }
+        .alert("Profil-Austausch", isPresented: $showProfileExchangeMessage) {
+            Button("OK") {}
+        } message: {
+            Text(profileExchangeMessage)
+        }
         .interactiveDismissDisabled()
     }
 
@@ -7419,6 +7485,155 @@ private struct CSVImportProfileAssistant: View {
         guard let selectedProfileID else { return }
         profiles.removeAll { $0.id == selectedProfileID }
         self.selectedProfileID = nil
+    }
+
+    private var profileExportFilename: String {
+        let permitted = CharacterSet.alphanumerics.union(
+            CharacterSet(charactersIn: "-_ ")
+        )
+        let safeName = profile.name.unicodeScalars.map {
+            permitted.contains($0) ? Character(String($0)) : "-"
+        }
+        return "\(String(safeName)).fvimportprofil"
+    }
+
+    private func exportProfile() {
+        do {
+            var exported = profile
+            exported.name = exported.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            profileDocument = CSVImportProfileDocument(
+                data: try CSVImportProfileLibrary.encodeExchange(exported)
+            )
+            showProfileExporter = true
+        } catch {
+            presentProfileExchangeMessage(error.localizedDescription)
+        }
+    }
+
+    private func importProfile(from result: Result<URL, Error>) {
+        do {
+            let source = try result.get()
+            let hasAccess = source.startAccessingSecurityScopedResource()
+            defer {
+                if hasAccess { source.stopAccessingSecurityScopedResource() }
+            }
+            let resource = try source.resourceValues(forKeys: [
+                .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey
+            ])
+            guard resource.isRegularFile == true,
+                  resource.isSymbolicLink != true
+            else {
+                throw FinanceError.invalidCSVImport(
+                    "Die Profildatei muss eine reguläre Datei sein."
+                )
+            }
+            guard (resource.fileSize ?? 0)
+                <= CSVImportProfileLibrary.maximumExchangeBytes
+            else {
+                throw FinanceError.invalidCSVImport(
+                    "Die Profildatei ist größer als 256 KiB."
+                )
+            }
+            let file = try FileHandle(forReadingFrom: source)
+            defer { try? file.close() }
+            let data = try file.read(
+                upToCount: CSVImportProfileLibrary.maximumExchangeBytes + 1
+            ) ?? Data()
+            let imported = try CSVImportProfileLibrary.decodeExchange(data)
+            switch CSVImportProfileLibrary.conflict(
+                for: imported,
+                in: profiles
+            ) {
+            case .none:
+                profiles = try CSVImportProfileLibrary.merging(
+                    imported,
+                    into: profiles
+                )
+                selectImportedProfile(imported)
+                presentProfileExchangeMessage(
+                    "Das Profil „\(imported.name)“ wurde importiert."
+                )
+            case .identical:
+                selectImportedProfile(imported)
+                presentProfileExchangeMessage(
+                    "Dieses Profil ist bereits unverändert vorhanden."
+                )
+            case .identifier(let existing):
+                pendingImportedProfile = imported
+                profileConflictMessage =
+                    "Die Profilkennung gehört bereits zu „\(existing.name)“. Sie können das vorhandene Profil ersetzen oder die Datei als neue Kopie übernehmen."
+                showProfileConflict = true
+            case .name(let existing):
+                pendingImportedProfile = imported
+                profileConflictMessage =
+                    "Ein Profil namens „\(existing.name)“ ist bereits vorhanden. Sie können es ersetzen oder die Datei unter einem automatisch ergänzten Namen importieren."
+                showProfileConflict = true
+            }
+        } catch {
+            presentProfileExchangeMessage(error.localizedDescription)
+        }
+    }
+
+    private func mergePendingProfile(using strategy: CSVImportProfileMergeStrategy) {
+        guard let imported = pendingImportedProfile else { return }
+        do {
+            let previousIDs = Set(profiles.map(\.id))
+            profiles = try CSVImportProfileLibrary.merging(
+                imported,
+                into: profiles,
+                strategy: strategy
+            )
+            let selected: CSVImportProfile?
+            if strategy == .copy {
+                selected = profiles.first { !previousIDs.contains($0.id) }
+            } else {
+                selected = profiles.first { $0.id == imported.id }
+            }
+            if let selected { selectImportedProfile(selected) }
+            presentProfileExchangeMessage(
+                strategy == .copy
+                    ? "Das Profil wurde als „\(selected?.name ?? imported.name)“ importiert."
+                    : "Das vorhandene Profil wurde durch „\(imported.name)“ ersetzt."
+            )
+        } catch {
+            presentProfileExchangeMessage(error.localizedDescription)
+        }
+        pendingImportedProfile = nil
+    }
+
+    private func selectImportedProfile(_ imported: CSVImportProfile) {
+        profile = imported
+        selectedProfileID = imported.id
+    }
+
+    private func presentProfileExchangeMessage(_ message: String) {
+        profileExchangeMessage = message
+        showProfileExchangeMessage = true
+    }
+}
+
+private struct CSVImportProfileDocument: FileDocument {
+    static var readableContentTypes: [UTType] {
+        [.finanzVerwalterCSVImportProfile, .json]
+    }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw FinanceError.invalidCSVImport("Die Profildatei ist leer.")
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

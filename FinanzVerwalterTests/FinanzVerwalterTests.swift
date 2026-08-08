@@ -1445,6 +1445,136 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertThrowsError(try CSVImportProfileLibrary.decode(futureData))
     }
 
+    func testCSVImportProfileExchangeRoundTripsOnlyPortableRules() throws {
+        var profile = CSVImportProfile(
+            id: UUID(uuidString: "D407825C-9F69-45C7-95F4-68DC25C15A75")!,
+            name: "Hausbank TSV",
+            revision: 7,
+            encoding: .windows1252,
+            separator: .tab,
+            hasHeader: true,
+            dateFormat: .germanLong,
+            decimalSeparator: ",",
+            thousandsSeparator: ".",
+            amountMode: .debitCredit
+        )
+        profile.setColumn(0, for: .bookingDate)
+        profile.setColumn(4, for: .debit)
+        profile.setColumn(5, for: .credit)
+        profile.setColumn(6, for: .category)
+
+        let data = try CSVImportProfileLibrary.encodeExchange(profile)
+        XCTAssertLessThan(data.count, CSVImportProfileLibrary.maximumExchangeBytes)
+        XCTAssertEqual(try CSVImportProfileLibrary.decodeExchange(data), profile)
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(text.contains(CSVImportProfileExchangeEnvelope.formatIdentifier))
+        XCTAssertFalse(text.localizedCaseInsensitiveContains("account"))
+        XCTAssertFalse(text.localizedCaseInsensitiveContains("transaction"))
+        XCTAssertFalse(text.localizedCaseInsensitiveContains("bookingData"))
+    }
+
+    func testCSVImportProfileExchangeRejectsUnexpectedAndOversizedInput() throws {
+        var profile = CSVImportProfile(name: "Strenges Profil")
+        profile.setColumn(0, for: .bookingDate)
+        profile.setColumn(1, for: .amount)
+        let data = try CSVImportProfileLibrary.encodeExchange(profile)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        object["unexpected"] = true
+        let unexpected = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(
+            try CSVImportProfileLibrary.decodeExchange(unexpected)
+        )
+
+        object.removeValue(forKey: "unexpected")
+        object["formatVersion"] =
+            CSVImportProfileExchangeEnvelope.formatVersion + 1
+        let futureFormat = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(
+            try CSVImportProfileLibrary.decodeExchange(futureFormat)
+        )
+
+        var invalidProfile = profile
+        invalidProfile.mappings["unknownField"] = 9
+        let invalidEnvelope = CSVImportProfileExchangeEnvelope(
+            profile: invalidProfile
+        )
+        let invalidData = try JSONEncoder().encode(invalidEnvelope)
+        XCTAssertThrowsError(
+            try CSVImportProfileLibrary.decodeExchange(invalidData)
+        )
+
+        let oversized = Data(
+            repeating: 0x20,
+            count: CSVImportProfileLibrary.maximumExchangeBytes + 1
+        )
+        XCTAssertThrowsError(
+            try CSVImportProfileLibrary.decodeExchange(oversized)
+        )
+    }
+
+    func testCSVImportProfileExchangeResolvesIdentifierAndNameConflicts() throws {
+        let id = UUID()
+        let existing = CSVImportProfile(id: id, name: "Hausbank", revision: 2)
+        var changed = existing
+        changed.revision = 3
+        changed.separator = .tab
+
+        XCTAssertEqual(
+            CSVImportProfileLibrary.conflict(for: existing, in: [existing]),
+            .identical
+        )
+        XCTAssertEqual(
+            CSVImportProfileLibrary.conflict(for: changed, in: [existing]),
+            .identifier(existing)
+        )
+        XCTAssertThrowsError(
+            try CSVImportProfileLibrary.merging(changed, into: [existing])
+        )
+        let replaced = try CSVImportProfileLibrary.merging(
+            changed,
+            into: [existing],
+            strategy: .replace
+        )
+        XCTAssertEqual(replaced, [changed])
+
+        let sameName = CSVImportProfile(name: "hausbank")
+        XCTAssertEqual(
+            CSVImportProfileLibrary.conflict(for: sameName, in: [existing]),
+            .name(existing)
+        )
+        let copied = try CSVImportProfileLibrary.merging(
+            sameName,
+            into: [existing],
+            strategy: .copy
+        )
+        XCTAssertEqual(copied.count, 2)
+        let importedCopy = try XCTUnwrap(copied.first { $0.id != existing.id })
+        XCTAssertNotEqual(importedCopy.id, sameName.id)
+        XCTAssertEqual(importedCopy.revision, 1)
+        XCTAssertEqual(importedCopy.name, "hausbank (Import)")
+
+        let other = CSVImportProfile(name: "Zweitbank")
+        var doubleConflict = changed
+        doubleConflict.name = other.name
+        XCTAssertThrowsError(
+            try CSVImportProfileLibrary.merging(
+                doubleConflict,
+                into: [existing, other],
+                strategy: .replace
+            )
+        )
+        let safeCopy = try CSVImportProfileLibrary.merging(
+            doubleConflict,
+            into: [existing, other],
+            strategy: .copy
+        )
+        XCTAssertEqual(safeCopy.count, 3)
+        XCTAssertTrue(safeCopy.contains(existing))
+        XCTAssertTrue(safeCopy.contains(other))
+    }
+
     func testCSVImportProfileSupportsHeaderlessFilesAndRejectsUnknownCategories() throws {
         let account = FinanceAccount(
             id: UUID(), name: "Kasse", institution: "", type: .cash,

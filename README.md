@@ -122,6 +122,13 @@ Rohdatenvorschau unterstützt auch maskierte Trennzeichen, doppelte
 Anführungszeichen und mehrzeilige Felder.
 
 Benannte Profile werden ohne Buchungsdaten lokal und versioniert gespeichert.
+Das aktuelle Profil lässt sich als `.fvimportprofil` exportieren und auf einem
+anderen Rechner wieder importieren. Die versionierte Datei enthält nur
+Importregeln. FinanzVerwalter begrenzt ihre Größe auf 256 KiB, verlangt eine
+exakte Struktur und prüft alle Feldnamen, Formate und Spaltenindizes. Bei
+gleicher Profilkennung oder gleichem Namen entscheidet man ausdrücklich
+zwischen Ersetzen und einer verlustfreien Kopie; identische Dateien werden
+nicht doppelt angelegt.
 Der Import übernimmt neben Empfänger, Zweck, Kategorie und Notiz auch Valuta,
 Referenz, externe Bank-ID, Provider, IBAN, BIC, End-to-End-ID,
 Mandatsreferenz, Gläubiger-ID, Buchungstext und Banksaldo. Kategorien werden
