@@ -28,6 +28,13 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
 - Buchungsdetails, primäre Zwischensummen und Gesamtsummen sind unabhängig
   schaltbar. Die optionalen Query-Felder bleiben beim Laden alter Vorlagen
   rückwärtskompatibel und werden ab Definitionsversion 3 gespeichert.
+- Die Detailtabelle besitzt zwölf kombinierbare Spalten für Datum, Konto,
+  Empfänger, Zweck, Memo, vollständigen Kategoriepfad, Klasse/Tags, Status,
+  Kennzeichen, Betrag, Währung und Splitstatus. `detailColumns` wird ab
+  Definitionsversion 5 in Vorlagen und Außenfenstern bewahrt. Fehlt das Feld
+  in einer älteren Query oder ist es leer, gilt der bewährte Standardsatz.
+  CSV, PDF, HTML, XLSX und Zwischenablage erzeugen die Detailtabelle aus exakt
+  derselben geordneten Auswahl.
 - Acht editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
   Kategorie, Empfänger, Buchungsjournal, Cashflow, Kontobewegungen und
   Kategorie/Klasse, monatlichen Cashflow sowie deutsche Steuerzuordnungen. Der Steuerbericht filtert

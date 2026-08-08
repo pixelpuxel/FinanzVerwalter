@@ -676,6 +676,12 @@ Splitzeilen. Währungen werden niemals unbemerkt addiert. Filter, Gruppierung
 und Sortierung lassen sich als versionierte Vorlage speichern. Die
 Kennzeichenauswahl bleibt dabei ebenso in Haupt- und eigenständigen
 Berichtsfenstern sowie in allen Exporten wirksam.
+Buchungsdetails besitzen außerdem zwölf frei kombinierbare Spalten: Datum,
+Konto, Empfänger, Verwendungszweck, Memo, vollständiger Kategoriepfad,
+Klasse/Tags, Status, Kennzeichen, Betrag, Währung und Splitstatus. Das Menü
+`Spalten` schaltet sie einzeln, als bewährten Standardsatz oder vollständig.
+Mindestens eine Spalte bleibt sichtbar. Auswahl und Reihenfolge gehören zur
+Query und damit zu Vorlagen und eigenständigen Berichtsfenstern.
 Buchungsdetails, primäre Zwischensummen und währungsgetrennte Gesamtsummen
 sind unabhängig ein- und ausblendbar; diese Darstellungseinstellungen werden
 ebenfalls in Vorlagen gespeichert. Das Menü `Standardberichte` setzt acht
@@ -694,7 +700,8 @@ Basiswährung, wiederholten Tabellenköpfen und Seitenzahlen. Dieselbe aktuelle
 Momentaufnahme kann entweder als PDF gespeichert oder direkt über den
 macOS-Systemdruckdialog ausgegeben werden. Ein druckoptimierter,
 deterministischer HTML-Export enthält dieselben Metadaten, Gruppen,
-Zwischen-/Gesamtsummen und optionalen Buchungsdetails wie die Oberfläche.
+Zwischen-/Gesamtsummen und exakt dieselben gewählten Buchungsdetailspalten wie
+die Oberfläche.
 Der XLSX-Export erzeugt ohne zusätzliche Laufzeitabhängigkeit ein echtes
 Open-XML-Arbeitsblatt mit numerischen, währungsabhängig formatierten Beträgen.
 `Kopieren` legt denselben Bericht gleichzeitig als tabulatorgetrennte Tabelle

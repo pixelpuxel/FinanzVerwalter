@@ -1913,6 +1913,7 @@ struct ReportsView: View {
     @State private var grouping: ReportGrouping = .category
     @State private var secondaryGrouping: ReportGrouping = .none
     @State private var sort: ReportSort = .amountDescending
+    @State private var detailColumns = TransactionReportDetailColumn.standard
     @State private var selectedReportGroupID: String?
     @State private var selectedStandardReport: TransactionReportStandardPreset?
     @State private var selectedTemplateID: UUID?
@@ -2049,6 +2050,8 @@ struct ReportsView: View {
             secondaryGrouping: secondaryGrouping == .none
                 ? nil : secondaryGrouping,
             sort: sort,
+            detailColumns: detailColumns == TransactionReportDetailColumn.standard
+                ? nil : detailColumns,
             transactionIDs: constrainedTransactionIDs,
             exactPayee: exactPayee,
             includeForecast: includeForecast,
@@ -2314,6 +2317,7 @@ struct ReportsView: View {
                         }
                     }
                     .frame(width: 125)
+                    detailColumnMenu
                     Picker("Diagrammwert", selection: $chartMetric) {
                         ForEach(ReportChartMetric.allCases) {
                             Text($0.title).tag($0)
@@ -2750,6 +2754,40 @@ struct ReportsView: View {
         }
     }
 
+    private var detailColumnMenu: some View {
+        Menu {
+            Button("Standardspalten") {
+                detailColumns = TransactionReportDetailColumn.standard
+            }
+            Button("Alle Spalten") {
+                detailColumns = TransactionReportDetailColumn.allCases
+            }
+            Divider()
+            ForEach(TransactionReportDetailColumn.allCases) { column in
+                Toggle(
+                    column.title,
+                    isOn: Binding(
+                        get: { detailColumns.contains(column) },
+                        set: { isVisible in
+                            if isVisible {
+                                let selected = Set(detailColumns).union([column])
+                                detailColumns = TransactionReportDetailColumn.allCases
+                                    .filter(selected.contains)
+                            } else if detailColumns.count > 1 {
+                                detailColumns.removeAll { $0 == column }
+                            }
+                        }
+                    )
+                )
+                .disabled(detailColumns.count == 1 && detailColumns.contains(column))
+            }
+        } label: {
+            Label("Spalten \(detailColumns.count)", systemImage: "rectangle.split.3x1")
+        }
+        .help("Sichtbare Detailspalten; die Auswahl wird in Berichtsvorlagen gespeichert")
+        .accessibilityIdentifier("reports.detailColumns")
+    }
+
     private func reportGroupsTable(
         _ groups: [TransactionReportGroup]
     ) -> some View {
@@ -2944,53 +2982,12 @@ struct ReportsView: View {
         _ facts: [TransactionReportFact]
     ) -> some View {
         Table(facts) {
-            TableColumn("Datum") {
-                Text($0.bookingDate, format: .dateTime.day().month(.twoDigits).year())
-                    .monospacedDigit()
-            }
-            .width(90)
-            TableColumn("Konto") {
-                Text($0.accountName).lineLimit(1)
-            }
-            .width(min: 105, ideal: 135)
-            TableColumn("Empfänger") {
-                Text($0.payee.isEmpty ? "—" : $0.payee).lineLimit(1)
-            }
-            .width(min: 115, ideal: 155)
-            TableColumn("Verwendungszweck") { fact in
-                Text(fact.purpose)
-                    .lineLimit(1)
-                    .help([fact.purpose, fact.detail].filter { !$0.isEmpty }.joined(separator: "\n"))
-            }
-            .width(min: 150, ideal: 220)
-            TableColumn("Kategorie") { fact in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(fact.categoryPath)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if !fact.germanTaxLine.isEmpty {
-                        Text(fact.germanTaxLine)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+            TableColumnForEach(detailColumns) { column in
+                TableColumn(column.title) { fact in
+                    reportFactCell(fact, column: column)
                 }
-                .help(
-                    [fact.categoryPath, fact.germanTaxLine]
-                        .filter { !$0.isEmpty }
-                        .joined(separator: "\n")
-                )
+                .width(min: column.minimumWidth, ideal: column.idealWidth)
             }
-            .width(min: 150, ideal: 210)
-            TableColumn("Status") {
-                Text($0.splitID == nil ? $0.status.title : "\($0.status.title) · Split")
-            }
-            .width(105)
-            TableColumn("Betrag") { fact in
-                reportMoney(fact.amountMinor, currency: fact.currency)
-            }
-            .width(115)
         }
         .overlay {
             if facts.isEmpty {
@@ -3000,6 +2997,73 @@ struct ReportsView: View {
                     description: Text("Passe die Filter an oder wähle eine andere Gruppe.")
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private func reportFactCell(
+        _ fact: TransactionReportFact,
+        column: TransactionReportDetailColumn
+    ) -> some View {
+        switch column {
+        case .date:
+            Text(fact.bookingDate, format: .dateTime.day().month(.twoDigits).year())
+                .monospacedDigit()
+        case .account:
+            Text(fact.accountName).lineLimit(1)
+        case .payee:
+            Text(fact.payee.isEmpty ? "—" : fact.payee).lineLimit(1)
+        case .purpose:
+            Text(fact.purpose).lineLimit(1)
+                .help([fact.purpose, fact.detail].filter { !$0.isEmpty }.joined(separator: "\n"))
+        case .memo:
+            Text(fact.detail.isEmpty ? "—" : fact.detail).lineLimit(1)
+                .help(fact.detail)
+        case .category:
+            VStack(alignment: .leading, spacing: 1) {
+                Text(fact.categoryPath.isEmpty ? "—" : fact.categoryPath)
+                    .lineLimit(1).truncationMode(.middle)
+                if !fact.germanTaxLine.isEmpty {
+                    Text(fact.germanTaxLine)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+            .help(
+                [fact.categoryPath, fact.germanTaxLine]
+                    .filter { !$0.isEmpty }.joined(separator: "\n")
+            )
+        case .tags:
+            Text(fact.tagPaths.isEmpty ? "—" : fact.tagPaths.joined(separator: ", "))
+                .lineLimit(1).truncationMode(.middle)
+                .help(fact.tagPaths.joined(separator: "\n"))
+        case .status:
+            Text(fact.status.title)
+        case .flag:
+            if let flag = fact.flag {
+                Label(flag.title, systemImage: "flag.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(reportFlagColor(flag), .secondary)
+            } else {
+                Text("Ohne Kennzeichen").foregroundStyle(.secondary)
+            }
+        case .amount:
+            reportMoney(fact.amountMinor, currency: fact.currency)
+        case .currency:
+            Text(fact.currency)
+        case .split:
+            Text(fact.splitID == nil ? "Nein" : "Ja")
+        }
+    }
+
+    private func reportFlagColor(_ flag: TransactionFlag) -> Color {
+        switch flag {
+        case .red: .red
+        case .orange: .orange
+        case .yellow: .yellow
+        case .green: .green
+        case .blue: .blue
+        case .purple: .purple
         }
     }
 
@@ -3102,6 +3166,7 @@ struct ReportsView: View {
             || grouping != .category
             || secondaryGrouping != .none
             || sort != .amountDescending
+            || detailColumns != TransactionReportDetailColumn.standard
             || constrainedTransactionIDs != nil
             || exactPayee != nil
             || includeForecast
@@ -3135,6 +3200,7 @@ struct ReportsView: View {
         grouping = .category
         secondaryGrouping = .none
         sort = .amountDescending
+        detailColumns = TransactionReportDetailColumn.standard
         constrainedTransactionIDs = nil
         exactPayee = nil
         includeForecast = false
@@ -3153,7 +3219,7 @@ struct ReportsView: View {
         let template = SavedReportTemplate(
             id: id,
             name: templateName,
-            definitionVersion: 4,
+            definitionVersion: 5,
             query: query
         )
         if store.saveReportTemplate(template) {
@@ -3216,6 +3282,7 @@ struct ReportsView: View {
         secondaryGrouping = savedQuery.secondaryGrouping ?? .none
         if secondaryGrouping == grouping { secondaryGrouping = .none }
         sort = savedQuery.sort
+        detailColumns = savedQuery.selectedDetailColumns
         constrainedTransactionIDs = savedQuery.transactionIDs
         exactPayee = savedQuery.exactPayee
         includeForecast = savedQuery.includeForecast == true
@@ -3349,6 +3416,7 @@ struct ReportsView: View {
                 ? "nur deutsche Steuerzuordnungen"
                 : "alle Steuerzuordnungen",
             expandSplits ? "Splitzeilen" : "Gesamtbuchungen",
+            "Detailspalten \(detailColumns.map(\.title).joined(separator: ", "))",
             "Gruppierung \(reportGroupingTitle)",
             "Darstellung \(visualization.title)",
             visualization == .table ? nil : "Diagrammwert \(chartMetric.title)",

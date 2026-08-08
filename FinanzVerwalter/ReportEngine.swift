@@ -83,6 +83,71 @@ enum ReportSort: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum TransactionReportDetailColumn: String, CaseIterable, Codable, Identifiable, Sendable {
+    case date
+    case account
+    case payee
+    case purpose
+    case memo
+    case category
+    case tags
+    case status
+    case flag
+    case amount
+    case currency
+    case split
+
+    var id: Self { self }
+
+    static let standard: [Self] = [
+        .date, .account, .payee, .purpose, .category, .status, .amount
+    ]
+
+    var title: String {
+        switch self {
+        case .date: "Datum"
+        case .account: "Konto"
+        case .payee: "Empfänger"
+        case .purpose: "Verwendungszweck"
+        case .memo: "Memo"
+        case .category: "Kategorie"
+        case .tags: "Klasse/Tags"
+        case .status: "Status"
+        case .flag: "Kennzeichen"
+        case .amount: "Betrag"
+        case .currency: "Währung"
+        case .split: "Split"
+        }
+    }
+
+    var isNumeric: Bool { self == .amount }
+
+    var widthWeight: CGFloat {
+        switch self {
+        case .date: 0.8
+        case .account: 1.2
+        case .payee: 1.35
+        case .purpose: 1.8
+        case .memo: 1.6
+        case .category: 1.65
+        case .tags: 1.4
+        case .status, .flag: 1.0
+        case .amount: 1.05
+        case .currency, .split: 0.65
+        }
+    }
+
+    var minimumWidth: CGFloat {
+        switch self {
+        case .currency, .split: 58
+        case .date, .status, .flag, .amount: 82
+        default: 105
+        }
+    }
+
+    var idealWidth: CGFloat { max(minimumWidth, widthWeight * 112) }
+}
+
 enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendable {
     case categoryIncomeExpense
     case payeeIncomeExpense
@@ -226,6 +291,7 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var grouping: ReportGrouping = .category
     var secondaryGrouping: ReportGrouping? = nil
     var sort: ReportSort = .amountDescending
+    var detailColumns: [TransactionReportDetailColumn]? = nil
     var transactionIDs: Set<UUID>? = nil
     var exactPayee: String? = nil
     var includeForecast: Bool? = nil
@@ -241,6 +307,12 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var showsGrandTotals: Bool { includeGrandTotals ?? true }
     var selectedVisualization: ReportVisualization { visualization ?? .table }
     var selectedChartMetric: ReportChartMetric { chartMetric ?? .expense }
+    var selectedDetailColumns: [TransactionReportDetailColumn] {
+        let requested = detailColumns ?? TransactionReportDetailColumn.standard
+        var seen = Set<TransactionReportDetailColumn>()
+        let sanitized = requested.filter { seen.insert($0).inserted }
+        return sanitized.isEmpty ? TransactionReportDetailColumn.standard : sanitized
+    }
 }
 
 struct TransactionReportFlagSelection: Codable, Equatable, Sendable {
@@ -424,6 +496,7 @@ struct TransactionReportFact: Identifiable, Hashable, Sendable {
     let tagIDs: [UUID]
     let tagPaths: [String]
     let status: TransactionStatus
+    var flag: TransactionFlag? = nil
     let amountMinor: Int64
     let currency: String
     let isTransfer: Bool
@@ -454,6 +527,7 @@ struct TransactionReportPresentation: Equatable, Sendable {
     var includeDetailRows = true
     var includeSubtotals = true
     var includeGrandTotals = true
+    var detailColumns = TransactionReportDetailColumn.standard
 
     static let all = TransactionReportPresentation()
 }
@@ -574,7 +648,8 @@ enum TransactionReportEngine {
             presentation: TransactionReportPresentation(
                 includeDetailRows: query.showsDetailRows,
                 includeSubtotals: query.showsSubtotals,
-                includeGrandTotals: query.showsGrandTotals
+                includeGrandTotals: query.showsGrandTotals,
+                detailColumns: query.selectedDetailColumns
             )
         )
     }
@@ -632,6 +707,7 @@ enum TransactionReportEngine {
                     tagIDs: combinedTagIDs,
                     tagPaths: combinedTagIDs.map { hierarchyPath($0, values: tagsByID) },
                     status: transaction.status,
+                    flag: transaction.flag,
                     amountMinor: split.amountMinor,
                     currency: transaction.currency,
                     isTransfer: transaction.transferID != nil,
@@ -661,6 +737,7 @@ enum TransactionReportEngine {
                 tagIDs: tagIDs,
                 tagPaths: tagIDs.map { hierarchyPath($0, values: tagsByID) },
                 status: transaction.status,
+                flag: transaction.flag,
                 amountMinor: transaction.amountMinor,
                 currency: transaction.currency,
                 isTransfer: transaction.transferID != nil,
@@ -1104,25 +1181,13 @@ enum TransactionReportCSVExporter {
         }
 
         if snapshot.presentation.includeDetailRows {
+            let columns = snapshot.presentation.detailColumns
             rows.append([])
             rows.append(["Buchungen und Splitpositionen"])
-            rows.append([
-                "Datum", "Konto", "Empfänger", "Verwendungszweck", "Kategorie",
-                "Status", "Betrag", "Währung", "Split"
-            ])
+            rows.append(columns.map(\.title))
             rows.append(
                 contentsOf: snapshot.facts.map { fact in
-                    [
-                        isoDate(fact.bookingDate),
-                        fact.accountName,
-                        fact.payee,
-                        fact.purpose,
-                        fact.categoryPath,
-                        fact.status.title,
-                        germanAmount(fact.amountMinor, currency: fact.currency),
-                        fact.currency,
-                        fact.splitID == nil ? "Nein" : "Ja"
-                    ]
+                    columns.map { $0.exportText(for: fact) }
                 }
             )
         }
@@ -1201,6 +1266,49 @@ enum TransactionReportCSVExporter {
     }()
 }
 
+extension TransactionReportDetailColumn {
+    func exportText(for fact: TransactionReportFact) -> String {
+        switch self {
+        case .date:
+            transactionReportDetailDateFormatter.string(from: fact.bookingDate)
+        case .account:
+            fact.accountName
+        case .payee:
+            fact.payee
+        case .purpose:
+            fact.purpose
+        case .memo:
+            fact.detail
+        case .category:
+            fact.categoryPath
+        case .tags:
+            fact.tagPaths.joined(separator: ", ")
+        case .status:
+            fact.status.title
+        case .flag:
+            fact.flag?.title ?? "Ohne Kennzeichen"
+        case .amount:
+            TransactionReportCSVExporter.germanAmount(
+                fact.amountMinor,
+                currency: fact.currency
+            )
+        case .currency:
+            fact.currency
+        case .split:
+            fact.splitID == nil ? "Nein" : "Ja"
+        }
+    }
+}
+
+private let transactionReportDetailDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+}()
+
 enum TransactionReportHTMLExporter {
     static func data(
         snapshot: TransactionReportSnapshot,
@@ -1239,21 +1347,19 @@ enum TransactionReportHTMLExporter {
         }
 
         if snapshot.presentation.includeDetailRows {
+            let columns = snapshot.presentation.detailColumns
             let rows = snapshot.facts.map { fact in
-                "<tr><td><time datetime=\"\(isoDate(fact.bookingDate))\">\(isoDate(fact.bookingDate))</time></td>"
-                    + "<td>\(escape(fact.accountName))</td>"
-                    + "<td>\(escape(fact.payee))</td>"
-                    + "<td>\(escape(fact.purpose))</td>"
-                    + "<td>\(escape(fact.categoryPath))</td>"
-                    + "<td>\(escape(fact.status.title + (fact.splitID == nil ? "" : " · Split")))</td>"
-                    + amountCells([fact.amountMinor], currency: fact.currency)
-                    + "<td>\(escape(fact.currency))</td></tr>"
+                "<tr>" + columns.map { detailCell($0, fact: fact) }.joined() + "</tr>"
             }.joined(separator: "\n")
+            let headers = columns.map { column in
+                "<th\(column.isNumeric ? " class=\"number\"" : "")>"
+                    + escape(column.title) + "</th>"
+            }.joined()
             sections.append(
                 """
                 <section>
                 <h2>Buchungen und Splitpositionen</h2>
-                <table><thead><tr><th>Datum</th><th>Konto</th><th>Empfänger</th><th>Verwendungszweck</th><th>Kategorie</th><th>Status</th><th class="number">Betrag</th><th>Währung</th></tr></thead>
+                <table><thead><tr>\(headers)</tr></thead>
                 <tbody>
                 \(rows)
                 </tbody></table>
@@ -1308,6 +1414,17 @@ enum TransactionReportHTMLExporter {
                 + TransactionReportCSVExporter.germanAmount($0, currency: currency)
                 + "</td>"
         }.joined()
+    }
+
+    private static func detailCell(
+        _ column: TransactionReportDetailColumn,
+        fact: TransactionReportFact
+    ) -> String {
+        let value = escape(column.exportText(for: fact))
+        if column == .date {
+            return "<td><time datetime=\"\(value)\">\(value)</time></td>"
+        }
+        return "<td\(column.isNumeric ? " class=\"number\"" : "")>\(value)</td>"
     }
 
     private static func escape(_ value: String) -> String {
@@ -1445,30 +1562,18 @@ enum TransactionReportXLSXExporter {
         }
 
         if snapshot.presentation.includeDetailRows {
+            let columns = snapshot.presentation.detailColumns
             rows.append(SheetRow(cells: []))
             rows.append(SheetRow(
                 cells: [.text("Buchungen und Splitpositionen")],
                 kind: .metadataLabel
             ))
             rows.append(SheetRow(
-                cells: [
-                    "Datum", "Konto", "Empfänger", "Verwendungszweck", "Kategorie",
-                    "Status", "Betrag", "Währung", "Split"
-                ].map(CellValue.text),
+                cells: columns.map { .text($0.title) },
                 kind: .header
             ))
             rows.append(contentsOf: snapshot.facts.map { fact in
-                SheetRow(cells: [
-                    .text(isoDate(fact.bookingDate)),
-                    .text(fact.accountName),
-                    .text(fact.payee),
-                    .text(fact.purpose),
-                    .text(fact.categoryPath),
-                    .text(fact.status.title),
-                    .amount(fact.amountMinor, currency: fact.currency),
-                    .text(fact.currency),
-                    .text(fact.splitID == nil ? "Nein" : "Ja")
-                ])
+                SheetRow(cells: columns.map { detailCell($0, fact: fact) })
             })
         }
 
@@ -1510,6 +1615,15 @@ enum TransactionReportXLSXExporter {
         \(serializedRows)
         </sheetData><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>
         """ + "\n"
+    }
+
+    private static func detailCell(
+        _ column: TransactionReportDetailColumn,
+        fact: TransactionReportFact
+    ) -> CellValue {
+        column == .amount
+            ? .amount(fact.amountMinor, currency: fact.currency)
+            : .text(column.exportText(for: fact))
     }
 
     private static func cellXML(

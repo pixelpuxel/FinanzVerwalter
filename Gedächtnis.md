@@ -4741,3 +4741,39 @@ Rechtsberatung.
   neuen Screenshot und behauptet keine sichtbare UI-Abnahme.
 - Exakter kumulativer Zielzählerstand nach Veröffentlichung und Übergabe:
   28.128.666 Tokens.
+
+## 08.08.2026 – Konfigurierbare Detailspalten der Berichtswerkstatt
+
+- Der erneute Master-Abgleich identifizierte die noch feste und zwischen
+  Bildschirm und Export abweichende Detailspaltenmenge als lokales P0-Delta.
+- `TransactionReportQuery.detailColumns` speichert optional eine geordnete
+  Auswahl aus zwölf stabilen Spaltentypen. Fehlende, leere oder dedupliziert
+  leere Werte fallen auf Datum, Konto, Empfänger, Verwendungszweck, Kategorie,
+  Status und Betrag zurück; alte Vorlagen bleiben ohne Migration lesbar.
+- Die Engine übernimmt Kennzeichen und Auswahl in den unveränderlichen Fakt-
+  und Präsentationssnapshot. Standard, alle oder einzelne Spalten werden in
+  der Oberfläche gewählt; mindestens eine bleibt sichtbar. Vorlagen nutzen
+  Definitionsversion 5, Außenfenster und Rückintegration erhalten die Query.
+- Tabelle, CSV, PDF, HTML, XLSX sowie Text- und HTML-Zwischenablage erzeugen
+  ihre Detailspalten aus derselben Reihenfolge. Neu wählbar sind insbesondere
+  Memo, vollständiger Kategoriepfad, Klasse/Tags, Kennzeichen, Währung und
+  Splitstatus. XLSX behält Beträge als echte numerische Zellen.
+- Der gezielte Lauf in `build/report-columns-targeted-final.log` besteht mit
+  8/8 Tests. Der vollständige Lauf in `build/full-report-columns-test.log`
+  meldet 182 Tests: 180 bestanden, 2 bewusst opt-in übersprungen, 0 Fehler.
+- Exakter kumulativer Zielzählerstand beim Start der Vollsuite:
+  28.401.050 Tokens.
+- Der optimierte arm64-Release wurde aus
+  `build/release-report-columns-build.log` erfolgreich gebaut, lokal signiert
+  und streng verifiziert. Seine ausführbare Datei hat SHA-256
+  `d775dc0588c302f64b1ed4fb4879cb50b059e11627906f7345fb9d6da7a8244e`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0707-report-columns/`. System- und
+  Benutzerinstallation enthalten den neuen Release bytegleich; der
+  Desktop-Link zeigt auf `/Applications/FinanzVerwalter.app`. Prozess 10924
+  läuft daraus im Light Mode.
+- Die echte Produktdatei bleibt auf Schema 40, meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung und unverändert 97 Konten, 2.170 Buchungen sowie
+  782 Kategorien.
+- Exakter kumulativer Zielzählerstand nach Release und Installation:
+  28.448.023 Tokens.

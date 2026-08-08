@@ -707,14 +707,11 @@ private struct ReportPDFRenderer {
             drawHeaderCell("Währung", column: columns[5])
         case .facts:
             let columns = factColumns
-            for (index, title) in [
-                "Datum", "Konto", "Empfänger", "Verwendungszweck",
-                "Kategorie", "Status", "Betrag"
-            ].enumerated() {
+            for (index, detailColumn) in snapshot.presentation.detailColumns.enumerated() {
                 drawHeaderCell(
-                    title,
+                    detailColumn.title,
                     column: columns[index],
-                    rightAligned: index == columns.count - 1
+                    rightAligned: detailColumn.isNumeric
                 )
             }
         case .totals:
@@ -803,29 +800,18 @@ private struct ReportPDFRenderer {
             )
         }
         let columns = factColumns
-        drawCell(isoDate(fact.bookingDate), column: columns[0], height: 22, fontSize: 7.8)
-        drawCell(fact.accountName, column: columns[1], height: 22, fontSize: 7.8)
-        drawCell(
-            fact.payee.isEmpty ? "-" : fact.payee,
-            column: columns[2],
-            height: 22,
-            fontSize: 7.8
-        )
-        drawCell(fact.purpose, column: columns[3], height: 22, fontSize: 7.8)
-        drawCell(fact.categoryPath, column: columns[4], height: 22, fontSize: 7.8)
-        drawCell(
-            fact.splitID == nil ? fact.status.title : "\(fact.status.title) / Split",
-            column: columns[5],
-            height: 22,
-            fontSize: 7.8
-        )
-        drawCell(
-            "\(germanAmount(fact.amountMinor, currency: fact.currency)) \(fact.currency)",
-            column: columns[6],
-            height: 22,
-            fontSize: 7.8,
-            rightAligned: true
-        )
+        let detailColumns = snapshot.presentation.detailColumns
+        let fontSize: CGFloat = detailColumns.count > 9 ? 6.2
+            : detailColumns.count > 7 ? 7.0 : 7.8
+        for (index, detailColumn) in detailColumns.enumerated() {
+            drawCell(
+                detailColumn.exportText(for: fact),
+                column: columns[index],
+                height: 22,
+                fontSize: fontSize,
+                rightAligned: detailColumn.isNumeric
+            )
+        }
         y += 22
     }
 
@@ -880,19 +866,13 @@ private struct ReportPDFRenderer {
 
     private var factColumns: [CGRect] {
         let content = pageSize.width - 2 * margin
-        let date: CGFloat = 58
-        let account: CGFloat = pageSize.width > 700 ? 92 : 62
-        let payee: CGFloat = pageSize.width > 700 ? 105 : 72
-        let category: CGFloat = pageSize.width > 700 ? 145 : 92
-        let status: CGFloat = pageSize.width > 700 ? 76 : 60
-        let amount: CGFloat = pageSize.width > 700 ? 92 : 76
-        let purpose = max(
-            72,
-            content - date - account - payee - category - status - amount
-        )
-        return horizontalColumns(
-            widths: [date, account, payee, purpose, category, status, amount]
-        )
+        let detailColumns = snapshot.presentation.detailColumns
+        let totalWeight = detailColumns.reduce(CGFloat.zero) {
+            $0 + $1.widthWeight
+        }
+        return horizontalColumns(widths: detailColumns.map {
+            content * $0.widthWeight / max(totalWeight, 1)
+        })
     }
 
     private var totalColumns: [CGRect] {

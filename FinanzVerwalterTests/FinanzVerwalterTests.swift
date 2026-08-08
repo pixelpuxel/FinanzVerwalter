@@ -6761,6 +6761,7 @@ final class FinanzVerwalterTests: XCTestCase {
         query.includeDetailRows = false
         query.includeSubtotals = false
         query.includeGrandTotals = false
+        query.detailColumns = [.flag, .category, .amount]
         let allTransactions = [normal, hiddenValue, transfer, cancelled]
         let base = TransactionReportEngine.snapshot(
             query: query,
@@ -6771,6 +6772,8 @@ final class FinanzVerwalterTests: XCTestCase {
         )
         XCTAssertEqual(base.facts.map(\.transactionID), [normal.id])
         XCTAssertEqual(base.groups.map(\.label), ["Giro"])
+        XCTAssertEqual(base.facts.first?.flag, .red)
+        XCTAssertEqual(base.presentation.detailColumns, [.flag, .category, .amount])
 
         query.includeHiddenAccounts = true
         let stillReportEligibleOnly = TransactionReportEngine.snapshot(
@@ -6847,6 +6850,7 @@ final class FinanzVerwalterTests: XCTestCase {
         query.flagSelection = TransactionReportFlagSelection(
             flags: [.orange, .purple], includeUnflagged: false
         )
+        query.detailColumns = [.date, .flag, .category, .tags, .amount, .currency]
         query.visualization = .pie
         query.chartMetric = .income
         let id = UUID()
@@ -7543,6 +7547,7 @@ final class FinanzVerwalterTests: XCTestCase {
         legacyObject.removeValue(forKey: "visualization")
         legacyObject.removeValue(forKey: "chartMetric")
         legacyObject.removeValue(forKey: "flagSelection")
+        legacyObject.removeValue(forKey: "detailColumns")
         let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
         let decoded = try JSONDecoder().decode(
             TransactionReportQuery.self, from: legacyData
@@ -7555,6 +7560,11 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(decoded.selectedVisualization, .table)
         XCTAssertEqual(decoded.selectedChartMetric, .expense)
         XCTAssertNil(decoded.flagSelection)
+        XCTAssertNil(decoded.detailColumns)
+        XCTAssertEqual(
+            decoded.selectedDetailColumns,
+            TransactionReportDetailColumn.standard
+        )
     }
 
     func testTransactionReportStandardPresetsAreDeterministicAndDistinct() throws {
@@ -8632,17 +8642,18 @@ final class FinanzVerwalterTests: XCTestCase {
             payee: "Händler \"Nord\"",
             payeeID: nil,
             purpose: "Zeile 1\nZeile 2",
-            detail: "",
+            detail: "Interne Notiz",
             categoryID: nil,
             categoryPath: "Haushalt › Lebensmittel",
-            tagIDs: [],
-            tagPaths: [],
+            tagIDs: [UUID(uuidString: "00000000-0000-0000-0000-000000000103")!],
+            tagPaths: ["Immobilien › Objekt A"],
             status: .booked,
+            flag: .purple,
             amountMinor: -123_456,
             currency: "EUR",
             isTransfer: false
         )
-        let snapshot = TransactionReportSnapshot(
+        var snapshot = TransactionReportSnapshot(
             facts: [fact],
             groups: [],
             totals: [
@@ -8654,15 +8665,19 @@ final class FinanzVerwalterTests: XCTestCase {
                 )
             ]
         )
+        snapshot.presentation.detailColumns = [
+            .flag, .memo, .tags, .amount, .currency, .split
+        ]
+        let metadata = ReportExportMetadata(
+            title: "Buchungsbericht",
+            dateLabel: "Gesamter Zeitraum",
+            filterSummary: "ohne Umbuchungen",
+            baseCurrency: "EUR",
+            generatedAt: Date(timeIntervalSince1970: 0)
+        )
         let data = try TransactionReportCSVExporter.data(
             snapshot: snapshot,
-            metadata: ReportExportMetadata(
-                title: "Buchungsbericht",
-                dateLabel: "Gesamter Zeitraum",
-                filterSummary: "ohne Umbuchungen",
-                baseCurrency: "EUR",
-                generatedAt: Date(timeIntervalSince1970: 0)
-            ),
+            metadata: metadata,
             options: ReportCSVOptions(separator: .semicolon, encoding: .utf8)
         )
         let text = try XCTUnwrap(String(data: data, encoding: .utf8))
@@ -8674,15 +8689,47 @@ final class FinanzVerwalterTests: XCTestCase {
             "Basiswährung;EUR",
             "",
             "Buchungen und Splitpositionen",
-            "Datum;Konto;Empfänger;Verwendungszweck;Kategorie;Status;Betrag;Währung;Split",
-            "1970-01-01;\"Giro;Privat\";\"Händler \"\"Nord\"\"\";"
-                + "\"Zeile 1\nZeile 2\";Haushalt › Lebensmittel;Gebucht;-1234,56;EUR;Ja",
+            "Kennzeichen;Memo;Klasse/Tags;Betrag;Währung;Split",
+            "Violett;Interne Notiz;Immobilien › Objekt A;-1234,56;EUR;Ja",
             "",
             "Gesamtsummen",
             "Währung;Einnahmen;Ausgaben;Saldo",
             "EUR;0,00;1234,56;-1234,56"
         ].joined(separator: "\r\n") + "\r\n"
         XCTAssertEqual(text, expected)
+
+        let html = TransactionReportHTMLExporter.html(
+            snapshot: snapshot, metadata: metadata
+        )
+        XCTAssertTrue(html.contains("<th>Kennzeichen</th>"))
+        XCTAssertTrue(html.contains("Violett"))
+        XCTAssertTrue(html.contains("Interne Notiz"))
+        XCTAssertTrue(html.contains("Immobilien › Objekt A"))
+        XCTAssertFalse(html.contains("<th>Datum</th>"))
+
+        let clipboard = try TransactionReportClipboardExporter.payload(
+            snapshot: snapshot, metadata: metadata
+        )
+        XCTAssertTrue(
+            clipboard.plainText.contains(
+                "Kennzeichen\tMemo\tKlasse/Tags\tBetrag\tWährung\tSplit"
+            )
+        )
+        let clipboardHTML = try XCTUnwrap(
+            String(data: clipboard.html, encoding: .utf8)
+        )
+        XCTAssertTrue(clipboardHTML.contains("Violett"))
+
+        let pdf = try TransactionReportPDFExporter.data(
+            snapshot: snapshot,
+            metadata: metadata,
+            options: ReportPDFOptions(orientation: .landscape)
+        )
+        let pdfText = try XCTUnwrap(PDFDocument(data: pdf)?.string)
+        XCTAssertTrue(pdfText.contains("Kennzeichen"))
+        XCTAssertTrue(pdfText.contains("Violett"))
+        XCTAssertTrue(pdfText.contains("Interne Notiz"))
+        XCTAssertFalse(pdfText.contains("Datum"))
     }
 
     func testReportHTMLExportIsDeterministicEscapedAndPresentationAware() throws {
@@ -8756,7 +8803,7 @@ final class FinanzVerwalterTests: XCTestCase {
             .joined()
         XCTAssertEqual(
             digest,
-            "eade30d54725fe90fe4a00620ecac5a425e268c4900740767f69b8564f6ff8c4"
+            "c7334e518c0b3c9a93f84adf0f2496c3a7b85dfd9c1ffe2fa6b9064285606dd9"
         )
 
         var summaryOnly = snapshot
@@ -8785,17 +8832,18 @@ final class FinanzVerwalterTests: XCTestCase {
             payee: "=2+2 & Händler",
             payeeID: nil,
             purpose: "Zeile 1\u{0001} / \"Zeile 2\"",
-            detail: "",
+            detail: "Interne Notiz",
             categoryID: nil,
             categoryPath: "Wohnen › Miete",
-            tagIDs: [],
-            tagPaths: [],
+            tagIDs: [UUID(uuidString: "00000000-0000-0000-0000-000000000103")!],
+            tagPaths: ["Immobilien › Objekt A"],
             status: .booked,
+            flag: .purple,
             amountMinor: -123_456,
             currency: "EUR",
             isTransfer: false
         )
-        let snapshot = TransactionReportSnapshot(
+        var snapshot = TransactionReportSnapshot(
             facts: [fact],
             groups: [
                 TransactionReportGroup(
@@ -8826,6 +8874,9 @@ final class FinanzVerwalterTests: XCTestCase {
                 )
             ]
         )
+        snapshot.presentation.detailColumns = [
+            .flag, .memo, .tags, .amount, .currency, .split
+        ]
         let metadata = ReportExportMetadata(
             title: "Miete <2025>",
             dateLabel: "Gesamter Zeitraum",
@@ -8847,9 +8898,14 @@ final class FinanzVerwalterTests: XCTestCase {
         let digest = SHA256.hash(data: first)
             .map { String(format: "%02x", $0) }
             .joined()
+        if let outputPath = ProcessInfo.processInfo.environment[
+            "FINANZVERWALTER_XLSX_QA_OUTPUT"
+        ] {
+            try first.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        }
         XCTAssertEqual(
             digest,
-            "c96f21d0d9e524b3418d1bd37aa03e5ec8c93cb3aca95ccaad8bf2ccf98186d6"
+            "ba7fc4929cbd835136c12932a6b332b438ba61cfc9ee1806be83e542acfa7c47"
         )
 
         let url = FileManager.default.temporaryDirectory
@@ -8884,8 +8940,12 @@ final class FinanzVerwalterTests: XCTestCase {
         _ = try XMLDocument(data: sheetData)
         let sheet = try XCTUnwrap(String(data: sheetData, encoding: .utf8))
         XCTAssertTrue(sheet.contains("Miete &lt;2025&gt;"))
-        XCTAssertTrue(sheet.contains("Giro &lt;Privat&gt;"))
-        XCTAssertTrue(sheet.contains("=2+2 &amp; Händler"))
+        XCTAssertTrue(sheet.contains("Kennzeichen"))
+        XCTAssertTrue(sheet.contains("Violett"))
+        XCTAssertTrue(sheet.contains("Interne Notiz"))
+        XCTAssertTrue(sheet.contains("Immobilien › Objekt A"))
+        XCTAssertFalse(sheet.contains("Giro &lt;Privat&gt;"))
+        XCTAssertFalse(sheet.contains("=2+2 &amp; Händler"))
         XCTAssertFalse(sheet.contains("\u{0001}"))
         XCTAssertFalse(sheet.contains("<f>"))
         XCTAssertTrue(sheet.contains("<v>-1234.56</v>"))
@@ -9063,7 +9123,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(text.contains("Gruppierte Übersicht"))
         XCTAssertTrue(text.contains("Buchungen und Splitpositionen"))
         XCTAssertTrue(text.contains("Immobilien › Wohnung 0 › Grundsteuer"))
-        XCTAssertTrue(text.contains("1.234,56 EUR"))
+        XCTAssertTrue(text.contains("1.234,56"))
         XCTAssertTrue(text.contains("Seite 1"))
         XCTAssertTrue(text.contains("Seite \(document.pageCount)"))
     }

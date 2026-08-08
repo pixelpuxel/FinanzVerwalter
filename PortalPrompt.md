@@ -2434,3 +2434,23 @@ Zwischenablage und Systemdruck denselben unveränderlichen Snapshot verwenden,
 müssen alle Ausgaben exakt dieselbe gefilterte Buchungsmenge zeigen. Teste
 Farbauswahl, ausschließlich unmarkierte Buchungen, Vorlagenrundlauf und die
 Dekodierung älterer Queries ohne das neue Feld.
+
+Ergänze die buchungsbasierte Berichtswerkstatt um konfigurierbare
+Detailspalten. Definiere einen stabil codierten
+`TransactionReportDetailColumn` mit Datum, Konto, Empfänger,
+Verwendungszweck, Memo, Kategorie, Klasse/Tags, Status, Kennzeichen, Betrag,
+Währung und Splitstatus. Speichere die geordnete Auswahl optional als
+`detailColumns` in `TransactionReportQuery`; ein fehlendes oder leeres Feld
+muss rückwärtskompatibel auf Datum, Konto, Empfänger, Zweck, Kategorie,
+Status und Betrag zurückfallen.
+
+Führe die normalisierte Auswahl in `TransactionReportPresentation` des
+unveränderlichen Snapshots. Die Oberfläche bietet Standard, alle und einzelne
+Spalten, verhindert eine vollständig leere Tabelle und verwendet
+`TableColumnForEach`. Vorlagen ab Definitionsversion 5, Außenfenster und
+Rückintegration bewahren die Auswahl. CSV, PDF, HTML, XLSX und die beiden
+Zwischenablage-Repräsentationen erzeugen Kopf und Werte ausschließlich aus
+derselben Spaltenfolge; XLSX lässt Beträge numerisch, PDF verteilt die
+verfügbare Breite gewichtet. Teste Query-/Vorlagenrundlauf, Legacy-Decodierung,
+Kennzeichenübernahme sowie semantische und deterministische Ausgaben aller
+Kanäle.
