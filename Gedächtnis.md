@@ -4199,3 +4199,20 @@ Rechtsberatung.
   `build/TestResults/PortfolioReport-full-20260808-0228.xcresult` umfasst 175
   Tests: 173 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
   erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-PortfolioReport-Product` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `1bd682b02c641770e10550b779e737923ed8235b8833c91ee2a9952a03e6a150`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0233-portfolio-report/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0233-portfolio-report/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch, der Desktop-Link
+  zeigt auf `/Applications`, Finder wurde auf die App gelenkt und Prozess
+  78201 läuft daraus. Die Produktivdatei meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung, Schema 39 und unverändert 97 Konten, 2.170
+  Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  daher wird keine sichtbare UI-Abnahme oder ein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand nach Installation: 24.785.375 Tokens.
