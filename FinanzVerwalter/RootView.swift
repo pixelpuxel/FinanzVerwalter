@@ -6,10 +6,12 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
     case categories
     case register
     case combinedRegister
+    case banking
     case payments
     case calendar
     case budget
     case reports
+    case taxAllowances
     case investments
     case assets
     case contracts
@@ -27,10 +29,12 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
         case .categories: "Kategorien"
         case .register: "Kontoblatt"
         case .combinedRegister: "Sammelkontoblätter"
+        case .banking: "Banking-Abruf"
         case .payments: "Zahlungsverkehr"
         case .calendar: "Kalender & Prognose"
         case .budget: "Budget"
         case .reports: "Auswertungen"
+        case .taxAllowances: "Freistellungsaufträge"
         case .investments: "Wertpapiere & Depots"
         case .assets: "Kredite & Vermögen"
         case .contracts: "Verträge"
@@ -48,10 +52,12 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
         case .categories: "folder"
         case .register: "list.bullet.rectangle"
         case .combinedRegister: "rectangle.stack"
+        case .banking: "arrow.triangle.2.circlepath"
         case .payments: "arrow.left.arrow.right"
         case .calendar: "calendar"
         case .budget: "chart.pie"
         case .reports: "chart.bar.xaxis"
+        case .taxAllowances: "eurosign.circle"
         case .investments: "chart.line.uptrend.xyaxis"
         case .assets: "house"
         case .contracts: "doc.text"
@@ -65,7 +71,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
 
     static let financeSections: [WorkspaceSection] = [
         .cockpit, .accounts, .register, .combinedRegister, .categories,
-        .payments, .calendar, .budget, .reports
+        .banking, .payments, .calendar, .budget, .reports, .taxAllowances
     ]
 
     static let organizationSections: [WorkspaceSection] = [
@@ -82,6 +88,14 @@ struct RootView: View {
     @State private var showNewTransaction = false
     @State private var showTransfer = false
     @State private var showReconciliation = false
+    @State private var newTransactionStartsWithSplits = false
+    @State private var reportLaunchQuery: TransactionReportQuery?
+    @State private var reportLaunchTitle: String?
+    @State private var specializedReportLaunch: SpecializedReportLaunchRequest?
+    @State private var reportLaunchID = UUID()
+    @State private var bankingLaunchScope: BankingLaunchScope?
+    @State private var bankingLaunchID = UUID()
+    @FocusState private var searchIsFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -101,20 +115,23 @@ struct RootView: View {
                     }
                     if !store.accounts.isEmpty {
                         Section("Konten") {
-                            ForEach(store.accounts.filter { !$0.isHidden }) { account in
-                                Button {
-                                    store.selectedAccountID = account.id
-                                    selectedSection = .register
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(account.name)
-                                        Text(Money(minorUnits: store.balances[account.id] ?? 0).formatted)
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(store.accountGroups.filter(\.isActive)) { group in
+                                let accounts = store.accounts.filter {
+                                    $0.groupID == group.id && !$0.isHidden && !$0.isClosed
                                 }
-                                .buttonStyle(.plain)
+                                if !accounts.isEmpty {
+                                    DisclosureGroup(group.name) {
+                                        ForEach(accounts) { account in
+                                            accountSidebarButton(account)
+                                        }
+                                    }
+                                }
+                            }
+                            let ungrouped = store.accounts.filter {
+                                $0.groupID == nil && !$0.isHidden && !$0.isClosed
+                            }
+                            ForEach(ungrouped) { account in
+                                accountSidebarButton(account)
                             }
                         }
                     }
@@ -128,6 +145,7 @@ struct RootView: View {
             Divider()
             HStack {
                 Label(store.fileInfo?.name ?? "Keine Finanzdatei", systemImage: "internaldrive")
+                    .help(store.currentFinanceFileURL?.path ?? "")
                 Spacer()
                 Text("\(store.filteredTransactions.count) Buchungen")
                 Divider().frame(height: 14)
@@ -140,7 +158,11 @@ struct RootView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .sheet(isPresented: $showNewAccount) { AccountEditorView() }
-        .sheet(isPresented: $showNewTransaction) { TransactionEditorView() }
+        .sheet(isPresented: $showNewTransaction) {
+            TransactionEditorView(
+                startWithSplits: newTransactionStartsWithSplits
+            )
+        }
         .sheet(isPresented: $showTransfer) { TransferEditorView() }
         .sheet(isPresented: $showReconciliation) { ReconciliationView() }
         .alert(
@@ -155,11 +177,123 @@ struct RootView: View {
             Text(store.errorMessage ?? "")
         }
         .onReceive(NotificationCenter.default.publisher(for: .newTransaction)) { _ in
-            if !store.accounts.isEmpty { showNewTransaction = true }
+            if !store.accounts.isEmpty {
+                newTransactionStartsWithSplits = false
+                showNewTransaction = true
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .reconcileAccount)) { _ in
             if !store.accounts.isEmpty { showReconciliation = true }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .focusSearch)) { _ in
+            searchIsFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSplitEditor)) { _ in
+            if !store.accounts.isEmpty, !showNewTransaction {
+                newTransactionStartsWithSplits = true
+                showNewTransaction = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cancelCurrentEditor)) { _ in
+            showNewAccount = false
+            showNewTransaction = false
+            showTransfer = false
+            showReconciliation = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .financeFileDidChange)) { _ in
+            showNewAccount = false
+            showNewTransaction = false
+            showTransfer = false
+            showReconciliation = false
+            reportLaunchQuery = nil
+            reportLaunchTitle = nil
+            specializedReportLaunch = nil
+            reportLaunchID = UUID()
+            selectedSection = .cockpit
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openTransactionReport)
+        ) { notification in
+            if let request = notification.object as? TransactionReportLaunchRequest {
+                reportLaunchQuery = request.query
+                reportLaunchTitle = request.title
+                reportLaunchID = request.id
+            } else if let query = notification.object as? TransactionReportQuery {
+                reportLaunchQuery = query
+                reportLaunchTitle = nil
+                reportLaunchID = UUID()
+            } else {
+                return
+            }
+            specializedReportLaunch = nil
+            selectedSection = .reports
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openSpecializedReport)
+        ) { notification in
+            guard let request = notification.object
+                as? SpecializedReportLaunchRequest else { return }
+            reportLaunchQuery = nil
+            reportLaunchTitle = nil
+            specializedReportLaunch = request
+            reportLaunchID = request.id
+            selectedSection = .reports
+            DispatchQueue.main.async {
+                if specializedReportLaunch?.id == request.id {
+                    specializedReportLaunch = nil
+                }
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openAccountRegister)
+        ) { notification in
+            guard let accountID = notification.object as? UUID,
+                  store.accounts.contains(where: { $0.id == accountID }) else { return }
+            store.selectedAccountID = accountID
+            selectedSection = .register
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openAccountBanking)
+        ) { notification in
+            let scope: BankingLaunchScope
+            if let requested = notification.object as? BankingLaunchScope {
+                scope = requested
+            } else if let accountID = notification.object as? UUID {
+                scope = .account(accountID)
+            } else {
+                return
+            }
+            guard !scope.localAccountIDs.isDisjoint(
+                with: Set(store.accounts.map(\.id))
+            ) else { return }
+            if case let .account(accountID) = scope {
+                store.selectedAccountID = accountID
+            }
+            bankingLaunchScope = scope
+            bankingLaunchID = UUID()
+            selectedSection = .banking
+        }
+    }
+
+    private func accountSidebarButton(_ account: FinanceAccount) -> some View {
+        Button {
+            store.selectedAccountID = account.id
+            selectedSection = .register
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(account.name)
+                Text(
+                    Money(
+                        minorUnits: store.balances[account.id] ?? 0,
+                        currency: account.currency
+                    ).formatted
+                )
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
     }
 
     private var topToolbar: some View {
@@ -170,13 +304,18 @@ struct RootView: View {
                 .padding(.trailing, 12)
             ToolbarButton("Konto", icon: "plus.rectangle.on.folder") { showNewAccount = true }
             ToolbarButton("Buchung", icon: "plus") {
-                if !store.accounts.isEmpty { showNewTransaction = true }
+                if !store.accounts.isEmpty {
+                    newTransactionStartsWithSplits = false
+                    showNewTransaction = true
+                }
             }
             ToolbarButton("Umbuchung", icon: "arrow.left.arrow.right") {
                 if store.accounts.count >= 2 { showTransfer = true }
             }
             Divider().frame(height: 28)
-            ToolbarButton("Speichern", icon: "square.and.arrow.down") { store.reload() }
+            ToolbarButton("Speichern", icon: "square.and.arrow.down") {
+                NotificationCenter.default.post(name: .saveCurrentEditor, object: nil)
+            }
             ToolbarButton("Aktualisieren", icon: "arrow.clockwise") { store.reload() }
             ToolbarButton("Abgleichen", icon: "checkmark.seal") {
                 if !store.accounts.isEmpty { showReconciliation = true }
@@ -188,6 +327,7 @@ struct RootView: View {
                 TextField("Suchen", text: $store.searchText)
                     .textFieldStyle(.plain)
                     .frame(width: 220)
+                    .focused($searchIsFocused)
                     .accessibilityIdentifier("globalSearch")
                 if !store.searchText.isEmpty {
                     Button { store.searchText = "" } label: {
@@ -232,10 +372,20 @@ struct RootView: View {
         case .categories: CategoriesView()
         case .register: RegisterView()
         case .combinedRegister: CombinedRegisterView()
+        case .banking:
+            BankingView(launchScope: bankingLaunchScope)
+                .id(bankingLaunchID)
         case .payments: PaymentsView()
         case .calendar: CalendarForecastView()
         case .budget: BudgetView()
-        case .reports: ReportsView()
+        case .reports:
+            ReportsView(
+                launchQuery: reportLaunchQuery,
+                launchTitle: reportLaunchTitle,
+                specializedLaunch: specializedReportLaunch
+            )
+            .id(reportLaunchID)
+        case .taxAllowances: TaxAllowancesView()
         case .investments: InvestmentsView()
         case .assets: AssetsView()
         case .contracts: ContractsView()

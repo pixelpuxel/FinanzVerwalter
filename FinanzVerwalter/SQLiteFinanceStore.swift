@@ -1,13 +1,58 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SQLite3
 
+struct FinanceBackupPreview: Equatable, Sendable {
+    let url: URL
+    let financeFileName: String
+    let baseCurrency: String
+    let schemaVersion: Int
+    let accountCount: Int64
+    let categoryCount: Int64
+    let transactionCount: Int64
+    let latestBookingDate: Date?
+    let byteCount: Int64
+    let modifiedAt: Date?
+}
+
+struct OpenDataArchiveSummary: Equatable, Sendable {
+    let url: URL
+    let formatVersion: Int
+    let tableCount: Int
+    let rowCount: Int
+    let attachmentCount: Int
+    let fileCount: Int
+    let byteCount: Int64
+    let checksumManifestSHA256: String
+}
+
+struct OpenDataArchiveImportSummary: Equatable, Sendable {
+    let archiveURL: URL
+    let financeFileURL: URL
+    let formatVersion: Int
+    let tableCount: Int
+    let rowCount: Int
+    let attachmentCount: Int
+    let importedSettings: [String: String]
+    let checksumManifestSHA256: String
+}
+
 final class SQLiteFinanceStore {
+    typealias AttachmentScanHook = (Data, String) throws -> Void
+
+    static let currentSchemaVersion = 41
     private var database: OpaquePointer?
+    private var transactionDepth = 0
+    private let attachmentScanHook: AttachmentScanHook
     let fileURL: URL
 
-    init(fileURL: URL = SQLiteFinanceStore.defaultFileURL()) throws {
+    init(
+        fileURL: URL = SQLiteFinanceStore.defaultFileURL(),
+        attachmentScanHook: @escaping AttachmentScanHook = { _, _ in }
+    ) throws {
         self.fileURL = fileURL
+        self.attachmentScanHook = attachmentScanHook
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -20,9 +65,23 @@ final class SQLiteFinanceStore {
         ) == SQLITE_OK else {
             throw FinanceError.database("Die Finanzdatei konnte nicht geöffnet werden.")
         }
+        guard sqlite3_busy_timeout(database, 5_000) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Die Wartezeit für eine vorübergehend belegte Finanzdatei konnte nicht gesetzt werden."
+            )
+        }
         try execute("PRAGMA foreign_keys = ON")
         try execute("PRAGMA journal_mode = WAL")
         try execute("PRAGMA synchronous = FULL")
+        let existingVersion = try scalarInt("PRAGMA user_version")
+        guard existingVersion <= Self.currentSchemaVersion else {
+            throw FinanceError.database(
+                "Die Finanzdatei verwendet Schema \(existingVersion); diese App unterstützt höchstens Schema \(Self.currentSchemaVersion)."
+            )
+        }
+        if existingVersion > 0 && existingVersion < Self.currentSchemaVersion {
+            try createPreMigrationBackup(schemaVersion: existingVersion)
+        }
         try migrate()
     }
 
@@ -46,7 +105,13 @@ final class SQLiteFinanceStore {
 
     static func validateBackup(at url: URL) throws {
         var checkDatabase: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &checkDatabase, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        let immutableURI = url.absoluteString + (url.query == nil ? "?immutable=1" : "&immutable=1")
+        guard sqlite3_open_v2(
+            immutableURI,
+            &checkDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+            nil
+        ) == SQLITE_OK else {
             throw FinanceError.invalidBackup
         }
         defer { sqlite3_close(checkDatabase) }
@@ -71,6 +136,124 @@ final class SQLiteFinanceStore {
         guard sqlite3_step(statement) == SQLITE_ROW, Self.text(statement, 0) == "ok" else {
             throw FinanceError.invalidBackup
         }
+    }
+
+    static func backupPreview(
+        at rawURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> FinanceBackupPreview {
+        let url = rawURL.standardizedFileURL
+        let values = try url.resourceValues(
+            forKeys: [
+                .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+                .contentModificationDateKey
+            ]
+        )
+        guard values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              let fileSize = values.fileSize,
+              fileSize >= 0 else {
+            throw FinanceError.invalidBackup
+        }
+        try validateBackup(at: url)
+
+        var previewDatabase: OpaquePointer?
+        let immutableURI = url.absoluteString
+            + (url.query == nil ? "?immutable=1" : "&immutable=1")
+        guard sqlite3_open_v2(
+            immutableURI,
+            &previewDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+            nil
+        ) == SQLITE_OK,
+        let database = previewDatabase else {
+            if let previewDatabase { sqlite3_close(previewDatabase) }
+            throw FinanceError.invalidBackup
+        }
+        defer { sqlite3_close(database) }
+
+        func scalarInt64(_ sql: String) throws -> Int64 {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw FinanceError.invalidBackup
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw FinanceError.invalidBackup
+            }
+            return sqlite3_column_int64(statement, 0)
+        }
+
+        func scalarText(_ sql: String) throws -> String {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw FinanceError.invalidBackup
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  sqlite3_column_type(statement, 0) != SQLITE_NULL else {
+                throw FinanceError.invalidBackup
+            }
+            return Self.text(statement, 0)
+        }
+
+        func optionalScalarText(_ sql: String) throws -> String? {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw FinanceError.invalidBackup
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw FinanceError.invalidBackup
+            }
+            return sqlite3_column_type(statement, 0) == SQLITE_NULL
+                ? nil
+                : Self.text(statement, 0)
+        }
+
+        let schemaVersion = Int(try scalarInt64("PRAGMA user_version"))
+        guard schemaVersion > 0 else { throw FinanceError.invalidBackup }
+        guard schemaVersion <= currentSchemaVersion else {
+            throw FinanceError.database(
+                "Die Sicherung verwendet Schema \(schemaVersion); diese App unterstützt höchstens Schema \(currentSchemaVersion)."
+            )
+        }
+        let latestBookingDate = try optionalScalarText(
+            "SELECT MAX(booking_date) FROM transactions"
+        ).flatMap(Self.date)
+        return FinanceBackupPreview(
+            url: url,
+            financeFileName: try scalarText("SELECT name FROM finance_files LIMIT 1"),
+            baseCurrency: try scalarText(
+                "SELECT base_currency FROM finance_files LIMIT 1"
+            ),
+            schemaVersion: schemaVersion,
+            accountCount: try scalarInt64("SELECT COUNT(*) FROM accounts"),
+            categoryCount: try scalarInt64("SELECT COUNT(*) FROM categories"),
+            transactionCount: try scalarInt64("SELECT COUNT(*) FROM transactions"),
+            latestBookingDate: latestBookingDate,
+            byteCount: Int64(fileSize),
+            modifiedAt: values.contentModificationDate
+        )
+    }
+
+    private func createPreMigrationBackup(schemaVersion: Int) throws {
+        let directory = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("Sicherungen", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let target = directory.appendingPathComponent(
+            "FinanzVerwalter-vor-Migration-v\(schemaVersion)-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).qbackup"
+        )
+        try backup(to: target)
+        try Self.validateBackup(at: target)
     }
 
     private func migrate() throws {
@@ -726,6 +909,1379 @@ final class SQLiteFinanceStore {
                 try execute("PRAGMA user_version = 10")
             }
         }
+        if version < 11 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE account_groups (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        sort_order INTEGER NOT NULL DEFAULT 0,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute("ALTER TABLE accounts ADD COLUMN short_name TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN group_id TEXT REFERENCES account_groups(id)")
+                try execute("ALTER TABLE accounts ADD COLUMN iban TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN bic TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN account_number_masked TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN owner_name TEXT NOT NULL DEFAULT ''")
+                try execute("ALTER TABLE accounts ADD COLUMN opening_date TEXT")
+                try execute("ALTER TABLE accounts ADD COLUMN credit_limit_minor INTEGER NOT NULL DEFAULT 0")
+                try execute("ALTER TABLE accounts ADD COLUMN is_online INTEGER NOT NULL DEFAULT 0")
+                try execute("ALTER TABLE accounts ADD COLUMN include_net_worth INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN include_budget INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN include_reports INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN include_forecast INTEGER NOT NULL DEFAULT 1")
+                try execute("ALTER TABLE accounts ADD COLUMN last_sync_at TEXT")
+                try execute("ALTER TABLE accounts ADD COLUMN last_bank_balance_minor INTEGER")
+                try execute("ALTER TABLE accounts ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'offline'")
+                let now = Self.timestamp(Date())
+                for (index, name) in ["Bankkonten", "Bargeld", "Vermögen", "Verbindlichkeiten"].enumerated() {
+                    try run(
+                        """
+                        INSERT INTO account_groups(id,finance_file_id,name,sort_order,is_active,created_at,updated_at)
+                        SELECT ?,id,?,?,1,?,? FROM finance_files LIMIT 1
+                        """,
+                        [
+                            .text(UUID().uuidString), .text(name), .integer(Int64(index)),
+                            .text(now), .text(now)
+                        ]
+                    )
+                }
+                try execute("CREATE INDEX accounts_group_sort ON accounts(group_id,sort_order,name)")
+                try execute("PRAGMA user_version = 11")
+            }
+        }
+        if version < 12 {
+            try transaction {
+                let groupNames = [
+                    "Bankkonten", "Kreditkarten", "Bargeld", "Depots", "Kredite",
+                    "Vermögen", "Verbindlichkeiten", "Forderungen", "Sonstige"
+                ]
+                let now = Self.timestamp(Date())
+                for (index, name) in groupNames.enumerated() {
+                    try run(
+                        """
+                        INSERT INTO account_groups(
+                            id,finance_file_id,name,sort_order,is_active,created_at,updated_at
+                        )
+                        SELECT ?,id,?,?,1,?,? FROM finance_files LIMIT 1
+                        ON CONFLICT(finance_file_id,name)
+                        DO UPDATE SET sort_order=excluded.sort_order,is_active=1,
+                                      updated_at=excluded.updated_at,version=version+1
+                        """,
+                        [
+                            .text(UUID().uuidString), .text(name), .integer(Int64(index)),
+                            .text(now), .text(now)
+                        ]
+                    )
+                }
+                try execute(
+                    """
+                    UPDATE accounts
+                    SET group_id=(
+                        SELECT id FROM account_groups
+                        WHERE finance_file_id=accounts.finance_file_id
+                          AND name=CASE
+                            WHEN accounts.type IN (
+                                'checking','savings','fixedDeposit','clearing','foreignCurrency'
+                            ) THEN 'Bankkonten'
+                            WHEN accounts.type='creditCard' THEN 'Kreditkarten'
+                            WHEN accounts.type='cash' THEN 'Bargeld'
+                            WHEN accounts.type='investment' THEN 'Depots'
+                            WHEN accounts.type='loan' THEN 'Kredite'
+                            WHEN accounts.type IN ('asset','inventory') THEN 'Vermögen'
+                            WHEN accounts.type='liability' THEN 'Verbindlichkeiten'
+                            WHEN accounts.type='receivable' THEN 'Forderungen'
+                            ELSE 'Sonstige'
+                          END
+                        LIMIT 1
+                    ),
+                    updated_at='\(now)',
+                    version=version+1
+                    WHERE group_id IS NULL
+                    """
+                )
+                try execute("PRAGMA user_version = 12")
+            }
+        }
+        if version < 13 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE report_templates (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id) ON DELETE CASCADE,
+                        name TEXT NOT NULL COLLATE NOCASE,
+                        definition_version INTEGER NOT NULL,
+                        query_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX report_templates_name ON report_templates(finance_file_id,name)"
+                )
+                try execute("PRAGMA user_version = 13")
+            }
+        }
+        if version < 14 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE standing_orders (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id) ON DELETE CASCADE,
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        name TEXT NOT NULL,
+                        recipient_name TEXT NOT NULL,
+                        iban TEXT NOT NULL,
+                        bic TEXT NOT NULL DEFAULT '',
+                        amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+                        currency TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        next_execution_date TEXT NOT NULL,
+                        end_date TEXT,
+                        frequency TEXT NOT NULL,
+                        business_day_adjustment TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE standing_order_runs (
+                        id TEXT PRIMARY KEY,
+                        standing_order_id TEXT NOT NULL REFERENCES standing_orders(id),
+                        due_date TEXT NOT NULL,
+                        execution_date TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        payment_order_id TEXT REFERENCES payment_orders(id),
+                        created_at TEXT NOT NULL,
+                        UNIQUE(standing_order_id,due_date)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX standing_orders_due ON standing_orders(status,next_execution_date,id)"
+                )
+                try execute(
+                    "CREATE INDEX standing_order_runs_order ON standing_order_runs(standing_order_id,due_date DESC,id)"
+                )
+                try execute("PRAGMA user_version = 14")
+            }
+        }
+        if version < 15 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN starting_balance_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN selected_sum_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN adjustment_transaction_id TEXT REFERENCES transactions(id)"
+                )
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN workflow_version INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    """
+                    CREATE TABLE reconciliation_items (
+                        reconciliation_id TEXT NOT NULL
+                            REFERENCES reconciliations(id) ON DELETE CASCADE,
+                        transaction_id TEXT NOT NULL REFERENCES transactions(id),
+                        previous_status TEXT NOT NULL,
+                        amount_minor INTEGER NOT NULL,
+                        is_adjustment INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(reconciliation_id,transaction_id)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX reconciliation_items_transaction ON reconciliation_items(transaction_id)"
+                )
+                try execute(
+                    "CREATE INDEX reconciliations_active ON reconciliations(account_id,reverted_at,statement_date DESC,completed_at DESC)"
+                )
+                try execute("PRAGMA user_version = 15")
+            }
+        }
+        if version < 16 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE reconciliations ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "UPDATE reconciliations SET sequence=rowid WHERE sequence=0"
+                )
+                try execute("PRAGMA user_version = 16")
+            }
+        }
+        if version < 17 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE transaction_templates (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX transaction_templates_name ON transaction_templates(finance_file_id,name COLLATE NOCASE,id)"
+                )
+                try execute("PRAGMA user_version = 17")
+            }
+        }
+        if version < 18 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE vat_codes (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        rate_basis_points INTEGER NOT NULL
+                            CHECK(rate_basis_points BETWEEN 0 AND 10000),
+                        description TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(finance_file_id,name)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    INSERT INTO vat_codes(
+                        id,finance_file_id,name,rate_basis_points,description,
+                        is_active,created_at,updated_at
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000001800',id,
+                        '0 %',0,'Steuerfrei oder eigener Nullsatz',1,
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    FROM finance_files LIMIT 1
+                    """
+                )
+                try execute(
+                    """
+                    INSERT INTO vat_codes(
+                        id,finance_file_id,name,rate_basis_points,description,
+                        is_active,created_at,updated_at
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000001807',id,
+                        '7 %',700,'Ermäßigter deutscher Steuersatz',1,
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    FROM finance_files LIMIT 1
+                    """
+                )
+                try execute(
+                    """
+                    INSERT INTO vat_codes(
+                        id,finance_file_id,name,rate_basis_points,description,
+                        is_active,created_at,updated_at
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000001819',id,
+                        '19 %',1900,'Deutscher Regelsteuersatz',1,
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    FROM finance_files LIMIT 1
+                    """
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN is_budgetable INTEGER NOT NULL DEFAULT 1"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN default_vat_code_id TEXT REFERENCES vat_codes(id) ON DELETE SET NULL"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN german_tax_line TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE categories ADD COLUMN us_tax_line TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN vat_code_id TEXT REFERENCES vat_codes(id) ON DELETE SET NULL"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN vat_mode TEXT NOT NULL DEFAULT 'none'"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN net_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN tax_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN vat_code_id TEXT REFERENCES vat_codes(id) ON DELETE SET NULL"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN vat_mode TEXT NOT NULL DEFAULT 'none'"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN net_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "ALTER TABLE transaction_splits ADD COLUMN tax_minor INTEGER NOT NULL DEFAULT 0"
+                )
+                try execute(
+                    "CREATE INDEX transactions_vat ON transactions(vat_code_id,booking_date)"
+                )
+                try execute(
+                    "CREATE INDEX transaction_splits_vat ON transaction_splits(vat_code_id)"
+                )
+                try execute("PRAGMA user_version = 18")
+            }
+        }
+        if version < 19 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN external_provider TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN external_transaction_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN counterparty_iban TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN end_to_end_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN mandate_reference TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN duplicate_fingerprint TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN bank_balance_after_minor INTEGER"
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX transactions_external_identity
+                    ON transactions(account_id,external_provider,external_transaction_id)
+                    WHERE external_provider<>'' AND external_transaction_id<>''
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX transactions_duplicate_fingerprint
+                    ON transactions(account_id,duplicate_fingerprint)
+                    WHERE duplicate_fingerprint<>''
+                    """
+                )
+                try execute("PRAGMA user_version = 19")
+            }
+        }
+        if version < 20 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS categorization_rules (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        priority INTEGER NOT NULL,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        stop_after_match INTEGER NOT NULL DEFAULT 1,
+                        payee_contains TEXT NOT NULL DEFAULT '',
+                        purpose_contains TEXT NOT NULL DEFAULT '',
+                        minimum_amount_minor INTEGER,
+                        maximum_amount_minor INTEGER,
+                        category_id TEXT NOT NULL REFERENCES categories(id),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    "ALTER TABLE categorization_rules ADD COLUMN definition_json TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN counterparty_bic TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN creditor_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN booking_text TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    """
+                    CREATE TABLE rule_application_runs (
+                        id TEXT PRIMARY KEY,
+                        rule_id TEXT NOT NULL REFERENCES categorization_rules(id),
+                        rule_name TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        undone_at TEXT,
+                        transaction_count INTEGER NOT NULL,
+                        definition_json TEXT NOT NULL
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE rule_application_items (
+                        run_id TEXT NOT NULL REFERENCES rule_application_runs(id) ON DELETE CASCADE,
+                        transaction_id TEXT NOT NULL,
+                        before_json BLOB NOT NULL,
+                        after_fingerprint TEXT NOT NULL,
+                        PRIMARY KEY(run_id,transaction_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX rule_application_runs_latest
+                    ON rule_application_runs(undone_at,applied_at DESC,id)
+                    """
+                )
+                try execute("PRAGMA user_version = 20")
+            }
+        }
+        if version < 21 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE banking_connections (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        provider_kind TEXT NOT NULL,
+                        adapter_identifier TEXT NOT NULL,
+                        institution_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        consent_valid_until TEXT,
+                        last_sync_at TEXT,
+                        last_user_message TEXT NOT NULL DEFAULT '',
+                        is_enabled INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE banking_account_mappings (
+                        id TEXT PRIMARY KEY,
+                        connection_id TEXT NOT NULL REFERENCES banking_connections(id) ON DELETE CASCADE,
+                        external_account_id TEXT NOT NULL,
+                        remote_name TEXT NOT NULL,
+                        remote_iban TEXT NOT NULL,
+                        currency TEXT NOT NULL,
+                        local_account_id TEXT REFERENCES accounts(id),
+                        is_enabled INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(connection_id,external_account_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE banking_sync_runs (
+                        id TEXT PRIMARY KEY,
+                        connection_id TEXT NOT NULL REFERENCES banking_connections(id) ON DELETE CASCADE,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        status TEXT NOT NULL,
+                        requested_operations TEXT NOT NULL,
+                        imported_count INTEGER NOT NULL DEFAULT 0,
+                        matched_count INTEGER NOT NULL DEFAULT 0,
+                        skipped_count INTEGER NOT NULL DEFAULT 0,
+                        user_message TEXT NOT NULL DEFAULT '',
+                        technical_code TEXT NOT NULL DEFAULT '',
+                        raw_payload_hash TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX banking_sync_runs_latest
+                    ON banking_sync_runs(connection_id,started_at DESC,id)
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE banking_remote_orders (
+                        connection_id TEXT NOT NULL REFERENCES banking_connections(id) ON DELETE CASCADE,
+                        external_order_id TEXT NOT NULL,
+                        external_account_id TEXT NOT NULL,
+                        recipient_name TEXT NOT NULL,
+                        recipient_iban TEXT NOT NULL,
+                        amount_minor INTEGER NOT NULL,
+                        currency TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        next_execution_date TEXT NOT NULL,
+                        frequency TEXT NOT NULL,
+                        is_scheduled_payment INTEGER NOT NULL,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY(connection_id,external_order_id)
+                    )
+                    """
+                )
+                try execute("PRAGMA user_version = 21")
+            }
+        }
+        if version < 22 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE payees ADD COLUMN creditor_id TEXT NOT NULL DEFAULT ''"
+                )
+                try execute(
+                    """
+                    CREATE TABLE payee_default_tags (
+                        payee_id TEXT NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+                        tag_id TEXT NOT NULL REFERENCES tags(id),
+                        PRIMARY KEY(payee_id,tag_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE sepa_mandates (
+                        id TEXT PRIMARY KEY,
+                        payee_id TEXT NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+                        reference TEXT NOT NULL,
+                        signed_on TEXT,
+                        sequence_type TEXT NOT NULL,
+                        note TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(payee_id,reference)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX sepa_mandates_payee_active
+                    ON sepa_mandates(payee_id,is_active,reference)
+                    """
+                )
+                try execute("PRAGMA user_version = 22")
+            }
+        }
+        if version < 23 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payee_bank_accounts (
+                        id TEXT PRIMARY KEY,
+                        payee_id TEXT NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+                        label TEXT NOT NULL,
+                        account_holder TEXT NOT NULL DEFAULT '',
+                        iban TEXT NOT NULL,
+                        bic TEXT NOT NULL DEFAULT '',
+                        bank_name TEXT NOT NULL DEFAULT '',
+                        is_default INTEGER NOT NULL DEFAULT 0,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(payee_id,iban),
+                        CHECK(is_default=0 OR is_active=1)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX payee_bank_accounts_one_default
+                    ON payee_bank_accounts(payee_id) WHERE is_default=1
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payee_bank_accounts_payee_active
+                    ON payee_bank_accounts(payee_id,is_active,label,id)
+                    """
+                )
+                try execute(
+                    "ALTER TABLE payment_orders ADD COLUMN payee_id TEXT REFERENCES payees(id)"
+                )
+                try execute(
+                    """
+                    ALTER TABLE payment_orders ADD COLUMN payee_bank_account_id TEXT
+                    REFERENCES payee_bank_accounts(id)
+                    """
+                )
+
+                var payeeColumns = Set<String>()
+                try query("PRAGMA table_info(payees)") {
+                    payeeColumns.insert(Self.text($0, 1))
+                }
+                if payeeColumns.isSuperset(of: ["id", "canonical_name", "iban", "bic"]) {
+                    var legacyAccounts: [(UUID, String, String, String)] = []
+                    try query(
+                        """
+                        SELECT id,canonical_name,iban,bic FROM payees
+                        WHERE TRIM(iban) != '' ORDER BY id
+                        """
+                    ) {
+                        guard let payeeID = UUID(uuidString: Self.text($0, 0)) else {
+                            return
+                        }
+                        legacyAccounts.append(
+                            (
+                                payeeID, Self.text($0, 1), Self.text($0, 2),
+                                Self.text($0, 3)
+                            )
+                        )
+                    }
+                    let now = Self.timestamp(Date())
+                    for legacy in legacyAccounts {
+                        try run(
+                            """
+                            INSERT INTO payee_bank_accounts(
+                                id,payee_id,label,account_holder,iban,bic,bank_name,
+                                is_default,is_active,created_at,updated_at
+                            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            [
+                                .text(UUID().uuidString),
+                                .text(legacy.0.uuidString), .text("Standardkonto"),
+                                .text(legacy.1),
+                                .text(IBANValidator.normalized(legacy.2)),
+                                .text(legacy.3.uppercased()), .text(""),
+                                .integer(1), .integer(1), .text(now), .text(now)
+                            ]
+                        )
+                    }
+                }
+                try execute("PRAGMA user_version = 23")
+            }
+        }
+        if version < 24 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE direct_debit_orders (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        creditor_account_id TEXT NOT NULL REFERENCES accounts(id),
+                        debtor_payee_id TEXT NOT NULL REFERENCES payees(id),
+                        debtor_bank_account_id TEXT NOT NULL REFERENCES payee_bank_accounts(id),
+                        mandate_id TEXT NOT NULL REFERENCES sepa_mandates(id),
+                        creditor_name TEXT NOT NULL,
+                        creditor_id TEXT NOT NULL,
+                        creditor_iban TEXT NOT NULL,
+                        creditor_bic TEXT NOT NULL DEFAULT '',
+                        debtor_name TEXT NOT NULL,
+                        debtor_iban TEXT NOT NULL,
+                        debtor_bic TEXT NOT NULL DEFAULT '',
+                        amount_minor INTEGER NOT NULL CHECK(amount_minor>0),
+                        currency TEXT NOT NULL CHECK(currency='EUR'),
+                        collection_date TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        end_to_end_id TEXT NOT NULL,
+                        mandate_reference TEXT NOT NULL,
+                        mandate_signed_on TEXT NOT NULL,
+                        sequence_type TEXT NOT NULL CHECK(sequence_type IN ('oneOff','first','recurring','final')),
+                        status TEXT NOT NULL CHECK(status IN ('draft','initiated','challengeReceived','awaitingUser','submitted','accepted','rejected','unknown','cancelled')),
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        bank_reference TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX direct_debit_orders_collection
+                    ON direct_debit_orders(collection_date,status,id)
+                    """
+                )
+                try execute("PRAGMA user_version = 24")
+            }
+        }
+        if version < 25 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payment_batches (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        name TEXT NOT NULL,
+                        kind TEXT NOT NULL CHECK(kind IN ('creditTransfer','directDebit')),
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        requested_date TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN ('draft','initiated','challengeReceived','awaitingUser','submitted','accepted','rejected','unknown','cancelled')),
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        bank_reference TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE payment_batch_items (
+                        batch_id TEXT NOT NULL REFERENCES payment_batches(id) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK(position>=0),
+                        payment_order_id TEXT REFERENCES payment_orders(id),
+                        direct_debit_order_id TEXT REFERENCES direct_debit_orders(id),
+                        PRIMARY KEY(batch_id,position),
+                        CHECK((payment_order_id IS NOT NULL) != (direct_debit_order_id IS NOT NULL))
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX payment_batch_credit_member
+                    ON payment_batch_items(payment_order_id)
+                    WHERE payment_order_id IS NOT NULL
+                    """
+                )
+                try execute(
+                    """
+                    CREATE UNIQUE INDEX payment_batch_debit_member
+                    ON payment_batch_items(direct_debit_order_id)
+                    WHERE direct_debit_order_id IS NOT NULL
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payment_batches_date_status
+                    ON payment_batches(requested_date,status,id)
+                    """
+                )
+                try execute("PRAGMA user_version = 25")
+            }
+        }
+        if version < 26 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payment_status_reports (
+                        fingerprint TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        message_id TEXT NOT NULL,
+                        source_created_at TEXT,
+                        imported_at TEXT NOT NULL,
+                        record_count INTEGER NOT NULL CHECK(record_count>0),
+                        applied_count INTEGER NOT NULL CHECK(applied_count>=0),
+                        warning_count INTEGER NOT NULL CHECK(warning_count>=0)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE payment_status_report_items (
+                        id TEXT PRIMARY KEY,
+                        report_fingerprint TEXT NOT NULL REFERENCES payment_status_reports(fingerprint) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK(position>=0),
+                        target_kind TEXT CHECK(target_kind IN ('creditTransfer','directDebit','batch')),
+                        target_id TEXT,
+                        target_title TEXT NOT NULL,
+                        original_message_id TEXT NOT NULL,
+                        original_message_name_id TEXT NOT NULL,
+                        original_payment_information_id TEXT NOT NULL,
+                        original_end_to_end_id TEXT NOT NULL,
+                        status_code TEXT NOT NULL,
+                        reason_code TEXT NOT NULL,
+                        reason_text TEXT NOT NULL,
+                        previous_status TEXT,
+                        applied_status TEXT,
+                        UNIQUE(report_fingerprint,position)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payment_status_reports_imported
+                    ON payment_status_reports(imported_at,fingerprint)
+                    """
+                )
+                try execute(
+                    """
+                    CREATE INDEX payment_status_items_target
+                    ON payment_status_report_items(target_kind,target_id,position)
+                    """
+                )
+                try execute("PRAGMA user_version = 26")
+            }
+        }
+        if version < 27 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE payment_instruction_imports (
+                        fingerprint TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        kind TEXT NOT NULL CHECK(kind IN ('creditTransfer','directDebit')),
+                        message_id TEXT NOT NULL,
+                        source_created_at TEXT,
+                        imported_at TEXT NOT NULL,
+                        record_count INTEGER NOT NULL CHECK(record_count>0),
+                        imported_count INTEGER NOT NULL CHECK(imported_count>=0),
+                        warning_count INTEGER NOT NULL CHECK(warning_count>=0)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE payment_instruction_import_items (
+                        id TEXT PRIMARY KEY,
+                        import_fingerprint TEXT NOT NULL REFERENCES payment_instruction_imports(fingerprint) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK(position>=0),
+                        kind TEXT NOT NULL CHECK(kind IN ('creditTransfer','directDebit')),
+                        payment_information_id TEXT NOT NULL,
+                        end_to_end_id TEXT NOT NULL,
+                        account_id TEXT REFERENCES accounts(id),
+                        account_title TEXT NOT NULL,
+                        target_order_id TEXT,
+                        counterparty_name TEXT NOT NULL,
+                        counterparty_iban TEXT NOT NULL,
+                        amount_minor INTEGER NOT NULL CHECK(amount_minor>0),
+                        requested_date TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        was_imported INTEGER NOT NULL CHECK(was_imported IN (0,1)),
+                        UNIQUE(import_fingerprint,position)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX payment_instruction_imports_date ON payment_instruction_imports(imported_at,fingerprint)"
+                )
+                try execute(
+                    "CREATE INDEX payment_instruction_items_target ON payment_instruction_import_items(target_order_id,position)"
+                )
+                try execute("PRAGMA user_version = 27")
+            }
+        }
+        if version < 28 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE payment_orders ADD COLUMN purpose_code TEXT NOT NULL DEFAULT '' CHECK(length(purpose_code)<=4)"
+                )
+                try execute("PRAGMA user_version = 28")
+            }
+        }
+        if version < 29 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE standing_orders ADD COLUMN banking_calendar_id TEXT NOT NULL DEFAULT 'target-euro-v1' CHECK(banking_calendar_id IN ('target-euro-v1','weekdays-v1'))"
+                )
+                try execute(
+                    "ALTER TABLE standing_order_runs ADD COLUMN banking_calendar_id TEXT NOT NULL DEFAULT 'target-euro-v1' CHECK(banking_calendar_id IN ('target-euro-v1','weekdays-v1'))"
+                )
+                try execute(
+                    "ALTER TABLE standing_order_runs ADD COLUMN banking_calendar_version INTEGER NOT NULL DEFAULT 1 CHECK(banking_calendar_version > 0)"
+                )
+                try execute("PRAGMA user_version = 29")
+            }
+        }
+        if version < 30 {
+            try transaction {
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN original_amount_minor INTEGER"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN original_currency TEXT NOT NULL DEFAULT '' CHECK(original_currency='' OR length(original_currency)=3)"
+                )
+                try execute(
+                    "ALTER TABLE transactions ADD COLUMN exchange_rate_scaled INTEGER CHECK(exchange_rate_scaled IS NULL OR exchange_rate_scaled>0)"
+                )
+                try execute("PRAGMA user_version = 30")
+            }
+        }
+        if version < 31 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS transaction_undo_runs (
+                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        before_json TEXT NOT NULL,
+                        after_json TEXT NOT NULL,
+                        transaction_count INTEGER NOT NULL CHECK(transaction_count > 0),
+                        created_at TEXT NOT NULL,
+                        undone_at TEXT
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS transaction_undo_runs_active ON transaction_undo_runs(undone_at,sequence DESC)"
+                )
+                try execute("PRAGMA user_version = 31")
+            }
+        }
+        if version < 32 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS attachment_blobs (
+                        sha256 TEXT PRIMARY KEY CHECK(length(sha256)=64),
+                        mime_type TEXT NOT NULL,
+                        byte_count INTEGER NOT NULL CHECK(byte_count>0),
+                        payload BLOB NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS attachment_links (
+                        id TEXT PRIMARY KEY,
+                        entity_type TEXT NOT NULL
+                            CHECK(entity_type IN ('account','transaction','contract','security','inventory')),
+                        entity_id TEXT NOT NULL,
+                        blob_sha256 TEXT NOT NULL REFERENCES attachment_blobs(sha256),
+                        file_name TEXT NOT NULL,
+                        source TEXT NOT NULL DEFAULT 'Dateiimport',
+                        ocr_text TEXT NOT NULL DEFAULT '',
+                        added_at TEXT NOT NULL,
+                        UNIQUE(entity_type,entity_id,blob_sha256,file_name)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS attachment_links_entity ON attachment_links(entity_type,entity_id,added_at,id)"
+                )
+                try execute("PRAGMA user_version = 32")
+            }
+        }
+        if version < 33 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_transaction_exceptions (
+                        id TEXT PRIMARY KEY,
+                        scheduled_transaction_id TEXT NOT NULL
+                            REFERENCES scheduled_transactions(id) ON DELETE CASCADE,
+                        original_due_date TEXT NOT NULL,
+                        effective_date TEXT NOT NULL,
+                        payee TEXT NOT NULL DEFAULT '',
+                        purpose TEXT NOT NULL DEFAULT '',
+                        category_id TEXT REFERENCES categories(id),
+                        amount_minor INTEGER NOT NULL,
+                        disposition TEXT NOT NULL
+                            CHECK(disposition IN ('modified','skipped')),
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(scheduled_transaction_id,original_due_date)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS scheduled_exceptions_effective ON scheduled_transaction_exceptions(effective_date,scheduled_transaction_id)"
+                )
+                try execute("PRAGMA user_version = 33")
+            }
+        }
+        if version < 34 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_transaction_revisions (
+                        id TEXT PRIMARY KEY,
+                        scheduled_transaction_id TEXT NOT NULL
+                            REFERENCES scheduled_transactions(id) ON DELETE CASCADE,
+                        original_due_date TEXT NOT NULL,
+                        effective_date TEXT NOT NULL,
+                        payee TEXT NOT NULL DEFAULT '',
+                        purpose TEXT NOT NULL DEFAULT '',
+                        category_id TEXT REFERENCES categories(id),
+                        amount_minor INTEGER NOT NULL,
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(scheduled_transaction_id,original_due_date)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS scheduled_revisions_boundary ON scheduled_transaction_revisions(scheduled_transaction_id,original_due_date)"
+                )
+                try execute("PRAGMA user_version = 34")
+            }
+        }
+        if version < 35 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS forecast_scenarios (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL CHECK(length(trim(name))>0),
+                        note TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS forecast_scenario_entries (
+                        id TEXT PRIMARY KEY,
+                        scenario_id TEXT NOT NULL REFERENCES forecast_scenarios(id) ON DELETE CASCADE,
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        entry_date TEXT NOT NULL,
+                        name TEXT NOT NULL CHECK(length(trim(name))>0),
+                        amount_minor INTEGER NOT NULL,
+                        is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0,1)),
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS forecast_entries_scenario_date ON forecast_scenario_entries(scenario_id,entry_date,account_id)"
+                )
+                try execute("PRAGMA user_version = 35")
+            }
+        }
+        if version < 36 {
+            try transaction {
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_people (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        display_name TEXT NOT NULL CHECK(length(trim(display_name))>0),
+                        tax_id_last_four TEXT NOT NULL DEFAULT '' CHECK(length(tax_id_last_four) IN (0,4)),
+                        tax_id_confirmed INTEGER NOT NULL DEFAULT 0 CHECK(tax_id_confirmed IN (0,1)),
+                        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_rules (
+                        id TEXT PRIMARY KEY,
+                        effective_from_year INTEGER NOT NULL CHECK(effective_from_year BETWEEN 1900 AND 2200),
+                        effective_through_year INTEGER CHECK(effective_through_year IS NULL OR effective_through_year>=effective_from_year),
+                        assessment_type TEXT NOT NULL CHECK(assessment_type IN ('individual','joint')),
+                        allowance_minor INTEGER NOT NULL CHECK(allowance_minor>=0),
+                        source_name TEXT NOT NULL,
+                        source_url TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(effective_from_year,effective_through_year,assessment_type)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_orders (
+                        id TEXT PRIMARY KEY,
+                        finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                        institution TEXT NOT NULL CHECK(length(trim(institution))>0),
+                        assessment_type TEXT NOT NULL CHECK(assessment_type IN ('individual','joint')),
+                        primary_person_id TEXT NOT NULL REFERENCES tax_people(id),
+                        partner_person_id TEXT REFERENCES tax_people(id),
+                        allowance_minor INTEGER NOT NULL CHECK(allowance_minor>=0),
+                        valid_from_year INTEGER NOT NULL CHECK(valid_from_year BETWEEN 1900 AND 2200),
+                        valid_through_year INTEGER CHECK(valid_through_year IS NULL OR valid_through_year>=valid_from_year),
+                        note TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        CHECK((assessment_type='individual' AND partner_person_id IS NULL) OR
+                              (assessment_type='joint' AND partner_person_id IS NOT NULL AND partner_person_id<>primary_person_id))
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_order_accounts (
+                        order_id TEXT NOT NULL REFERENCES tax_allowance_orders(id) ON DELETE CASCADE,
+                        account_id TEXT NOT NULL REFERENCES accounts(id),
+                        PRIMARY KEY(order_id,account_id)
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tax_allowance_usages (
+                        id TEXT PRIMARY KEY,
+                        order_id TEXT NOT NULL REFERENCES tax_allowance_orders(id) ON DELETE CASCADE,
+                        tax_year INTEGER NOT NULL CHECK(tax_year BETWEEN 1900 AND 2200),
+                        used_minor INTEGER NOT NULL CHECK(used_minor>=0),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(order_id,tax_year)
+                    )
+                    """
+                )
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS tax_allowance_orders_subject ON tax_allowance_orders(primary_person_id,partner_person_id,valid_from_year,valid_through_year)"
+                )
+                let sourceName = "§ 20 Absatz 9 EStG"
+                let sourceURL = "https://www.gesetze-im-internet.de/estg/__20.html"
+                let seeds: [(String, Int, Int?, String, Int64)] = [
+                    ("7A200001-0000-4000-8000-000000000001", 2009, 2022, "individual", 80_100),
+                    ("7A200001-0000-4000-8000-000000000002", 2009, 2022, "joint", 160_200),
+                    ("7A200001-0000-4000-8000-000000000003", 2023, nil, "individual", 100_000),
+                    ("7A200001-0000-4000-8000-000000000004", 2023, nil, "joint", 200_000)
+                ]
+                for seed in seeds {
+                    try run(
+                        """
+                        INSERT OR IGNORE INTO tax_allowance_rules(
+                            id,effective_from_year,effective_through_year,assessment_type,
+                            allowance_minor,source_name,source_url
+                        ) VALUES(?,?,?,?,?,?,?)
+                        """,
+                        [.text(seed.0), .integer(Int64(seed.1)),
+                         seed.2.map { .integer(Int64($0)) } ?? .null,
+                         .text(seed.3), .integer(seed.4), .text(sourceName), .text(sourceURL)]
+                    )
+                }
+                try execute("PRAGMA user_version = 36")
+            }
+        }
+        if version < 37 {
+            try transaction {
+                // Some early finance files were written without the otherwise
+                // unused v9 match table. Recreate it before extending the
+                // metadata so those valid legacy files remain migratable.
+                try execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS loan_payment_matches (
+                        id TEXT PRIMARY KEY,
+                        loan_id TEXT NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
+                        transaction_id TEXT NOT NULL UNIQUE REFERENCES transactions(id),
+                        scheduled_date TEXT NOT NULL,
+                        principal_minor INTEGER NOT NULL,
+                        interest_minor INTEGER NOT NULL,
+                        fee_minor INTEGER NOT NULL,
+                        matched_at TEXT NOT NULL,
+                        extra_payment_minor INTEGER NOT NULL DEFAULT 0
+                            CHECK(extra_payment_minor>=0),
+                        source TEXT NOT NULL DEFAULT 'legacy'
+                            CHECK(source IN ('generated','linkedExisting','legacy')),
+                        original_transaction_json TEXT,
+                        matched_transaction_json TEXT,
+                        UNIQUE(loan_id,scheduled_date)
+                    )
+                    """
+                )
+                var columns = Set<String>()
+                try query("PRAGMA table_info(loan_payment_matches)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("extra_payment_minor") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN extra_payment_minor INTEGER NOT NULL DEFAULT 0 CHECK(extra_payment_minor>=0)"
+                    )
+                }
+                if !columns.contains("source") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy' CHECK(source IN ('generated','linkedExisting','legacy'))"
+                    )
+                }
+                if !columns.contains("original_transaction_json") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN original_transaction_json TEXT"
+                    )
+                }
+                if !columns.contains("matched_transaction_json") {
+                    try execute(
+                        "ALTER TABLE loan_payment_matches ADD COLUMN matched_transaction_json TEXT"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS loan_payment_matches_loan_date ON loan_payment_matches(loan_id,scheduled_date,transaction_id)"
+                )
+                try execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS loan_matched_transaction_guard_update
+                    BEFORE UPDATE ON transactions
+                    WHEN EXISTS(
+                        SELECT 1 FROM loan_payment_matches
+                        WHERE transaction_id=OLD.id
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT,'Zugeordnete Kreditraten sind vor Änderungen zu lösen.');
+                    END
+                    """
+                )
+                try execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS loan_matched_transaction_guard_delete
+                    BEFORE DELETE ON transactions
+                    WHEN EXISTS(
+                        SELECT 1 FROM loan_payment_matches
+                        WHERE transaction_id=OLD.id
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT,'Zugeordnete Kreditraten sind vor dem Löschen zu lösen.');
+                    END
+                    """
+                )
+                try execute("PRAGMA user_version = 37")
+            }
+        }
+        if version < 38 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(scheduled_transactions)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if columns.isEmpty {
+                    try execute(
+                        """
+                        CREATE TABLE scheduled_transactions (
+                            id TEXT PRIMARY KEY,
+                            finance_file_id TEXT NOT NULL REFERENCES finance_files(id),
+                            name TEXT NOT NULL,
+                            account_id TEXT NOT NULL REFERENCES accounts(id),
+                            payee TEXT NOT NULL DEFAULT '',
+                            purpose TEXT NOT NULL DEFAULT '',
+                            category_id TEXT REFERENCES categories(id),
+                            amount_minor INTEGER NOT NULL,
+                            currency TEXT NOT NULL,
+                            next_due_date TEXT NOT NULL,
+                            end_date TEXT,
+                            frequency TEXT NOT NULL,
+                            action TEXT NOT NULL,
+                            reminder_days INTEGER NOT NULL DEFAULT 0,
+                            is_active INTEGER NOT NULL DEFAULT 1,
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            version INTEGER NOT NULL DEFAULT 1,
+                            transaction_template_json TEXT
+                        )
+                        """
+                    )
+                    try execute(
+                        "CREATE INDEX IF NOT EXISTS scheduled_transactions_due ON scheduled_transactions(is_active,next_due_date,id)"
+                    )
+                } else if !columns.contains("transaction_template_json") {
+                    try execute(
+                        "ALTER TABLE scheduled_transactions ADD COLUMN transaction_template_json TEXT"
+                    )
+                }
+                try execute("PRAGMA user_version = 38")
+            }
+        }
+        if version < 39 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(accounts)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("subtype") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"
+                    )
+                }
+                if !columns.contains("bank_code") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN bank_code TEXT NOT NULL DEFAULT ''"
+                    )
+                }
+                if !columns.contains("opening_balance_date") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN opening_balance_date TEXT"
+                    )
+                }
+                if !columns.contains("closing_date") {
+                    try execute("ALTER TABLE accounts ADD COLUMN closing_date TEXT")
+                }
+                if !columns.contains("linked_account_id") {
+                    try execute(
+                        "ALTER TABLE accounts ADD COLUMN linked_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS accounts_linked_account ON accounts(linked_account_id)"
+                )
+                try execute("PRAGMA user_version = 39")
+            }
+        }
+        if version < 40 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(transactions)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("flag_color") {
+                    try execute(
+                        "ALTER TABLE transactions ADD COLUMN flag_color TEXT NOT NULL DEFAULT '' CHECK(flag_color IN ('','red','orange','yellow','green','blue','purple'))"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS transactions_flag ON transactions(flag_color,booking_date,id) WHERE flag_color<>''"
+                )
+                try execute("PRAGMA user_version = 40")
+            }
+        }
+        if version < 41 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(transaction_templates)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("is_active") {
+                    try execute(
+                        "ALTER TABLE transaction_templates ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1))"
+                    )
+                }
+                if !columns.contains("usage_count") {
+                    try execute(
+                        "ALTER TABLE transaction_templates ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0 CHECK(usage_count>=0)"
+                    )
+                }
+                if !columns.contains("last_used_at") {
+                    try execute(
+                        "ALTER TABLE transaction_templates ADD COLUMN last_used_at TEXT"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS transaction_templates_active_usage ON transaction_templates(finance_file_id,is_active,usage_count DESC,last_used_at DESC,name COLLATE NOCASE,id)"
+                )
+                try execute("PRAGMA user_version = 41")
+            }
+        }
     }
 
     func financeFileInfo() throws -> FinanceFileInfo {
@@ -744,17 +2300,45 @@ final class SQLiteFinanceStore {
         return result
     }
 
+    func renameFinanceFile(_ rawName: String) throws {
+        guard let name = FinanceFilePreferences.validatedName(rawName) else {
+            throw FinanceError.database(
+                "Der Name der Finanzdatei fehlt, enthält Steuerzeichen oder ist länger als 120 Zeichen."
+            )
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                "UPDATE finance_files SET name=?,updated_at=?,version=version+1 WHERE id=?",
+                [.text(name), .text(now), .text(info.id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Der Finanzdatei-Kopf konnte nicht aktualisiert werden.")
+            }
+            try audit(
+                entity: "finance-file", id: info.id,
+                action: "rename", details: name
+            )
+        }
+    }
+
     func accounts() throws -> [FinanceAccount] {
         var values: [FinanceAccount] = []
         try query(
             """
-            SELECT id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order
+            SELECT id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,
+                   short_name,description,group_id,iban,bic,account_number_masked,owner_name,
+                   opening_date,credit_limit_minor,is_online,include_net_worth,include_budget,
+                   include_reports,include_forecast,last_sync_at,last_bank_balance_minor,sync_status,
+                   subtype,bank_code,opening_balance_date,closing_date,linked_account_id
             FROM accounts ORDER BY sort_order,name COLLATE NOCASE
             """
         ) { statement in
             guard
                 let id = UUID(uuidString: Self.text(statement, 0)),
-                let type = AccountType(rawValue: Self.text(statement, 3))
+                let type = AccountType(rawValue: Self.text(statement, 3)),
+                let syncStatus = AccountSyncStatus(rawValue: Self.text(statement, 25))
             else { return }
             values.append(
                 FinanceAccount(
@@ -766,7 +2350,48 @@ final class SQLiteFinanceStore {
                     openingBalanceMinor: sqlite3_column_int64(statement, 5),
                     isHidden: sqlite3_column_int(statement, 6) != 0,
                     isClosed: sqlite3_column_int(statement, 7) != 0,
-                    sortOrder: Int(sqlite3_column_int(statement, 8))
+                    sortOrder: Int(sqlite3_column_int(statement, 8)),
+                    shortName: Self.text(statement, 9),
+                    description: Self.text(statement, 10),
+                    groupID: Self.optionalText(statement, 11).flatMap(UUID.init(uuidString:)),
+                    iban: Self.text(statement, 12),
+                    bic: Self.text(statement, 13),
+                    accountNumberMasked: Self.text(statement, 14),
+                    ownerName: Self.text(statement, 15),
+                    openingDate: Self.optionalText(statement, 16).flatMap(Self.date),
+                    creditLimitMinor: sqlite3_column_int64(statement, 17),
+                    isOnline: sqlite3_column_int(statement, 18) != 0,
+                    includeNetWorth: sqlite3_column_int(statement, 19) != 0,
+                    includeBudget: sqlite3_column_int(statement, 20) != 0,
+                    includeReports: sqlite3_column_int(statement, 21) != 0,
+                    includeForecast: sqlite3_column_int(statement, 22) != 0,
+                    lastSyncAt: Self.optionalText(statement, 23).flatMap(Self.timestampDate),
+                    lastBankBalanceMinor: sqlite3_column_type(statement, 24) == SQLITE_NULL
+                        ? nil
+                        : sqlite3_column_int64(statement, 24),
+                    syncStatus: syncStatus,
+                    subtype: Self.text(statement, 26),
+                    bankCode: Self.text(statement, 27),
+                    openingBalanceDate: Self.optionalText(statement, 28).flatMap(Self.date),
+                    closingDate: Self.optionalText(statement, 29).flatMap(Self.date),
+                    linkedAccountID: Self.optionalText(statement, 30).flatMap(UUID.init(uuidString:))
+                )
+            )
+        }
+        return values
+    }
+
+    func accountGroups() throws -> [AccountGroup] {
+        var values: [AccountGroup] = []
+        try query(
+            "SELECT id,name,sort_order,is_active FROM account_groups ORDER BY sort_order,name COLLATE NOCASE"
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)) else { return }
+            values.append(
+                AccountGroup(
+                    id: id, name: Self.text(statement, 1),
+                    sortOrder: Int(sqlite3_column_int(statement, 2)),
+                    isActive: sqlite3_column_int(statement, 3) != 0
                 )
             )
         }
@@ -776,7 +2401,11 @@ final class SQLiteFinanceStore {
     func categories() throws -> [FinanceCategory] {
         var values: [FinanceCategory] = []
         try query(
-            "SELECT id,parent_id,name,kind,color,is_active FROM categories ORDER BY kind,name COLLATE NOCASE"
+            """
+            SELECT id,parent_id,name,kind,color,is_active,description,
+                   is_budgetable,default_vat_code_id,german_tax_line,us_tax_line
+            FROM categories ORDER BY kind,name COLLATE NOCASE
+            """
         ) { statement in
             guard
                 let id = UUID(uuidString: Self.text(statement, 0)),
@@ -789,11 +2418,80 @@ final class SQLiteFinanceStore {
                     name: Self.text(statement, 2),
                     kind: kind,
                     color: Self.text(statement, 4),
-                    isActive: sqlite3_column_int(statement, 5) != 0
+                    isActive: sqlite3_column_int(statement, 5) != 0,
+                    description: Self.text(statement, 6),
+                    isBudgetable: sqlite3_column_int(statement, 7) != 0,
+                    defaultVATCodeID: Self.optionalText(statement, 8).flatMap(
+                        UUID.init(uuidString:)
+                    ),
+                    germanTaxLine: Self.text(statement, 9),
+                    usTaxLine: Self.text(statement, 10)
                 )
             )
         }
         return values
+    }
+
+    func vatCodes() throws -> [VATCode] {
+        var values: [VATCode] = []
+        try query(
+            """
+            SELECT id,name,rate_basis_points,description,is_active
+            FROM vat_codes
+            ORDER BY rate_basis_points,name COLLATE NOCASE,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)) else { return }
+            values.append(
+                VATCode(
+                    id: id,
+                    name: Self.text(statement, 1),
+                    rateBasisPoints: Int(sqlite3_column_int(statement, 2)),
+                    description: Self.text(statement, 3),
+                    isActive: sqlite3_column_int(statement, 4) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveVATCode(_ value: VATCode) throws {
+        try value.validate()
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO vat_codes(
+                    id,finance_file_id,name,rate_basis_points,description,
+                    is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    rate_basis_points=excluded.rate_basis_points,
+                    description=excluded.description,
+                    is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,
+                    version=version+1
+                """,
+                [
+                    .text(value.id.uuidString),
+                    .text(info.id.uuidString),
+                    .text(value.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .integer(Int64(value.rateBasisPoints)),
+                    .text(value.description),
+                    .integer(value.isActive ? 1 : 0),
+                    .text(now),
+                    .text(now)
+                ]
+            )
+            try audit(
+                entity: "vat-code",
+                id: value.id,
+                action: "save",
+                details: "\(value.name):\(value.rateBasisPoints)"
+            )
+        }
     }
 
     func categorizationRules() throws -> [CategorizationRule] {
@@ -801,7 +2499,8 @@ final class SQLiteFinanceStore {
         try query(
             """
             SELECT id,name,priority,is_active,stop_after_match,payee_contains,purpose_contains,
-                   minimum_amount_minor,maximum_amount_minor,category_id
+                   minimum_amount_minor,maximum_amount_minor,category_id,
+                   definition_json
             FROM categorization_rules ORDER BY priority,id
             """
         ) {
@@ -809,6 +2508,8 @@ final class SQLiteFinanceStore {
                 let id = UUID(uuidString: Self.text($0, 0)),
                 let categoryID = UUID(uuidString: Self.text($0, 9))
             else { return }
+            let definition = Self.text($0, 10).data(using: .utf8)
+                .flatMap(RuleEngine.definition(from:))
             values.append(
                 CategorizationRule(
                     id: id,
@@ -822,7 +2523,281 @@ final class SQLiteFinanceStore {
                         ? nil : sqlite3_column_int64($0, 7),
                     maximumAmountMinor: sqlite3_column_type($0, 8) == SQLITE_NULL
                         ? nil : sqlite3_column_int64($0, 8),
-                    categoryID: categoryID
+                    categoryID: categoryID,
+                    expression: definition?.expression,
+                    actions: definition?.actions ?? []
+                )
+            )
+        }
+        return values
+    }
+
+    func bankingConnections() throws -> [BankingConnection] {
+        var values: [BankingConnection] = []
+        try query(
+            """
+            SELECT id,name,provider_kind,adapter_identifier,
+                   institution_name,status,consent_valid_until,last_sync_at,
+                   last_user_message,is_enabled
+            FROM banking_connections ORDER BY name,id
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let providerKind = BankingProviderKind(
+                    rawValue: Self.text(statement, 2)
+                ),
+                let status = BankingConnectionStatus(
+                    rawValue: Self.text(statement, 5)
+                )
+            else { return }
+            values.append(
+                BankingConnection(
+                    id: id,
+                    name: Self.text(statement, 1),
+                    providerKind: providerKind,
+                    adapterIdentifier: Self.text(statement, 3),
+                    institutionName: Self.text(statement, 4),
+                    status: status,
+                    consentValidUntil: Self.optionalText(statement, 6)
+                        .flatMap(Self.timestampDate),
+                    lastSyncAt: Self.optionalText(statement, 7)
+                        .flatMap(Self.timestampDate),
+                    lastUserMessage: Self.text(statement, 8),
+                    isEnabled: sqlite3_column_int(statement, 9) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveBankingConnection(_ value: BankingConnection) throws {
+        guard value.providerKind == .simulator else {
+            throw FinanceError.database(
+                "Live-Banking ist in diesem Entwicklungsstand deaktiviert."
+            )
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO banking_connections(
+                    id,finance_file_id,name,provider_kind,adapter_identifier,
+                    institution_name,status,consent_valid_until,last_sync_at,
+                    last_user_message,is_enabled,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,provider_kind=excluded.provider_kind,
+                    adapter_identifier=excluded.adapter_identifier,
+                    institution_name=excluded.institution_name,
+                    status=excluded.status,
+                    consent_valid_until=excluded.consent_valid_until,
+                    last_sync_at=excluded.last_sync_at,
+                    last_user_message=excluded.last_user_message,
+                    is_enabled=excluded.is_enabled,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString),
+                    .text(info.id.uuidString),
+                    .text(value.name),
+                    .text(value.providerKind.rawValue),
+                    .text(value.adapterIdentifier),
+                    .text(value.institutionName),
+                    .text(value.status.rawValue),
+                    value.consentValidUntil.map {
+                        .text(Self.timestamp($0))
+                    } ?? .null,
+                    value.lastSyncAt.map {
+                        .text(Self.timestamp($0))
+                    } ?? .null,
+                    .text(value.lastUserMessage),
+                    .integer(value.isEnabled ? 1 : 0),
+                    .text(now),
+                    .text(now)
+                ]
+            )
+            try audit(
+                entity: "banking_connection",
+                id: value.id,
+                action: "save",
+                details: "\(value.providerKind.rawValue):\(value.adapterIdentifier)"
+            )
+        }
+    }
+
+    func bankingAccountMappings(
+        connectionID: UUID? = nil
+    ) throws -> [BankingAccountMapping] {
+        var values: [BankingAccountMapping] = []
+        let sql = """
+            SELECT id,connection_id,external_account_id,remote_name,
+                   remote_iban,currency,local_account_id,is_enabled
+            FROM banking_account_mappings
+            \(connectionID == nil ? "" : "WHERE connection_id=?")
+            ORDER BY remote_name,external_account_id
+            """
+        try query(
+            sql,
+            connectionID.map { [.text($0.uuidString)] } ?? []
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let connectionID = UUID(
+                    uuidString: Self.text(statement, 1)
+                )
+            else { return }
+            values.append(
+                BankingAccountMapping(
+                    id: id,
+                    connectionID: connectionID,
+                    externalAccountID: Self.text(statement, 2),
+                    remoteName: Self.text(statement, 3),
+                    remoteIBAN: Self.text(statement, 4),
+                    currency: Self.text(statement, 5),
+                    localAccountID: Self.optionalText(statement, 6)
+                        .flatMap(UUID.init(uuidString:)),
+                    isEnabled: sqlite3_column_int(statement, 7) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveBankingAccountMapping(
+        _ value: BankingAccountMapping
+    ) throws {
+        if let localAccountID = value.localAccountID {
+            guard let account = try accounts().first(where: {
+                $0.id == localAccountID
+            }), account.currency == value.currency else {
+                throw FinanceError.database(
+                    "Das lokale Konto fehlt oder verwendet eine andere Währung."
+                )
+            }
+        }
+        try transaction {
+            try run(
+                """
+                INSERT INTO banking_account_mappings(
+                    id,connection_id,external_account_id,remote_name,
+                    remote_iban,currency,local_account_id,is_enabled
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(connection_id,external_account_id) DO UPDATE SET
+                    remote_name=excluded.remote_name,
+                    remote_iban=excluded.remote_iban,
+                    currency=excluded.currency,
+                    local_account_id=excluded.local_account_id,
+                    is_enabled=excluded.is_enabled
+                """,
+                [
+                    .text(value.id.uuidString),
+                    .text(value.connectionID.uuidString),
+                    .text(value.externalAccountID),
+                    .text(value.remoteName),
+                    .text(value.remoteIBAN),
+                    .text(value.currency),
+                    value.localAccountID.map {
+                        .text($0.uuidString)
+                    } ?? .null,
+                    .integer(value.isEnabled ? 1 : 0)
+                ]
+            )
+            try audit(
+                entity: "banking_mapping",
+                id: value.id,
+                action: "save",
+                details: value.externalAccountID
+            )
+        }
+    }
+
+    func bankingSyncRuns(
+        connectionID: UUID? = nil,
+        limit: Int = 50
+    ) throws -> [BankingSyncRun] {
+        var values: [BankingSyncRun] = []
+        let sql = """
+            SELECT id,connection_id,started_at,completed_at,status,
+                   requested_operations,imported_count,matched_count,
+                   skipped_count,user_message,technical_code,
+                   raw_payload_hash
+            FROM banking_sync_runs
+            \(connectionID == nil ? "" : "WHERE connection_id=?")
+            ORDER BY started_at DESC,id DESC LIMIT ?
+            """
+        var bindings: [SQLiteValue] = []
+        if let connectionID {
+            bindings.append(.text(connectionID.uuidString))
+        }
+        bindings.append(.integer(Int64(max(1, limit))))
+        try query(sql, bindings) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let connectionID = UUID(
+                    uuidString: Self.text(statement, 1)
+                ),
+                let startedAt = Self.timestampDate(Self.text(statement, 2)),
+                let status = BankingConnectionStatus(
+                    rawValue: Self.text(statement, 4)
+                )
+            else { return }
+            values.append(
+                BankingSyncRun(
+                    id: id,
+                    connectionID: connectionID,
+                    startedAt: startedAt,
+                    completedAt: Self.optionalText(statement, 3)
+                        .flatMap(Self.timestampDate),
+                    status: status,
+                    requestedOperations: Self.bankingOperations(
+                        Self.text(statement, 5)
+                    ),
+                    importedCount: Int(sqlite3_column_int64(statement, 6)),
+                    matchedCount: Int(sqlite3_column_int64(statement, 7)),
+                    skippedCount: Int(sqlite3_column_int64(statement, 8)),
+                    userMessage: Self.text(statement, 9),
+                    technicalCode: Self.text(statement, 10),
+                    rawPayloadHash: Self.text(statement, 11)
+                )
+            )
+        }
+        return values
+    }
+
+    func bankingRemoteOrders(
+        connectionID: UUID
+    ) throws -> [BankingRemoteStandingOrder] {
+        var values: [BankingRemoteStandingOrder] = []
+        try query(
+            """
+            SELECT external_order_id,external_account_id,recipient_name,
+                   recipient_iban,amount_minor,currency,purpose,
+                   next_execution_date,frequency,is_scheduled_payment
+            FROM banking_remote_orders WHERE connection_id=?
+            ORDER BY next_execution_date,external_order_id
+            """,
+            [.text(connectionID.uuidString)]
+        ) { statement in
+            guard let date = Self.date(Self.text(statement, 7)) else {
+                return
+            }
+            values.append(
+                BankingRemoteStandingOrder(
+                    id: Self.text(statement, 0),
+                    externalAccountID: Self.text(statement, 1),
+                    recipientName: Self.text(statement, 2),
+                    recipientIBAN: Self.text(statement, 3),
+                    amountMinor: sqlite3_column_int64(statement, 4),
+                    currency: Self.text(statement, 5),
+                    purpose: Self.text(statement, 6),
+                    nextExecutionDate: date,
+                    frequency: Self.text(statement, 8),
+                    isScheduledPayment: sqlite3_column_int(
+                        statement,
+                        9
+                    ) != 0
                 )
             )
         }
@@ -831,10 +2806,12 @@ final class SQLiteFinanceStore {
 
     func scheduledTransactions() throws -> [ScheduledTransaction] {
         var values: [ScheduledTransaction] = []
+        let decoder = JSONDecoder()
         try query(
             """
             SELECT id,name,account_id,payee,purpose,category_id,amount_minor,currency,
-                   next_due_date,end_date,frequency,action,reminder_days,is_active
+                   next_due_date,end_date,frequency,action,reminder_days,is_active,
+                   transaction_template_json
             FROM scheduled_transactions ORDER BY is_active DESC,next_due_date,name COLLATE NOCASE,id
             """
         ) {
@@ -845,6 +2822,25 @@ final class SQLiteFinanceStore {
                 let frequency = RecurrenceFrequency(rawValue: Self.text($0, 10)),
                 let action = ScheduledAction(rawValue: Self.text($0, 11))
             else { return }
+            let transactionTemplate: TransactionTemplate?
+            if let payload = Self.optionalText($0, 14) {
+                guard let data = payload.data(using: .utf8) else {
+                    throw FinanceError.database(
+                        "Der Buchungsinhalt eines regelmäßigen Vorgangs ist beschädigt."
+                    )
+                }
+                do {
+                    transactionTemplate = try decoder.decode(
+                        TransactionTemplate.self, from: data
+                    )
+                } catch {
+                    throw FinanceError.database(
+                        "Der Buchungsinhalt des regelmäßigen Vorgangs „\(Self.text($0, 1))“ ist beschädigt."
+                    )
+                }
+            } else {
+                transactionTemplate = nil
+            }
             values.append(
                 ScheduledTransaction(
                     id: id,
@@ -860,7 +2856,8 @@ final class SQLiteFinanceStore {
                     frequency: frequency,
                     action: action,
                     reminderDays: Int(sqlite3_column_int($0, 12)),
-                    isActive: sqlite3_column_int($0, 13) != 0
+                    isActive: sqlite3_column_int($0, 13) != 0,
+                    transactionTemplate: transactionTemplate
                 )
             )
         }
@@ -874,6 +2871,44 @@ final class SQLiteFinanceStore {
         if let endDate = value.endDate, endDate < value.nextDueDate {
             throw FinanceError.database("Das Enddatum liegt vor der nächsten Fälligkeit.")
         }
+        guard let account = try accounts().first(where: { $0.id == value.accountID }) else {
+            throw FinanceError.database("Das Konto des regelmäßigen Vorgangs fehlt.")
+        }
+        guard !account.isClosed else {
+            throw FinanceError.database("Für ein geschlossenes Konto kann kein regelmäßiger Vorgang gespeichert werden.")
+        }
+        guard account.currency == value.currency else {
+            throw FinanceError.database(
+                "Die Währung des regelmäßigen Vorgangs stimmt nicht mit dem Konto überein."
+            )
+        }
+        var transactionTemplate = value.transactionTemplate
+        if transactionTemplate != nil {
+            transactionTemplate?.name = value.name
+            transactionTemplate?.accountID = value.accountID
+            transactionTemplate?.payee = value.payee
+            transactionTemplate?.purpose = value.purpose
+            transactionTemplate?.categoryID = value.categoryID
+            transactionTemplate?.amountMinor = value.amountMinor
+            transactionTemplate?.currency = value.currency
+            if let transactionTemplate {
+                try transactionTemplate.transaction().validate()
+            }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let transactionTemplateJSON: String?
+        if let transactionTemplate {
+            let data = try encoder.encode(transactionTemplate)
+            guard let payload = String(data: data, encoding: .utf8) else {
+                throw FinanceError.database(
+                    "Der Buchungsinhalt des regelmäßigen Vorgangs konnte nicht codiert werden."
+                )
+            }
+            transactionTemplateJSON = payload
+        } else {
+            transactionTemplateJSON = nil
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -882,14 +2917,15 @@ final class SQLiteFinanceStore {
                 INSERT INTO scheduled_transactions(
                     id,finance_file_id,name,account_id,payee,purpose,category_id,amount_minor,
                     currency,next_due_date,end_date,frequency,action,reminder_days,is_active,
-                    created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    transaction_template_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,account_id=excluded.account_id,
                     payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                     amount_minor=excluded.amount_minor,currency=excluded.currency,
                     next_due_date=excluded.next_due_date,end_date=excluded.end_date,
                     frequency=excluded.frequency,action=excluded.action,
                     reminder_days=excluded.reminder_days,is_active=excluded.is_active,
+                    transaction_template_json=excluded.transaction_template_json,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
@@ -901,11 +2937,625 @@ final class SQLiteFinanceStore {
                     value.endDate.map { .text(Self.day($0)) } ?? .null,
                     .text(value.frequency.rawValue), .text(value.action.rawValue),
                     .integer(Int64(value.reminderDays)), .integer(value.isActive ? 1 : 0),
+                    transactionTemplateJSON.map { .text($0) } ?? .null,
                     .text(now), .text(now)
                 ]
             )
             try audit(entity: "scheduled_transaction", id: value.id, action: "save", details: value.name)
         }
+    }
+
+    func scheduledTransactionExceptions() throws -> [ScheduledTransactionException] {
+        var values: [ScheduledTransactionException] = []
+        try query(
+            """
+            SELECT id,scheduled_transaction_id,original_due_date,effective_date,
+                   payee,purpose,category_id,amount_minor,disposition,note,
+                   created_at,updated_at
+            FROM scheduled_transaction_exceptions
+            ORDER BY original_due_date,scheduled_transaction_id,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let scheduledTransactionID = UUID(uuidString: Self.text(statement, 1)),
+                  let originalDueDate = Self.date(Self.text(statement, 2)),
+                  let effectiveDate = Self.date(Self.text(statement, 3)),
+                  let disposition = ScheduledOccurrenceDisposition(
+                    rawValue: Self.text(statement, 8)
+                  ),
+                  let createdAt = Self.timestampDate(Self.text(statement, 10)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 11))
+            else { return }
+            values.append(
+                ScheduledTransactionException(
+                    id: id, scheduledTransactionID: scheduledTransactionID,
+                    originalDueDate: originalDueDate, effectiveDate: effectiveDate,
+                    payee: Self.text(statement, 4), purpose: Self.text(statement, 5),
+                    categoryID: Self.optionalText(statement, 6).flatMap(UUID.init(uuidString:)),
+                    amountMinor: sqlite3_column_int64(statement, 7),
+                    disposition: disposition, note: Self.text(statement, 9),
+                    createdAt: createdAt, updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func saveScheduledTransactionException(
+        _ value: ScheduledTransactionException
+    ) throws {
+        guard let schedule = try scheduledTransactions().first(where: {
+            $0.id == value.scheduledTransactionID
+        }) else {
+            throw FinanceError.database("Der regelmäßige Vorgang existiert nicht mehr.")
+        }
+        guard isOccurrenceDate(value.originalDueDate, for: schedule) else {
+            throw FinanceError.database(
+                "Die ursprüngliche Fälligkeit gehört nicht zu diesem regelmäßigen Vorgang."
+            )
+        }
+        let originalDay = Self.day(value.originalDueDate)
+        var existingPairID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_exceptions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { existingPairID = UUID(uuidString: Self.text($0, 0)) }
+        var existingIDIdentity: (UUID, String)?
+        try query(
+            """
+            SELECT scheduled_transaction_id,original_due_date
+            FROM scheduled_transaction_exceptions WHERE id=?
+            """,
+            [.text(value.id.uuidString)]
+        ) {
+            if let scheduleID = UUID(uuidString: Self.text($0, 0)) {
+                existingIDIdentity = (scheduleID, Self.text($0, 1))
+            }
+        }
+        if let existingIDIdentity,
+           existingIDIdentity.0 != value.scheduledTransactionID
+            || existingIDIdentity.1 != originalDay {
+            throw FinanceError.database("Die Serienausnahme besitzt eine widersprüchliche Kennung.")
+        }
+        let storedID = existingPairID ?? value.id
+        let now = Self.timestamp(Date())
+        let createdAt = existingPairID == nil ? now : Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO scheduled_transaction_exceptions(
+                    id,scheduled_transaction_id,original_due_date,effective_date,
+                    payee,purpose,category_id,amount_minor,disposition,note,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    effective_date=excluded.effective_date,payee=excluded.payee,
+                    purpose=excluded.purpose,category_id=excluded.category_id,
+                    amount_minor=excluded.amount_minor,
+                    disposition=excluded.disposition,note=excluded.note,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(storedID.uuidString),
+                    .text(value.scheduledTransactionID.uuidString),
+                    .text(originalDay), .text(Self.day(value.effectiveDate)),
+                    .text(value.payee), .text(value.purpose),
+                    value.categoryID.map { .text($0.uuidString) } ?? .null,
+                    .integer(value.amountMinor), .text(value.disposition.rawValue),
+                    .text(value.note), .text(createdAt), .text(now)
+                ]
+            )
+            try audit(
+                entity: "scheduled_transaction_exception", id: storedID,
+                action: value.disposition.rawValue,
+                details: "\(schedule.name) · \(originalDay)"
+            )
+        }
+    }
+
+    func deleteScheduledTransactionException(
+        scheduledTransactionID: UUID,
+        originalDueDate: Date
+    ) throws {
+        let originalDay = Self.day(originalDueDate)
+        var exceptionID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_exceptions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { exceptionID = UUID(uuidString: Self.text($0, 0)) }
+        guard let exceptionID else { return }
+        try transaction {
+            try run(
+                "DELETE FROM scheduled_transaction_exceptions WHERE id=?",
+                [.text(exceptionID.uuidString)]
+            )
+            try audit(
+                entity: "scheduled_transaction_exception", id: exceptionID,
+                action: "delete", details: originalDay
+            )
+        }
+    }
+
+    func scheduledTransactionRevisions() throws -> [ScheduledTransactionRevision] {
+        var values: [ScheduledTransactionRevision] = []
+        try query(
+            """
+            SELECT id,scheduled_transaction_id,original_due_date,effective_date,
+                   payee,purpose,category_id,amount_minor,note,created_at,updated_at
+            FROM scheduled_transaction_revisions
+            ORDER BY original_due_date,scheduled_transaction_id,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let scheduledTransactionID = UUID(uuidString: Self.text(statement, 1)),
+                  let originalDueDate = Self.date(Self.text(statement, 2)),
+                  let effectiveDate = Self.date(Self.text(statement, 3)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 9)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 10))
+            else { return }
+            values.append(
+                ScheduledTransactionRevision(
+                    id: id, scheduledTransactionID: scheduledTransactionID,
+                    originalDueDate: originalDueDate, effectiveDate: effectiveDate,
+                    payee: Self.text(statement, 4), purpose: Self.text(statement, 5),
+                    categoryID: Self.optionalText(statement, 6).flatMap(UUID.init(uuidString:)),
+                    amountMinor: sqlite3_column_int64(statement, 7),
+                    note: Self.text(statement, 8), createdAt: createdAt,
+                    updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func saveScheduledTransactionRevision(
+        _ value: ScheduledTransactionRevision
+    ) throws {
+        guard let schedule = try scheduledTransactions().first(where: {
+            $0.id == value.scheduledTransactionID
+        }) else {
+            throw FinanceError.database("Der regelmäßige Vorgang existiert nicht mehr.")
+        }
+        guard isOccurrenceDate(value.originalDueDate, for: schedule) else {
+            throw FinanceError.database(
+                "Der Beginn der Serienänderung gehört nicht zu diesem regelmäßigen Vorgang."
+            )
+        }
+        let originalDay = Self.day(value.originalDueDate)
+        var existingPairID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_revisions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { existingPairID = UUID(uuidString: Self.text($0, 0)) }
+        var existingIDIdentity: (UUID, String)?
+        try query(
+            """
+            SELECT scheduled_transaction_id,original_due_date
+            FROM scheduled_transaction_revisions WHERE id=?
+            """,
+            [.text(value.id.uuidString)]
+        ) {
+            if let scheduleID = UUID(uuidString: Self.text($0, 0)) {
+                existingIDIdentity = (scheduleID, Self.text($0, 1))
+            }
+        }
+        if let existingIDIdentity,
+           existingIDIdentity.0 != value.scheduledTransactionID
+            || existingIDIdentity.1 != originalDay {
+            throw FinanceError.database("Die Serienänderung besitzt eine widersprüchliche Kennung.")
+        }
+        let storedID = existingPairID ?? value.id
+        var replacedExceptionID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_exceptions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { replacedExceptionID = UUID(uuidString: Self.text($0, 0)) }
+        let now = Self.timestamp(Date())
+        let createdAt = existingPairID == nil ? now : Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO scheduled_transaction_revisions(
+                    id,scheduled_transaction_id,original_due_date,effective_date,
+                    payee,purpose,category_id,amount_minor,note,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    effective_date=excluded.effective_date,payee=excluded.payee,
+                    purpose=excluded.purpose,category_id=excluded.category_id,
+                    amount_minor=excluded.amount_minor,note=excluded.note,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(storedID.uuidString),
+                    .text(value.scheduledTransactionID.uuidString),
+                    .text(originalDay), .text(Self.day(value.effectiveDate)),
+                    .text(value.payee), .text(value.purpose),
+                    value.categoryID.map { .text($0.uuidString) } ?? .null,
+                    .integer(value.amountMinor), .text(value.note),
+                    .text(createdAt), .text(now)
+                ]
+            )
+            try run(
+                """
+                DELETE FROM scheduled_transaction_exceptions
+                WHERE scheduled_transaction_id=? AND original_due_date=?
+                """,
+                [.text(value.scheduledTransactionID.uuidString), .text(originalDay)]
+            )
+            if let replacedExceptionID {
+                try audit(
+                    entity: "scheduled_transaction_exception",
+                    id: replacedExceptionID, action: "replaced_by_revision",
+                    details: originalDay
+                )
+            }
+            try audit(
+                entity: "scheduled_transaction_revision", id: storedID,
+                action: "save", details: "\(schedule.name) · ab \(originalDay)"
+            )
+        }
+    }
+
+    func deleteScheduledTransactionRevision(
+        scheduledTransactionID: UUID,
+        originalDueDate: Date
+    ) throws {
+        let originalDay = Self.day(originalDueDate)
+        var revisionID: UUID?
+        try query(
+            """
+            SELECT id FROM scheduled_transaction_revisions
+            WHERE scheduled_transaction_id=? AND original_due_date=?
+            """,
+            [.text(scheduledTransactionID.uuidString), .text(originalDay)]
+        ) { revisionID = UUID(uuidString: Self.text($0, 0)) }
+        guard let revisionID else { return }
+        try transaction {
+            try run(
+                "DELETE FROM scheduled_transaction_revisions WHERE id=?",
+                [.text(revisionID.uuidString)]
+            )
+            try audit(
+                entity: "scheduled_transaction_revision", id: revisionID,
+                action: "delete", details: originalDay
+            )
+        }
+    }
+
+    func forecastScenarios() throws -> [ForecastScenario] {
+        var values: [ForecastScenario] = []
+        try query(
+            "SELECT id,name,note,is_active,created_at,updated_at FROM forecast_scenarios ORDER BY lower(name),id"
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 4)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 5)) else { return }
+            values.append(ForecastScenario(
+                id: id, name: Self.text(statement, 1), note: Self.text(statement, 2),
+                isActive: sqlite3_column_int(statement, 3) != 0,
+                createdAt: createdAt, updatedAt: updatedAt
+            ))
+        }
+        return values
+    }
+
+    func forecastScenarioEntries() throws -> [ForecastScenarioEntry] {
+        var values: [ForecastScenarioEntry] = []
+        try query(
+            """
+            SELECT id,scenario_id,account_id,entry_date,name,amount_minor,is_enabled,note,created_at,updated_at
+            FROM forecast_scenario_entries ORDER BY entry_date,lower(name),id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let scenarioID = UUID(uuidString: Self.text(statement, 1)),
+                  let accountID = UUID(uuidString: Self.text(statement, 2)),
+                  let date = Self.date(Self.text(statement, 3)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 8)),
+                  let updatedAt = Self.timestampDate(Self.text(statement, 9)) else { return }
+            values.append(ForecastScenarioEntry(
+                id: id, scenarioID: scenarioID, accountID: accountID, date: date,
+                name: Self.text(statement, 4), amountMinor: sqlite3_column_int64(statement, 5),
+                isEnabled: sqlite3_column_int(statement, 6) != 0,
+                note: Self.text(statement, 7), createdAt: createdAt, updatedAt: updatedAt
+            ))
+        }
+        return values
+    }
+
+    func saveForecastScenario(_ value: ForecastScenario) throws {
+        let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Das Szenario benötigt einen Namen.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO forecast_scenarios(id,name,note,is_active,created_at,updated_at)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,note=excluded.note,is_active=excluded.is_active,
+                updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(name), .text(value.note),
+                 .integer(value.isActive ? 1 : 0), .text(Self.timestamp(value.createdAt)), .text(now)]
+            )
+            try audit(entity: "forecast_scenario", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func saveForecastScenarioEntry(_ value: ForecastScenarioEntry) throws {
+        let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Die Szenarioposition benötigt einen Namen.")
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM forecast_scenarios WHERE id=?", [.text(value.scenarioID.uuidString)]
+        ) == 1 else { throw FinanceError.database("Das Szenario existiert nicht mehr.") }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM accounts WHERE id=? AND is_closed=0", [.text(value.accountID.uuidString)]
+        ) == 1 else { throw FinanceError.database("Das Prognosekonto ist geschlossen oder fehlt.") }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO forecast_scenario_entries(
+                    id,scenario_id,account_id,entry_date,name,amount_minor,is_enabled,note,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    scenario_id=excluded.scenario_id,account_id=excluded.account_id,
+                    entry_date=excluded.entry_date,name=excluded.name,amount_minor=excluded.amount_minor,
+                    is_enabled=excluded.is_enabled,note=excluded.note,updated_at=excluded.updated_at,
+                    version=version+1
+                """,
+                [.text(value.id.uuidString), .text(value.scenarioID.uuidString),
+                 .text(value.accountID.uuidString), .text(Self.day(value.date)), .text(name),
+                 .integer(value.amountMinor), .integer(value.isEnabled ? 1 : 0), .text(value.note),
+                 .text(Self.timestamp(value.createdAt)), .text(now)]
+            )
+            try audit(entity: "forecast_scenario_entry", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func deleteForecastScenario(id: UUID) throws {
+        try transaction {
+            try run("DELETE FROM forecast_scenarios WHERE id=?", [.text(id.uuidString)])
+            try audit(entity: "forecast_scenario", id: id, action: "delete", details: "")
+        }
+    }
+
+    func deleteForecastScenarioEntry(id: UUID) throws {
+        try transaction {
+            try run("DELETE FROM forecast_scenario_entries WHERE id=?", [.text(id.uuidString)])
+            try audit(entity: "forecast_scenario_entry", id: id, action: "delete", details: "")
+        }
+    }
+
+    func taxPeople() throws -> [TaxPerson] {
+        var values: [TaxPerson] = []
+        try query(
+            """
+            SELECT id,display_name,tax_id_last_four,tax_id_confirmed,is_active
+            FROM tax_people ORDER BY is_active DESC,lower(display_name),id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)) else { return }
+            values.append(TaxPerson(
+                id: id, displayName: Self.text(statement, 1),
+                taxIDLastFour: Self.text(statement, 2),
+                taxIDConfirmed: sqlite3_column_int(statement, 3) != 0,
+                isActive: sqlite3_column_int(statement, 4) != 0
+            ))
+        }
+        return values
+    }
+
+    func saveTaxPerson(_ value: TaxPerson) throws {
+        let name = value.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = value.taxIDLastFour.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, suffix.isEmpty || (suffix.count == 4 && suffix.allSatisfy(\.isNumber)) else {
+            throw FinanceError.database("Name und optional die letzten vier Ziffern der Steuer-ID sind erforderlich.")
+        }
+        guard !value.taxIDConfirmed || suffix.count == 4 else {
+            throw FinanceError.database("Zur bestätigten Steuer-ID müssen die letzten vier Ziffern hinterlegt sein.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO tax_people(
+                    id,finance_file_id,display_name,tax_id_last_four,tax_id_confirmed,
+                    is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    display_name=excluded.display_name,tax_id_last_four=excluded.tax_id_last_four,
+                    tax_id_confirmed=excluded.tax_id_confirmed,is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(info.id.uuidString), .text(name),
+                 .text(suffix), .integer(value.taxIDConfirmed ? 1 : 0),
+                 .integer(value.isActive ? 1 : 0), .text(now), .text(now)]
+            )
+            try audit(entity: "tax_person", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func taxAllowanceRules() throws -> [TaxAllowanceRule] {
+        var values: [TaxAllowanceRule] = []
+        try query(
+            """
+            SELECT id,effective_from_year,effective_through_year,assessment_type,
+                   allowance_minor,source_name,source_url
+            FROM tax_allowance_rules ORDER BY effective_from_year,assessment_type,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let type = TaxAssessmentType(rawValue: Self.text(statement, 3)) else { return }
+            values.append(TaxAllowanceRule(
+                id: id, effectiveFromYear: Int(sqlite3_column_int(statement, 1)),
+                effectiveThroughYear: sqlite3_column_type(statement, 2) == SQLITE_NULL
+                    ? nil : Int(sqlite3_column_int(statement, 2)),
+                assessmentType: type, allowanceMinor: sqlite3_column_int64(statement, 4),
+                sourceName: Self.text(statement, 5), sourceURL: Self.text(statement, 6)
+            ))
+        }
+        return values
+    }
+
+    func taxAllowanceOrders() throws -> [TaxAllowanceOrder] {
+        var accountIDsByOrder: [UUID: Set<UUID>] = [:]
+        try query("SELECT order_id,account_id FROM tax_allowance_order_accounts") { statement in
+            guard let orderID = UUID(uuidString: Self.text(statement, 0)),
+                  let accountID = UUID(uuidString: Self.text(statement, 1)) else { return }
+            accountIDsByOrder[orderID, default: []].insert(accountID)
+        }
+        var values: [TaxAllowanceOrder] = []
+        try query(
+            """
+            SELECT id,institution,assessment_type,primary_person_id,partner_person_id,
+                   allowance_minor,valid_from_year,valid_through_year,note,is_active
+            FROM tax_allowance_orders
+            ORDER BY is_active DESC,valid_from_year DESC,lower(institution),id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let type = TaxAssessmentType(rawValue: Self.text(statement, 2)),
+                  let primaryID = UUID(uuidString: Self.text(statement, 3)) else { return }
+            values.append(TaxAllowanceOrder(
+                id: id, institution: Self.text(statement, 1), assessmentType: type,
+                primaryPersonID: primaryID,
+                partnerPersonID: Self.optionalText(statement, 4).flatMap(UUID.init(uuidString:)),
+                allowanceMinor: sqlite3_column_int64(statement, 5),
+                validFromYear: Int(sqlite3_column_int(statement, 6)),
+                validThroughYear: sqlite3_column_type(statement, 7) == SQLITE_NULL
+                    ? nil : Int(sqlite3_column_int(statement, 7)),
+                accountIDs: accountIDsByOrder[id] ?? [], note: Self.text(statement, 8),
+                isActive: sqlite3_column_int(statement, 9) != 0
+            ))
+        }
+        return values
+    }
+
+    func taxAllowanceUsages() throws -> [TaxAllowanceUsage] {
+        var values: [TaxAllowanceUsage] = []
+        try query(
+            """
+            SELECT id,order_id,tax_year,used_minor
+            FROM tax_allowance_usages ORDER BY tax_year DESC,order_id,id
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let orderID = UUID(uuidString: Self.text(statement, 1)) else { return }
+            values.append(TaxAllowanceUsage(
+                id: id, orderID: orderID,
+                taxYear: Int(sqlite3_column_int(statement, 2)),
+                usedMinor: sqlite3_column_int64(statement, 3)
+            ))
+        }
+        return values
+    }
+
+    func saveTaxAllowanceOrder(_ value: TaxAllowanceOrder) throws {
+        let allOrders = try taxAllowanceOrders()
+        try TaxAllowanceRuleEngine.validate(
+            order: value, replacingExisting: allOrders.first { $0.id == value.id },
+            orders: allOrders, usages: try taxAllowanceUsages(), people: try taxPeople(),
+            accounts: try accounts(), rules: try taxAllowanceRules()
+        )
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        let institution = value.institution.trimmingCharacters(in: .whitespacesAndNewlines)
+        try transaction {
+            try run(
+                """
+                INSERT INTO tax_allowance_orders(
+                    id,finance_file_id,institution,assessment_type,primary_person_id,
+                    partner_person_id,allowance_minor,valid_from_year,valid_through_year,
+                    note,is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    institution=excluded.institution,assessment_type=excluded.assessment_type,
+                    primary_person_id=excluded.primary_person_id,
+                    partner_person_id=excluded.partner_person_id,
+                    allowance_minor=excluded.allowance_minor,
+                    valid_from_year=excluded.valid_from_year,
+                    valid_through_year=excluded.valid_through_year,note=excluded.note,
+                    is_active=excluded.is_active,updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(info.id.uuidString), .text(institution),
+                 .text(value.assessmentType.rawValue), .text(value.primaryPersonID.uuidString),
+                 value.partnerPersonID.map { .text($0.uuidString) } ?? .null,
+                 .integer(value.allowanceMinor), .integer(Int64(value.validFromYear)),
+                 value.validThroughYear.map { .integer(Int64($0)) } ?? .null,
+                 .text(value.note), .integer(value.isActive ? 1 : 0), .text(now), .text(now)]
+            )
+            try run(
+                "DELETE FROM tax_allowance_order_accounts WHERE order_id=?",
+                [.text(value.id.uuidString)]
+            )
+            for accountID in value.accountIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try run(
+                    "INSERT INTO tax_allowance_order_accounts(order_id,account_id) VALUES(?,?)",
+                    [.text(value.id.uuidString), .text(accountID.uuidString)]
+                )
+            }
+            try audit(
+                entity: "tax_allowance_order", id: value.id, action: "save",
+                details: "\(institution) · \(value.allowanceMinor)"
+            )
+        }
+    }
+
+    func saveTaxAllowanceUsage(_ value: TaxAllowanceUsage) throws {
+        let orders = try taxAllowanceOrders()
+        try TaxAllowanceRuleEngine.validateUsage(
+            value, order: orders.first { $0.id == value.orderID }
+        )
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO tax_allowance_usages(
+                    id,order_id,tax_year,used_minor,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?) ON CONFLICT(order_id,tax_year) DO UPDATE SET
+                    used_minor=excluded.used_minor,updated_at=excluded.updated_at,version=version+1
+                """,
+                [.text(value.id.uuidString), .text(value.orderID.uuidString),
+                 .integer(Int64(value.taxYear)), .integer(value.usedMinor), .text(now), .text(now)]
+            )
+            try audit(
+                entity: "tax_allowance_usage", id: value.id, action: "save",
+                details: "\(value.taxYear) · \(value.usedMinor)"
+            )
+        }
+    }
+
+    private func isOccurrenceDate(
+        _ candidate: Date,
+        for schedule: ScheduledTransaction,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let candidateDay = Self.day(candidate)
+        var due = schedule.nextDueDate
+        var guardCount = 0
+        while Self.day(due) <= candidateDay,
+              due <= (schedule.endDate ?? candidate),
+              guardCount < 10_000 {
+            if Self.day(due) == candidateDay { return true }
+            due = schedule.frequency.next(after: due, calendar: calendar)
+            guardCount += 1
+        }
+        return false
     }
 
     func budgets() throws -> [FinanceBudget] {
@@ -936,6 +3586,12 @@ final class SQLiteFinanceStore {
         }
         guard (1...12).contains(value.startMonth) else {
             throw FinanceError.database("Der Startmonat ist ungültig.")
+        }
+        let nameKey = Self.budgetNameKey(value.name)
+        guard try !budgets().contains(where: {
+            $0.id != value.id && Self.budgetNameKey($0.name) == nameKey
+        }) else {
+            throw FinanceError.database("Ein Budget mit diesem Namen existiert bereits.")
         }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
@@ -985,34 +3641,179 @@ final class SQLiteFinanceStore {
         return values
     }
 
+    func budgetLines(budgetID: UUID) throws -> [BudgetLine] {
+        var values: [BudgetLine] = []
+        try query(
+            """
+            SELECT id,category_id,year,month,planned_minor,rollover_positive,rollover_negative
+            FROM budget_lines WHERE budget_id=? ORDER BY year,month,category_id
+            """,
+            [.text(budgetID.uuidString)]
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let categoryID = UUID(uuidString: Self.text($0, 1))
+            else { return }
+            values.append(BudgetLine(
+                id: id, budgetID: budgetID, categoryID: categoryID,
+                year: Int(sqlite3_column_int($0, 2)),
+                month: Int(sqlite3_column_int($0, 3)),
+                plannedMinor: sqlite3_column_int64($0, 4),
+                rolloverPositive: sqlite3_column_int($0, 5) != 0,
+                rolloverNegative: sqlite3_column_int($0, 6) != 0
+            ))
+        }
+        return values
+    }
+
     func saveBudgetLine(_ value: BudgetLine) throws {
         guard (1...12).contains(value.month) else {
             throw FinanceError.database("Der Budgetmonat ist ungültig.")
         }
         let now = Self.timestamp(Date())
         try transaction {
-            try run(
-                """
-                INSERT INTO budget_lines(
-                    id,budget_id,category_id,year,month,planned_minor,
-                    rollover_positive,rollover_negative,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(budget_id,category_id,year,month) DO UPDATE SET
-                    planned_minor=excluded.planned_minor,
-                    rollover_positive=excluded.rollover_positive,
-                    rollover_negative=excluded.rollover_negative,
-                    updated_at=excluded.updated_at,version=version+1
-                """,
-                [
-                    .text(value.id.uuidString), .text(value.budgetID.uuidString),
-                    .text(value.categoryID.uuidString), .integer(Int64(value.year)),
-                    .integer(Int64(value.month)), .integer(value.plannedMinor),
-                    .integer(value.rolloverPositive ? 1 : 0),
-                    .integer(value.rolloverNegative ? 1 : 0), .text(now), .text(now)
-                ]
-            )
+            try upsertBudgetLine(value, timestamp: now)
             try audit(entity: "budget_line", id: value.id, action: "save", details: "\(value.year)-\(value.month)")
         }
+    }
+
+    func saveBudgetLines(_ values: [BudgetLine]) throws {
+        guard !values.isEmpty else { return }
+        guard values.allSatisfy({ (1...12).contains($0.month) }) else {
+            throw FinanceError.database("Mindestens ein Budgetmonat ist ungültig.")
+        }
+        let keys = values.map { "\($0.budgetID)|\($0.categoryID)|\($0.year)|\($0.month)" }
+        guard Set(keys).count == keys.count else {
+            throw FinanceError.database("Ein Budgetmonat wurde mehrfach übergeben.")
+        }
+        let budgetIDs = Set(values.map(\.budgetID))
+        guard budgetIDs.count == 1, let budgetID = budgetIDs.first,
+              try scalarInt("SELECT COUNT(*) FROM budgets WHERE id=?", [.text(budgetID.uuidString)]) == 1
+        else {
+            throw FinanceError.database("Die Budgetzeilen gehören nicht zu genau einem vorhandenen Budget.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            for value in values {
+                try upsertBudgetLine(value, timestamp: now)
+                try audit(
+                    entity: "budget_line", id: value.id, action: "save",
+                    details: "\(value.year)-\(value.month)"
+                )
+            }
+        }
+    }
+
+    func duplicateBudget(
+        sourceID: UUID,
+        target: FinanceBudget,
+        calendar: Calendar = .current
+    ) throws {
+        guard let source = try budgets().first(where: { $0.id == sourceID }) else {
+            throw FinanceError.database("Das Ausgangsbudget existiert nicht mehr.")
+        }
+        guard sourceID != target.id else {
+            throw FinanceError.database("Das Zielbudget benötigt eine neue Kennung.")
+        }
+        guard !target.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...12).contains(target.startMonth) else {
+            throw FinanceError.database("Name oder Geschäftsjahresbeginn ist ungültig.")
+        }
+        let targetNameKey = Self.budgetNameKey(target.name)
+        guard try !budgets().contains(where: {
+            $0.id == target.id || Self.budgetNameKey($0.name) == targetNameKey
+        }) else {
+            throw FinanceError.database("Das Zielbudget oder sein Name existiert bereits.")
+        }
+        let sourceLines = try budgetLines(budgetID: sourceID)
+        let sourceMonths = source.months(calendar: calendar)
+        let targetMonths = target.months(calendar: calendar)
+        let sourceIndex = Dictionary(uniqueKeysWithValues: sourceMonths.enumerated().map {
+            (BudgetPlanningEngine.monthKey($0.element, calendar: calendar), $0.offset)
+        })
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO budgets(
+                    id,finance_file_id,name,start_year,start_month,currency,is_active,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(target.id.uuidString), .text(info.id.uuidString), .text(target.name),
+                    .integer(Int64(target.startYear)), .integer(Int64(target.startMonth)),
+                    .text(target.currency), .integer(target.isActive ? 1 : 0),
+                    .text(now), .text(now)
+                ]
+            )
+            for line in sourceLines {
+                let key = String(format: "%04d-%02d", line.year, line.month)
+                guard let index = sourceIndex[key], targetMonths.indices.contains(index) else {
+                    continue
+                }
+                let components = calendar.dateComponents([.year, .month], from: targetMonths[index])
+                guard let year = components.year, let month = components.month else { continue }
+                try upsertBudgetLine(BudgetLine(
+                    id: UUID(), budgetID: target.id, categoryID: line.categoryID,
+                    year: year, month: month, plannedMinor: line.plannedMinor,
+                    rolloverPositive: line.rolloverPositive,
+                    rolloverNegative: line.rolloverNegative
+                ), timestamp: now)
+            }
+            try audit(
+                entity: "budget", id: target.id, action: "duplicate",
+                details: "\(source.name) → \(target.name)"
+            )
+        }
+    }
+
+    func deleteBudget(id: UUID) throws {
+        guard let budget = try budgets().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Das Budget existiert nicht mehr.")
+        }
+        let lineCount = try scalarInt(
+            "SELECT COUNT(*) FROM budget_lines WHERE budget_id=?", [.text(id.uuidString)]
+        )
+        try transaction {
+            try run("DELETE FROM budgets WHERE id=?", [.text(id.uuidString)])
+            try audit(
+                entity: "budget", id: id, action: "delete",
+                details: "\(budget.name); \(lineCount) Monatswerte"
+            )
+        }
+    }
+
+    private func upsertBudgetLine(_ value: BudgetLine, timestamp: String) throws {
+        try run(
+            """
+            INSERT INTO budget_lines(
+                id,budget_id,category_id,year,month,planned_minor,
+                rollover_positive,rollover_negative,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(budget_id,category_id,year,month) DO UPDATE SET
+                planned_minor=excluded.planned_minor,
+                rollover_positive=excluded.rollover_positive,
+                rollover_negative=excluded.rollover_negative,
+                updated_at=excluded.updated_at,version=version+1
+            """,
+            [
+                .text(value.id.uuidString), .text(value.budgetID.uuidString),
+                .text(value.categoryID.uuidString), .integer(Int64(value.year)),
+                .integer(Int64(value.month)), .integer(value.plannedMinor),
+                .integer(value.rolloverPositive ? 1 : 0),
+                .integer(value.rolloverNegative ? 1 : 0), .text(timestamp), .text(timestamp)
+            ]
+        )
+    }
+
+    private static func budgetNameKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "de_DE")
+            )
     }
 
     func paymentOrders() throws -> [PaymentOrder] {
@@ -1021,7 +3822,8 @@ final class SQLiteFinanceStore {
             """
             SELECT id,account_id,type,recipient_name,iban,bic,amount_minor,currency,
                    execution_date,purpose,end_to_end_id,status,idempotency_key,
-                   bank_reference,created_at,updated_at
+                   bank_reference,created_at,updated_at,payee_id,payee_bank_account_id,
+                   purpose_code
             FROM payment_orders ORDER BY created_at DESC,id DESC
             """
         ) {
@@ -1043,7 +3845,634 @@ final class SQLiteFinanceStore {
                     purpose: Self.text($0, 9), endToEndID: Self.text($0, 10),
                     status: status, idempotencyKey: Self.text($0, 12),
                     bankReference: Self.text($0, 13),
-                    createdAt: createdAt, updatedAt: updatedAt
+                    createdAt: createdAt, updatedAt: updatedAt,
+                    payeeID: Self.optionalText($0, 16).flatMap(UUID.init(uuidString:)),
+                    payeeBankAccountID: Self.optionalText($0, 17)
+                        .flatMap(UUID.init(uuidString:)),
+                    purposeCode: Self.text($0, 18)
+                )
+            )
+        }
+        return values
+    }
+
+    func directDebitOrders() throws -> [DirectDebitOrder] {
+        var values: [DirectDebitOrder] = []
+        try query(
+            """
+            SELECT id,creditor_account_id,debtor_payee_id,debtor_bank_account_id,
+                   mandate_id,creditor_name,creditor_id,creditor_iban,creditor_bic,
+                   debtor_name,debtor_iban,debtor_bic,amount_minor,currency,
+                   collection_date,purpose,end_to_end_id,mandate_reference,
+                   mandate_signed_on,sequence_type,status,idempotency_key,
+                   bank_reference,created_at,updated_at
+            FROM direct_debit_orders
+            ORDER BY created_at DESC,id DESC
+            """
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let creditorAccountID = UUID(uuidString: Self.text($0, 1)),
+                let debtorPayeeID = UUID(uuidString: Self.text($0, 2)),
+                let debtorBankAccountID = UUID(uuidString: Self.text($0, 3)),
+                let mandateID = UUID(uuidString: Self.text($0, 4)),
+                let collectionDate = Self.date(Self.text($0, 14)),
+                let mandateSignedOn = Self.date(Self.text($0, 18)),
+                let sequenceType = SEPAMandateSequenceType(
+                    rawValue: Self.text($0, 19)
+                ),
+                let status = PaymentStatus(rawValue: Self.text($0, 20)),
+                let createdAt = Self.timestampDate(Self.text($0, 23)),
+                let updatedAt = Self.timestampDate(Self.text($0, 24))
+            else { return }
+            values.append(
+                DirectDebitOrder(
+                    id: id,
+                    creditorAccountID: creditorAccountID,
+                    debtorPayeeID: debtorPayeeID,
+                    debtorBankAccountID: debtorBankAccountID,
+                    mandateID: mandateID,
+                    creditorName: Self.text($0, 5),
+                    creditorID: Self.text($0, 6),
+                    creditorIBAN: Self.text($0, 7),
+                    creditorBIC: Self.text($0, 8),
+                    debtorName: Self.text($0, 9),
+                    debtorIBAN: Self.text($0, 10),
+                    debtorBIC: Self.text($0, 11),
+                    amountMinor: sqlite3_column_int64($0, 12),
+                    currency: Self.text($0, 13),
+                    collectionDate: collectionDate,
+                    purpose: Self.text($0, 15),
+                    endToEndID: Self.text($0, 16),
+                    mandateReference: Self.text($0, 17),
+                    mandateSignedOn: mandateSignedOn,
+                    sequenceType: sequenceType,
+                    status: status,
+                    idempotencyKey: Self.text($0, 21),
+                    bankReference: Self.text($0, 22),
+                    createdAt: createdAt,
+                    updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func paymentBatches() throws -> [PaymentBatch] {
+        struct Header {
+            let id: UUID
+            let name: String
+            let kind: PaymentBatchKind
+            let accountID: UUID
+            let requestedDate: Date
+            let status: PaymentStatus
+            let idempotencyKey: String
+            let bankReference: String
+            let createdAt: Date
+            let updatedAt: Date
+        }
+        var headers: [Header] = []
+        try query(
+            """
+            SELECT id,name,kind,account_id,requested_date,status,idempotency_key,
+                   bank_reference,created_at,updated_at
+            FROM payment_batches ORDER BY created_at DESC,id DESC
+            """
+        ) {
+            guard let id = UUID(uuidString: Self.text($0, 0)),
+                  let kind = PaymentBatchKind(rawValue: Self.text($0, 2)),
+                  let accountID = UUID(uuidString: Self.text($0, 3)),
+                  let requestedDate = Self.date(Self.text($0, 4)),
+                  let status = PaymentStatus(rawValue: Self.text($0, 5)),
+                  let createdAt = Self.timestampDate(Self.text($0, 8)),
+                  let updatedAt = Self.timestampDate(Self.text($0, 9))
+            else { return }
+            headers.append(
+                Header(
+                    id: id, name: Self.text($0, 1), kind: kind,
+                    accountID: accountID, requestedDate: requestedDate,
+                    status: status, idempotencyKey: Self.text($0, 6),
+                    bankReference: Self.text($0, 7), createdAt: createdAt,
+                    updatedAt: updatedAt
+                )
+            )
+        }
+        return try headers.map { header in
+            var memberIDs: [UUID] = []
+            let column = header.kind == .creditTransfer
+                ? "payment_order_id" : "direct_debit_order_id"
+            try query(
+                """
+                SELECT \(column) FROM payment_batch_items
+                WHERE batch_id=? ORDER BY position
+                """,
+                [.text(header.id.uuidString)]
+            ) {
+                if let id = UUID(uuidString: Self.text($0, 0)) {
+                    memberIDs.append(id)
+                }
+            }
+            return PaymentBatch(
+                id: header.id, name: header.name, kind: header.kind,
+                accountID: header.accountID, requestedDate: header.requestedDate,
+                status: header.status, idempotencyKey: header.idempotencyKey,
+                bankReference: header.bankReference,
+                memberOrderIDs: memberIDs, createdAt: header.createdAt,
+                updatedAt: header.updatedAt
+            )
+        }
+    }
+
+    func paymentInstructionImports() throws -> [PaymentInstructionImportSummary] {
+        var values: [PaymentInstructionImportSummary] = []
+        try query(
+            """
+            SELECT fingerprint,kind,message_id,source_created_at,imported_at,
+                   record_count,imported_count,warning_count
+            FROM payment_instruction_imports ORDER BY imported_at DESC,fingerprint
+            """
+        ) {
+            guard let kind = PainInstructionKind(rawValue: Self.text($0, 1)),
+                  let importedAt = Self.timestampDate(Self.text($0, 4)) else { return }
+            values.append(
+                PaymentInstructionImportSummary(
+                    id: Self.text($0, 0), kind: kind,
+                    messageID: Self.text($0, 2),
+                    sourceCreatedAt: Self.timestampDate(Self.text($0, 3)),
+                    importedAt: importedAt,
+                    recordCount: Int(sqlite3_column_int64($0, 5)),
+                    importedCount: Int(sqlite3_column_int64($0, 6)),
+                    warningCount: Int(sqlite3_column_int64($0, 7))
+                )
+            )
+        }
+        return values
+    }
+
+    func paymentInstructionImportItems(
+        importID: String
+    ) throws -> [PaymentInstructionImportItem] {
+        var values: [PaymentInstructionImportItem] = []
+        try query(
+            """
+            SELECT id,import_fingerprint,position,kind,payment_information_id,
+                   end_to_end_id,account_id,account_title,target_order_id,
+                   counterparty_name,counterparty_iban,amount_minor,
+                   requested_date,purpose,was_imported
+            FROM payment_instruction_import_items
+            WHERE import_fingerprint=? ORDER BY position
+            """,
+            [.text(importID)]
+        ) {
+            guard let id = UUID(uuidString: Self.text($0, 0)),
+                  let kind = PainInstructionKind(rawValue: Self.text($0, 3)),
+                  let requestedDate = Self.date(Self.text($0, 12)) else { return }
+            values.append(
+                PaymentInstructionImportItem(
+                    id: id, importID: Self.text($0, 1),
+                    position: Int(sqlite3_column_int64($0, 2)), kind: kind,
+                    paymentInformationID: Self.text($0, 4),
+                    endToEndID: Self.text($0, 5),
+                    accountID: UUID(uuidString: Self.text($0, 6)),
+                    accountTitle: Self.text($0, 7),
+                    targetOrderID: UUID(uuidString: Self.text($0, 8)),
+                    counterpartyName: Self.text($0, 9),
+                    counterpartyIBAN: Self.text($0, 10),
+                    amountMinor: sqlite3_column_int64($0, 11),
+                    requestedDate: requestedDate, purpose: Self.text($0, 13),
+                    imported: sqlite3_column_int64($0, 14) == 1
+                )
+            )
+        }
+        return values
+    }
+
+    func commitPaymentInstructionImport(
+        _ preview: PainInstructionPreview,
+        importing selectedMatchIDs: Set<UUID>
+    ) throws {
+        guard !selectedMatchIDs.isEmpty else {
+            throw FinanceError.invalidImportResolution(
+                "Es wurde keine importierbare Zahlungsposition ausgewählt."
+            )
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_instruction_imports WHERE fingerprint=?",
+            [.text(preview.document.fingerprint)]
+        ) == 0 else { throw FinanceError.duplicateImport }
+        let currentAccounts = try accounts()
+        let currentPayees = try payees()
+        let currentBanks = try payeeBankAccounts()
+        let currentMandates = try sepaMandates()
+        let fresh = PainInstructionImporter.preview(
+            document: preview.document, accounts: currentAccounts,
+            payees: currentPayees, bankAccounts: currentBanks,
+            mandates: currentMandates
+        )
+        let oldMapping = preview.matches.map {
+            ($0.id, $0.accountID, $0.payeeBankAccountID, $0.mandateID, $0.canImport)
+        }
+        let newMapping = fresh.matches.map {
+            ($0.id, $0.accountID, $0.payeeBankAccountID, $0.mandateID, $0.canImport)
+        }
+        guard oldMapping.elementsEqual(newMapping, by: {
+            $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2
+                && $0.3 == $1.3 && $0.4 == $1.4
+        }) else {
+            throw FinanceError.invalidImportResolution(
+                "Konto-, Empfänger- oder Mandatszuordnung hat sich geändert."
+            )
+        }
+        let selected = fresh.matches.filter { selectedMatchIDs.contains($0.id) }
+        guard selected.count == selectedMatchIDs.count,
+              selected.allSatisfy({ $0.canImport && $0.accountID != nil }) else {
+            throw FinanceError.invalidImportResolution(
+                "Mindestens eine gewählte Position ist nicht mehr importierbar."
+            )
+        }
+        let accountsByID = Dictionary(uniqueKeysWithValues: currentAccounts.map { ($0.id, $0) })
+        let banksByID = Dictionary(uniqueKeysWithValues: currentBanks.map { ($0.id, $0) })
+        let now = Date()
+        let info = try financeFileInfo()
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_instruction_imports(
+                    fingerprint,finance_file_id,kind,message_id,source_created_at,
+                    imported_at,record_count,imported_count,warning_count
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(preview.document.fingerprint), .text(info.id.uuidString),
+                    .text(preview.document.kind.rawValue),
+                    .text(preview.document.messageID),
+                    preview.document.createdAt.map { .text(Self.timestamp($0)) } ?? .null,
+                    .text(Self.timestamp(now)),
+                    .integer(Int64(fresh.matches.count)),
+                    .integer(Int64(selected.count)),
+                    .integer(Int64(preview.document.warnings.count))
+                ]
+            )
+            var importedOrderIDs: [UUID: UUID] = [:]
+            for match in selected {
+                let record = match.record
+                let account = accountsByID[match.accountID!]!
+                switch record.kind {
+                case .creditTransfer:
+                    let bank = match.payeeBankAccountID.flatMap { banksByID[$0] }
+                    try createPaymentOrder(
+                        PaymentOrder(
+                            id: match.id, accountID: account.id,
+                            type: record.isInstant ? .instantCreditTransfer : .sepaCreditTransfer,
+                            recipientName: record.counterpartyName,
+                            iban: record.counterpartyIBAN,
+                            bic: bank?.bic ?? record.counterpartyBIC,
+                            amountMinor: record.amountMinor, currency: "EUR",
+                            executionDate: record.requestedDate,
+                            purpose: record.purpose, endToEndID: record.endToEndID,
+                            status: .draft,
+                            idempotencyKey: "pain-instruction:\(preview.document.fingerprint):\(match.id.uuidString)",
+                            bankReference: "", createdAt: now, updatedAt: now,
+                            payeeID: match.payeeID,
+                            payeeBankAccountID: match.payeeBankAccountID,
+                            purposeCode: record.purposeCode
+                        )
+                    )
+                case .directDebit:
+                    let bank = banksByID[match.payeeBankAccountID!]!
+                    try createDirectDebitOrder(
+                        DirectDebitOrder(
+                            id: match.id, creditorAccountID: account.id,
+                            debtorPayeeID: match.payeeID!,
+                            debtorBankAccountID: bank.id, mandateID: match.mandateID!,
+                            creditorName: account.ownerName,
+                            creditorID: record.creditorID,
+                            creditorIBAN: IBANValidator.normalized(account.iban),
+                            creditorBIC: account.bic,
+                            debtorName: bank.accountHolder,
+                            debtorIBAN: IBANValidator.normalized(bank.iban),
+                            debtorBIC: bank.bic, amountMinor: record.amountMinor,
+                            currency: "EUR", collectionDate: record.requestedDate,
+                            purpose: record.purpose, endToEndID: record.endToEndID,
+                            mandateReference: record.mandateReference,
+                            mandateSignedOn: record.mandateSignedOn!,
+                            sequenceType: record.sequenceType!, status: .draft,
+                            idempotencyKey: "pain-instruction:\(preview.document.fingerprint):\(match.id.uuidString)",
+                            bankReference: "", createdAt: now, updatedAt: now
+                        )
+                    )
+                }
+                importedOrderIDs[match.id] = match.id
+            }
+            for (position, match) in fresh.matches.enumerated() {
+                let record = match.record
+                let imported = importedOrderIDs[match.id] != nil
+                try run(
+                    """
+                    INSERT INTO payment_instruction_import_items(
+                        id,import_fingerprint,position,kind,payment_information_id,
+                        end_to_end_id,account_id,account_title,target_order_id,
+                        counterparty_name,counterparty_iban,amount_minor,
+                        requested_date,purpose,was_imported
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(match.id.uuidString), .text(preview.document.fingerprint),
+                        .integer(Int64(position)), .text(record.kind.rawValue),
+                        .text(record.paymentInformationID), .text(record.endToEndID),
+                        match.accountID.map { .text($0.uuidString) } ?? .null,
+                        .text(match.accountTitle),
+                        imported ? .text(match.id.uuidString) : .null,
+                        .text(record.counterpartyName),
+                        .text(record.counterpartyIBAN),
+                        .integer(record.amountMinor), .text(Self.day(record.requestedDate)),
+                        .text(record.purpose), .integer(imported ? 1 : 0)
+                    ]
+                )
+            }
+            let selectedGroups = Dictionary(grouping: selected) {
+                "\($0.record.kind.rawValue)|\($0.record.paymentInformationID)"
+            }
+            for group in selectedGroups.values where group.count >= 2 {
+                let sourceCount = fresh.matches.filter {
+                    $0.record.kind == group[0].record.kind
+                        && $0.record.paymentInformationID
+                            == group[0].record.paymentInformationID
+                }.count
+                guard sourceCount == group.count else { continue }
+                let ordered = group.sorted {
+                    let left = fresh.matches.firstIndex(of: $0) ?? 0
+                    let right = fresh.matches.firstIndex(of: $1) ?? 0
+                    return left < right
+                }
+                try createPaymentBatch(
+                    PaymentBatch(
+                        id: UUID(),
+                        name: "Import \(group[0].record.paymentInformationID)",
+                        kind: group[0].record.kind == .creditTransfer
+                            ? .creditTransfer : .directDebit,
+                        accountID: group[0].accountID!,
+                        requestedDate: group[0].record.requestedDate,
+                        status: .draft,
+                        idempotencyKey: "pain-import-batch:\(preview.document.fingerprint):\(group[0].record.paymentInformationID)",
+                        bankReference: "", memberOrderIDs: ordered.map(\.id),
+                        createdAt: now, updatedAt: now
+                    )
+                )
+            }
+            try audit(
+                entity: "payment_instruction_import",
+                id: UUID(), action: "commit",
+                details: "fingerprint=\(preview.document.fingerprint);imported=\(selected.count)"
+            )
+        }
+    }
+
+    func paymentStatusReports() throws -> [PaymentStatusReportSummary] {
+        var values: [PaymentStatusReportSummary] = []
+        try query(
+            """
+            SELECT fingerprint,message_id,source_created_at,imported_at,
+                   record_count,applied_count,warning_count
+            FROM payment_status_reports ORDER BY imported_at DESC,fingerprint
+            """
+        ) {
+            guard let importedAt = Self.timestampDate(Self.text($0, 3)) else {
+                return
+            }
+            values.append(
+                PaymentStatusReportSummary(
+                    id: Self.text($0, 0), messageID: Self.text($0, 1),
+                    sourceCreatedAt: Self.timestampDate(Self.text($0, 2)),
+                    importedAt: importedAt,
+                    recordCount: Int(sqlite3_column_int64($0, 4)),
+                    appliedCount: Int(sqlite3_column_int64($0, 5)),
+                    warningCount: Int(sqlite3_column_int64($0, 6))
+                )
+            )
+        }
+        return values
+    }
+
+    func paymentStatusReportItems(
+        reportID: String
+    ) throws -> [PaymentStatusReportItem] {
+        var values: [PaymentStatusReportItem] = []
+        try query(
+            """
+            SELECT id,report_fingerprint,position,target_kind,target_id,
+                   target_title,status_code,reason_code,reason_text,
+                   previous_status,applied_status
+            FROM payment_status_report_items
+            WHERE report_fingerprint=? ORDER BY position
+            """,
+            [.text(reportID)]
+        ) {
+            guard let id = UUID(uuidString: Self.text($0, 0)) else { return }
+            values.append(
+                PaymentStatusReportItem(
+                    id: id, reportID: Self.text($0, 1),
+                    position: Int(sqlite3_column_int64($0, 2)),
+                    targetKind: Pain002TargetKind(rawValue: Self.text($0, 3)),
+                    targetID: UUID(uuidString: Self.text($0, 4)),
+                    targetTitle: Self.text($0, 5), statusCode: Self.text($0, 6),
+                    reasonCode: Self.text($0, 7), reasonText: Self.text($0, 8),
+                    previousStatus: PaymentStatus(rawValue: Self.text($0, 9)),
+                    appliedStatus: PaymentStatus(rawValue: Self.text($0, 10))
+                )
+            )
+        }
+        return values
+    }
+
+    func commitPaymentStatusReport(
+        _ preview: Pain002Preview,
+        applying selectedMatchIDs: Set<UUID>
+    ) throws {
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_status_reports WHERE fingerprint=?",
+            [.text(preview.document.fingerprint)]
+        ) == 0 else { throw FinanceError.duplicateImport }
+        let fresh = Pain002Importer.preview(
+            document: preview.document,
+            paymentOrders: try paymentOrders(),
+            directDebitOrders: try directDebitOrders(),
+            batches: try paymentBatches()
+        )
+        guard fresh.matches.map({ ($0.targetKind?.rawValue ?? "", $0.targetID) })
+            .elementsEqual(preview.matches.map({ ($0.targetKind?.rawValue ?? "", $0.targetID) }), by: { $0.0 == $1.0 && $0.1 == $1.1 })
+        else {
+            throw FinanceError.invalidImportResolution(
+                "Die Zuordnung des Statusberichts hat sich seit der Vorschau geändert."
+            )
+        }
+        let selected = fresh.matches.filter { selectedMatchIDs.contains($0.id) }
+        guard selected.count == selectedMatchIDs.count,
+              selected.allSatisfy({
+                  $0.canApply && $0.targetKind != nil && $0.targetID != nil
+                      && $0.proposedStatus != nil
+              }) else {
+            throw FinanceError.invalidImportResolution(
+                "Mindestens eine ausgewählte Statusposition ist nicht mehr anwendbar."
+            )
+        }
+        struct ActionKey: Hashable {
+            let kind: Pain002TargetKind
+            let id: UUID
+        }
+        var actions: [ActionKey: PaymentStatus] = [:]
+        for match in selected {
+            let key = ActionKey(kind: match.targetKind!, id: match.targetID!)
+            if let existing = actions[key], existing != match.proposedStatus! {
+                throw FinanceError.invalidImportResolution(
+                    "Der Bericht enthält widersprüchliche finale Status für denselben Auftrag."
+                )
+            }
+            actions[key] = match.proposedStatus!
+        }
+        let info = try financeFileInfo()
+        let now = Date()
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_status_reports(
+                    fingerprint,finance_file_id,message_id,source_created_at,
+                    imported_at,record_count,applied_count,warning_count
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(preview.document.fingerprint), .text(info.id.uuidString),
+                    .text(preview.document.messageID),
+                    preview.document.createdAt.map { .text(Self.timestamp($0)) } ?? .null,
+                    .text(Self.timestamp(now)),
+                    .integer(Int64(preview.matches.count)),
+                    .integer(Int64(selected.count)),
+                    .integer(Int64(preview.document.warnings.count))
+                ]
+            )
+            for (position, match) in preview.matches.enumerated() {
+                let record = match.record
+                try run(
+                    """
+                    INSERT INTO payment_status_report_items(
+                        id,report_fingerprint,position,target_kind,target_id,
+                        target_title,original_message_id,original_message_name_id,
+                        original_payment_information_id,original_end_to_end_id,
+                        status_code,reason_code,reason_text,previous_status,applied_status
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(match.id.uuidString),
+                        .text(preview.document.fingerprint), .integer(Int64(position)),
+                        match.targetKind.map { .text($0.rawValue) } ?? .null,
+                        match.targetID.map { .text($0.uuidString) } ?? .null,
+                        .text(match.targetTitle), .text(record.originalMessageID),
+                        .text(record.originalMessageNameID),
+                        .text(record.originalPaymentInformationID),
+                        .text(record.originalEndToEndID), .text(record.statusCode),
+                        .text(record.reasonCode), .text(record.reasonText),
+                        match.currentStatus.map { .text($0.rawValue) } ?? .null,
+                        selectedMatchIDs.contains(match.id)
+                            ? .text(match.proposedStatus!.rawValue) : .null
+                    ]
+                )
+            }
+            let bankReference = "P002-\(preview.document.messageID)"
+            for (key, status) in actions.sorted(by: {
+                if $0.key.kind.rawValue != $1.key.kind.rawValue {
+                    return $0.key.kind.rawValue < $1.key.kind.rawValue
+                }
+                return $0.key.id.uuidString < $1.key.id.uuidString
+            }) {
+                switch key.kind {
+                case .creditTransfer:
+                    try transitionPaymentOrder(
+                        id: key.id, to: status, bankReference: bankReference
+                    )
+                case .directDebit:
+                    try transitionDirectDebitOrder(
+                        id: key.id, to: status, bankReference: bankReference
+                    )
+                case .batch:
+                    try transitionPaymentBatch(
+                        id: key.id, to: status, bankReference: bankReference
+                    )
+                }
+            }
+            try audit(
+                entity: "payment_status_report", id: UUID(), action: "import",
+                details: "message=\(preview.document.messageID);records=\(preview.matches.count);applied=\(selected.count)"
+            )
+        }
+    }
+
+    func standingOrders() throws -> [StandingOrder] {
+        var values: [StandingOrder] = []
+        try query(
+            """
+            SELECT id,account_id,name,recipient_name,iban,bic,amount_minor,currency,
+                   purpose,next_execution_date,end_date,frequency,
+                   business_day_adjustment,status,created_at,updated_at,
+                   banking_calendar_id
+            FROM standing_orders
+            ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                     next_execution_date,name COLLATE NOCASE,id
+            """
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let accountID = UUID(uuidString: Self.text($0, 1)),
+                let nextExecutionDate = Self.date(Self.text($0, 9)),
+                let frequency = RecurrenceFrequency(rawValue: Self.text($0, 11)),
+                let adjustment = BusinessDayAdjustment(rawValue: Self.text($0, 12)),
+                let status = StandingOrderStatus(rawValue: Self.text($0, 13)),
+                let createdAt = Self.timestampDate(Self.text($0, 14)),
+                let updatedAt = Self.timestampDate(Self.text($0, 15)),
+                let bankingCalendar = BankingCalendarProfile(rawValue: Self.text($0, 16))
+            else { return }
+            values.append(
+                StandingOrder(
+                    id: id, accountID: accountID, name: Self.text($0, 2),
+                    recipientName: Self.text($0, 3), iban: Self.text($0, 4),
+                    bic: Self.text($0, 5), amountMinor: sqlite3_column_int64($0, 6),
+                    currency: Self.text($0, 7), purpose: Self.text($0, 8),
+                    nextExecutionDate: nextExecutionDate,
+                    endDate: Self.optionalText($0, 10).flatMap(Self.date),
+                    frequency: frequency, businessDayAdjustment: adjustment,
+                    bankingCalendar: bankingCalendar,
+                    status: status, createdAt: createdAt, updatedAt: updatedAt
+                )
+            )
+        }
+        return values
+    }
+
+    func standingOrderRuns(standingOrderID: UUID) throws -> [StandingOrderRun] {
+        var values: [StandingOrderRun] = []
+        try query(
+            """
+            SELECT id,due_date,execution_date,status,payment_order_id,created_at,
+                   banking_calendar_id,banking_calendar_version
+            FROM standing_order_runs
+            WHERE standing_order_id=?
+            ORDER BY due_date DESC,id DESC
+            """,
+            [.text(standingOrderID.uuidString)]
+        ) {
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let dueDate = Self.date(Self.text($0, 1)),
+                let executionDate = Self.date(Self.text($0, 2)),
+                let status = StandingOrderRunStatus(rawValue: Self.text($0, 3)),
+                let createdAt = Self.timestampDate(Self.text($0, 5))
+            else { return }
+            values.append(
+                StandingOrderRun(
+                    id: id, standingOrderID: standingOrderID,
+                    dueDate: dueDate, executionDate: executionDate, status: status,
+                    paymentOrderID: Self.optionalText($0, 4).flatMap(UUID.init(uuidString:)),
+                    createdAt: createdAt, bankingCalendarID: Self.text($0, 6),
+                    bankingCalendarVersion: Int(sqlite3_column_int64($0, 7))
                 )
             )
         }
@@ -1075,6 +4504,26 @@ final class SQLiteFinanceStore {
     func saveTag(_ value: FinanceTag) throws {
         let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw FinanceError.database("Der Tagname fehlt.") }
+        guard value.parentID != value.id else {
+            throw FinanceError.database("Eine Klasse kann nicht ihr eigener Oberpunkt sein.")
+        }
+        let existing = try tags()
+        if let parentID = value.parentID {
+            guard existing.contains(where: { $0.id == parentID }) else {
+                throw FinanceError.database("Die übergeordnete Klasse fehlt.")
+            }
+            var ancestorID: UUID? = parentID
+            var visited = Set<UUID>()
+            while let currentID = ancestorID {
+                guard visited.insert(currentID).inserted else {
+                    throw FinanceError.database("Die Klassenhierarchie enthält einen Kreis.")
+                }
+                guard currentID != value.id else {
+                    throw FinanceError.database("Die Klassenhierarchie würde einen Kreis erzeugen.")
+                }
+                ancestorID = existing.first(where: { $0.id == currentID })?.parentID
+            }
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -1103,7 +4552,7 @@ final class SQLiteFinanceStore {
         try query(
             """
             SELECT id,canonical_name,address,email,phone,iban,bic,
-                   default_category_id,preferred_account_id,note,is_active
+                   creditor_id,default_category_id,preferred_account_id,note,is_active
             FROM payees ORDER BY canonical_name COLLATE NOCASE,id
             """
         ) {
@@ -1113,15 +4562,26 @@ final class SQLiteFinanceStore {
                 "SELECT alias FROM payee_aliases WHERE payee_id=? ORDER BY alias COLLATE NOCASE",
                 [.text(id.uuidString)]
             ) { aliases.append(Self.text($0, 0)) }
+            var defaultTagIDs: [UUID] = []
+            try query(
+                "SELECT tag_id FROM payee_default_tags WHERE payee_id=? ORDER BY tag_id",
+                [.text(id.uuidString)]
+            ) {
+                if let tagID = UUID(uuidString: Self.text($0, 0)) {
+                    defaultTagIDs.append(tagID)
+                }
+            }
             values.append(
                 FinancePayee(
                     id: id, canonicalName: Self.text($0, 1), aliases: aliases,
                     address: Self.text($0, 2), email: Self.text($0, 3),
                     phone: Self.text($0, 4), iban: Self.text($0, 5),
                     bic: Self.text($0, 6),
-                    defaultCategoryID: Self.optionalText($0, 7).flatMap(UUID.init(uuidString:)),
-                    preferredAccountID: Self.optionalText($0, 8).flatMap(UUID.init(uuidString:)),
-                    note: Self.text($0, 9), isActive: sqlite3_column_int($0, 10) != 0
+                    creditorID: Self.text($0, 7),
+                    defaultCategoryID: Self.optionalText($0, 8).flatMap(UUID.init(uuidString:)),
+                    defaultTagIDs: defaultTagIDs,
+                    preferredAccountID: Self.optionalText($0, 9).flatMap(UUID.init(uuidString:)),
+                    note: Self.text($0, 10), isActive: sqlite3_column_int($0, 11) != 0
                 )
             )
         }
@@ -1134,6 +4594,14 @@ final class SQLiteFinanceStore {
         if !value.iban.isEmpty, !IBANValidator.isValid(value.iban) {
             throw FinanceError.invalidIBAN
         }
+        let creditorID = SEPACreditorIDValidator.normalized(value.creditorID)
+        if !creditorID.isEmpty, !SEPACreditorIDValidator.isValid(creditorID) {
+            throw FinanceError.database("Die SEPA-Gläubiger-ID ist ungültig.")
+        }
+        let activeTagIDs = Set(try tags().filter(\.isActive).map(\.id))
+        guard Set(value.defaultTagIDs).isSubset(of: activeTagIDs) else {
+            throw FinanceError.database("Mindestens eine Standardklasse fehlt oder ist inaktiv.")
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
@@ -1141,11 +4609,12 @@ final class SQLiteFinanceStore {
                 """
                 INSERT INTO payees(
                     id,finance_file_id,canonical_name,address,email,phone,iban,bic,
-                    default_category_id,preferred_account_id,note,is_active,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    creditor_id,default_category_id,preferred_account_id,note,is_active,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET canonical_name=excluded.canonical_name,
                     address=excluded.address,email=excluded.email,phone=excluded.phone,
-                    iban=excluded.iban,bic=excluded.bic,
+                    iban=excluded.iban,bic=excluded.bic,creditor_id=excluded.creditor_id,
                     default_category_id=excluded.default_category_id,
                     preferred_account_id=excluded.preferred_account_id,note=excluded.note,
                     is_active=excluded.is_active,updated_at=excluded.updated_at,version=version+1
@@ -1154,6 +4623,7 @@ final class SQLiteFinanceStore {
                     .text(value.id.uuidString), .text(info.id.uuidString), .text(name),
                     .text(value.address), .text(value.email), .text(value.phone),
                     .text(IBANValidator.normalized(value.iban)), .text(value.bic.uppercased()),
+                    .text(creditorID),
                     value.defaultCategoryID.map { .text($0.uuidString) } ?? .null,
                     value.preferredAccountID.map { .text($0.uuidString) } ?? .null,
                     .text(value.note), .integer(value.isActive ? 1 : 0),
@@ -1169,7 +4639,270 @@ final class SQLiteFinanceStore {
                     [.text(value.id.uuidString), .text(alias)]
                 )
             }
+            try run(
+                "DELETE FROM payee_default_tags WHERE payee_id=?",
+                [.text(value.id.uuidString)]
+            )
+            for tagID in Set(value.defaultTagIDs).sorted(by: {
+                $0.uuidString < $1.uuidString
+            }) {
+                try run(
+                    "INSERT INTO payee_default_tags(payee_id,tag_id) VALUES(?,?)",
+                    [.text(value.id.uuidString), .text(tagID.uuidString)]
+                )
+            }
+            let normalizedIBAN = IBANValidator.normalized(value.iban)
+            if !normalizedIBAN.isEmpty,
+               try scalarInt(
+                "SELECT COUNT(*) FROM payee_bank_accounts WHERE payee_id=? AND iban=?",
+                [.text(value.id.uuidString), .text(normalizedIBAN)]
+               ) == 0 {
+                let hasDefault = try scalarInt(
+                    "SELECT COUNT(*) FROM payee_bank_accounts WHERE payee_id=? AND is_default=1",
+                    [.text(value.id.uuidString)]
+                ) > 0
+                try run(
+                    """
+                    INSERT INTO payee_bank_accounts(
+                        id,payee_id,label,account_holder,iban,bic,bank_name,
+                        is_default,is_active,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(UUID().uuidString), .text(value.id.uuidString),
+                        .text("Standardkonto"), .text(name),
+                        .text(normalizedIBAN), .text(value.bic.uppercased()),
+                        .text(""), .integer(hasDefault ? 0 : 1), .integer(1),
+                        .text(now), .text(now)
+                    ]
+                )
+            }
             try audit(entity: "payee", id: value.id, action: "save", details: name)
+        }
+    }
+
+    func payeeBankAccounts(payeeID: UUID? = nil) throws -> [FinancePayeeBankAccount] {
+        var values: [FinancePayeeBankAccount] = []
+        let sql: String
+        let bindings: [SQLiteValue]
+        if let payeeID {
+            sql = """
+                SELECT id,payee_id,label,account_holder,iban,bic,bank_name,
+                       is_default,is_active
+                FROM payee_bank_accounts WHERE payee_id=?
+                ORDER BY is_default DESC,is_active DESC,label COLLATE NOCASE,id
+                """
+            bindings = [.text(payeeID.uuidString)]
+        } else {
+            sql = """
+                SELECT id,payee_id,label,account_holder,iban,bic,bank_name,
+                       is_default,is_active
+                FROM payee_bank_accounts
+                ORDER BY payee_id,is_default DESC,is_active DESC,label COLLATE NOCASE,id
+                """
+            bindings = []
+        }
+        try query(sql, bindings) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let ownerID = UUID(uuidString: Self.text(statement, 1))
+            else { return }
+            values.append(
+                FinancePayeeBankAccount(
+                    id: id,
+                    payeeID: ownerID,
+                    label: Self.text(statement, 2),
+                    accountHolder: Self.text(statement, 3),
+                    iban: Self.text(statement, 4),
+                    bic: Self.text(statement, 5),
+                    bankName: Self.text(statement, 6),
+                    isDefault: sqlite3_column_int(statement, 7) != 0,
+                    isActive: sqlite3_column_int(statement, 8) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func savePayeeBankAccount(_ value: FinancePayeeBankAccount) throws {
+        let label = value.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let holder = value.accountHolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let iban = IBANValidator.normalized(value.iban)
+        guard !label.isEmpty else {
+            throw FinanceError.database("Die Bezeichnung der Bankverbindung fehlt.")
+        }
+        guard !holder.isEmpty else {
+            throw FinanceError.database("Der Kontoinhaber fehlt.")
+        }
+        guard IBANValidator.isValid(iban) else { throw FinanceError.invalidIBAN }
+        guard !value.isDefault || value.isActive else {
+            throw FinanceError.database("Eine inaktive Bankverbindung kann nicht Standard sein.")
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payees WHERE id=?",
+            [.text(value.payeeID.uuidString)]
+        ) == 1 else {
+            throw FinanceError.database("Die Empfängerakte wurde nicht gefunden.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM payee_bank_accounts WHERE id=? AND payee_id!=?",
+                [.text(value.id.uuidString), .text(value.payeeID.uuidString)]
+            ) == 0 else {
+                throw FinanceError.database(
+                    "Eine Bankverbindung kann nicht einer anderen Empfängerakte zugeordnet werden."
+                )
+            }
+            if value.isDefault {
+                try run(
+                    "UPDATE payee_bank_accounts SET is_default=0,updated_at=?,version=version+1 WHERE payee_id=? AND is_default=1 AND id!=?",
+                    [
+                        .text(now), .text(value.payeeID.uuidString),
+                        .text(value.id.uuidString)
+                    ]
+                )
+            }
+            try run(
+                """
+                INSERT INTO payee_bank_accounts(
+                    id,payee_id,label,account_holder,iban,bic,bank_name,
+                    is_default,is_active,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET label=excluded.label,
+                    account_holder=excluded.account_holder,iban=excluded.iban,
+                    bic=excluded.bic,bank_name=excluded.bank_name,
+                    is_default=excluded.is_default,is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(value.payeeID.uuidString),
+                    .text(label), .text(holder), .text(iban),
+                    .text(value.bic.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()),
+                    .text(value.bankName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .integer(value.isDefault ? 1 : 0),
+                    .integer(value.isActive ? 1 : 0), .text(now), .text(now)
+                ]
+            )
+            if try scalarInt(
+                "SELECT COUNT(*) FROM payee_bank_accounts WHERE payee_id=? AND is_active=1 AND is_default=1",
+                [.text(value.payeeID.uuidString)]
+            ) == 0 {
+                var replacementID: UUID?
+                try query(
+                    """
+                    SELECT id FROM payee_bank_accounts
+                    WHERE payee_id=? AND is_active=1
+                    ORDER BY CASE WHEN id=? THEN 1 ELSE 0 END,label COLLATE NOCASE,id
+                    LIMIT 1
+                    """,
+                    [.text(value.payeeID.uuidString), .text(value.id.uuidString)]
+                ) {
+                    replacementID = UUID(uuidString: Self.text($0, 0))
+                }
+                if let replacementID {
+                    try run(
+                        "UPDATE payee_bank_accounts SET is_default=1,updated_at=?,version=version+1 WHERE id=?",
+                        [.text(now), .text(replacementID.uuidString)]
+                    )
+                }
+            }
+            try audit(
+                entity: "payee_bank_account",
+                id: value.id,
+                action: "save",
+                details: "payee=\(value.payeeID.uuidString);label=\(label)"
+            )
+        }
+    }
+
+    func sepaMandates(payeeID: UUID? = nil) throws -> [FinanceSEPAMandate] {
+        var values: [FinanceSEPAMandate] = []
+        let sql: String
+        let bindings: [SQLiteValue]
+        if let payeeID {
+            sql = """
+                SELECT id,payee_id,reference,signed_on,sequence_type,note,is_active
+                FROM sepa_mandates WHERE payee_id=?
+                ORDER BY is_active DESC,reference COLLATE NOCASE,id
+                """
+            bindings = [.text(payeeID.uuidString)]
+        } else {
+            sql = """
+                SELECT id,payee_id,reference,signed_on,sequence_type,note,is_active
+                FROM sepa_mandates
+                ORDER BY payee_id,is_active DESC,reference COLLATE NOCASE,id
+                """
+            bindings = []
+        }
+        try query(sql, bindings) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let payeeID = UUID(uuidString: Self.text(statement, 1)),
+                  let sequence = SEPAMandateSequenceType(
+                      rawValue: Self.text(statement, 4)
+                  )
+            else { return }
+            values.append(
+                FinanceSEPAMandate(
+                    id: id,
+                    payeeID: payeeID,
+                    reference: Self.text(statement, 2),
+                    signedOn: Self.optionalText(statement, 3).flatMap(Self.date),
+                    sequenceType: sequence,
+                    note: Self.text(statement, 5),
+                    isActive: sqlite3_column_int(statement, 6) != 0
+                )
+            )
+        }
+        return values
+    }
+
+    func saveSEPAMandate(_ value: FinanceSEPAMandate) throws {
+        let reference = value.reference.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard (1...35).contains(reference.count),
+              reference.range(
+                  of: #"^[A-Za-z0-9 /?:().,'+\-]+$"#,
+                  options: .regularExpression
+              ) != nil
+        else {
+            throw FinanceError.database(
+                "Die Mandatsreferenz muss 1 bis 35 zulässige SEPA-Zeichen enthalten."
+            )
+        }
+        guard try payees().contains(where: {
+            $0.id == value.payeeID && $0.isActive
+        }) else {
+            throw FinanceError.database("Die aktive Empfängerakte fehlt.")
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO sepa_mandates(
+                    id,payee_id,reference,signed_on,sequence_type,note,is_active,
+                    created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    payee_id=excluded.payee_id,reference=excluded.reference,
+                    signed_on=excluded.signed_on,sequence_type=excluded.sequence_type,
+                    note=excluded.note,is_active=excluded.is_active,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(value.payeeID.uuidString),
+                    .text(reference),
+                    value.signedOn.map { .text(Self.day($0)) } ?? .null,
+                    .text(value.sequenceType.rawValue), .text(value.note),
+                    .integer(value.isActive ? 1 : 0), .text(now), .text(now)
+                ]
+            )
+            try audit(
+                entity: "sepa-mandate",
+                id: value.id,
+                action: "save",
+                details: reference
+            )
         }
     }
 
@@ -1269,6 +5002,31 @@ final class SQLiteFinanceStore {
                     id: id, securityID: securityID,
                     assetClassID: classID,
                     basisPoints: Int(sqlite3_column_int($0, 2))
+                )
+            )
+        }
+        return values
+    }
+
+    func securityAllocations() throws -> [SecurityAllocation] {
+        var values: [SecurityAllocation] = []
+        try query(
+            """
+            SELECT id,security_id,asset_class_id,basis_points
+            FROM security_allocations
+            ORDER BY security_id,asset_class_id,id
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let securityID = UUID(uuidString: Self.text(statement, 1)),
+                let assetClassID = UUID(uuidString: Self.text(statement, 2))
+            else { return }
+            values.append(
+                SecurityAllocation(
+                    id: id, securityID: securityID,
+                    assetClassID: assetClassID,
+                    basisPoints: Int(sqlite3_column_int(statement, 3))
                 )
             )
         }
@@ -1447,6 +5205,105 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func recordSecurityIncome(
+        accountID: UUID,
+        securityID: UUID,
+        date: Date,
+        grossMinor: Int64,
+        feesMinor: Int64,
+        taxesMinor: Int64,
+        note: String = ""
+    ) throws {
+        let (deductionsMinor, deductionsOverflow) = feesMinor.addingReportingOverflow(taxesMinor)
+        guard grossMinor > 0, feesMinor >= 0, taxesMinor >= 0,
+              !deductionsOverflow, grossMinor >= deductionsMinor
+        else {
+            throw FinanceError.database(
+                "Der Bruttoertrag muss positiv und mindestens so hoch wie Gebühren und Steuern sein."
+            )
+        }
+        let currency = try validatedInvestmentCurrency(
+            accountID: accountID, securityID: securityID
+        )
+        try insertSecurityCashTrade(
+            accountID: accountID, securityID: securityID, type: .dividend,
+            date: date, grossMinor: grossMinor, feesMinor: feesMinor,
+            taxesMinor: taxesMinor, currency: currency, note: note
+        )
+    }
+
+    func recordSecurityFee(
+        accountID: UUID,
+        securityID: UUID,
+        date: Date,
+        feeMinor: Int64,
+        note: String = ""
+    ) throws {
+        guard feeMinor > 0 else {
+            throw FinanceError.database("Die Gebühr muss positiv sein.")
+        }
+        let currency = try validatedInvestmentCurrency(
+            accountID: accountID, securityID: securityID
+        )
+        try insertSecurityCashTrade(
+            accountID: accountID, securityID: securityID, type: .fee,
+            date: date, grossMinor: 0, feesMinor: feeMinor,
+            taxesMinor: 0, currency: currency, note: note
+        )
+    }
+
+    private func validatedInvestmentCurrency(
+        accountID: UUID, securityID: UUID
+    ) throws -> String {
+        guard let account = try accounts().first(where: { $0.id == accountID }),
+              account.type == .investment, !account.isClosed
+        else {
+            throw FinanceError.database("Das Depot fehlt oder ist geschlossen.")
+        }
+        guard let security = try securities().first(where: { $0.id == securityID }),
+              security.isActive
+        else {
+            throw FinanceError.database("Das Wertpapier fehlt oder ist inaktiv.")
+        }
+        return security.currency.uppercased()
+    }
+
+    private func insertSecurityCashTrade(
+        accountID: UUID,
+        securityID: UUID,
+        type: SecurityTradeType,
+        date: Date,
+        grossMinor: Int64,
+        feesMinor: Int64,
+        taxesMinor: Int64,
+        currency: String,
+        note: String
+    ) throws {
+        let tradeID = UUID()
+        try transaction {
+            try run(
+                """
+                INSERT INTO security_trades(
+                    id,account_id,security_id,type,trade_date,quantity_micro,price_minor,
+                    fees_minor,taxes_minor,gross_minor,realized_gain_minor,currency,note,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(tradeID.uuidString), .text(accountID.uuidString),
+                    .text(securityID.uuidString), .text(type.rawValue),
+                    .text(Self.day(date)), .integer(0), .integer(0),
+                    .integer(feesMinor), .integer(taxesMinor), .integer(grossMinor),
+                    .integer(0), .text(currency), .text(note),
+                    .text(Self.timestamp(Date()))
+                ]
+            )
+            try audit(
+                entity: "security_trade", id: tradeID, action: type.rawValue,
+                details: "gross=\(grossMinor),fees=\(feesMinor),taxes=\(taxesMinor)"
+            )
+        }
+    }
+
     func saveSecurityPrice(
         securityID: UUID,
         date: Date,
@@ -1544,6 +5401,29 @@ final class SQLiteFinanceStore {
                     grossMinor: sqlite3_column_int64($0, 9),
                     realizedGainMinor: sqlite3_column_int64($0, 10),
                     currency: Self.text($0, 11), note: Self.text($0, 12)
+                )
+            )
+        }
+        return values
+    }
+
+    func securityPrices() throws -> [SecurityPrice] {
+        var values: [SecurityPrice] = []
+        try query(
+            """
+            SELECT security_id,price_date,price_minor,currency,source
+            FROM security_prices
+            ORDER BY security_id,price_date,source
+            """
+        ) {
+            guard let securityID = UUID(uuidString: Self.text($0, 0)),
+                  let date = Self.date(Self.text($0, 1))
+            else { return }
+            values.append(
+                SecurityPrice(
+                    securityID: securityID, priceDate: date,
+                    priceMinor: sqlite3_column_int64($0, 2),
+                    currency: Self.text($0, 3), source: Self.text($0, 4)
                 )
             )
         }
@@ -1784,6 +5664,345 @@ final class SQLiteFinanceStore {
         }
         let entries = try loanSchedule(loanID: loanID).filter { $0.dueDate <= date }
         return entries.last?.closingBalanceMinor ?? loan.principalMinor
+    }
+
+    func loanPaymentMatches(loanID: UUID? = nil) throws -> [LoanPaymentMatch] {
+        var values: [LoanPaymentMatch] = []
+        let filter = loanID == nil ? "" : " WHERE loan_id=?"
+        let bindings: [SQLiteValue] = loanID.map { [.text($0.uuidString)] } ?? []
+        try query(
+            """
+            SELECT id,loan_id,transaction_id,scheduled_date,principal_minor,
+                   interest_minor,fee_minor,extra_payment_minor,matched_at,source
+            FROM loan_payment_matches\(filter)
+            ORDER BY scheduled_date,loan_id,id
+            """,
+            bindings
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let storedLoanID = UUID(uuidString: Self.text(statement, 1)),
+                  let transactionID = UUID(uuidString: Self.text(statement, 2)),
+                  let scheduledDate = Self.date(Self.text(statement, 3)),
+                  let matchedAt = Self.timestampDate(Self.text(statement, 8)),
+                  let source = LoanPaymentMatchSource(rawValue: Self.text(statement, 9))
+            else { return }
+            values.append(
+                LoanPaymentMatch(
+                    id: id, loanID: storedLoanID, transactionID: transactionID,
+                    scheduledDate: scheduledDate,
+                    principalMinor: sqlite3_column_int64(statement, 4),
+                    interestMinor: sqlite3_column_int64(statement, 5),
+                    feeMinor: sqlite3_column_int64(statement, 6),
+                    extraPaymentMinor: sqlite3_column_int64(statement, 7),
+                    matchedAt: matchedAt, source: source
+                )
+            )
+        }
+        return values
+    }
+
+    @discardableResult
+    func postLoanScheduleEntry(
+        loanID: UUID,
+        scheduleEntryID: String,
+        bookingDate: Date? = nil
+    ) throws -> LoanPaymentMatch {
+        let (loan, entry) = try loanAndScheduleEntry(
+            loanID: loanID, scheduleEntryID: scheduleEntryID
+        )
+        guard let accountID = loan.linkedAccountID,
+              let account = try accounts().first(where: { $0.id == accountID })
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Für die automatische Rate muss ein vorhandenes Zahlungskonto verknüpft sein."
+            )
+        }
+        guard !account.isClosed,
+              account.currency.uppercased() == loan.currency.uppercased()
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Das Zahlungskonto ist geschlossen oder verwendet eine andere Währung."
+            )
+        }
+        guard try loanPaymentMatches(loanID: loanID).allSatisfy({
+            !Calendar.current.isDate($0.scheduledDate, inSameDayAs: entry.dueDate)
+        }) else {
+            throw FinanceError.invalidLoanTerms("Diese Planrate ist bereits zugeordnet.")
+        }
+        let total = entry.installmentMinor + entry.extraPaymentMinor
+        let booking = FinanceTransaction(
+            id: UUID(), accountID: accountID,
+            bookingDate: bookingDate ?? entry.dueDate,
+            valueDate: bookingDate ?? entry.dueDate,
+            payee: loan.lender,
+            purpose: "Darlehensrate \(loan.name) – Rate \(entry.sequence)",
+            categoryID: nil, amountMinor: -total,
+            currency: loan.currency.uppercased(), status: .booked,
+            memo: "Automatisch aus dem Kreditplan gebucht",
+            reference: "KREDIT-\(loan.id.uuidString)-\(entry.sequence)",
+            transferID: nil, importFingerprint: nil,
+            splits: loanPaymentSplits(
+                principalMinor: entry.principalMinor,
+                interestMinor: entry.interestMinor,
+                feeMinor: entry.feeMinor,
+                extraPaymentMinor: entry.extraPaymentMinor
+            )
+        )
+        try booking.validate()
+        try validateVATReferences(booking)
+        let now = Self.timestamp(Date())
+        let match = LoanPaymentMatch(
+            id: UUID(), loanID: loanID, transactionID: booking.id,
+            scheduledDate: entry.dueDate,
+            principalMinor: entry.principalMinor,
+            interestMinor: entry.interestMinor, feeMinor: entry.feeMinor,
+            extraPaymentMinor: entry.extraPaymentMinor,
+            matchedAt: Self.timestampDate(now) ?? Date(), source: .generated
+        )
+        try transaction {
+            try writeTransaction(booking, now: now)
+            guard let persistedBooking = try transactionSnapshots(ids: [booking.id]).first else {
+                throw FinanceError.database("Die erzeugte Kreditrate konnte nicht gelesen werden.")
+            }
+            try insertLoanPaymentMatch(
+                match, originalTransactionJSON: nil,
+                matchedTransactionJSON: try encodeUndoTransactions([persistedBooking])
+            )
+            try audit(
+                entity: "loan-payment-match", id: match.id, action: "post-generated",
+                details: "loan=\(loanID.uuidString);rate=\(entry.sequence);transaction=\(booking.id.uuidString)"
+            )
+        }
+        return match
+    }
+
+    @discardableResult
+    func matchLoanPayment(
+        loanID: UUID,
+        scheduleEntryID: String,
+        transactionID: UUID
+    ) throws -> LoanPaymentMatch {
+        let (loan, entry) = try loanAndScheduleEntry(
+            loanID: loanID, scheduleEntryID: scheduleEntryID
+        )
+        guard let linkedAccountID = loan.linkedAccountID else {
+            throw FinanceError.invalidLoanTerms("Das Darlehen besitzt kein Zahlungskonto.")
+        }
+        guard let original = try transactions().first(where: { $0.id == transactionID }) else {
+            throw FinanceError.database("Die reale Buchung wurde nicht gefunden.")
+        }
+        guard original.accountID == linkedAccountID,
+              original.currency.uppercased() == loan.currency.uppercased(),
+              original.amountMinor < 0,
+              original.transferID == nil,
+              original.splits.isEmpty,
+              original.vatMode == .none,
+              original.status == .booked || original.status == .cleared
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Nur eine ungeteilte gebuchte oder bestätigte Belastung des verknüpften Zahlungskontos kann zugeordnet werden."
+            )
+        }
+        let existing = try loanPaymentMatches()
+        guard existing.allSatisfy({ $0.transactionID != transactionID }) else {
+            throw FinanceError.invalidLoanTerms("Diese Buchung ist bereits einer Kreditrate zugeordnet.")
+        }
+        guard existing.filter({ $0.loanID == loanID }).allSatisfy({
+            !Calendar.current.isDate($0.scheduledDate, inSameDayAs: entry.dueDate)
+        }) else {
+            throw FinanceError.invalidLoanTerms("Diese Planrate ist bereits zugeordnet.")
+        }
+        guard original.amountMinor != Int64.min else {
+            throw FinanceError.invalidLoanTerms("Der Buchungsbetrag liegt außerhalb des zulässigen Bereichs.")
+        }
+        let actualPayment = abs(original.amountMinor)
+        guard actualPayment >= entry.interestMinor + entry.feeMinor else {
+            throw FinanceError.invalidLoanTerms(
+                "Die reale Zahlung deckt den geplanten Zins- und Gebührenanteil nicht."
+            )
+        }
+        let actualPrincipal = actualPayment - entry.interestMinor - entry.feeMinor
+        guard actualPrincipal <= entry.openingBalanceMinor else {
+            throw FinanceError.invalidLoanTerms(
+                "Die reale Tilgung übersteigt die Restschuld vor dieser Rate."
+            )
+        }
+        let regularPrincipal = min(entry.principalMinor, actualPrincipal)
+        let extraPayment = actualPrincipal - regularPrincipal
+        var matched = original
+        matched.categoryID = nil
+        matched.splits = loanPaymentSplits(
+            principalMinor: regularPrincipal,
+            interestMinor: entry.interestMinor,
+            feeMinor: entry.feeMinor,
+            extraPaymentMinor: extraPayment
+        )
+        matched.memo = [original.memo, "Kreditabgleich: \(loan.name), Rate \(entry.sequence)"]
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        try matched.validate()
+        try validateVATReferences(matched)
+        let now = Self.timestamp(Date())
+        let match = LoanPaymentMatch(
+            id: UUID(), loanID: loanID, transactionID: transactionID,
+            scheduledDate: entry.dueDate, principalMinor: regularPrincipal,
+            interestMinor: entry.interestMinor, feeMinor: entry.feeMinor,
+            extraPaymentMinor: extraPayment,
+            matchedAt: Self.timestampDate(now) ?? Date(), source: .linkedExisting
+        )
+        try transaction {
+            try writeTransaction(matched, now: now)
+            try insertLoanPaymentMatch(
+                match,
+                originalTransactionJSON: try encodeUndoTransactions([original]),
+                matchedTransactionJSON: try encodeUndoTransactions([matched])
+            )
+            try audit(
+                entity: "loan-payment-match", id: match.id, action: "link-existing",
+                details: "loan=\(loanID.uuidString);rate=\(entry.sequence);transaction=\(transactionID.uuidString)"
+            )
+        }
+        return match
+    }
+
+    func removeLoanPaymentMatch(id: UUID) throws {
+        var stored: (LoanPaymentMatch, String?, String?)?
+        try query(
+            """
+            SELECT loan_id,transaction_id,scheduled_date,principal_minor,interest_minor,
+                   fee_minor,extra_payment_minor,matched_at,source,
+                   original_transaction_json,matched_transaction_json
+            FROM loan_payment_matches WHERE id=?
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard let loanID = UUID(uuidString: Self.text(statement, 0)),
+                  let transactionID = UUID(uuidString: Self.text(statement, 1)),
+                  let scheduledDate = Self.date(Self.text(statement, 2)),
+                  let matchedAt = Self.timestampDate(Self.text(statement, 7)),
+                  let source = LoanPaymentMatchSource(rawValue: Self.text(statement, 8))
+            else { return }
+            stored = (
+                LoanPaymentMatch(
+                    id: id, loanID: loanID, transactionID: transactionID,
+                    scheduledDate: scheduledDate,
+                    principalMinor: sqlite3_column_int64(statement, 3),
+                    interestMinor: sqlite3_column_int64(statement, 4),
+                    feeMinor: sqlite3_column_int64(statement, 5),
+                    extraPaymentMinor: sqlite3_column_int64(statement, 6),
+                    matchedAt: matchedAt, source: source
+                ),
+                Self.optionalText(statement, 9), Self.optionalText(statement, 10)
+            )
+        }
+        guard let (match, originalJSON, matchedJSON) = stored,
+              match.source != .legacy,
+              let matchedJSON,
+              let current = try transactions().first(where: { $0.id == match.transactionID })
+        else {
+            throw FinanceError.invalidLoanTerms(
+                "Diese ältere oder unvollständige Zuordnung kann nicht sicher gelöst werden."
+            )
+        }
+        guard try encodeUndoTransactions([current]) == matchedJSON else {
+            throw FinanceError.invalidLoanTerms(
+                "Die zugeordnete Buchung wurde verändert; die Zuordnung kann nicht verlustfrei gelöst werden."
+            )
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run("DELETE FROM loan_payment_matches WHERE id=?", [.text(id.uuidString)])
+            switch match.source {
+            case .generated:
+                try run(
+                    "DELETE FROM attachment_links WHERE entity_type='transaction' AND entity_id=?",
+                    [.text(match.transactionID.uuidString)]
+                )
+                try run(
+                    "DELETE FROM attachment_blobs WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE blob_sha256=attachment_blobs.sha256)"
+                )
+                try run(
+                    "DELETE FROM transactions WHERE id=?",
+                    [.text(match.transactionID.uuidString)]
+                )
+            case .linkedExisting:
+                guard let originalJSON else {
+                    throw FinanceError.invalidLoanTerms(
+                        "Der ursprüngliche Buchungsstand ist nicht verfügbar."
+                    )
+                }
+                let originals = try decodeUndoTransactions(originalJSON)
+                guard originals.count == 1, let original = originals.first else {
+                    throw FinanceError.invalidLoanTerms(
+                        "Der ursprüngliche Buchungsstand ist nicht eindeutig."
+                    )
+                }
+                try writeTransaction(original, now: now, computeFingerprint: false)
+            case .legacy:
+                break
+            }
+            try audit(
+                entity: "loan-payment-match", id: id, action: "remove",
+                details: "loan=\(match.loanID.uuidString);transaction=\(match.transactionID.uuidString)"
+            )
+        }
+    }
+
+    private func loanAndScheduleEntry(
+        loanID: UUID,
+        scheduleEntryID: String
+    ) throws -> (FinanceLoan, LoanScheduleEntry) {
+        guard let loan = try loans().first(where: { $0.id == loanID }),
+              let entry = try loanSchedule(loanID: loanID).first(where: {
+                  $0.id == scheduleEntryID
+              })
+        else {
+            throw FinanceError.invalidLoanTerms("Darlehen oder Planrate wurde nicht gefunden.")
+        }
+        return (loan, entry)
+    }
+
+    private func loanPaymentSplits(
+        principalMinor: Int64,
+        interestMinor: Int64,
+        feeMinor: Int64,
+        extraPaymentMinor: Int64
+    ) -> [FinanceSplit] {
+        let parts: [(String, Int64)] = [
+            ("Tilgung", principalMinor), ("Sollzins", interestMinor),
+            ("Gebühr", feeMinor), ("Sondertilgung", extraPaymentMinor)
+        ]
+        return parts.enumerated().compactMap { index, part in
+            guard part.1 > 0 else { return nil }
+            return FinanceSplit(
+                id: UUID(), categoryID: nil, amountMinor: -part.1,
+                memo: part.0, sortOrder: index
+            )
+        }
+    }
+
+    private func insertLoanPaymentMatch(
+        _ match: LoanPaymentMatch,
+        originalTransactionJSON: String?,
+        matchedTransactionJSON: String
+    ) throws {
+        try run(
+            """
+            INSERT INTO loan_payment_matches(
+                id,loan_id,transaction_id,scheduled_date,principal_minor,
+                interest_minor,fee_minor,matched_at,extra_payment_minor,source,
+                original_transaction_json,matched_transaction_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                .text(match.id.uuidString), .text(match.loanID.uuidString),
+                .text(match.transactionID.uuidString), .text(Self.day(match.scheduledDate)),
+                .integer(match.principalMinor), .integer(match.interestMinor),
+                .integer(match.feeMinor), .text(Self.timestamp(match.matchedAt)),
+                .integer(match.extraPaymentMinor), .text(match.source.rawValue),
+                originalTransactionJSON.map { .text($0) } ?? .null,
+                .text(matchedTransactionJSON)
+            ]
+        )
     }
 
     func propertyAssets() throws -> [PropertyAsset] {
@@ -2082,8 +6301,336 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func saveStandingOrder(_ value: StandingOrder) throws {
+        try value.validate()
+        guard let account = try accounts().first(where: { $0.id == value.accountID }) else {
+            throw FinanceError.missingAccount
+        }
+        guard !account.isClosed else {
+            throw FinanceError.invalidStandingOrder("Das Auftraggeberkonto ist geschlossen.")
+        }
+        guard account.currency == value.currency else {
+            throw FinanceError.invalidStandingOrder(
+                "Konto- und Dauerauftragswährung stimmen nicht überein."
+            )
+        }
+        var existingStatus: StandingOrderStatus?
+        try query(
+            "SELECT status FROM standing_orders WHERE id=?",
+            [.text(value.id.uuidString)]
+        ) {
+            existingStatus = StandingOrderStatus(rawValue: Self.text($0, 0))
+        }
+        if existingStatus == .cancelled, value.status != .cancelled {
+            throw FinanceError.invalidStandingOrder(
+                "Ein beendeter Dauerauftrag kann nicht reaktiviert werden."
+            )
+        }
+        var latestRunDay: String?
+        try query(
+            "SELECT MAX(due_date) FROM standing_order_runs WHERE standing_order_id=?",
+            [.text(value.id.uuidString)]
+        ) {
+            latestRunDay = Self.optionalText($0, 0)
+        }
+        if let latestRunDay, Self.day(value.nextExecutionDate) <= latestRunDay {
+            throw FinanceError.invalidStandingOrder(
+                "Die nächste Fälligkeit muss nach allen bereits verarbeiteten Terminen liegen."
+            )
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        let createdAt = existingStatus == nil ? Self.timestamp(value.createdAt) : now
+        try transaction {
+            try run(
+                """
+                INSERT INTO standing_orders(
+                    id,finance_file_id,account_id,name,recipient_name,iban,bic,
+                    amount_minor,currency,purpose,next_execution_date,end_date,
+                    frequency,business_day_adjustment,status,created_at,updated_at,
+                    banking_calendar_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    account_id=excluded.account_id,name=excluded.name,
+                    recipient_name=excluded.recipient_name,iban=excluded.iban,
+                    bic=excluded.bic,amount_minor=excluded.amount_minor,
+                    currency=excluded.currency,purpose=excluded.purpose,
+                    next_execution_date=excluded.next_execution_date,
+                    end_date=excluded.end_date,frequency=excluded.frequency,
+                    business_day_adjustment=excluded.business_day_adjustment,
+                    banking_calendar_id=excluded.banking_calendar_id,
+                    status=excluded.status,updated_at=excluded.updated_at,
+                    version=version+1
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(value.accountID.uuidString),
+                    .text(value.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.recipientName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(IBANValidator.normalized(value.iban)),
+                    .text(value.bic.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()),
+                    .integer(value.amountMinor), .text(value.currency),
+                    .text(value.purpose.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(Self.day(value.nextExecutionDate)),
+                    value.endDate.map { .text(Self.day($0)) } ?? .null,
+                    .text(value.frequency.rawValue),
+                    .text(value.businessDayAdjustment.rawValue),
+                    .text(value.status.rawValue), .text(createdAt), .text(now),
+                    .text(value.bankingCalendar.rawValue)
+                ]
+            )
+            try audit(
+                entity: "standing_order", id: value.id, action: "save",
+                details: value.name
+            )
+        }
+    }
+
+    func setStandingOrderStatus(id: UUID, to target: StandingOrderStatus) throws {
+        guard let current = try standingOrders().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Dauerauftrag nicht gefunden.")
+        }
+        if current.status == .cancelled, target != .cancelled {
+            throw FinanceError.invalidStandingOrder(
+                "Ein beendeter Dauerauftrag kann nicht reaktiviert werden."
+            )
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                UPDATE standing_orders
+                SET status=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [.text(target.rawValue), .text(now), .text(id.uuidString)]
+            )
+            try audit(
+                entity: "standing_order", id: id, action: "status",
+                details: "\(current.status.rawValue)->\(target.rawValue)"
+            )
+        }
+    }
+
+    func materializeStandingOrder(id: UUID, dueDate: Date) throws -> PaymentOrder {
+        guard let standingOrder = try standingOrders().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Dauerauftrag nicht gefunden.")
+        }
+        let dueDay = Self.day(dueDate)
+        if let existing = try standingOrderRuns(standingOrderID: id).first(where: {
+            Self.day($0.dueDate) == dueDay
+        }) {
+            guard
+                existing.status == .materialized,
+                let paymentOrderID = existing.paymentOrderID,
+                let payment = try paymentOrders().first(where: { $0.id == paymentOrderID })
+            else { throw FinanceError.standingOrderRunFinalized }
+            return payment
+        }
+        guard standingOrder.status == .active else {
+            throw FinanceError.inactiveStandingOrder
+        }
+        guard Self.day(standingOrder.nextExecutionDate) == dueDay else {
+            throw FinanceError.invalidStandingOrder(
+                "Nur die nächste offene Fälligkeit kann vorbereitet werden."
+            )
+        }
+        if let endDate = standingOrder.endDate, dueDay > Self.day(endDate) {
+            throw FinanceError.invalidStandingOrder("Die Fälligkeit liegt nach dem Enddatum.")
+        }
+        try standingOrder.validate()
+        guard let account = try accounts().first(where: { $0.id == standingOrder.accountID }),
+              !account.isClosed, account.currency == standingOrder.currency
+        else {
+            throw FinanceError.invalidStandingOrder(
+                "Das Auftraggeberkonto ist nicht verfügbar."
+            )
+        }
+
+        let now = Date()
+        let executionDate = standingOrder.businessDayAdjustment.adjusted(
+            dueDate, bankingCalendar: standingOrder.bankingCalendar
+        )
+        let payment = PaymentOrder(
+            id: UUID(), accountID: standingOrder.accountID,
+            type: .scheduledCreditTransfer,
+            recipientName: standingOrder.recipientName,
+            iban: standingOrder.iban, bic: standingOrder.bic,
+            amountMinor: standingOrder.amountMinor, currency: standingOrder.currency,
+            executionDate: executionDate, purpose: standingOrder.purpose,
+            endToEndID: "NOTPROVIDED", status: .draft,
+            idempotencyKey: "standing:\(standingOrder.id.uuidString):\(dueDay)",
+            bankReference: "", createdAt: now, updatedAt: now
+        )
+        try payment.validate()
+        let nextDate = standingOrder.frequency.next(after: dueDate)
+        let nextStatus: StandingOrderStatus = standingOrder.endDate.map {
+            Self.day(nextDate) > Self.day($0) ? .cancelled : .active
+        } ?? .active
+        let info = try financeFileInfo()
+        let timestamp = Self.timestamp(now)
+        let runID = UUID()
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_orders(
+                    id,finance_file_id,account_id,type,recipient_name,iban,bic,amount_minor,
+                    currency,execution_date,purpose,end_to_end_id,status,idempotency_key,
+                    bank_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(payment.id.uuidString), .text(info.id.uuidString),
+                    .text(payment.accountID.uuidString), .text(payment.type.rawValue),
+                    .text(payment.recipientName), .text(IBANValidator.normalized(payment.iban)),
+                    .text(payment.bic.uppercased()), .integer(payment.amountMinor),
+                    .text(payment.currency), .text(Self.day(payment.executionDate)),
+                    .text(payment.purpose), .text(payment.endToEndID),
+                    .text(payment.status.rawValue), .text(payment.idempotencyKey),
+                    .text(payment.bankReference), .text(timestamp), .text(timestamp)
+                ]
+            )
+            try run(
+                """
+                INSERT INTO standing_order_runs(
+                    id,standing_order_id,due_date,execution_date,status,
+                    payment_order_id,created_at,banking_calendar_id,
+                    banking_calendar_version
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(runID.uuidString), .text(id.uuidString), .text(dueDay),
+                    .text(Self.day(executionDate)),
+                    .text(StandingOrderRunStatus.materialized.rawValue),
+                    .text(payment.id.uuidString), .text(timestamp),
+                    .text(standingOrder.bankingCalendar.rawValue),
+                    .integer(Int64(standingOrder.bankingCalendar.version))
+                ]
+            )
+            try run(
+                """
+                UPDATE standing_orders
+                SET next_execution_date=?,status=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [
+                    .text(Self.day(nextDate)), .text(nextStatus.rawValue),
+                    .text(timestamp), .text(id.uuidString)
+                ]
+            )
+            try audit(
+                entity: "standing_order", id: id, action: "materialize",
+                details: "\(dueDay):\(payment.id.uuidString)"
+            )
+        }
+        return payment
+    }
+
+    func skipStandingOrder(id: UUID, dueDate: Date) throws {
+        guard let standingOrder = try standingOrders().first(where: { $0.id == id }) else {
+            throw FinanceError.database("Dauerauftrag nicht gefunden.")
+        }
+        guard standingOrder.status == .active else {
+            throw FinanceError.inactiveStandingOrder
+        }
+        let dueDay = Self.day(dueDate)
+        guard Self.day(standingOrder.nextExecutionDate) == dueDay else {
+            throw FinanceError.standingOrderRunFinalized
+        }
+        guard try standingOrderRuns(standingOrderID: id).allSatisfy({
+            Self.day($0.dueDate) != dueDay
+        }) else {
+            throw FinanceError.standingOrderRunFinalized
+        }
+        let executionDate = standingOrder.businessDayAdjustment.adjusted(
+            dueDate, bankingCalendar: standingOrder.bankingCalendar
+        )
+        let nextDate = standingOrder.frequency.next(after: dueDate)
+        let nextStatus: StandingOrderStatus = standingOrder.endDate.map {
+            Self.day(nextDate) > Self.day($0) ? .cancelled : .active
+        } ?? .active
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO standing_order_runs(
+                    id,standing_order_id,due_date,execution_date,status,
+                    payment_order_id,created_at,banking_calendar_id,
+                    banking_calendar_version
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(UUID().uuidString), .text(id.uuidString), .text(dueDay),
+                    .text(Self.day(executionDate)),
+                    .text(StandingOrderRunStatus.skipped.rawValue), .null, .text(now),
+                    .text(standingOrder.bankingCalendar.rawValue),
+                    .integer(Int64(standingOrder.bankingCalendar.version))
+                ]
+            )
+            try run(
+                """
+                UPDATE standing_orders
+                SET next_execution_date=?,status=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [
+                    .text(Self.day(nextDate)), .text(nextStatus.rawValue),
+                    .text(now), .text(id.uuidString)
+                ]
+            )
+            try audit(
+                entity: "standing_order", id: id, action: "skip", details: dueDay
+            )
+        }
+    }
+
     func createPaymentOrder(_ value: PaymentOrder) throws {
         try value.validate()
+        guard let account = try accounts().first(where: { $0.id == value.accountID }),
+              !account.isClosed,
+              account.currency == value.currency else {
+            throw FinanceError.database(
+                "Das Auftraggeberkonto fehlt, ist geschlossen oder verwendet eine andere Währung."
+            )
+        }
+        if value.payeeID == nil, value.payeeBankAccountID != nil {
+            throw FinanceError.database(
+                "Eine Bankverbindung benötigt eine verknüpfte Empfängerakte."
+            )
+        }
+        if let payeeID = value.payeeID {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM payees WHERE id=? AND is_active=1",
+                [.text(payeeID.uuidString)]
+            ) == 1 else {
+                throw FinanceError.database(
+                    "Die verknüpfte Empfängerakte fehlt oder ist inaktiv."
+                )
+            }
+        }
+        if let bankAccountID = value.payeeBankAccountID {
+            guard let payeeID = value.payeeID,
+                  let bankAccount = try payeeBankAccounts(payeeID: payeeID)
+                    .first(where: { $0.id == bankAccountID }),
+                  bankAccount.isActive
+            else {
+                throw FinanceError.database(
+                    "Die gewählte Empfänger-Bankverbindung fehlt oder ist inaktiv."
+                )
+            }
+            guard bankAccount.accountHolder
+                    == value.recipientName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                  IBANValidator.normalized(bankAccount.iban)
+                    == IBANValidator.normalized(value.iban),
+                  bankAccount.bic.uppercased() == value.bic.uppercased()
+            else {
+                throw FinanceError.database(
+                    "Die Zahlungsdaten stimmen nicht mehr mit der gewählten Bankverbindung überein."
+                )
+            }
+        }
         if try scalarInt(
             "SELECT COUNT(*) FROM payment_orders WHERE idempotency_key=?",
             [.text(value.idempotencyKey)]
@@ -2097,8 +6644,9 @@ final class SQLiteFinanceStore {
                 INSERT INTO payment_orders(
                     id,finance_file_id,account_id,type,recipient_name,iban,bic,amount_minor,
                     currency,execution_date,purpose,end_to_end_id,status,idempotency_key,
-                    bank_reference,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    bank_reference,created_at,updated_at,payee_id,payee_bank_account_id,
+                    purpose_code
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 [
                     .text(value.id.uuidString), .text(info.id.uuidString),
@@ -2109,14 +6657,128 @@ final class SQLiteFinanceStore {
                     .text(value.purpose), .text(value.endToEndID),
                     .text(value.status.rawValue), .text(value.idempotencyKey),
                     .text(value.bankReference), .text(Self.timestamp(value.createdAt)),
-                    .text(Self.timestamp(value.updatedAt))
+                    .text(Self.timestamp(value.updatedAt)),
+                    value.payeeID.map { .text($0.uuidString) } ?? .null,
+                    value.payeeBankAccountID.map { .text($0.uuidString) } ?? .null,
+                    .text(value.purposeCode)
                 ]
             )
             try audit(entity: "payment_order", id: value.id, action: "create", details: value.type.rawValue)
         }
     }
 
-    func transitionPaymentOrder(id: UUID, to target: PaymentStatus) throws {
+    func updatePaymentOrderDraft(_ value: PaymentOrder) throws {
+        try value.validate()
+        guard value.status == .draft else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        guard let current = try paymentOrders().first(where: { $0.id == value.id }),
+              current.status == .draft else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_batch_items WHERE payment_order_id=?",
+            [.text(value.id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Ein Auftrag im Sammler kann nicht einzeln bearbeitet werden."
+            )
+        }
+        guard let account = try accounts().first(where: { $0.id == value.accountID }),
+              !account.isClosed,
+              account.currency == value.currency else {
+            throw FinanceError.database(
+                "Das Auftraggeberkonto fehlt, ist geschlossen oder verwendet eine andere Währung."
+            )
+        }
+        if value.payeeID == nil, value.payeeBankAccountID != nil {
+            throw FinanceError.database(
+                "Eine Bankverbindung benötigt eine verknüpfte Empfängerakte."
+            )
+        }
+        if let payeeID = value.payeeID {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM payees WHERE id=? AND is_active=1",
+                [.text(payeeID.uuidString)]
+            ) == 1 else {
+                throw FinanceError.database(
+                    "Die verknüpfte Empfängerakte fehlt oder ist inaktiv."
+                )
+            }
+        }
+        if let bankAccountID = value.payeeBankAccountID {
+            guard let payeeID = value.payeeID,
+                  let bankAccount = try payeeBankAccounts(payeeID: payeeID)
+                    .first(where: { $0.id == bankAccountID }),
+                  bankAccount.isActive,
+                  bankAccount.accountHolder
+                    == value.recipientName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                  IBANValidator.normalized(bankAccount.iban)
+                    == IBANValidator.normalized(value.iban),
+                  bankAccount.bic.uppercased() == value.bic.uppercased()
+            else {
+                throw FinanceError.database(
+                    "Die Zahlungsdaten stimmen nicht mehr mit der gewählten Bankverbindung überein."
+                )
+            }
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_orders WHERE idempotency_key=? AND id<>?",
+            [.text(value.idempotencyKey), .text(value.id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.duplicatePaymentOrder
+        }
+        let now = Self.timestamp(value.updatedAt)
+        try transaction {
+            try run(
+                """
+                UPDATE payment_orders SET
+                    account_id=?,type=?,recipient_name=?,iban=?,bic=?,amount_minor=?,
+                    currency=?,execution_date=?,purpose=?,end_to_end_id=?,
+                    idempotency_key=?,updated_at=?,payee_id=?,payee_bank_account_id=?,
+                    purpose_code=?,version=version+1
+                WHERE id=? AND status=?
+                """,
+                [
+                    .text(value.accountID.uuidString), .text(value.type.rawValue),
+                    .text(value.recipientName),
+                    .text(IBANValidator.normalized(value.iban)),
+                    .text(value.bic.uppercased()), .integer(value.amountMinor),
+                    .text(value.currency), .text(Self.day(value.executionDate)),
+                    .text(value.purpose), .text(value.endToEndID),
+                    .text(value.idempotencyKey), .text(now),
+                    value.payeeID.map { .text($0.uuidString) } ?? .null,
+                    value.payeeBankAccountID.map {
+                        .text($0.uuidString)
+                    } ?? .null,
+                    .text(value.purposeCode), .text(value.id.uuidString),
+                    .text(PaymentStatus.draft.rawValue)
+                ]
+            )
+            try audit(
+                entity: "payment_order", id: value.id,
+                action: "update_draft",
+                details: "\(current.type.rawValue)->\(value.type.rawValue);"
+                    + "amount=\(current.amountMinor)->\(value.amountMinor);"
+                    + "date=\(Self.day(current.executionDate))->"
+                    + Self.day(value.executionDate)
+            )
+        }
+    }
+
+    func transitionPaymentOrder(
+        id: UUID, to target: PaymentStatus, bankReference suppliedReference: String? = nil
+    ) throws {
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_batch_items WHERE payment_order_id=?",
+            [.text(id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Dieser Auftrag gehört zu einem Sammler und kann nur gemeinsam weitergeschaltet werden."
+            )
+        }
         var currentStatus: PaymentStatus?
         try query("SELECT status FROM payment_orders WHERE id=?", [.text(id.uuidString)]) {
             currentStatus = PaymentStatus(rawValue: Self.text($0, 0))
@@ -2132,8 +6794,8 @@ final class SQLiteFinanceStore {
         }
         let now = Self.timestamp(Date())
         try transaction {
-            let bankReference = target == .accepted
-                ? "SIM-\(id.uuidString.prefix(8).uppercased())" : current.bankReference
+            let bankReference = suppliedReference ?? (target == .accepted
+                ? "SIM-\(id.uuidString.prefix(8).uppercased())" : current.bankReference)
             try run(
                 """
                 UPDATE payment_orders SET status=?,bank_reference=?,updated_at=?,version=version+1
@@ -2171,23 +6833,579 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func createDirectDebitOrder(_ value: DirectDebitOrder) throws {
+        try value.validate()
+        let textFields = [
+            ("Gläubigername", value.creditorName, 140),
+            ("Zahlername", value.debtorName, 140),
+            ("Verwendungszweck", value.purpose, 140),
+            ("End-to-End-ID", value.endToEndID, 35),
+            ("Mandatsreferenz", value.mandateReference, 35)
+        ]
+        for (label, rawValue, maximum) in textFields {
+            let normalized = rawValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !normalized.isEmpty, normalized.count <= maximum else {
+                throw FinanceError.invalidDirectDebit(
+                    "\(label) muss ausgefüllt sein und darf höchstens \(maximum) Zeichen enthalten."
+                )
+            }
+        }
+        for bic in [value.creditorBIC, value.debtorBIC] {
+            let normalized = bic.trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+            guard normalized.isEmpty || normalized.range(
+                of: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$",
+                options: .regularExpression
+            ) != nil else {
+                throw FinanceError.invalidDirectDebit(
+                    "Eine BIC muss 8 oder 11 gültige Zeichen enthalten."
+                )
+            }
+        }
+        for (label, identifier) in [
+            ("End-to-End-ID", value.endToEndID),
+            ("Mandatsreferenz", value.mandateReference),
+            ("Gläubiger-ID", value.creditorID)
+        ] {
+            let normalized = identifier.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !normalized.hasPrefix("/"), !normalized.hasSuffix("/"),
+                  !normalized.contains("//") else {
+                throw FinanceError.invalidDirectDebit(
+                    "\(label) darf nicht mit / beginnen oder enden und kein // enthalten."
+                )
+            }
+        }
+        guard value.status == .draft else {
+            throw FinanceError.invalidDirectDebit(
+                "Neue Lastschriften müssen als unveränderter Entwurf beginnen."
+            )
+        }
+        guard let account = try accounts().first(where: {
+            $0.id == value.creditorAccountID
+        }), !account.isClosed, account.currency.uppercased() == "EUR" else {
+            throw FinanceError.invalidDirectDebit(
+                "Das Gläubigerkonto fehlt, ist geschlossen oder führt keine EUR."
+            )
+        }
+        let accountOwner = account.ownerName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !accountOwner.isEmpty,
+              accountOwner == value.creditorName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              IBANValidator.normalized(account.iban)
+                == IBANValidator.normalized(value.creditorIBAN),
+              account.bic.uppercased().filter({ !$0.isWhitespace })
+                == value.creditorBIC.uppercased().filter({ !$0.isWhitespace })
+        else {
+            throw FinanceError.invalidDirectDebit(
+                "Der Gläubiger-Schnappschuss stimmt nicht mit dem ausgewählten Konto überein."
+            )
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payees WHERE id=? AND is_active=1",
+            [.text(value.debtorPayeeID.uuidString)]
+        ) == 1 else {
+            throw FinanceError.invalidDirectDebit(
+                "Die Zahlerakte fehlt oder ist inaktiv."
+            )
+        }
+        guard let bankAccount = try payeeBankAccounts(
+            payeeID: value.debtorPayeeID
+        ).first(where: { $0.id == value.debtorBankAccountID }),
+              bankAccount.isActive,
+              bankAccount.accountHolder == value.debtorName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              IBANValidator.normalized(bankAccount.iban)
+                == IBANValidator.normalized(value.debtorIBAN),
+              bankAccount.bic.uppercased().filter({ !$0.isWhitespace })
+                == value.debtorBIC.uppercased().filter({ !$0.isWhitespace })
+        else {
+            throw FinanceError.invalidDirectDebit(
+                "Die aktive Zahler-Bankverbindung fehlt oder stimmt nicht mit dem Schnappschuss überein."
+            )
+        }
+        guard let mandate = try sepaMandates(
+            payeeID: value.debtorPayeeID
+        ).first(where: { $0.id == value.mandateID }),
+              mandate.isActive,
+              mandate.reference == value.mandateReference,
+              mandate.signedOn.map({ Self.day($0) })
+                == Self.day(value.mandateSignedOn),
+              mandate.sequenceType == value.sequenceType
+        else {
+            throw FinanceError.invalidDirectDebit(
+                "Das aktive SEPA-Mandat fehlt oder stimmt nicht mit dem Schnappschuss überein."
+            )
+        }
+        if try scalarInt(
+            "SELECT COUNT(*) FROM direct_debit_orders WHERE idempotency_key=?",
+            [.text(value.idempotencyKey)]
+        ) > 0 {
+            throw FinanceError.duplicateDirectDebitOrder
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO direct_debit_orders(
+                    id,finance_file_id,creditor_account_id,debtor_payee_id,
+                    debtor_bank_account_id,mandate_id,creditor_name,creditor_id,
+                    creditor_iban,creditor_bic,debtor_name,debtor_iban,debtor_bic,
+                    amount_minor,currency,collection_date,purpose,end_to_end_id,
+                    mandate_reference,mandate_signed_on,sequence_type,status,
+                    idempotency_key,bank_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(value.creditorAccountID.uuidString),
+                    .text(value.debtorPayeeID.uuidString),
+                    .text(value.debtorBankAccountID.uuidString),
+                    .text(value.mandateID.uuidString),
+                    .text(value.creditorName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(SEPACreditorIDValidator.normalized(value.creditorID)),
+                    .text(IBANValidator.normalized(value.creditorIBAN)),
+                    .text(value.creditorBIC.uppercased().filter { !$0.isWhitespace }),
+                    .text(value.debtorName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(IBANValidator.normalized(value.debtorIBAN)),
+                    .text(value.debtorBIC.uppercased().filter { !$0.isWhitespace }),
+                    .integer(value.amountMinor), .text("EUR"),
+                    .text(Self.day(value.collectionDate)),
+                    .text(value.purpose.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.endToEndID.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.mandateReference),
+                    .text(Self.day(value.mandateSignedOn)),
+                    .text(value.sequenceType.rawValue),
+                    .text(value.status.rawValue), .text(value.idempotencyKey),
+                    .text(value.bankReference), .text(now),
+                    .text(Self.timestamp(value.updatedAt))
+                ]
+            )
+            try audit(
+                entity: "direct_debit_order", id: value.id, action: "create",
+                details: "payee=\(value.debtorPayeeID.uuidString);mandate=\(value.mandateID.uuidString)"
+            )
+        }
+    }
+
+    func transitionDirectDebitOrder(
+        id: UUID, to target: PaymentStatus, bankReference suppliedReference: String? = nil
+    ) throws {
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM payment_batch_items WHERE direct_debit_order_id=?",
+            [.text(id.uuidString)]
+        ) == 0 else {
+            throw FinanceError.invalidPaymentBatch(
+                "Diese Lastschrift gehört zu einem Sammler und kann nur gemeinsam weitergeschaltet werden."
+            )
+        }
+        guard let current = try directDebitOrders().first(where: { $0.id == id })
+        else {
+            throw FinanceError.invalidDirectDebit("Der Lastschriftauftrag fehlt.")
+        }
+        guard current.status.canTransition(to: target) else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            let bankReference = suppliedReference ?? (target == .accepted
+                ? "SIM-DD-\(id.uuidString.prefix(8).uppercased())"
+                : current.bankReference)
+            try run(
+                """
+                UPDATE direct_debit_orders
+                SET status=?,bank_reference=?,updated_at=?,version=version+1
+                WHERE id=? AND status=?
+                """,
+                [
+                    .text(target.rawValue), .text(bankReference), .text(now),
+                    .text(id.uuidString), .text(current.status.rawValue)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.invalidPaymentTransition
+            }
+            if target == .accepted {
+                let reference = "direct-debit:\(id.uuidString)"
+                if try scalarInt(
+                    "SELECT COUNT(*) FROM transactions WHERE reference=?",
+                    [.text(reference)]
+                ) == 0 {
+                    try writeTransaction(
+                        FinanceTransaction(
+                            id: UUID(), accountID: current.creditorAccountID,
+                            bookingDate: current.collectionDate,
+                            valueDate: current.collectionDate,
+                            payee: current.debtorName, purpose: current.purpose,
+                            categoryID: nil, amountMinor: current.amountMinor,
+                            currency: current.currency, status: .pending,
+                            memo: "SEPA-Basislastschrift", reference: reference,
+                            transferID: nil, importFingerprint: nil, splits: [],
+                            payeeID: current.debtorPayeeID,
+                            origin: .manual,
+                            counterpartyIBAN: current.debtorIBAN,
+                            endToEndID: current.endToEndID,
+                            mandateReference: current.mandateReference,
+                            counterpartyBIC: current.debtorBIC,
+                            creditorID: current.creditorID,
+                            bookingText: "SEPA-Basislastschrift"
+                        ),
+                        now: now
+                    )
+                }
+            }
+            try audit(
+                entity: "direct_debit_order", id: id, action: "transition",
+                details: "\(current.status.rawValue)->\(target.rawValue)"
+            )
+        }
+    }
+
+    func createPaymentBatch(_ value: PaymentBatch) throws {
+        try value.validate()
+        guard let account = try accounts().first(where: { $0.id == value.accountID }),
+              !account.isClosed, account.currency.uppercased() == "EUR" else {
+            throw FinanceError.invalidPaymentBatch(
+                "Das gemeinsame Konto fehlt, ist geschlossen oder führt keine EUR."
+            )
+        }
+        let requestedDay = Self.day(value.requestedDate)
+        switch value.kind {
+        case .creditTransfer:
+            let byID = Dictionary(uniqueKeysWithValues: try paymentOrders().map { ($0.id, $0) })
+            let members = try value.memberOrderIDs.map { id in
+                guard let order = byID[id] else {
+                    throw FinanceError.invalidPaymentBatch("Ein Überweisungsentwurf fehlt.")
+                }
+                return order
+            }
+            guard let first = members.first,
+                  members.allSatisfy({
+                      $0.status == .draft
+                          && $0.accountID == value.accountID
+                          && $0.currency.uppercased() == "EUR"
+                          && Self.day($0.executionDate) == requestedDay
+                          && $0.type == first.type
+                  }) else {
+                throw FinanceError.invalidPaymentBatch(
+                    "Alle Überweisungen müssen unveränderte Entwürfe desselben Typs, Kontos und Ausführungstags sein."
+                )
+            }
+            var total: Int64 = 0
+            for member in members {
+                let (sum, overflow) = total.addingReportingOverflow(
+                    member.amountMinor
+                )
+                guard !overflow, sum <= 999_999_999_999_999_999 else {
+                    throw FinanceError.invalidPaymentBatch(
+                        "Die Gesamtsumme überschreitet den SEPA-Wertebereich."
+                    )
+                }
+                total = sum
+            }
+        case .directDebit:
+            let byID = Dictionary(uniqueKeysWithValues: try directDebitOrders().map { ($0.id, $0) })
+            let members = try value.memberOrderIDs.map { id in
+                guard let order = byID[id] else {
+                    throw FinanceError.invalidPaymentBatch("Ein Lastschriftentwurf fehlt.")
+                }
+                return order
+            }
+            guard let first = members.first,
+                  members.allSatisfy({
+                      $0.status == .draft
+                          && $0.creditorAccountID == value.accountID
+                          && $0.currency.uppercased() == "EUR"
+                          && Self.day($0.collectionDate) == requestedDay
+                          && $0.sequenceType == first.sequenceType
+                          && $0.creditorID == first.creditorID
+                          && $0.creditorName == first.creditorName
+                          && $0.creditorIBAN == first.creditorIBAN
+                          && $0.creditorBIC == first.creditorBIC
+                  }) else {
+                throw FinanceError.invalidPaymentBatch(
+                    "Alle Lastschriften müssen unveränderte Entwürfe mit gleichem Gläubiger, Sequenztyp, Konto und Fälligkeitstag sein."
+                )
+            }
+            var total: Int64 = 0
+            for member in members {
+                let (sum, overflow) = total.addingReportingOverflow(
+                    member.amountMinor
+                )
+                guard !overflow, sum <= 999_999_999_999_999_999 else {
+                    throw FinanceError.invalidPaymentBatch(
+                        "Die Gesamtsumme überschreitet den SEPA-Wertebereich."
+                    )
+                }
+                total = sum
+            }
+        }
+        if try scalarInt(
+            "SELECT COUNT(*) FROM payment_batches WHERE idempotency_key=?",
+            [.text(value.idempotencyKey)]
+        ) > 0 {
+            throw FinanceError.duplicatePaymentBatch
+        }
+        let info = try financeFileInfo()
+        let createdAt = Self.timestamp(value.createdAt)
+        try transaction {
+            try run(
+                """
+                INSERT INTO payment_batches(
+                    id,finance_file_id,name,kind,account_id,requested_date,status,
+                    idempotency_key,bank_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(value.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(value.kind.rawValue), .text(value.accountID.uuidString),
+                    .text(requestedDay), .text(value.status.rawValue),
+                    .text(value.idempotencyKey), .text(value.bankReference),
+                    .text(createdAt), .text(Self.timestamp(value.updatedAt))
+                ]
+            )
+            for (position, memberID) in value.memberOrderIDs.enumerated() {
+                let membershipStillValid: Bool
+                if value.kind == .creditTransfer {
+                    membershipStillValid = try scalarInt(
+                        """
+                        SELECT COUNT(*) FROM payment_orders
+                        WHERE id=? AND status='draft' AND account_id=?
+                              AND execution_date=? AND currency='EUR'
+                        """,
+                        [
+                            .text(memberID.uuidString),
+                            .text(value.accountID.uuidString), .text(requestedDay)
+                        ]
+                    ) == 1
+                } else {
+                    membershipStillValid = try scalarInt(
+                        """
+                        SELECT COUNT(*) FROM direct_debit_orders
+                        WHERE id=? AND status='draft' AND creditor_account_id=?
+                              AND collection_date=? AND currency='EUR'
+                        """,
+                        [
+                            .text(memberID.uuidString),
+                            .text(value.accountID.uuidString), .text(requestedDay)
+                        ]
+                    ) == 1
+                }
+                guard membershipStillValid else {
+                    throw FinanceError.invalidPaymentBatch(
+                        "Mindestens ein ausgewählter Entwurf wurde zwischenzeitlich geändert."
+                    )
+                }
+                try run(
+                    """
+                    INSERT INTO payment_batch_items(
+                        batch_id,position,payment_order_id,direct_debit_order_id
+                    ) VALUES(?,?,?,?)
+                    """,
+                    [
+                        .text(value.id.uuidString), .integer(Int64(position)),
+                        value.kind == .creditTransfer
+                            ? .text(memberID.uuidString) : .null,
+                        value.kind == .directDebit
+                            ? .text(memberID.uuidString) : .null
+                    ]
+                )
+            }
+            try audit(
+                entity: "payment_batch", id: value.id, action: "create",
+                details: "\(value.kind.rawValue);members=\(value.memberOrderIDs.count)"
+            )
+        }
+    }
+
+    func transitionPaymentBatch(
+        id: UUID, to target: PaymentStatus, bankReference suppliedReference: String? = nil
+    ) throws {
+        guard let current = try paymentBatches().first(where: { $0.id == id }) else {
+            throw FinanceError.invalidPaymentBatch("Der Sammler fehlt.")
+        }
+        guard current.status.canTransition(to: target) else {
+            throw FinanceError.invalidPaymentTransition
+        }
+        let now = Self.timestamp(Date())
+        let batchReference = suppliedReference ?? (target == .accepted
+            ? "SIM-BT-\(id.uuidString.prefix(8).uppercased())"
+            : current.bankReference)
+        try transaction {
+            try run(
+                """
+                UPDATE payment_batches
+                SET status=?,bank_reference=?,updated_at=?,version=version+1
+                WHERE id=? AND status=?
+                """,
+                [
+                    .text(target.rawValue), .text(batchReference), .text(now),
+                    .text(id.uuidString), .text(current.status.rawValue)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.invalidPaymentTransition
+            }
+            switch current.kind {
+            case .creditTransfer:
+                let byID = Dictionary(uniqueKeysWithValues: try paymentOrders().map { ($0.id, $0) })
+                for memberID in current.memberOrderIDs {
+                    guard let order = byID[memberID], order.status == current.status else {
+                        throw FinanceError.invalidPaymentBatch(
+                            "Mindestens ein Überweisungsstatus wurde zwischenzeitlich geändert."
+                        )
+                    }
+                    let reference = suppliedReference ?? (target == .accepted
+                        ? "SIM-\(memberID.uuidString.prefix(8).uppercased())"
+                        : order.bankReference)
+                    try run(
+                        """
+                        UPDATE payment_orders
+                        SET status=?,bank_reference=?,updated_at=?,version=version+1
+                        WHERE id=? AND status=?
+                        """,
+                        [
+                            .text(target.rawValue), .text(reference), .text(now),
+                            .text(memberID.uuidString), .text(current.status.rawValue)
+                        ]
+                    )
+                    guard sqlite3_changes(database) == 1 else {
+                        throw FinanceError.invalidPaymentTransition
+                    }
+                    if target == .accepted {
+                        let transactionReference = "payment:\(memberID.uuidString)"
+                        if try scalarInt(
+                            "SELECT COUNT(*) FROM transactions WHERE reference=?",
+                            [.text(transactionReference)]
+                        ) == 0 {
+                            try writeTransaction(
+                                FinanceTransaction(
+                                    id: UUID(), accountID: order.accountID,
+                                    bookingDate: order.executionDate,
+                                    valueDate: order.executionDate,
+                                    payee: order.recipientName, purpose: order.purpose,
+                                    categoryID: nil, amountMinor: -order.amountMinor,
+                                    currency: order.currency, status: .pending,
+                                    memo: order.type.title,
+                                    reference: transactionReference,
+                                    transferID: nil, importFingerprint: nil, splits: []
+                                ),
+                                now: now
+                            )
+                        }
+                    }
+                    try audit(
+                        entity: "payment_order", id: memberID,
+                        action: "batch-transition",
+                        details: "batch=\(id.uuidString);\(current.status.rawValue)->\(target.rawValue)"
+                    )
+                }
+            case .directDebit:
+                let byID = Dictionary(uniqueKeysWithValues: try directDebitOrders().map { ($0.id, $0) })
+                for memberID in current.memberOrderIDs {
+                    guard let order = byID[memberID], order.status == current.status else {
+                        throw FinanceError.invalidPaymentBatch(
+                            "Mindestens ein Lastschriftstatus wurde zwischenzeitlich geändert."
+                        )
+                    }
+                    let reference = suppliedReference ?? (target == .accepted
+                        ? "SIM-DD-\(memberID.uuidString.prefix(8).uppercased())"
+                        : order.bankReference)
+                    try run(
+                        """
+                        UPDATE direct_debit_orders
+                        SET status=?,bank_reference=?,updated_at=?,version=version+1
+                        WHERE id=? AND status=?
+                        """,
+                        [
+                            .text(target.rawValue), .text(reference), .text(now),
+                            .text(memberID.uuidString), .text(current.status.rawValue)
+                        ]
+                    )
+                    guard sqlite3_changes(database) == 1 else {
+                        throw FinanceError.invalidPaymentTransition
+                    }
+                    if target == .accepted {
+                        let transactionReference = "direct-debit:\(memberID.uuidString)"
+                        if try scalarInt(
+                            "SELECT COUNT(*) FROM transactions WHERE reference=?",
+                            [.text(transactionReference)]
+                        ) == 0 {
+                            try writeTransaction(
+                                FinanceTransaction(
+                                    id: UUID(), accountID: order.creditorAccountID,
+                                    bookingDate: order.collectionDate,
+                                    valueDate: order.collectionDate,
+                                    payee: order.debtorName, purpose: order.purpose,
+                                    categoryID: nil, amountMinor: order.amountMinor,
+                                    currency: order.currency, status: .pending,
+                                    memo: "SEPA-Basislastschrift",
+                                    reference: transactionReference,
+                                    transferID: nil, importFingerprint: nil, splits: [],
+                                    payeeID: order.debtorPayeeID, origin: .manual,
+                                    counterpartyIBAN: order.debtorIBAN,
+                                    endToEndID: order.endToEndID,
+                                    mandateReference: order.mandateReference,
+                                    counterpartyBIC: order.debtorBIC,
+                                    creditorID: order.creditorID,
+                                    bookingText: "SEPA-Basislastschrift"
+                                ),
+                                now: now
+                            )
+                        }
+                    }
+                    try audit(
+                        entity: "direct_debit_order", id: memberID,
+                        action: "batch-transition",
+                        details: "batch=\(id.uuidString);\(current.status.rawValue)->\(target.rawValue)"
+                    )
+                }
+            }
+            try audit(
+                entity: "payment_batch", id: id, action: "transition",
+                details: "\(current.status.rawValue)->\(target.rawValue)"
+            )
+        }
+    }
+
     func saveCategorizationRule(_ rule: CategorizationRule) throws {
+        try RuleEngine.validate(rule)
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
+        let definitionData = try RuleEngine.definitionData(for: rule)
+        guard let definitionJSON = String(
+            data: definitionData,
+            encoding: .utf8
+        ) else {
+            throw FinanceError.database(
+                "Die Regeldefinition konnte nicht codiert werden."
+            )
+        }
         try transaction {
             try run(
                 """
                 INSERT INTO categorization_rules(
                     id,finance_file_id,name,priority,is_active,stop_after_match,
                     payee_contains,purpose_contains,minimum_amount_minor,maximum_amount_minor,
-                    category_id,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    category_id,created_at,updated_at,definition_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,priority=excluded.priority,
                     is_active=excluded.is_active,stop_after_match=excluded.stop_after_match,
                     payee_contains=excluded.payee_contains,purpose_contains=excluded.purpose_contains,
                     minimum_amount_minor=excluded.minimum_amount_minor,
                     maximum_amount_minor=excluded.maximum_amount_minor,
-                    category_id=excluded.category_id,updated_at=excluded.updated_at,version=version+1
+                    category_id=excluded.category_id,
+                    definition_json=excluded.definition_json,
+                    updated_at=excluded.updated_at,version=version+1
                 """,
                 [
                     .text(rule.id.uuidString), .text(info.id.uuidString), .text(rule.name),
@@ -2196,7 +7414,8 @@ final class SQLiteFinanceStore {
                     .text(rule.purposeContains),
                     rule.minimumAmountMinor.map(SQLiteValue.integer) ?? .null,
                     rule.maximumAmountMinor.map(SQLiteValue.integer) ?? .null,
-                    .text(rule.categoryID.uuidString), .text(now), .text(now)
+                    .text(rule.categoryID.uuidString), .text(now), .text(now),
+                    .text(definitionJSON)
                 ]
             )
             try audit(entity: "categorization_rule", id: rule.id, action: "save", details: rule.name)
@@ -2204,35 +7423,218 @@ final class SQLiteFinanceStore {
     }
 
     func applyCategorizationRule(_ rule: CategorizationRule) throws -> Int {
-        let candidates = try transactions().filter(rule.matches)
-        guard !candidates.isEmpty else { return 0 }
+        let preview = RuleEngine.preview(
+            rule: rule,
+            transactions: try transactions()
+        )
+        guard !preview.isEmpty else { return 0 }
+        return try applyCategorizationRule(
+            rule,
+            transactionIDs: Set(preview.map(\.id))
+        ).changedCount
+    }
+
+    func applyCategorizationRule(
+        _ rule: CategorizationRule,
+        transactionIDs: Set<UUID>
+    ) throws -> RuleApplicationResult {
+        guard !transactionIDs.isEmpty else {
+            throw FinanceError.database(
+                "Für die Regelanwendung wurde keine Buchung ausgewählt."
+            )
+        }
+        let preview = RuleEngine.preview(
+            rule: rule,
+            transactions: try transactions()
+        ).filter { transactionIDs.contains($0.id) }
+        guard preview.count == transactionIDs.count else {
+            throw FinanceError.database(
+                "Mindestens eine ausgewählte Buchung ist kein unveränderter Regeltreffer mehr."
+            )
+        }
+        let definition = try RuleEngine.definitionData(for: rule)
+        guard let definitionJSON = String(data: definition, encoding: .utf8)
+        else {
+            throw FinanceError.database(
+                "Das Undo-Paket der Regel konnte nicht codiert werden."
+            )
+        }
+        let runID = UUID()
         let now = Self.timestamp(Date())
         try transaction {
-            for candidate in candidates {
+            try run(
+                """
+                INSERT INTO rule_application_runs(
+                    id,rule_id,rule_name,applied_at,transaction_count,
+                    definition_json
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                [
+                    .text(runID.uuidString),
+                    .text(rule.id.uuidString),
+                    .text(rule.name),
+                    .text(now),
+                    .integer(Int64(preview.count)),
+                    .text(definitionJSON)
+                ]
+            )
+            for candidate in preview {
+                let before = try RuleEngine.snapshotData(candidate.before)
+                let afterFingerprint = try RuleEngine.snapshotFingerprint(
+                    candidate.after
+                )
                 try run(
                     """
-                    UPDATE transactions SET category_id=?,updated_at=?,version=version+1
-                    WHERE id=? AND status NOT IN ('reconciled','cancelled')
+                    INSERT INTO rule_application_items(
+                        run_id,transaction_id,before_json,after_fingerprint
+                    ) VALUES(?,?,?,?)
                     """,
                     [
-                        .text(rule.categoryID.uuidString), .text(now),
-                        .text(candidate.id.uuidString)
+                        .text(runID.uuidString),
+                        .text(candidate.id.uuidString),
+                        .text(before.base64EncodedString()),
+                        .text(afterFingerprint)
                     ]
+                )
+                try candidate.after.validate()
+                try validateVATReferences(candidate.after)
+                try writeTransaction(candidate.after, now: now)
+                /*
+                 The identity is validated again by writeTransaction and all
+                 updates live in the same SQLite transaction as the undo data.
+                 */
+                guard sqlite3_changes(database) >= 0 else {
+                    throw databaseError()
+                }
+            }
+            try audit(
+                entity: "categorization_rule",
+                id: rule.id,
+                action: "apply",
+                details: "run=\(runID.uuidString);count=\(preview.count)"
+            )
+        }
+        return RuleApplicationResult(
+            runID: runID,
+            changedCount: preview.count
+        )
+    }
+
+    func latestRuleUndo() throws -> RuleUndoSummary? {
+        var value: RuleUndoSummary?
+        try query(
+            """
+            SELECT id,rule_name,applied_at,transaction_count
+            FROM rule_application_runs
+            WHERE undone_at IS NULL
+            ORDER BY applied_at DESC,id DESC LIMIT 1
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let appliedAt = Self.timestampDate(Self.text(statement, 2))
+            else { return }
+            value = RuleUndoSummary(
+                id: id,
+                ruleName: Self.text(statement, 1),
+                appliedAt: appliedAt,
+                transactionCount: Int(sqlite3_column_int64(statement, 3))
+            )
+        }
+        return value
+    }
+
+    func undoRuleApplication(id: UUID) throws -> Int {
+        var snapshots: [(UUID, FinanceTransaction, String)] = []
+        try query(
+            """
+            SELECT i.transaction_id,i.before_json,i.after_fingerprint
+            FROM rule_application_items i
+            JOIN rule_application_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND r.undone_at IS NULL
+            ORDER BY i.transaction_id
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard
+                let transactionID = UUID(
+                    uuidString: Self.text(statement, 0)
+                ),
+                let data = Data(
+                    base64Encoded: Self.text(statement, 1)
+                ),
+                let before = try? RuleEngine.snapshot(from: data)
+            else { return }
+            snapshots.append(
+                (
+                    transactionID,
+                    before,
+                    Self.text(statement, 2)
+                )
+            )
+        }
+        guard !snapshots.isEmpty else {
+            throw FinanceError.database(
+                "Das Undo-Paket fehlt oder wurde bereits verwendet."
+            )
+        }
+        let currentByID = Dictionary(
+            uniqueKeysWithValues: try transactions().map { ($0.id, $0) }
+        )
+        for snapshot in snapshots {
+            guard
+                let current = currentByID[snapshot.0],
+                try RuleEngine.snapshotFingerprint(current) == snapshot.2
+            else {
+                throw FinanceError.database(
+                    "Mindestens eine Buchung wurde nach der Regelanwendung geändert. Das Undo wurde vollständig abgebrochen."
+                )
+            }
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            for snapshot in snapshots {
+                try snapshot.1.validate()
+                try validateVATReferences(snapshot.1)
+                try writeTransaction(
+                    snapshot.1,
+                    now: now,
+                    computeFingerprint: false
+                )
+            }
+            try run(
+                """
+                UPDATE rule_application_runs SET undone_at=?
+                WHERE id=? AND undone_at IS NULL
+                """,
+                [.text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Die Regelanwendung wurde bereits zurückgenommen."
                 )
             }
             try audit(
-                entity: "categorization_rule", id: rule.id, action: "apply",
-                details: "\(candidates.count) Buchungen"
+                entity: "categorization_rule",
+                id: id,
+                action: "undo",
+                details: "\(snapshots.count) Buchungen"
             )
         }
-        return candidates.count
+        return snapshots.count
     }
 
     func transactions(accountID: UUID? = nil) throws -> [FinanceTransaction] {
         var values: [FinanceTransaction] = []
         let sql = """
             SELECT id,account_id,booking_date,value_date,payee,purpose,category_id,
-                   amount_minor,currency,status,memo,reference,transfer_id,import_fingerprint,payee_id
+                   amount_minor,currency,status,memo,reference,transfer_id,
+                   import_fingerprint,payee_id,vat_code_id,vat_mode,net_minor,tax_minor,
+                   origin,external_provider,external_transaction_id,counterparty_iban,
+                   end_to_end_id,mandate_reference,duplicate_fingerprint,
+                   bank_balance_after_minor,counterparty_bic,creditor_id,
+                   booking_text,original_amount_minor,original_currency,
+                   exchange_rate_scaled,flag_color
             FROM transactions
             \(accountID == nil ? "" : "WHERE account_id = ?")
             ORDER BY booking_date DESC,id DESC
@@ -2242,7 +7644,9 @@ final class SQLiteFinanceStore {
                 let id = UUID(uuidString: Self.text(statement, 0)),
                 let account = UUID(uuidString: Self.text(statement, 1)),
                 let date = Self.date(Self.text(statement, 2)),
-                let status = TransactionStatus(rawValue: Self.text(statement, 9))
+                let status = TransactionStatus(rawValue: Self.text(statement, 9)),
+                let vatMode = VATMode(rawValue: Self.text(statement, 16)),
+                let origin = TransactionOrigin(rawValue: Self.text(statement, 19))
             else { return }
             values.append(
                 FinanceTransaction(
@@ -2262,42 +7666,408 @@ final class SQLiteFinanceStore {
                     importFingerprint: Self.optionalText(statement, 13),
                     splits: [],
                     payeeID: Self.optionalText(statement, 14).flatMap(UUID.init(uuidString:)),
-                    tagIDs: []
+                    tagIDs: [],
+                    vatCodeID: Self.optionalText(statement, 15).flatMap(UUID.init(uuidString:)),
+                    vatMode: vatMode,
+                    netMinor: sqlite3_column_int64(statement, 17),
+                    taxMinor: sqlite3_column_int64(statement, 18),
+                    origin: origin,
+                    externalProvider: Self.text(statement, 20),
+                    externalTransactionID: Self.text(statement, 21),
+                    counterpartyIBAN: Self.text(statement, 22),
+                    endToEndID: Self.text(statement, 23),
+                    mandateReference: Self.text(statement, 24),
+                    duplicateFingerprint: Self.text(statement, 25),
+                    bankBalanceAfterMinor: sqlite3_column_type(statement, 26)
+                        == SQLITE_NULL
+                        ? nil : sqlite3_column_int64(statement, 26),
+                    counterpartyBIC: Self.text(statement, 27),
+                    creditorID: Self.text(statement, 28),
+                    bookingText: Self.text(statement, 29),
+                    originalAmountMinor: sqlite3_column_type(statement, 30)
+                        == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 30),
+                    originalCurrency: Self.text(statement, 31),
+                    exchangeRateScaled: sqlite3_column_type(statement, 32)
+                        == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 32),
+                    flag: TransactionFlag(rawValue: Self.text(statement, 33))
                 )
             )
         }
-        for index in values.indices {
-            values[index].splits = try splits(transactionID: values[index].id)
-            values[index].tagIDs = try tagIDs(
-                table: "transaction_tags", ownerColumn: "transaction_id",
-                ownerID: values[index].id
+        guard !values.isEmpty else { return values }
+
+        let filterValues: [SQLiteValue] = accountID.map {
+            [.text($0.uuidString)]
+        } ?? []
+        let joinedTransactionFilter = accountID == nil
+            ? ""
+            : "JOIN transactions t ON t.id=s.transaction_id WHERE t.account_id=?"
+        var splitsByTransaction: [UUID: [FinanceSplit]] = [:]
+        try query(
+            """
+            SELECT s.transaction_id,s.id,s.category_id,s.amount_minor,s.memo,
+                   s.sort_order,s.vat_code_id,s.vat_mode,s.net_minor,s.tax_minor
+            FROM transaction_splits s
+            \(joinedTransactionFilter)
+            ORDER BY s.transaction_id,s.sort_order,s.id
+            """,
+            filterValues
+        ) { statement in
+            guard
+                let transactionID = UUID(uuidString: Self.text(statement, 0)),
+                let splitID = UUID(uuidString: Self.text(statement, 1)),
+                let vatMode = VATMode(rawValue: Self.text(statement, 7))
+            else { return }
+            splitsByTransaction[transactionID, default: []].append(
+                FinanceSplit(
+                    id: splitID,
+                    categoryID: Self.optionalText(statement, 2).flatMap(UUID.init(uuidString:)),
+                    amountMinor: sqlite3_column_int64(statement, 3),
+                    memo: Self.text(statement, 4),
+                    sortOrder: Int(sqlite3_column_int(statement, 5)),
+                    tagIDs: [],
+                    vatCodeID: Self.optionalText(statement, 6).flatMap(UUID.init(uuidString:)),
+                    vatMode: vatMode,
+                    netMinor: sqlite3_column_int64(statement, 8),
+                    taxMinor: sqlite3_column_int64(statement, 9)
+                )
             )
+        }
+
+        let joinedSplitFilter = accountID == nil
+            ? ""
+            : "JOIN transactions t ON t.id=s.transaction_id WHERE t.account_id=?"
+        var splitTagsByID: [UUID: [UUID]] = [:]
+        try query(
+            """
+            SELECT st.split_id,st.tag_id
+            FROM split_tags st
+            JOIN transaction_splits s ON s.id=st.split_id
+            \(joinedSplitFilter)
+            ORDER BY st.split_id,st.tag_id
+            """,
+            filterValues
+        ) { statement in
+            guard
+                let splitID = UUID(uuidString: Self.text(statement, 0)),
+                let tagID = UUID(uuidString: Self.text(statement, 1))
+            else { return }
+            splitTagsByID[splitID, default: []].append(tagID)
+        }
+
+        let joinedTagFilter = accountID == nil
+            ? ""
+            : "JOIN transactions t ON t.id=tt.transaction_id WHERE t.account_id=?"
+        var transactionTagsByID: [UUID: [UUID]] = [:]
+        try query(
+            """
+            SELECT tt.transaction_id,tt.tag_id
+            FROM transaction_tags tt
+            \(joinedTagFilter)
+            ORDER BY tt.transaction_id,tt.tag_id
+            """,
+            filterValues
+        ) { statement in
+            guard
+                let transactionID = UUID(uuidString: Self.text(statement, 0)),
+                let tagID = UUID(uuidString: Self.text(statement, 1))
+            else { return }
+            transactionTagsByID[transactionID, default: []].append(tagID)
+        }
+
+        for index in values.indices {
+            var transactionSplits = splitsByTransaction[values[index].id] ?? []
+            for splitIndex in transactionSplits.indices {
+                transactionSplits[splitIndex].tagIDs =
+                    splitTagsByID[transactionSplits[splitIndex].id] ?? []
+            }
+            values[index].splits = transactionSplits
+            values[index].tagIDs = transactionTagsByID[values[index].id] ?? []
         }
         return values
     }
 
-    func saveAccount(_ account: FinanceAccount) throws {
+    func transactionTemplates() throws -> [TransactionTemplate] {
+        var values: [TransactionTemplate] = []
+        let decoder = JSONDecoder()
+        try query(
+            """
+            SELECT id,name,payload_json,is_active,usage_count,last_used_at
+            FROM transaction_templates
+            ORDER BY is_active DESC,usage_count DESC,last_used_at DESC,
+                     name COLLATE NOCASE,id
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let data = Self.text(statement, 2).data(using: .utf8)
+            else {
+                throw FinanceError.database("Eine Buchungsvorlage ist beschädigt.")
+            }
+            do {
+                let decoded = try decoder.decode(TransactionTemplate.self, from: data)
+                let value = TransactionTemplate(
+                    id: id,
+                    name: Self.text(statement, 1),
+                    transaction: decoded.transaction(),
+                    includedFields: decoded.effectiveFields,
+                    isActive: sqlite3_column_int(statement, 3) != 0,
+                    usageCount: Int(sqlite3_column_int64(statement, 4)),
+                    lastUsedAt: Self.optionalText(statement, 5).flatMap(Self.timestampDate)
+                )
+                values.append(value)
+            } catch {
+                throw FinanceError.database("Die Buchungsvorlage „\(Self.text(statement, 1))“ ist beschädigt.")
+            }
+        }
+        return values
+    }
+
+    func saveTransactionTemplate(_ value: TransactionTemplate) throws {
+        let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Der Name der Buchungsvorlage fehlt.")
+        }
+        let fields = value.effectiveFields
+        guard !fields.isEmpty else {
+            throw FinanceError.database(
+                "Eine Buchungsvorlage muss mindestens ein Feld enthalten."
+            )
+        }
+        let amountDependentFields: Set<TransactionTemplateField> = [
+            .splits, .vat, .foreignCurrency
+        ]
+        guard fields.isDisjoint(with: amountDependentFields)
+                || fields.contains(.amount) else {
+            throw FinanceError.database(
+                "Splitzeilen, MwSt. und Fremdwährung benötigen das Feld Betrag."
+            )
+        }
+        try value.transaction().validate()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(value)
+        guard let payload = String(data: encoded, encoding: .utf8) else {
+            throw FinanceError.database("Die Buchungsvorlage konnte nicht codiert werden.")
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
             try run(
                 """
-                INSERT INTO accounts(id,finance_file_id,name,institution,type,currency,opening_balance_minor,is_hidden,is_closed,sort_order,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET name=excluded.name,institution=excluded.institution,
-                    type=excluded.type,currency=excluded.currency,opening_balance_minor=excluded.opening_balance_minor,
-                    is_hidden=excluded.is_hidden,is_closed=excluded.is_closed,sort_order=excluded.sort_order,
+                INSERT INTO transaction_templates(
+                    id,finance_file_id,name,payload_json,created_at,updated_at,
+                    is_active
+                ) VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,payload_json=excluded.payload_json,
+                    is_active=excluded.is_active,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
-                    .text(account.id.uuidString), .text(info.id.uuidString), .text(account.name),
+                    .text(value.id.uuidString), .text(info.id.uuidString),
+                    .text(name), .text(payload), .text(now), .text(now),
+                    .integer(value.effectiveIsActive ? 1 : 0)
+                ]
+            )
+            try audit(
+                entity: "transaction-template",
+                id: value.id,
+                action: "save",
+                details: name
+            )
+        }
+    }
+
+    func setTransactionTemplateActive(id: UUID, isActive: Bool) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                "UPDATE transaction_templates SET is_active=?,updated_at=?,version=version+1 WHERE id=?",
+                [.integer(isActive ? 1 : 0), .text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Die Buchungsvorlage wurde nicht gefunden.")
+            }
+            try audit(
+                entity: "transaction-template", id: id, action: "status",
+                details: isActive ? "active" : "inactive"
+            )
+        }
+    }
+
+    func recordTransactionTemplateUse(id: UUID) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                UPDATE transaction_templates
+                SET usage_count=usage_count+1,last_used_at=?,updated_at=?,
+                    version=version+1
+                WHERE id=? AND is_active=1
+                """,
+                [.text(now), .text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Nur eine aktive vorhandene Buchungsvorlage kann verwendet werden."
+                )
+            }
+            try audit(
+                entity: "transaction-template", id: id, action: "use",
+                details: ""
+            )
+        }
+    }
+
+    func deleteTransactionTemplate(id: UUID) throws {
+        try transaction {
+            try run(
+                "DELETE FROM transaction_templates WHERE id=?",
+                [.text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Die Buchungsvorlage wurde nicht gefunden.")
+            }
+            try audit(
+                entity: "transaction-template",
+                id: id,
+                action: "delete",
+                details: ""
+            )
+        }
+    }
+
+    func saveAccount(_ account: FinanceAccount) throws {
+        let name = account.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Der Kontoname fehlt.")
+        }
+        guard account.creditLimitMinor >= 0 else {
+            throw FinanceError.database("Das Kreditlimit darf nicht negativ sein.")
+        }
+        let normalizedIBAN = account.iban
+            .replacingOccurrences(of: " ", with: "")
+            .uppercased()
+        if !normalizedIBAN.isEmpty, !IBANValidator.isValid(normalizedIBAN) {
+            throw FinanceError.invalidIBAN
+        }
+        let subtype = account.subtype.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard subtype.utf8.count <= 80,
+              subtype.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else {
+            throw FinanceError.database("Der Kontountertyp ist ungültig oder länger als 80 Zeichen.")
+        }
+        let bankCode = account.bankCode.filter { !$0.isWhitespace }
+        guard bankCode.isEmpty
+                || (bankCode.count == 8 && bankCode.allSatisfy(\.isNumber)) else {
+            throw FinanceError.database("Die deutsche Bankleitzahl muss aus genau acht Ziffern bestehen.")
+        }
+        guard account.closingDate == nil || account.isClosed else {
+            throw FinanceError.database("Ein Schließdatum ist nur für ein geschlossenes Konto zulässig.")
+        }
+        if let openingDate = account.openingDate,
+           let balanceDate = account.openingBalanceDate,
+           balanceDate < openingDate {
+            throw FinanceError.database("Der Eröffnungssaldo-Stichtag darf nicht vor der Kontoeröffnung liegen.")
+        }
+        let firstOpeningDate = account.openingBalanceDate ?? account.openingDate
+        if let firstOpeningDate, let closingDate = account.closingDate,
+           closingDate < firstOpeningDate {
+            throw FinanceError.database("Das Schließdatum darf nicht vor der Kontoeröffnung liegen.")
+        }
+        guard account.linkedAccountID != account.id else {
+            throw FinanceError.database("Ein Konto kann nicht mit sich selbst verknüpft werden.")
+        }
+        if let groupID = account.groupID,
+           try !accountGroups().contains(where: { $0.id == groupID }) {
+            throw FinanceError.database("Die Kontengruppe existiert nicht.")
+        }
+        if let linkedAccountID = account.linkedAccountID,
+           try !accounts().contains(where: { $0.id == linkedAccountID }) {
+            throw FinanceError.database("Das zugeordnete Gegenkonto existiert nicht.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO accounts(
+                    id,finance_file_id,name,institution,type,currency,opening_balance_minor,
+                    is_hidden,is_closed,sort_order,created_at,updated_at,short_name,description,
+                    group_id,iban,bic,account_number_masked,owner_name,opening_date,
+                    credit_limit_minor,is_online,include_net_worth,include_budget,include_reports,
+                    include_forecast,last_sync_at,last_bank_balance_minor,sync_status,
+                    subtype,bank_code,opening_balance_date,closing_date,linked_account_id
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,institution=excluded.institution,
+                    type=excluded.type,currency=excluded.currency,opening_balance_minor=excluded.opening_balance_minor,
+                    is_hidden=excluded.is_hidden,is_closed=excluded.is_closed,sort_order=excluded.sort_order,
+                    short_name=excluded.short_name,description=excluded.description,
+                    group_id=excluded.group_id,iban=excluded.iban,bic=excluded.bic,
+                    account_number_masked=excluded.account_number_masked,owner_name=excluded.owner_name,
+                    opening_date=excluded.opening_date,credit_limit_minor=excluded.credit_limit_minor,
+                    is_online=excluded.is_online,include_net_worth=excluded.include_net_worth,
+                    include_budget=excluded.include_budget,include_reports=excluded.include_reports,
+                    include_forecast=excluded.include_forecast,last_sync_at=excluded.last_sync_at,
+                    last_bank_balance_minor=excluded.last_bank_balance_minor,
+                    sync_status=excluded.sync_status,
+                    subtype=excluded.subtype,bank_code=excluded.bank_code,
+                    opening_balance_date=excluded.opening_balance_date,
+                    closing_date=excluded.closing_date,
+                    linked_account_id=excluded.linked_account_id,
+                    updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(account.id.uuidString), .text(info.id.uuidString), .text(name),
                     .text(account.institution), .text(account.type.rawValue), .text(account.currency),
                     .integer(account.openingBalanceMinor), .integer(account.isHidden ? 1 : 0),
                     .integer(account.isClosed ? 1 : 0), .integer(Int64(account.sortOrder)),
+                    .text(now), .text(now), .text(account.shortName), .text(account.description),
+                    account.groupID.map { .text($0.uuidString) } ?? .null,
+                    .text(normalizedIBAN), .text(account.bic.uppercased()),
+                    .text(account.accountNumberMasked), .text(account.ownerName),
+                    account.openingDate.map { .text(Self.day($0)) } ?? .null,
+                    .integer(account.creditLimitMinor), .integer(account.isOnline ? 1 : 0),
+                    .integer(account.includeNetWorth ? 1 : 0),
+                    .integer(account.includeBudget ? 1 : 0),
+                    .integer(account.includeReports ? 1 : 0),
+                    .integer(account.includeForecast ? 1 : 0),
+                    account.lastSyncAt.map { .text(Self.timestamp($0)) } ?? .null,
+                    account.lastBankBalanceMinor.map(SQLiteValue.integer) ?? .null,
+                    .text(account.syncStatus.rawValue), .text(subtype), .text(bankCode),
+                    account.openingBalanceDate.map { .text(Self.day($0)) } ?? .null,
+                    account.closingDate.map { .text(Self.day($0)) } ?? .null,
+                    account.linkedAccountID.map { .text($0.uuidString) } ?? .null
+                ]
+            )
+            try audit(entity: "account", id: account.id, action: "save", details: name)
+        }
+    }
+
+    func saveAccountGroup(_ group: AccountGroup) throws {
+        let name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Der Name der Kontengruppe fehlt.")
+        }
+        let info = try financeFileInfo()
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO account_groups(id,finance_file_id,name,sort_order,is_active,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,
+                    is_active=excluded.is_active,updated_at=excluded.updated_at,version=version+1
+                """,
+                [
+                    .text(group.id.uuidString), .text(info.id.uuidString), .text(name),
+                    .integer(Int64(group.sortOrder)), .integer(group.isActive ? 1 : 0),
                     .text(now), .text(now)
                 ]
             )
-            try audit(entity: "account", id: account.id, action: "save", details: account.name)
+            try audit(entity: "account-group", id: group.id, action: "save", details: name)
         }
     }
 
@@ -2329,56 +8099,1137 @@ final class SQLiteFinanceStore {
                 ancestorID = existing.first(where: { $0.id == currentID })?.parentID
             }
         }
+        if let vatCodeID = category.defaultVATCodeID {
+            guard try vatCodes().contains(where: {
+                $0.id == vatCodeID && $0.isActive
+            }) else {
+                throw FinanceError.invalidVAT(
+                    "Der Standard-MwSt.-Schlüssel fehlt oder ist inaktiv."
+                )
+            }
+        }
         let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
             try run(
                 """
-                INSERT INTO categories(id,finance_file_id,parent_id,name,kind,color,is_active,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                INSERT INTO categories(
+                    id,finance_file_id,parent_id,name,kind,color,is_active,
+                    created_at,updated_at,description,is_budgetable,
+                    default_vat_code_id,german_tax_line,us_tax_line
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,
                     kind=excluded.kind,color=excluded.color,is_active=excluded.is_active,
+                    description=excluded.description,
+                    is_budgetable=excluded.is_budgetable,
+                    default_vat_code_id=excluded.default_vat_code_id,
+                    german_tax_line=excluded.german_tax_line,
+                    us_tax_line=excluded.us_tax_line,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
                     .text(category.id.uuidString), .text(info.id.uuidString),
                     category.parentID.map { .text($0.uuidString) } ?? .null,
                     .text(name), .text(category.kind.rawValue), .text(category.color),
-                    .integer(category.isActive ? 1 : 0), .text(now), .text(now)
+                    .integer(category.isActive ? 1 : 0), .text(now), .text(now),
+                    .text(category.description),
+                    .integer(category.isBudgetable ? 1 : 0),
+                    category.defaultVATCodeID.map { .text($0.uuidString) } ?? .null,
+                    .text(category.germanTaxLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    .text(category.usTaxLine.trimmingCharacters(in: .whitespacesAndNewlines))
                 ]
             )
             try audit(entity: "category", id: category.id, action: "save", details: name)
         }
     }
 
+    private func normalizedUndoTransactions(
+        _ values: [FinanceTransaction]
+    ) -> [FinanceTransaction] {
+        values.map { value in
+            var value = value
+            value.tagIDs.sort { $0.uuidString < $1.uuidString }
+            value.splits.sort {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            for index in value.splits.indices {
+                value.splits[index].tagIDs.sort { $0.uuidString < $1.uuidString }
+            }
+            return value
+        }.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func transactionSnapshots(
+        ids: Set<UUID>,
+        transferIDs: Set<UUID> = []
+    ) throws -> [FinanceTransaction] {
+        normalizedUndoTransactions(
+            try transactions().filter {
+                ids.contains($0.id)
+                    || $0.transferID.map(transferIDs.contains) == true
+            }
+        )
+    }
+
+    private func encodeUndoTransactions(
+        _ values: [FinanceTransaction]
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        let data = try encoder.encode(normalizedUndoTransactions(values))
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw FinanceError.database("Das Buchungs-Undo konnte nicht codiert werden.")
+        }
+        return text
+    }
+
+    private func decodeUndoTransactions(_ text: String) throws -> [FinanceTransaction] {
+        guard let data = text.data(using: .utf8) else {
+            throw FinanceError.database("Das Buchungs-Undo ist beschädigt.")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        do {
+            return normalizedUndoTransactions(
+                try decoder.decode([FinanceTransaction].self, from: data)
+            )
+        } catch {
+            throw FinanceError.database("Das Buchungs-Undo ist beschädigt.")
+        }
+    }
+
+    private func recordTransactionUndo(
+        title: String,
+        before: [FinanceTransaction],
+        after: [FinanceTransaction],
+        now: String
+    ) throws {
+        let transactionCount = Set((before + after).map(\.id)).count
+        guard transactionCount > 0,
+              normalizedUndoTransactions(before) != normalizedUndoTransactions(after)
+        else { return }
+        try run(
+            """
+            INSERT INTO transaction_undo_runs(
+                id,title,before_json,after_json,transaction_count,created_at
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            [
+                .text(UUID().uuidString), .text(title),
+                .text(try encodeUndoTransactions(before)),
+                .text(try encodeUndoTransactions(after)),
+                .integer(Int64(transactionCount)), .text(now)
+            ]
+        )
+    }
+
+    func latestTransactionUndo() throws -> TransactionUndoSummary? {
+        var result: TransactionUndoSummary?
+        try query(
+            """
+            SELECT id,title,transaction_count,created_at
+            FROM transaction_undo_runs
+            WHERE undone_at IS NULL
+            ORDER BY sequence DESC LIMIT 1
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let createdAt = Self.timestampDate(Self.text(statement, 3))
+            else { return }
+            result = TransactionUndoSummary(
+                id: id,
+                title: Self.text(statement, 1),
+                transactionCount: Int(sqlite3_column_int64(statement, 2)),
+                createdAt: createdAt
+            )
+        }
+        return result
+    }
+
+    private static let maximumAttachmentBytes = 50 * 1_024 * 1_024
+
+    private func validateAttachmentEntity(
+        _ entityType: AttachmentEntityType,
+        id: UUID
+    ) throws {
+        let table: String
+        switch entityType {
+        case .account: table = "accounts"
+        case .transaction: table = "transactions"
+        case .contract: table = "contracts"
+        case .security: table = "securities"
+        case .inventory: table = "inventory_items"
+        }
+        guard try scalarInt(
+            "SELECT COUNT(*) FROM \(table) WHERE id=?",
+            [.text(id.uuidString)]
+        ) == 1 else {
+            throw FinanceError.database("Das Ziel des Anhangs wurde nicht gefunden.")
+        }
+    }
+
+    private func validatedAttachmentInput(
+        from url: URL
+    ) throws -> (fileName: String, mimeType: String, data: Data, sha256: String) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+        let values = try url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw FinanceError.database("Anhänge müssen normale Dateien sein.")
+        }
+        guard let fileSize = values.fileSize, fileSize > 0,
+              fileSize <= Self.maximumAttachmentBytes else {
+            throw FinanceError.database(
+                "Ein Anhang muss zwischen 1 Byte und 50 MB groß sein."
+            )
+        }
+        let fileName = url.lastPathComponent.precomposedStringWithCanonicalMapping
+        guard !fileName.isEmpty, fileName.utf8.count <= 255,
+              fileName.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else {
+            throw FinanceError.database("Der Dateiname des Anhangs ist ungültig.")
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard data.count == fileSize else {
+            throw FinanceError.database("Der Anhang wurde während des Lesens verändert.")
+        }
+        let suffix = url.pathExtension.lowercased()
+        let mimeType: String
+        switch suffix {
+        case "pdf":
+            guard data.starts(with: Data("%PDF-".utf8)) else {
+                throw FinanceError.database("Die Datei ist kein gültiger PDF-Anhang.")
+            }
+            mimeType = "application/pdf"
+        case "png":
+            guard data.starts(with: Data([137, 80, 78, 71, 13, 10, 26, 10])) else {
+                throw FinanceError.database("Die Datei ist kein gültiger PNG-Anhang.")
+            }
+            mimeType = "image/png"
+        case "jpg", "jpeg":
+            guard data.count >= 3, data[0] == 0xff, data[1] == 0xd8,
+                  data[2] == 0xff else {
+                throw FinanceError.database("Die Datei ist kein gültiger JPEG-Anhang.")
+            }
+            mimeType = "image/jpeg"
+        case "txt", "csv", "qif", "xml":
+            guard !data.contains(0), String(data: data, encoding: .utf8) != nil else {
+                throw FinanceError.database("Der Textanhang muss gültiges UTF-8 enthalten.")
+            }
+            switch suffix {
+            case "csv": mimeType = "text/csv"
+            case "qif": mimeType = "application/x-qif"
+            case "xml": mimeType = "application/xml"
+            default: mimeType = "text/plain"
+            }
+        default:
+            throw FinanceError.database(
+                "Erlaubte Anhangstypen sind PDF, PNG, JPEG, TXT, CSV, QIF und XML."
+            )
+        }
+        try attachmentScanHook(data, fileName)
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return (fileName, mimeType, data, digest)
+    }
+
+    func attachments(
+        entityType: AttachmentEntityType,
+        entityID: UUID
+    ) throws -> [FinanceAttachment] {
+        var values: [FinanceAttachment] = []
+        try query(
+            """
+            SELECT l.id,l.file_name,b.mime_type,b.byte_count,b.sha256,
+                   l.source,l.added_at,l.ocr_text
+            FROM attachment_links l
+            JOIN attachment_blobs b ON b.sha256=l.blob_sha256
+            WHERE l.entity_type=? AND l.entity_id=?
+            ORDER BY l.added_at,l.id
+            """,
+            [.text(entityType.rawValue), .text(entityID.uuidString)]
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let addedAt = Self.timestampDate(Self.text(statement, 6))
+            else {
+                throw FinanceError.database("Anhangsmetadaten sind beschädigt.")
+            }
+            values.append(
+                FinanceAttachment(
+                    id: id, entityType: entityType, entityID: entityID,
+                    fileName: Self.text(statement, 1),
+                    mimeType: Self.text(statement, 2),
+                    byteCount: sqlite3_column_int64(statement, 3),
+                    sha256: Self.text(statement, 4),
+                    source: Self.text(statement, 5), addedAt: addedAt,
+                    ocrText: Self.text(statement, 7)
+                )
+            )
+        }
+        return values
+    }
+
+    @discardableResult
+    func addAttachment(
+        from url: URL,
+        to entityType: AttachmentEntityType,
+        entityID: UUID,
+        source: String = "Dateiimport"
+    ) throws -> FinanceAttachment {
+        try validateAttachmentEntity(entityType, id: entityID)
+        let input = try validatedAttachmentInput(from: url)
+        let cleanSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanSource.utf8.count <= 100 else {
+            throw FinanceError.database("Die Quellenangabe des Anhangs ist zu lang.")
+        }
+        let now = Self.timestamp(Date())
+        var linkID = UUID()
+        try transaction {
+            try run(
+                """
+                INSERT OR IGNORE INTO attachment_blobs(
+                    sha256,mime_type,byte_count,payload,created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                [
+                    .text(input.sha256), .text(input.mimeType),
+                    .integer(Int64(input.data.count)), .blob(input.data), .text(now)
+                ]
+            )
+            var storedMime = ""
+            var storedSize: Int64 = 0
+            var storedPayload = Data()
+            try query(
+                "SELECT mime_type,byte_count,payload FROM attachment_blobs WHERE sha256=?",
+                [.text(input.sha256)]
+            ) { statement in
+                storedMime = Self.text(statement, 0)
+                storedSize = sqlite3_column_int64(statement, 1)
+                storedPayload = Self.data(statement, 2)
+            }
+            guard storedMime == input.mimeType,
+                  storedSize == Int64(input.data.count),
+                  storedPayload == input.data else {
+                throw FinanceError.database("Die Anhangs-Deduplizierung ist inkonsistent.")
+            }
+
+            try run(
+                """
+                INSERT OR IGNORE INTO attachment_links(
+                    id,entity_type,entity_id,blob_sha256,file_name,source,added_at
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(linkID.uuidString), .text(entityType.rawValue),
+                    .text(entityID.uuidString), .text(input.sha256),
+                    .text(input.fileName),
+                    .text(cleanSource.isEmpty ? "Dateiimport" : cleanSource),
+                    .text(now)
+                ]
+            )
+            let inserted = sqlite3_changes(database) == 1
+            if !inserted {
+                try query(
+                    """
+                    SELECT id FROM attachment_links
+                    WHERE entity_type=? AND entity_id=? AND blob_sha256=? AND file_name=?
+                    """,
+                    [
+                        .text(entityType.rawValue), .text(entityID.uuidString),
+                        .text(input.sha256), .text(input.fileName)
+                    ]
+                ) { statement in
+                    if let existing = UUID(uuidString: Self.text(statement, 0)) {
+                        linkID = existing
+                    }
+                }
+            } else {
+                try audit(
+                    entity: "attachment", id: linkID, action: "add",
+                    details: "\(entityType.rawValue);\(entityID.uuidString);\(input.sha256)"
+                )
+            }
+        }
+        guard let result = try attachments(
+            entityType: entityType, entityID: entityID
+        ).first(where: { $0.id == linkID }) else {
+            throw FinanceError.database("Der Anhang konnte nicht geladen werden.")
+        }
+        return result
+    }
+
+    func removeAttachment(id: UUID) throws {
+        var sha256: String?
+        var entityType = ""
+        var entityID = ""
+        try query(
+            "SELECT blob_sha256,entity_type,entity_id FROM attachment_links WHERE id=?",
+            [.text(id.uuidString)]
+        ) { statement in
+            sha256 = Self.text(statement, 0)
+            entityType = Self.text(statement, 1)
+            entityID = Self.text(statement, 2)
+        }
+        guard let sha256 else {
+            throw FinanceError.database("Der Anhang wurde nicht gefunden.")
+        }
+        try transaction {
+            try run("DELETE FROM attachment_links WHERE id=?", [.text(id.uuidString)])
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Der Anhang wurde parallel verändert.")
+            }
+            if try scalarInt(
+                "SELECT COUNT(*) FROM attachment_links WHERE blob_sha256=?",
+                [.text(sha256)]
+            ) == 0 {
+                try run("DELETE FROM attachment_blobs WHERE sha256=?", [.text(sha256)])
+            }
+            try audit(
+                entity: "attachment", id: id, action: "remove",
+                details: "\(entityType);\(entityID);\(sha256)"
+            )
+        }
+    }
+
+    private func verifiedAttachmentPayload(id: UUID) throws -> (FinanceAttachment, Data) {
+        var metadata: FinanceAttachment?
+        var payload = Data()
+        try query(
+            """
+            SELECT l.entity_type,l.entity_id,l.file_name,b.mime_type,b.byte_count,
+                   b.sha256,l.source,l.added_at,l.ocr_text,b.payload
+            FROM attachment_links l
+            JOIN attachment_blobs b ON b.sha256=l.blob_sha256
+            WHERE l.id=?
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard let entityType = AttachmentEntityType(rawValue: Self.text(statement, 0)),
+                  let entityID = UUID(uuidString: Self.text(statement, 1)),
+                  let addedAt = Self.timestampDate(Self.text(statement, 7))
+            else { return }
+            metadata = FinanceAttachment(
+                id: id, entityType: entityType, entityID: entityID,
+                fileName: Self.text(statement, 2), mimeType: Self.text(statement, 3),
+                byteCount: sqlite3_column_int64(statement, 4),
+                sha256: Self.text(statement, 5), source: Self.text(statement, 6),
+                addedAt: addedAt, ocrText: Self.text(statement, 8)
+            )
+            payload = Self.data(statement, 9)
+        }
+        guard let metadata, Int64(payload.count) == metadata.byteCount else {
+            throw FinanceError.database("Der Anhang fehlt oder seine Größe ist beschädigt.")
+        }
+        let digest = SHA256.hash(data: payload)
+            .map { String(format: "%02x", $0) }.joined()
+        guard digest == metadata.sha256 else {
+            throw FinanceError.database("Die SHA-256-Prüfung des Anhangs ist fehlgeschlagen.")
+        }
+        return (metadata, payload)
+    }
+
+    func attachmentPreviewURL(id: UUID) throws -> URL {
+        let (metadata, payload) = try verifiedAttachmentPayload(id: id)
+        let directory = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask
+        )[0]
+            .appendingPathComponent("FinanzVerwalter", isDirectory: true)
+            .appendingPathComponent("Anhangsvorschau", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let suffix = URL(fileURLWithPath: metadata.fileName).pathExtension.lowercased()
+        let target = directory.appendingPathComponent(
+            metadata.sha256 + (suffix.isEmpty ? "" : ".\(suffix)")
+        )
+        try payload.write(to: target, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: target.path
+        )
+        return target
+    }
+
+    @discardableResult
+    func exportAttachment(
+        id: UUID,
+        to destinationURL: URL,
+        replaceExisting: Bool = false
+    ) throws -> URL {
+        let (metadata, payload) = try verifiedAttachmentPayload(id: id)
+        guard destinationURL.isFileURL,
+              destinationURL.host == nil
+                || destinationURL.host?.isEmpty == true
+                || destinationURL.host == "localhost"
+        else {
+            throw FinanceError.database("Anhänge können nur lokal exportiert werden.")
+        }
+        let destination = destinationURL.standardizedFileURL
+        let destinationName = destination.lastPathComponent
+        guard !destinationName.isEmpty,
+              destinationName != ".", destinationName != "..",
+              destination != fileURL.standardizedFileURL else {
+            throw FinanceError.database("Das Exportziel ist nicht zulässig.")
+        }
+        let originalSuffix = URL(fileURLWithPath: metadata.fileName)
+            .pathExtension.lowercased()
+        let destinationSuffix = destination.pathExtension.lowercased()
+        let equivalentJPEG = Set([originalSuffix, destinationSuffix]) == Set(["jpg", "jpeg"])
+        guard originalSuffix == destinationSuffix || equivalentJPEG else {
+            throw FinanceError.database(
+                "Die Dateiendung des Exports muss zum Originalanhang passen."
+            )
+        }
+
+        let fileManager = FileManager.default
+        let directory = destination.deletingLastPathComponent()
+        let directoryValues = try directory.resourceValues(forKeys: [
+            .isDirectoryKey, .isSymbolicLinkKey
+        ])
+        guard directoryValues.isDirectory == true,
+              directoryValues.isSymbolicLink != true else {
+            throw FinanceError.database("Der Exportordner ist nicht zulässig.")
+        }
+
+        let exists = fileManager.fileExists(atPath: destination.path)
+        if exists {
+            let values = try destination.resourceValues(forKeys: [
+                .isRegularFileKey, .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey
+            ])
+            guard replaceExisting else {
+                throw FinanceError.database(
+                    "Am Exportziel besteht bereits eine Datei. Ersetze sie nur nach Bestätigung."
+                )
+            }
+            guard values.isRegularFile == true,
+                  values.isDirectory != true,
+                  values.isPackage != true,
+                  values.isSymbolicLink != true else {
+                throw FinanceError.database(
+                    "Das vorhandene Exportziel ist keine ersetzbare reguläre Datei."
+                )
+            }
+        }
+
+        let staged = directory.appendingPathComponent(
+            ".finanzverwalter-export-\(UUID().uuidString).tmp"
+        )
+        defer { try? fileManager.removeItem(at: staged) }
+        try payload.write(to: staged, options: [.withoutOverwriting])
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: staged.path
+        )
+        if exists {
+            _ = try fileManager.replaceItemAt(
+                destination, withItemAt: staged,
+                backupItemName: nil, options: []
+            )
+        } else {
+            try fileManager.moveItem(at: staged, to: destination)
+        }
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: destination.path
+        )
+        let exported = try Data(contentsOf: destination, options: [.mappedIfSafe])
+        let digest = SHA256.hash(data: exported)
+            .map { String(format: "%02x", $0) }.joined()
+        guard Int64(exported.count) == metadata.byteCount,
+              digest == metadata.sha256 else {
+            try? fileManager.removeItem(at: destination)
+            throw FinanceError.database(
+                "Die Prüfung des exportierten Anhangs ist fehlgeschlagen."
+            )
+        }
+        try audit(
+            entity: "attachment", id: id, action: "export",
+            details: "\(metadata.sha256);\(destinationName)"
+        )
+        return destination
+    }
+
+    @discardableResult
+    func undoTransactionMutation(id: UUID) throws -> Int {
+        var beforeJSON: String?
+        var afterJSON: String?
+        var title = ""
+        try query(
+            """
+            SELECT title,before_json,after_json
+            FROM transaction_undo_runs
+            WHERE id=? AND undone_at IS NULL
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            title = Self.text(statement, 0)
+            beforeJSON = Self.text(statement, 1)
+            afterJSON = Self.text(statement, 2)
+        }
+        guard let beforeJSON, let afterJSON else {
+            throw FinanceError.database("Das Buchungs-Undo fehlt oder wurde bereits verwendet.")
+        }
+        let before = try decodeUndoTransactions(beforeJSON)
+        let after = try decodeUndoTransactions(afterJSON)
+        let affectedIDs = Set((before + after).map(\.id))
+        let transactionIDsRemovedByUndo = Set(after.map(\.id))
+            .subtracting(before.map(\.id))
+        let current = try transactionSnapshots(ids: affectedIDs)
+        guard current == after else {
+            throw FinanceError.database(
+                "Mindestens eine Buchung wurde nach „\(title)“ geändert. Das Undo wurde vollständig abgebrochen."
+            )
+        }
+        guard current.allSatisfy({ $0.status != .reconciled }) else {
+            throw FinanceError.protectedTransaction
+        }
+
+        let now = Self.timestamp(Date())
+        try transaction {
+            for transactionID in transactionIDsRemovedByUndo.sorted(
+                by: { $0.uuidString < $1.uuidString }
+            ) {
+                try run(
+                    "DELETE FROM attachment_links WHERE entity_type='transaction' AND entity_id=?",
+                    [.text(transactionID.uuidString)]
+                )
+            }
+            if !transactionIDsRemovedByUndo.isEmpty {
+                try run(
+                    "DELETE FROM attachment_blobs WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE blob_sha256=attachment_blobs.sha256)"
+                )
+            }
+            for transactionID in affectedIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try run("DELETE FROM transactions WHERE id=?", [.text(transactionID.uuidString)])
+            }
+            for value in before {
+                try writeTransaction(value, now: now, computeFingerprint: false)
+            }
+            try run(
+                "UPDATE transaction_undo_runs SET undone_at=? WHERE id=? AND undone_at IS NULL",
+                [.text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Das Buchungs-Undo wurde parallel verändert.")
+            }
+            try audit(
+                entity: "transaction-undo",
+                id: id,
+                action: "undo",
+                details: "\(title);\(affectedIDs.count) Buchungen"
+            )
+        }
+        return affectedIDs.count
+    }
+
     func saveTransaction(_ value: FinanceTransaction) throws {
         try value.validate()
+        try validateVATReferences(value)
+        let before = try transactionSnapshots(ids: [value.id])
         var existingStatus: String?
-        try query("SELECT status FROM transactions WHERE id=?", [.text(value.id.uuidString)]) {
+        var existingTransferID: String?
+        try query(
+            "SELECT status,transfer_id FROM transactions WHERE id=?",
+            [.text(value.id.uuidString)]
+        ) {
             existingStatus = Self.text($0, 0)
+            existingTransferID = Self.optionalText($0, 1)
         }
         if existingStatus == TransactionStatus.reconciled.rawValue {
             throw FinanceError.protectedTransaction
         }
+        if existingTransferID != nil || value.transferID != nil {
+            throw FinanceError.database(
+                "Eine Umbuchung kann nur als zusammengehöriges Buchungspaar geändert werden."
+            )
+        }
         let now = Self.timestamp(Date())
         try transaction {
             try writeTransaction(value, now: now)
+            let after = try transactionSnapshots(ids: [value.id])
+            try recordTransactionUndo(
+                title: before.isEmpty ? "Buchung erstellt" : "Buchung bearbeitet",
+                before: before,
+                after: after,
+                now: now
+            )
             try audit(entity: "transaction", id: value.id, action: "save", details: value.purpose)
         }
     }
 
-    func deleteTransaction(id: UUID) throws {
+    func seedReferenceTransactions(_ values: [FinanceTransaction]) throws {
+        guard !values.isEmpty else { return }
+        guard Set(values.map(\.id)).count == values.count else {
+            throw FinanceError.database(
+                "Der Referenzdatensatz enthält doppelte Buchungskennungen."
+            )
+        }
+        let accountsByID = Dictionary(
+            uniqueKeysWithValues: try accounts().map { ($0.id, $0) }
+        )
+        for value in values {
+            try value.validate()
+            try validateVATReferences(value)
+            guard value.tagIDs.isEmpty,
+                  value.splits.allSatisfy({ $0.tagIDs.isEmpty }),
+                  let account = accountsByID[value.accountID],
+                  !account.isClosed,
+                  account.currency == value.currency else {
+                throw FinanceError.database(
+                    "Eine Referenzbuchung verweist auf ein ungeeignetes Konto."
+                )
+            }
+        }
+        let transferGroups = Dictionary(
+            grouping: values.compactMap { value in
+                value.transferID.map { ($0, value) }
+            },
+            by: { $0.0 }
+        )
+        for (_, members) in transferGroups {
+            let transactions = members.map(\.1)
+            guard transactions.count == 2,
+                  transactions[0].accountID != transactions[1].accountID,
+                  transactions[0].currency == transactions[1].currency,
+                  transactions.reduce(Int64.zero, { $0 + $1.amountMinor }) == 0
+            else {
+                throw FinanceError.database(
+                    "Eine Referenzumbuchung ist nicht vollständig ausgeglichen."
+                )
+            }
+        }
+
+        var transactionStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            """
+            INSERT INTO transactions(
+                id,account_id,booking_date,value_date,payee,purpose,category_id,
+                amount_minor,currency,status,memo,reference,transfer_id,
+                import_fingerprint,payee_id,created_at,updated_at,
+                vat_code_id,vat_mode,net_minor,tax_minor,
+                origin,external_provider,external_transaction_id,
+                counterparty_iban,end_to_end_id,mandate_reference,
+                duplicate_fingerprint,bank_balance_after_minor,
+                counterparty_bic,creditor_id,booking_text,
+                original_amount_minor,original_currency,exchange_rate_scaled,flag_color
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            -1,
+            &transactionStatement,
+            nil
+        ) == SQLITE_OK else { throw databaseError() }
+        defer { sqlite3_finalize(transactionStatement) }
+
+        var splitStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            """
+            INSERT INTO transaction_splits(
+                id,transaction_id,category_id,amount_minor,memo,sort_order,
+                vat_code_id,vat_mode,net_minor,tax_minor
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            -1,
+            &splitStatement,
+            nil
+        ) == SQLITE_OK else { throw databaseError() }
+        defer { sqlite3_finalize(splitStatement) }
+
+        let now = Self.timestamp(Date())
         try transaction {
-            var transferID: String?
-            try query("SELECT transfer_id FROM transactions WHERE id=?", [.text(id.uuidString)]) {
-                transferID = Self.optionalText($0, 0)
+            for value in values {
+                sqlite3_reset(transactionStatement)
+                sqlite3_clear_bindings(transactionStatement)
+                try bind(
+                    [
+                        .text(value.id.uuidString), .text(value.accountID.uuidString),
+                        .text(Self.day(value.bookingDate)),
+                        value.valueDate.map { .text(Self.day($0)) } ?? .null,
+                        .text(value.payee), .text(value.purpose),
+                        value.categoryID.map { .text($0.uuidString) } ?? .null,
+                        .integer(value.amountMinor), .text(value.currency),
+                        .text(value.status.rawValue), .text(value.memo), .text(value.reference),
+                        value.transferID.map { .text($0.uuidString) } ?? .null,
+                        value.importFingerprint.map(SQLiteValue.text) ?? .null,
+                        value.payeeID.map { .text($0.uuidString) } ?? .null,
+                        .text(now), .text(now),
+                        value.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                        .text(value.vatMode.rawValue), .integer(value.netMinor),
+                        .integer(value.taxMinor), .text(value.origin.rawValue),
+                        .text(value.externalProvider), .text(value.externalTransactionID),
+                        .text(value.counterpartyIBAN), .text(value.endToEndID),
+                        .text(value.mandateReference), .text(value.duplicateFingerprint),
+                        value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null,
+                        .text(value.counterpartyBIC), .text(value.creditorID),
+                        .text(value.bookingText),
+                        value.originalAmountMinor.map(SQLiteValue.integer) ?? .null,
+                        .text(value.originalCurrency.uppercased()),
+                        value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null,
+                        .text(value.flag?.rawValue ?? "")
+                    ],
+                    to: transactionStatement
+                )
+                guard sqlite3_step(transactionStatement) == SQLITE_DONE else {
+                    throw databaseError()
+                }
+                for split in value.splits {
+                    sqlite3_reset(splitStatement)
+                    sqlite3_clear_bindings(splitStatement)
+                    try bind(
+                        [
+                            .text(split.id.uuidString), .text(value.id.uuidString),
+                            split.categoryID.map { .text($0.uuidString) } ?? .null,
+                            .integer(split.amountMinor), .text(split.memo),
+                            .integer(Int64(split.sortOrder)),
+                            split.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                            .text(split.vatMode.rawValue), .integer(split.netMinor),
+                            .integer(split.taxMinor)
+                        ],
+                        to: splitStatement
+                    )
+                    guard sqlite3_step(splitStatement) == SQLITE_DONE else {
+                        throw databaseError()
+                    }
+                }
             }
-            if let transferID {
-                try run("DELETE FROM transactions WHERE transfer_id=?", [.text(transferID)])
-            } else {
-                try run("DELETE FROM transactions WHERE id=?", [.text(id.uuidString)])
+            try audit(
+                entity: "reference_dataset", id: UUID(), action: "seed",
+                details: "transactions=\(values.count)"
+            )
+        }
+    }
+
+    func moveTransaction(id: UUID, toAccountID destinationID: UUID) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            var sourceAccountID: UUID?
+            var sourceCurrency = ""
+            var sourceStatus: TransactionStatus?
+            var sourceTransferID: UUID?
+            try query(
+                "SELECT account_id,currency,status,transfer_id FROM transactions WHERE id=?",
+                [.text(id.uuidString)]
+            ) { statement in
+                sourceAccountID = UUID(uuidString: Self.text(statement, 0))
+                sourceCurrency = Self.text(statement, 1)
+                sourceStatus = TransactionStatus(
+                    rawValue: Self.text(statement, 2)
+                )
+                sourceTransferID = Self.optionalText(statement, 3)
+                    .flatMap(UUID.init(uuidString:))
             }
-            try audit(entity: "transaction", id: id, action: "delete", details: transferID ?? "")
+            guard let sourceAccountID, let sourceStatus else {
+                throw FinanceError.database("Die Buchung wurde nicht gefunden.")
+            }
+            guard sourceStatus != .reconciled else {
+                throw FinanceError.protectedTransaction
+            }
+            guard sourceTransferID == nil else {
+                throw FinanceError.database(
+                    "Eine Umbuchung kann nur als zusammengehöriges Buchungspaar geändert werden."
+                )
+            }
+            guard sourceAccountID != destinationID else {
+                throw FinanceError.database(
+                    "Quell- und Zielkonto sind identisch."
+                )
+            }
+            let before = try transactionSnapshots(ids: [id])
+
+            var destinationCurrency: String?
+            var destinationClosed = true
+            try query(
+                "SELECT currency,is_closed FROM accounts WHERE id=?",
+                [.text(destinationID.uuidString)]
+            ) { statement in
+                destinationCurrency = Self.text(statement, 0)
+                destinationClosed = sqlite3_column_int(statement, 1) != 0
+            }
+            guard let destinationCurrency else {
+                throw FinanceError.database("Das Zielkonto wurde nicht gefunden.")
+            }
+            guard !destinationClosed else {
+                throw FinanceError.database(
+                    "In ein geschlossenes Konto kann keine Buchung verschoben werden."
+                )
+            }
+            guard destinationCurrency == sourceCurrency else {
+                throw FinanceError.database(
+                    "Buchungen können nur zwischen Konten derselben Währung verschoben werden."
+                )
+            }
+
+            try run(
+                "UPDATE transactions SET account_id=?,updated_at=?,version=version+1 WHERE id=?",
+                [
+                    .text(destinationID.uuidString), .text(now),
+                    .text(id.uuidString)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Die Buchung konnte nicht verschoben werden."
+                )
+            }
+            let after = try transactionSnapshots(ids: [id])
+            try recordTransactionUndo(
+                title: "Buchung verschoben",
+                before: before,
+                after: after,
+                now: now
+            )
+            try audit(
+                entity: "transaction",
+                id: id,
+                action: "move-account",
+                details: "from=\(sourceAccountID.uuidString);to=\(destinationID.uuidString)"
+            )
+        }
+    }
+
+    func bulkUpdateTransactionCategory(
+        ids: Set<UUID>,
+        categoryID: UUID?
+    ) throws -> BulkCategoryUpdateResult {
+        try bulkUpdateTransactionOrganization(
+            ids: ids,
+            updateCategory: true,
+            categoryID: categoryID,
+            replacementTagIDs: nil
+        )
+    }
+
+    func bulkUpdateTransactionOrganization(
+        ids: Set<UUID>,
+        updateCategory: Bool,
+        categoryID: UUID?,
+        replacementTagIDs: Set<UUID>?,
+        updateFlag: Bool = false,
+        flag: TransactionFlag? = nil
+    ) throws -> BulkCategoryUpdateResult {
+        guard !ids.isEmpty else {
+            return BulkCategoryUpdateResult(updatedCount: 0, totalsByCurrency: [:])
+        }
+        guard updateCategory || replacementTagIDs != nil || updateFlag else {
+            throw FinanceError.database("Es wurde keine Massenänderung ausgewählt.")
+        }
+        if updateCategory, let categoryID {
+            var categoryExists = false
+            try query(
+                "SELECT 1 FROM categories WHERE id=? AND is_active=1 LIMIT 1",
+                [.text(categoryID.uuidString)]
+            ) { _ in categoryExists = true }
+            guard categoryExists else {
+                throw FinanceError.database("Die gewählte Kategorie existiert nicht oder ist inaktiv.")
+            }
+        }
+        if let replacementTagIDs {
+            for tagID in replacementTagIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                var tagExists = false
+                try query(
+                    "SELECT 1 FROM tags WHERE id=? AND is_active=1 LIMIT 1",
+                    [.text(tagID.uuidString)]
+                ) { _ in tagExists = true }
+                guard tagExists else {
+                    throw FinanceError.database("Mindestens eine gewählte Klasse fehlt oder ist inaktiv.")
+                }
+            }
+        }
+
+        var selected: [(id: UUID, status: String, transferID: String?, splitCount: Int, amount: Int64, currency: String)] = []
+        for id in ids.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try query(
+                """
+                SELECT t.status,t.transfer_id,
+                       (SELECT COUNT(*) FROM transaction_splits s WHERE s.transaction_id=t.id),
+                       t.amount_minor,t.currency
+                FROM transactions t WHERE t.id=?
+                """,
+                [.text(id.uuidString)]
+            ) { statement in
+                selected.append(
+                    (
+                        id,
+                        Self.text(statement, 0),
+                        Self.optionalText(statement, 1),
+                        Int(sqlite3_column_int64(statement, 2)),
+                        sqlite3_column_int64(statement, 3),
+                        Self.text(statement, 4)
+                    )
+                )
+            }
+        }
+        guard selected.count == ids.count else {
+            throw FinanceError.database("Mindestens eine ausgewählte Buchung wurde nicht gefunden.")
+        }
+        guard selected.allSatisfy({
+            $0.status != TransactionStatus.reconciled.rawValue
+                && $0.transferID == nil
+                && (!updateCategory || $0.splitCount == 0)
+        }) else {
+            throw FinanceError.protectedBulkEdit
+        }
+
+        let before = try transactionSnapshots(ids: ids)
+        let now = Self.timestamp(Date())
+        try transaction {
+            for value in selected {
+                if updateCategory {
+                    try run(
+                        """
+                        UPDATE transactions
+                        SET category_id=?,updated_at=?,version=version+1
+                        WHERE id=?
+                        """,
+                        [
+                            categoryID.map { .text($0.uuidString) } ?? .null,
+                            .text(now),
+                            .text(value.id.uuidString)
+                        ]
+                    )
+                } else {
+                    try run(
+                        "UPDATE transactions SET updated_at=?,version=version+1 WHERE id=?",
+                        [.text(now), .text(value.id.uuidString)]
+                    )
+                }
+                if let replacementTagIDs {
+                    try run(
+                        "DELETE FROM transaction_tags WHERE transaction_id=?",
+                        [.text(value.id.uuidString)]
+                    )
+                    for tagID in replacementTagIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                        try run(
+                            "INSERT INTO transaction_tags(transaction_id,tag_id) VALUES(?,?)",
+                            [.text(value.id.uuidString), .text(tagID.uuidString)]
+                        )
+                    }
+                }
+                if updateFlag {
+                    try run(
+                        "UPDATE transactions SET flag_color=?,updated_at=?,version=version+1 WHERE id=?",
+                        [.text(flag?.rawValue ?? ""), .text(now), .text(value.id.uuidString)]
+                    )
+                }
+                try audit(
+                    entity: "transaction",
+                    id: value.id,
+                    action: replacementTagIDs == nil ? "bulk-category" : "bulk-organization",
+                    details: [
+                        updateCategory
+                            ? "category=\(categoryID?.uuidString ?? "uncategorized")"
+                            : "category=unchanged",
+                        replacementTagIDs.map {
+                            "tags=" + $0.map(\.uuidString).sorted().joined(separator: ",")
+                        } ?? "tags=unchanged",
+                        updateFlag ? "flag=\(flag?.rawValue ?? "none")" : "flag=unchanged"
+                    ].joined(separator: ";")
+                )
+            }
+            let after = try transactionSnapshots(ids: ids)
+            try recordTransactionUndo(
+                title: selected.count == 1
+                    ? "Buchung organisiert"
+                    : "\(selected.count) Buchungen organisiert",
+                before: before,
+                after: after,
+                now: now
+            )
+        }
+        let totals = Dictionary(grouping: selected, by: \.currency)
+            .mapValues { values in values.reduce(Int64.zero) { $0 + $1.amount } }
+        return BulkCategoryUpdateResult(updatedCount: selected.count, totalsByCurrency: totals)
+    }
+
+    func deleteTransaction(id: UUID) throws {
+        try deleteTransactions(ids: [id])
+    }
+
+    func deleteTransactions(ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        var selected: [(id: UUID, status: TransactionStatus, transferID: UUID?)] = []
+        for id in ids.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try query(
+                "SELECT status,transfer_id FROM transactions WHERE id=?",
+                [.text(id.uuidString)]
+            ) { statement in
+                guard let status = TransactionStatus(rawValue: Self.text(statement, 0)) else {
+                    return
+                }
+                selected.append(
+                    (
+                        id,
+                        status,
+                        Self.optionalText(statement, 1).flatMap(UUID.init(uuidString:))
+                    )
+                )
+            }
+        }
+        guard selected.count == ids.count else {
+            throw FinanceError.database("Mindestens eine ausgewählte Buchung wurde nicht gefunden.")
+        }
+        guard selected.allSatisfy({ $0.status != .reconciled }) else {
+            throw FinanceError.protectedTransaction
+        }
+        for transferID in Set(selected.compactMap(\.transferID)) {
+            guard try scalarInt(
+                "SELECT COUNT(*) FROM transactions WHERE transfer_id=? AND status='reconciled'",
+                [.text(transferID.uuidString)]
+            ) == 0 else {
+                throw FinanceError.protectedTransaction
+            }
+        }
+        let transferIDs = Set(selected.compactMap(\.transferID))
+        let before = try transactionSnapshots(ids: ids, transferIDs: transferIDs)
+        let now = Self.timestamp(Date())
+        try transaction {
+            var deletedTransfers = Set<UUID>()
+            for value in selected {
+                if let transferID = value.transferID {
+                    guard deletedTransfers.insert(transferID).inserted else { continue }
+                    try run(
+                        "DELETE FROM transactions WHERE transfer_id=?",
+                        [.text(transferID.uuidString)]
+                    )
+                    try audit(
+                        entity: "transfer",
+                        id: transferID,
+                        action: "delete",
+                        details: "shortcut-confirmed"
+                    )
+                } else {
+                    try run(
+                        "DELETE FROM transactions WHERE id=?",
+                        [.text(value.id.uuidString)]
+                    )
+                    guard sqlite3_changes(database) == 1 else {
+                        throw FinanceError.database("Eine Buchung konnte nicht gelöscht werden.")
+                    }
+                    try audit(
+                        entity: "transaction",
+                        id: value.id,
+                        action: "delete",
+                        details: "shortcut-confirmed"
+                    )
+                }
+            }
+            try recordTransactionUndo(
+                title: before.count == 1
+                    ? "Buchung gelöscht"
+                    : "\(before.count) Buchungen gelöscht",
+                before: before,
+                after: [],
+                now: now
+            )
         }
     }
 
@@ -2389,24 +9240,209 @@ final class SQLiteFinanceStore {
         date: Date,
         purpose: String
     ) throws {
-        let transferID = UUID()
-        let sourceValue = FinanceTransaction(
-            id: UUID(), accountID: source.id, bookingDate: date, valueDate: date,
-            payee: destination.name, purpose: purpose, categoryID: nil,
-            amountMinor: -abs(amountMinor), currency: source.currency, status: .booked,
-            memo: "", reference: "", transferID: transferID, importFingerprint: nil, splits: []
+        try createTransfer(
+            from: source,
+            to: destination,
+            sourceAmountMinor: amountMinor,
+            destinationAmountMinor: amountMinor,
+            date: date,
+            purpose: purpose
         )
-        let destinationValue = FinanceTransaction(
-            id: UUID(), accountID: destination.id, bookingDate: date, valueDate: date,
-            payee: source.name, purpose: purpose, categoryID: nil,
-            amountMinor: abs(amountMinor), currency: destination.currency, status: .booked,
-            memo: "", reference: "", transferID: transferID, importFingerprint: nil, splits: []
-        )
+    }
+
+    func createTransfer(
+        from source: FinanceAccount,
+        to destination: FinanceAccount,
+        sourceAmountMinor: Int64,
+        destinationAmountMinor: Int64,
+        date: Date,
+        purpose: String
+    ) throws {
         let now = Self.timestamp(Date())
         try transaction {
+            let currentAccounts = try accounts()
+            guard source.id != destination.id,
+                  let source = currentAccounts.first(where: { $0.id == source.id }),
+                  let destination = currentAccounts.first(where: { $0.id == destination.id }),
+                  !source.isClosed, !destination.isClosed else {
+                throw FinanceError.database(
+                    "Quell- und Zielkonto müssen verschieden, vorhanden und geöffnet sein."
+                )
+            }
+            guard sourceAmountMinor != .min,
+                  destinationAmountMinor != .min else {
+                throw FinanceError.invalidAmount("Überlauf")
+            }
+            let sourceAmount = abs(sourceAmountMinor)
+            let destinationAmount = abs(destinationAmountMinor)
+            guard sourceAmount > 0, destinationAmount > 0 else {
+                throw FinanceError.invalidAmount("0")
+            }
+            let isForeignCurrency = source.currency.uppercased()
+                != destination.currency.uppercased()
+            guard isForeignCurrency || sourceAmount == destinationAmount else {
+                throw FinanceError.invalidExchangeRate(
+                    "Bei gleicher Währung müssen beide Kontoseiten denselben Betrag besitzen."
+                )
+            }
+            let sourceRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: destinationAmount,
+                originalCurrency: destination.currency,
+                bookedMinor: sourceAmount,
+                bookedCurrency: source.currency
+            ) : nil
+            let destinationRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: sourceAmount,
+                originalCurrency: source.currency,
+                bookedMinor: destinationAmount,
+                bookedCurrency: destination.currency
+            ) : nil
+            let transferID = UUID()
+            let sourceValue = FinanceTransaction(
+                id: UUID(), accountID: source.id, bookingDate: date, valueDate: date,
+                payee: destination.name, purpose: purpose, categoryID: nil,
+                amountMinor: -sourceAmount, currency: source.currency, status: .booked,
+                memo: "", reference: "", transferID: transferID,
+                importFingerprint: nil, splits: [], origin: .transfer,
+                originalAmountMinor: isForeignCurrency ? -destinationAmount : nil,
+                originalCurrency: isForeignCurrency ? destination.currency : "",
+                exchangeRateScaled: sourceRate?.scaledValue
+            )
+            let destinationValue = FinanceTransaction(
+                id: UUID(), accountID: destination.id, bookingDate: date, valueDate: date,
+                payee: source.name, purpose: purpose, categoryID: nil,
+                amountMinor: destinationAmount, currency: destination.currency,
+                status: .booked, memo: "", reference: "", transferID: transferID,
+                importFingerprint: nil, splits: [], origin: .transfer,
+                originalAmountMinor: isForeignCurrency ? sourceAmount : nil,
+                originalCurrency: isForeignCurrency ? source.currency : "",
+                exchangeRateScaled: destinationRate?.scaledValue
+            )
             try writeTransaction(sourceValue, now: now)
             try writeTransaction(destinationValue, now: now)
-            try audit(entity: "transfer", id: transferID, action: "create", details: purpose)
+            let after = try transactionSnapshots(
+                ids: [sourceValue.id, destinationValue.id]
+            )
+            try recordTransactionUndo(
+                title: "Umbuchung erstellt",
+                before: [],
+                after: after,
+                now: now
+            )
+            let details = isForeignCurrency
+                ? "\(purpose); \(Money(minorUnits: sourceAmount, currency: source.currency).editingString) \(source.currency) → \(Money(minorUnits: destinationAmount, currency: destination.currency).editingString) \(destination.currency)"
+                : purpose
+            try audit(entity: "transfer", id: transferID, action: "create", details: details)
+        }
+    }
+
+    func updateTransfer(
+        id transferID: UUID,
+        sourceAmountMinor: Int64,
+        destinationAmountMinor: Int64,
+        date: Date,
+        purpose: String
+    ) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            let members = try transactions().filter { $0.transferID == transferID }
+            guard members.count == 2,
+                  var sourceValue = members.first(where: { $0.amountMinor < 0 }),
+                  var destinationValue = members.first(where: { $0.amountMinor > 0 }),
+                  sourceValue.id != destinationValue.id
+            else {
+                throw FinanceError.database(
+                    "Die Umbuchung ist unvollständig oder besitzt keine eindeutige Soll-/Habenseite."
+                )
+            }
+            guard sourceValue.status != .reconciled,
+                  destinationValue.status != .reconciled else {
+                throw FinanceError.protectedTransaction
+            }
+            let accountsByID = Dictionary(
+                uniqueKeysWithValues: try accounts().map { ($0.id, $0) }
+            )
+            guard let source = accountsByID[sourceValue.accountID],
+                  let destination = accountsByID[destinationValue.accountID],
+                  !source.isClosed, !destination.isClosed,
+                  source.id != destination.id else {
+                throw FinanceError.database(
+                    "Beide Konten der Umbuchung müssen vorhanden, verschieden und geöffnet sein."
+                )
+            }
+            guard sourceAmountMinor != .min,
+                  destinationAmountMinor != .min else {
+                throw FinanceError.invalidAmount("Überlauf")
+            }
+            let sourceAmount = abs(sourceAmountMinor)
+            let destinationAmount = abs(destinationAmountMinor)
+            guard sourceAmount > 0, destinationAmount > 0 else {
+                throw FinanceError.invalidAmount("0")
+            }
+            let isForeignCurrency = source.currency.uppercased()
+                != destination.currency.uppercased()
+            guard isForeignCurrency || sourceAmount == destinationAmount else {
+                throw FinanceError.invalidExchangeRate(
+                    "Bei gleicher Währung müssen beide Kontoseiten denselben Betrag besitzen."
+                )
+            }
+            let sourceRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: destinationAmount,
+                originalCurrency: destination.currency,
+                bookedMinor: sourceAmount,
+                bookedCurrency: source.currency
+            ) : nil
+            let destinationRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: sourceAmount,
+                originalCurrency: source.currency,
+                bookedMinor: destinationAmount,
+                bookedCurrency: destination.currency
+            ) : nil
+            let memberIDs = Set(members.map(\.id))
+            let before = try transactionSnapshots(ids: memberIDs)
+
+            sourceValue.bookingDate = date
+            sourceValue.valueDate = date
+            sourceValue.payee = destination.name
+            sourceValue.purpose = purpose
+            sourceValue.amountMinor = -sourceAmount
+            sourceValue.currency = source.currency
+            sourceValue.originalAmountMinor = isForeignCurrency
+                ? -destinationAmount : nil
+            sourceValue.originalCurrency = isForeignCurrency
+                ? destination.currency : ""
+            sourceValue.exchangeRateScaled = sourceRate?.scaledValue
+            sourceValue.duplicateFingerprint = ""
+
+            destinationValue.bookingDate = date
+            destinationValue.valueDate = date
+            destinationValue.payee = source.name
+            destinationValue.purpose = purpose
+            destinationValue.amountMinor = destinationAmount
+            destinationValue.currency = destination.currency
+            destinationValue.originalAmountMinor = isForeignCurrency
+                ? sourceAmount : nil
+            destinationValue.originalCurrency = isForeignCurrency
+                ? source.currency : ""
+            destinationValue.exchangeRateScaled = destinationRate?.scaledValue
+            destinationValue.duplicateFingerprint = ""
+
+            try writeTransaction(sourceValue, now: now)
+            try writeTransaction(destinationValue, now: now)
+            let after = try transactionSnapshots(ids: memberIDs)
+            try recordTransactionUndo(
+                title: "Umbuchung bearbeitet",
+                before: before,
+                after: after,
+                now: now
+            )
+            let details = isForeignCurrency
+                ? "\(purpose); \(Money(minorUnits: sourceAmount, currency: source.currency).editingString) \(source.currency) → \(Money(minorUnits: destinationAmount, currency: destination.currency).editingString) \(destination.currency)"
+                : purpose
+            try audit(
+                entity: "transfer", id: transferID,
+                action: "update", details: details
+            )
         }
     }
 
@@ -2427,8 +9463,11 @@ final class SQLiteFinanceStore {
             SELECT COALESCE(c.name,'Ohne Kategorie'),
                    COALESCE(SUM(CASE WHEN t.amount_minor > 0 THEN t.amount_minor ELSE 0 END),0),
                    COALESCE(SUM(CASE WHEN t.amount_minor < 0 THEN -t.amount_minor ELSE 0 END),0)
-            FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+            FROM transactions t
+            JOIN accounts a ON a.id=t.account_id
+            LEFT JOIN categories c ON c.id=t.category_id
             WHERE t.status != 'cancelled' AND t.transfer_id IS NULL
+              AND a.include_reports=1
             GROUP BY COALESCE(c.name,'Ohne Kategorie') ORDER BY 1 COLLATE NOCASE
             """
         ) {
@@ -2445,61 +9484,498 @@ final class SQLiteFinanceStore {
         return rows
     }
 
-    func reconcile(account: FinanceAccount, endingBalanceMinor: Int64, date: Date) throws {
-        let calculated = try scalarInt64(
+    func reportTemplates() throws -> [SavedReportTemplate] {
+        var templates: [SavedReportTemplate] = []
+        let decoder = JSONDecoder()
+        try query(
             """
-            SELECT ? + COALESCE(SUM(amount_minor),0)
-            FROM transactions
-            WHERE account_id=? AND booking_date<=? AND status!='cancelled'
-            """,
-            [
-                .integer(account.openingBalanceMinor),
-                .text(account.id.uuidString),
-                .text(Self.day(date))
-            ]
-        )
-        guard calculated == endingBalanceMinor else {
-            throw FinanceError.reconciliationDifference(endingBalanceMinor - calculated)
+            SELECT id,name,definition_version,query_json
+            FROM report_templates
+            ORDER BY name COLLATE NOCASE
+            """
+        ) { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0)),
+                  let data = Self.text(statement, 3).data(using: .utf8)
+            else {
+                throw FinanceError.database("Eine Berichtsvorlage ist beschädigt.")
+            }
+            do {
+                templates.append(
+                    SavedReportTemplate(
+                        id: id,
+                        name: Self.text(statement, 1),
+                        definitionVersion: Int(sqlite3_column_int64(statement, 2)),
+                        query: try decoder.decode(TransactionReportQuery.self, from: data)
+                    )
+                )
+            } catch {
+                throw FinanceError.database(
+                    "Die Berichtsvorlage „\(Self.text(statement, 1))“ kann nicht gelesen werden."
+                )
+            }
         }
-        let reconciliationID = UUID()
+        return templates
+    }
+
+    func saveReportTemplate(_ template: SavedReportTemplate) throws {
+        let name = template.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw FinanceError.database("Die Berichtsvorlage benötigt einen Namen.")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let json = String(data: try encoder.encode(template.query), encoding: .utf8) else {
+            throw FinanceError.database("Die Berichtsvorlage konnte nicht codiert werden.")
+        }
+        let info = try financeFileInfo()
         let now = Self.timestamp(Date())
         try transaction {
             try run(
                 """
-                INSERT INTO reconciliations(id,account_id,statement_date,ending_balance_minor,completed_at)
-                VALUES(?,?,?,?,?)
+                INSERT INTO report_templates(
+                    id,finance_file_id,name,definition_version,query_json,
+                    created_at,updated_at
+                )
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    definition_version=excluded.definition_version,
+                    query_json=excluded.query_json,
+                    updated_at=excluded.updated_at,
+                    version=report_templates.version+1
                 """,
                 [
-                    .text(reconciliationID.uuidString), .text(account.id.uuidString),
-                    .text(Self.day(date)), .integer(endingBalanceMinor), .text(now)
+                    .text(template.id.uuidString),
+                    .text(info.id.uuidString),
+                    .text(name),
+                    .integer(Int64(template.definitionVersion)),
+                    .text(json),
+                    .text(now),
+                    .text(now)
                 ]
             )
-            try run(
-                """
-                UPDATE transactions SET status='reconciled',updated_at=?,version=version+1
-                WHERE account_id=? AND booking_date<=? AND status IN ('booked','cleared')
-                """,
-                [.text(now), .text(account.id.uuidString), .text(Self.day(date))]
-            )
             try audit(
-                entity: "reconciliation", id: reconciliationID, action: "complete",
-                details: "\(account.id.uuidString):\(endingBalanceMinor)"
+                entity: "report-template",
+                id: template.id,
+                action: "save",
+                details: name
             )
         }
     }
 
-    func commitImport(_ preview: ImportPreview) throws {
+    func deleteReportTemplate(id: UUID) throws {
+        try transaction {
+            try run("DELETE FROM report_templates WHERE id=?", [.text(id.uuidString)])
+            try audit(
+                entity: "report-template",
+                id: id,
+                action: "delete",
+                details: ""
+            )
+        }
+    }
+
+    func reconciliationSnapshot(
+        account: FinanceAccount,
+        statementDate: Date
+    ) throws -> ReconciliationSnapshot {
+        var latestID: UUID?
+        var latestDay: String?
+        var startingBalance = account.openingBalanceMinor
+        try query(
+            """
+            SELECT id,statement_date,ending_balance_minor
+            FROM reconciliations
+            WHERE account_id=? AND reverted_at IS NULL
+            ORDER BY statement_date DESC,sequence DESC,completed_at DESC,id DESC
+            LIMIT 1
+            """,
+            [.text(account.id.uuidString)]
+        ) { statement in
+            latestID = UUID(uuidString: Self.text(statement, 0))
+            latestDay = Self.text(statement, 1)
+            startingBalance = sqlite3_column_int64(statement, 2)
+        }
+        if let latestDay, Self.day(statementDate) < latestDay {
+            throw FinanceError.database(
+                "Das Auszugsdatum liegt vor dem jüngsten aktiven Kontoabgleich."
+            )
+        }
+        let day = Self.day(statementDate)
+        let candidates = try transactions(accountID: account.id).filter {
+            ($0.status == .booked || $0.status == .cleared)
+                && Self.day($0.bookingDate) <= day
+        }.sorted {
+            if $0.bookingDate != $1.bookingDate {
+                return $0.bookingDate < $1.bookingDate
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        return ReconciliationSnapshot(
+            accountID: account.id,
+            statementDate: statementDate,
+            startingBalanceMinor: startingBalance,
+            candidates: candidates,
+            latestActiveReconciliationID: latestID
+        )
+    }
+
+    @discardableResult
+    func reconcile(
+        account: FinanceAccount,
+        endingBalanceMinor: Int64,
+        date: Date,
+        selectedTransactionIDs: Set<UUID>,
+        createAdjustment: Bool
+    ) throws -> ReconciliationRecord {
+        let snapshot = try reconciliationSnapshot(
+            account: account,
+            statementDate: date
+        )
+        let candidateIDs = Set(snapshot.candidates.map(\.id))
+        guard selectedTransactionIDs.isSubset(of: candidateIDs) else {
+            throw FinanceError.database(
+                "Die Auswahl enthält keine abgleichbare Buchung dieses Kontos."
+            )
+        }
+        let selectedSum = snapshot.selectedSumMinor(selectedTransactionIDs)
+        let difference = snapshot.differenceMinor(
+            endingBalanceMinor: endingBalanceMinor,
+            selectedIDs: selectedTransactionIDs
+        )
+        guard difference == 0 || createAdjustment else {
+            throw FinanceError.reconciliationDifference(difference)
+        }
+
+        let reconciliationID = UUID()
+        let adjustmentID = difference == 0 ? nil : UUID()
+        let completedAt = Date()
+        let now = Self.timestamp(completedAt)
+        try transaction {
+            if let adjustmentID {
+                let adjustment = FinanceTransaction(
+                    id: adjustmentID,
+                    accountID: account.id,
+                    bookingDate: date,
+                    valueDate: date,
+                    payee: "Kontoabgleich",
+                    purpose: "Ausgleichsbuchung zum Kontoabgleich",
+                    categoryID: nil,
+                    amountMinor: difference,
+                    currency: account.currency,
+                    status: .booked,
+                    memo: "Explizit bestätigte Differenzbuchung",
+                    reference: "ABGLEICH",
+                    transferID: nil,
+                    importFingerprint: nil,
+                    splits: []
+                )
+                try writeTransaction(adjustment, now: now)
+            }
+            try run(
+                """
+                INSERT INTO reconciliations(
+                    id,account_id,statement_date,ending_balance_minor,
+                    completed_at,starting_balance_minor,selected_sum_minor,
+                    adjustment_transaction_id,workflow_version,sequence
+                )
+                SELECT ?,?,?,?,?,?,?,?,1,COALESCE(MAX(sequence),0)+1
+                FROM reconciliations WHERE account_id=?
+                """,
+                [
+                    .text(reconciliationID.uuidString),
+                    .text(account.id.uuidString),
+                    .text(Self.day(date)),
+                    .integer(endingBalanceMinor),
+                    .text(now),
+                    .integer(snapshot.startingBalanceMinor),
+                    .integer(selectedSum),
+                    adjustmentID.map { .text($0.uuidString) } ?? .null,
+                    .text(account.id.uuidString)
+                ]
+            )
+            let selected = snapshot.candidates.filter {
+                selectedTransactionIDs.contains($0.id)
+            }
+            for value in selected {
+                try insertReconciliationItem(
+                    reconciliationID: reconciliationID,
+                    transaction: value,
+                    isAdjustment: false
+                )
+            }
+            if let adjustmentID {
+                let adjustment = FinanceTransaction(
+                    id: adjustmentID,
+                    accountID: account.id,
+                    bookingDate: date,
+                    valueDate: date,
+                    payee: "Kontoabgleich",
+                    purpose: "Ausgleichsbuchung zum Kontoabgleich",
+                    categoryID: nil,
+                    amountMinor: difference,
+                    currency: account.currency,
+                    status: .booked,
+                    memo: "Explizit bestätigte Differenzbuchung",
+                    reference: "ABGLEICH",
+                    transferID: nil,
+                    importFingerprint: nil,
+                    splits: []
+                )
+                try insertReconciliationItem(
+                    reconciliationID: reconciliationID,
+                    transaction: adjustment,
+                    isAdjustment: true
+                )
+            }
+            let reconciledIDs = selectedTransactionIDs.union(
+                adjustmentID.map { Set([$0]) } ?? []
+            )
+            for transactionID in reconciledIDs {
+                try run(
+                    """
+                    UPDATE transactions
+                    SET status='reconciled',updated_at=?,version=version+1
+                    WHERE id=? AND account_id=? AND status IN ('booked','cleared')
+                    """,
+                    [
+                        .text(now),
+                        .text(transactionID.uuidString),
+                        .text(account.id.uuidString)
+                    ]
+                )
+                guard sqlite3_changes(database) == 1 else {
+                    throw FinanceError.protectedTransaction
+                }
+            }
+            try audit(
+                entity: "reconciliation",
+                id: reconciliationID,
+                action: "complete",
+                details: "account=\(account.id.uuidString);start=\(snapshot.startingBalanceMinor);selected=\(selectedSum);end=\(endingBalanceMinor);adjustment=\(difference)"
+            )
+        }
+        return ReconciliationRecord(
+            id: reconciliationID,
+            accountID: account.id,
+            statementDate: date,
+            startingBalanceMinor: snapshot.startingBalanceMinor,
+            endingBalanceMinor: endingBalanceMinor,
+            selectedSumMinor: selectedSum,
+            adjustmentTransactionID: adjustmentID,
+            completedAt: completedAt,
+            revertedAt: nil,
+            canRevert: true
+        )
+    }
+
+    @discardableResult
+    func reconcile(
+        account: FinanceAccount,
+        endingBalanceMinor: Int64,
+        date: Date
+    ) throws -> ReconciliationRecord {
+        let snapshot = try reconciliationSnapshot(
+            account: account,
+            statementDate: date
+        )
+        return try reconcile(
+            account: account,
+            endingBalanceMinor: endingBalanceMinor,
+            date: date,
+            selectedTransactionIDs: Set(snapshot.candidates.map(\.id)),
+            createAdjustment: false
+        )
+    }
+
+    func reconciliations(accountID: UUID) throws -> [ReconciliationRecord] {
+        var values: [ReconciliationRecord] = []
+        try query(
+            """
+            SELECT id,statement_date,starting_balance_minor,
+                   ending_balance_minor,selected_sum_minor,
+                   adjustment_transaction_id,completed_at,reverted_at,
+                   workflow_version
+            FROM reconciliations
+            WHERE account_id=?
+            ORDER BY statement_date DESC,sequence DESC,completed_at DESC,id DESC
+            """,
+            [.text(accountID.uuidString)]
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let statementDate = Self.date(Self.text(statement, 1)),
+                let completedAt = Self.timestampDate(Self.text(statement, 6))
+            else { return }
+            values.append(
+                ReconciliationRecord(
+                    id: id,
+                    accountID: accountID,
+                    statementDate: statementDate,
+                    startingBalanceMinor: sqlite3_column_int64(statement, 2),
+                    endingBalanceMinor: sqlite3_column_int64(statement, 3),
+                    selectedSumMinor: sqlite3_column_int64(statement, 4),
+                    adjustmentTransactionID: Self.optionalText(statement, 5)
+                        .flatMap(UUID.init(uuidString:)),
+                    completedAt: completedAt,
+                    revertedAt: Self.optionalText(statement, 7)
+                        .flatMap(Self.timestampDate),
+                    canRevert: sqlite3_column_int(statement, 8) == 1
+                        && sqlite3_column_type(statement, 7) == SQLITE_NULL
+                )
+            )
+        }
+        if let latestActiveID = values.first(where: { $0.revertedAt == nil })?.id {
+            values = values.map { value in
+                ReconciliationRecord(
+                    id: value.id,
+                    accountID: value.accountID,
+                    statementDate: value.statementDate,
+                    startingBalanceMinor: value.startingBalanceMinor,
+                    endingBalanceMinor: value.endingBalanceMinor,
+                    selectedSumMinor: value.selectedSumMinor,
+                    adjustmentTransactionID: value.adjustmentTransactionID,
+                    completedAt: value.completedAt,
+                    revertedAt: value.revertedAt,
+                    canRevert: value.canRevert && value.id == latestActiveID
+                )
+            }
+        }
+        return values
+    }
+
+    func revertReconciliation(id: UUID, accountID: UUID) throws {
+        guard let latest = try reconciliations(accountID: accountID)
+            .first(where: { $0.revertedAt == nil }),
+              latest.id == id,
+              latest.canRevert
+        else {
+            throw FinanceError.database(
+                "Nur der jüngste mit dieser Version erstellte Abgleich kann zurückgenommen werden."
+            )
+        }
+        var items: [(UUID, TransactionStatus, Bool)] = []
+        try query(
+            """
+            SELECT transaction_id,previous_status,is_adjustment
+            FROM reconciliation_items WHERE reconciliation_id=?
+            ORDER BY transaction_id
+            """,
+            [.text(id.uuidString)]
+        ) { statement in
+            guard
+                let transactionID = UUID(uuidString: Self.text(statement, 0)),
+                let status = TransactionStatus(rawValue: Self.text(statement, 1))
+            else { return }
+            items.append(
+                (
+                    transactionID,
+                    status,
+                    sqlite3_column_int(statement, 2) != 0
+                )
+            )
+        }
+        let now = Self.timestamp(Date())
+        try transaction {
+            for item in items {
+                try run(
+                    """
+                    UPDATE transactions
+                    SET status=?,updated_at=?,version=version+1
+                    WHERE id=? AND account_id=? AND status='reconciled'
+                    """,
+                    [
+                        .text(
+                            item.2
+                                ? TransactionStatus.cancelled.rawValue
+                                : item.1.rawValue
+                        ),
+                        .text(now),
+                        .text(item.0.uuidString),
+                        .text(accountID.uuidString)
+                    ]
+                )
+                guard sqlite3_changes(database) == 1 else {
+                    throw FinanceError.protectedTransaction
+                }
+            }
+            try run(
+                "UPDATE reconciliations SET reverted_at=? WHERE id=? AND reverted_at IS NULL",
+                [.text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Der Kontoabgleich wurde bereits zurückgenommen."
+                )
+            }
+            try audit(
+                entity: "reconciliation",
+                id: id,
+                action: "revert",
+                details: "account=\(accountID.uuidString);items=\(items.count)"
+            )
+        }
+    }
+
+    private func insertReconciliationItem(
+        reconciliationID: UUID,
+        transaction value: FinanceTransaction,
+        isAdjustment: Bool
+    ) throws {
+        try run(
+            """
+            INSERT INTO reconciliation_items(
+                reconciliation_id,transaction_id,previous_status,
+                amount_minor,is_adjustment
+            )
+            VALUES(?,?,?,?,?)
+            """,
+            [
+                .text(reconciliationID.uuidString),
+                .text(value.id.uuidString),
+                .text(value.status.rawValue),
+                .integer(value.amountMinor),
+                .integer(isAdjustment ? 1 : 0)
+            ]
+        )
+    }
+
+    func commitImport(
+        _ preview: ImportPreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) throws -> ImportCommitResult {
         if try scalarInt(
             "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
             [.text(preview.fingerprint)]
         ) > 0 {
             throw FinanceError.duplicateImport
         }
+        let plan = try validatedImportPlan(
+            preview,
+            resolutions: resolutions
+        )
         let now = Self.timestamp(Date())
+        var importedCount = 0
+        var matchedCount = 0
+        var skippedCount = 0
         try transaction {
-            for value in preview.rows {
-                try value.validate()
-                try writeTransaction(value, now: now)
+            for item in plan {
+                switch item.resolution {
+                case .importNew:
+                    try item.row.validate()
+                    try writeTransaction(item.row, now: now)
+                    importedCount += 1
+                case .skip:
+                    skippedCount += 1
+                case .match(let existingID):
+                    try mergeImportedTransaction(
+                        item.row,
+                        into: existingID,
+                        existing: item.existing,
+                        now: now
+                    )
+                    matchedCount += 1
+                }
             }
             try run(
                 "INSERT INTO import_packages(fingerprint,imported_at,row_count) VALUES(?,?,?)",
@@ -2509,32 +9985,1845 @@ final class SQLiteFinanceStore {
                 entity: "import",
                 id: UUID(),
                 action: "commit",
-                details: "\(preview.fingerprint):\(preview.rows.count)"
+                details: "\(preview.fingerprint):neu=\(importedCount):abgeglichen=\(matchedCount):übersprungen=\(skippedCount)"
+            )
+        }
+        return ImportCommitResult(
+            importedCount: importedCount,
+            matchedCount: matchedCount,
+            skippedCount: skippedCount
+        )
+    }
+
+    func commitQIFPackage(
+        _ package: QIFPackagePreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) throws -> ImportCommitResult {
+        let preview = package.importPreview
+        if try scalarInt(
+            "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
+            [.text(preview.fingerprint)]
+        ) > 0 {
+            throw FinanceError.duplicateImport
+        }
+        let info = try financeFileInfo()
+        let groupIDs = Dictionary(
+            uniqueKeysWithValues: try accountGroups().map { ($0.name, $0.id) }
+        )
+        let plan = try validatedImportPlan(
+            preview,
+            resolutions: resolutions
+        )
+        let now = Self.timestamp(Date())
+        var importedCount = 0
+        var matchedCount = 0
+        var skippedCount = 0
+        try transaction {
+            for account in package.accountsToCreate {
+                try run(
+                    """
+                    INSERT INTO accounts(
+                        id,finance_file_id,name,institution,type,currency,
+                        opening_balance_minor,is_hidden,is_closed,sort_order,
+                        created_at,updated_at,group_id
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(account.id.uuidString), .text(info.id.uuidString),
+                        .text(account.name), .text(account.institution), .text(account.type.rawValue),
+                        .text(account.currency), .integer(account.openingBalanceMinor),
+                        .integer(account.isHidden ? 1 : 0), .integer(account.isClosed ? 1 : 0),
+                        .integer(Int64(account.sortOrder)), .text(now), .text(now),
+                        groupIDs[account.type.defaultGroupName]
+                            .map { .text($0.uuidString) } ?? .null
+                    ]
+                )
+            }
+            for category in package.categoriesToCreate {
+                try run(
+                    """
+                    INSERT INTO categories(id,finance_file_id,parent_id,name,kind,color,is_active,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(category.id.uuidString), .text(info.id.uuidString),
+                        category.parentID.map { .text($0.uuidString) } ?? .null,
+                        .text(category.name), .text(category.kind.rawValue), .text(category.color),
+                        .integer(category.isActive ? 1 : 0), .text(now), .text(now)
+                    ]
+                )
+            }
+            for item in plan {
+                switch item.resolution {
+                case .importNew:
+                    try item.row.validate()
+                    try writeTransaction(item.row, now: now)
+                    importedCount += 1
+                case .skip:
+                    skippedCount += 1
+                case .match(let existingID):
+                    try mergeImportedTransaction(
+                        item.row,
+                        into: existingID,
+                        existing: item.existing,
+                        now: now
+                    )
+                    matchedCount += 1
+                }
+            }
+            try run(
+                "INSERT INTO import_packages(fingerprint,imported_at,row_count) VALUES(?,?,?)",
+                [.text(preview.fingerprint), .text(now), .integer(Int64(preview.rows.count))]
+            )
+            try audit(
+                entity: "import", id: UUID(), action: "commit-qif-package",
+                details: "\(preview.fingerprint):konten=\(package.accountsToCreate.count):kategorien=\(package.categoriesToCreate.count):neu=\(importedCount):abgeglichen=\(matchedCount):übersprungen=\(skippedCount)"
+            )
+        }
+        return ImportCommitResult(
+            importedCount: importedCount,
+            matchedCount: matchedCount,
+            skippedCount: skippedCount
+        )
+    }
+
+    func commitBankingDownload(
+        _ download: BankingDownloadPreview,
+        resolutions: [UUID: ImportResolution] = [:]
+    ) throws -> ImportCommitResult {
+        guard download.connection.providerKind == .simulator,
+              download.package.adapterIdentifier
+                == download.connection.adapterIdentifier,
+              download.package.diagnostics.allSatisfy(\.isSuccess)
+        else {
+            throw FinanceError.database(
+                "Das Abrufpaket stammt nicht vom erwarteten Adapter oder enthält fehlgeschlagene Vorgänge."
+            )
+        }
+        let mappings = try bankingAccountMappings(
+            connectionID: download.connection.id
+        ).filter {
+            $0.isEnabled
+                && download.selectedExternalAccountIDs.contains(
+                    $0.externalAccountID
+                )
+        }
+        let mappedLocalIDs = Set(mappings.compactMap(\.localAccountID))
+        guard mappings.count == download.selectedExternalAccountIDs.count,
+              mappedLocalIDs.count == mappings.count,
+              Set(download.importPreview.rows.map(\.accountID))
+                .isSubset(of: mappedLocalIDs)
+        else {
+            throw FinanceError.database(
+                "Jedes ausgewählte Bankkonto muss genau einem lokalen Konto zugeordnet sein."
+            )
+        }
+        let localByID = Dictionary(
+            uniqueKeysWithValues: try accounts().map { ($0.id, $0) }
+        )
+        for mapping in mappings {
+            guard let localID = mapping.localAccountID,
+                  localByID[localID]?.currency == mapping.currency
+            else {
+                throw FinanceError.database(
+                    "Eine Kontozuordnung verwendet eine abweichende Währung."
+                )
+            }
+        }
+        let plan = try validatedImportPlan(
+            download.importPreview,
+            resolutions: resolutions
+        )
+        let packageExists = try scalarInt(
+            "SELECT COUNT(*) FROM import_packages WHERE fingerprint=?",
+            [.text(download.importPreview.fingerprint)]
+        ) > 0
+        if packageExists,
+           plan.contains(where: { $0.resolution == .importNew }) {
+            throw FinanceError.duplicateImport
+        }
+
+        let runID = UUID()
+        let nowDate = Date()
+        let now = Self.timestamp(nowDate)
+        var importedCount = 0
+        var matchedCount = 0
+        var skippedCount = 0
+        try transaction {
+            for item in plan {
+                switch item.resolution {
+                case .importNew:
+                    try item.row.validate()
+                    try writeTransaction(item.row, now: now)
+                    importedCount += 1
+                case .skip:
+                    skippedCount += 1
+                case .match(let existingID):
+                    try mergeImportedTransaction(
+                        item.row,
+                        into: existingID,
+                        existing: item.existing,
+                        now: now
+                    )
+                    matchedCount += 1
+                }
+            }
+            if !packageExists {
+                try run(
+                    """
+                    INSERT INTO import_packages(
+                        fingerprint,imported_at,row_count
+                    ) VALUES(?,?,?)
+                    """,
+                    [
+                        .text(download.importPreview.fingerprint),
+                        .text(now),
+                        .integer(Int64(download.importPreview.rows.count))
+                    ]
+                )
+            }
+            for (accountID, balance) in download.balancesByLocalAccountID {
+                try run(
+                    """
+                    UPDATE accounts SET last_sync_at=?,
+                        last_bank_balance_minor=?,sync_status='ready',
+                        updated_at=?,version=version+1
+                    WHERE id=? AND currency=?
+                    """,
+                    [
+                        .text(now),
+                        .integer(balance.bookedMinor),
+                        .text(now),
+                        .text(accountID.uuidString),
+                        .text(balance.currency)
+                    ]
+                )
+                guard sqlite3_changes(database) == 1 else {
+                    throw FinanceError.database(
+                        "Ein Banksaldo konnte nicht dem lokalen Konto zugeordnet werden."
+                    )
+                }
+            }
+            try run(
+                "DELETE FROM banking_remote_orders WHERE connection_id=?",
+                [.text(download.connection.id.uuidString)]
+            )
+            for order in download.package.standingOrders where
+                download.selectedExternalAccountIDs.contains(
+                    order.externalAccountID
+                ) {
+                try run(
+                    """
+                    INSERT INTO banking_remote_orders(
+                        connection_id,external_order_id,
+                        external_account_id,recipient_name,recipient_iban,
+                        amount_minor,currency,purpose,next_execution_date,
+                        frequency,is_scheduled_payment,fetched_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        .text(download.connection.id.uuidString),
+                        .text(order.id),
+                        .text(order.externalAccountID),
+                        .text(order.recipientName),
+                        .text(order.recipientIBAN),
+                        .integer(order.amountMinor),
+                        .text(order.currency),
+                        .text(order.purpose),
+                        .text(Self.day(order.nextExecutionDate)),
+                        .text(order.frequency),
+                        .integer(order.isScheduledPayment ? 1 : 0),
+                        .text(now)
+                    ]
+                )
+            }
+            let operations = Self.bankingOperationsText(
+                download.requestedOperations
+            )
+            try run(
+                """
+                INSERT INTO banking_sync_runs(
+                    id,connection_id,started_at,completed_at,status,
+                    requested_operations,imported_count,matched_count,
+                    skipped_count,user_message,technical_code,
+                    raw_payload_hash
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(runID.uuidString),
+                    .text(download.connection.id.uuidString),
+                    .text(Self.timestamp(download.package.fetchedAt)),
+                    .text(now),
+                    .text(BankingConnectionStatus.ready.rawValue),
+                    .text(operations),
+                    .integer(Int64(importedCount)),
+                    .integer(Int64(matchedCount)),
+                    .integer(Int64(skippedCount)),
+                    .text("Abrufpaket atomar übernommen"),
+                    .text("BANKING-OK"),
+                    .text(download.package.rawPayloadHash)
+                ]
+            )
+            try run(
+                """
+                UPDATE banking_connections SET status='ready',
+                    last_sync_at=?,last_user_message=?,updated_at=?,
+                    version=version+1 WHERE id=?
+                """,
+                [
+                    .text(now),
+                    .text("Abrufpaket atomar übernommen"),
+                    .text(now),
+                    .text(download.connection.id.uuidString)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Die Banking-Verbindung wurde zwischenzeitlich entfernt."
+                )
+            }
+            try audit(
+                entity: "banking_sync",
+                id: runID,
+                action: "commit",
+                details: "connection=\(download.connection.id.uuidString);new=\(importedCount);matched=\(matchedCount);skipped=\(skippedCount);hash=\(download.package.rawPayloadHash)"
+            )
+        }
+        return ImportCommitResult(
+            importedCount: importedCount,
+            matchedCount: matchedCount,
+            skippedCount: skippedCount
+        )
+    }
+
+    func recordBankingFailure(
+        connectionID: UUID,
+        operations: Set<BankingOperation>,
+        userMessage: String,
+        technicalCode: String
+    ) throws {
+        let id = UUID()
+        let now = Self.timestamp(Date())
+        let safeUserMessage = String(userMessage.prefix(500))
+        let safeTechnicalCode = String(technicalCode.prefix(100))
+        try transaction {
+            try run(
+                """
+                INSERT INTO banking_sync_runs(
+                    id,connection_id,started_at,completed_at,status,
+                    requested_operations,user_message,technical_code
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(id.uuidString),
+                    .text(connectionID.uuidString),
+                    .text(now),
+                    .text(now),
+                    .text(BankingConnectionStatus.failed.rawValue),
+                    .text(Self.bankingOperationsText(operations)),
+                    .text(safeUserMessage),
+                    .text(safeTechnicalCode)
+                ]
+            )
+            try run(
+                """
+                UPDATE banking_connections SET status='failed',
+                    last_user_message=?,updated_at=?,version=version+1
+                WHERE id=?
+                """,
+                [
+                    .text(safeUserMessage),
+                    .text(now),
+                    .text(connectionID.uuidString)
+                ]
+            )
+            try audit(
+                entity: "banking_sync",
+                id: id,
+                action: "failure",
+                details: safeTechnicalCode
             )
         }
     }
 
+    private struct ValidatedImportItem {
+        let row: FinanceTransaction
+        let resolution: ImportResolution
+        let existing: FinanceTransaction?
+    }
+
+    private func validatedImportPlan(
+        _ preview: ImportPreview,
+        resolutions: [UUID: ImportResolution]
+    ) throws -> [ValidatedImportItem] {
+        let existing = try transactions()
+        let existingByID = Dictionary(
+            uniqueKeysWithValues: existing.map { ($0.id, $0) }
+        )
+        let currentAssessments = ImportMatcher.assess(
+            rows: preview.rows,
+            against: existing,
+            dateWindowDays: preview.matchDateWindowDays
+        )
+        return try preview.rows.map { row in
+            let resolution = resolutions[row.id]
+                ?? preview.matches[row.id]?.suggestedResolution
+                ?? .importNew
+            switch resolution {
+            case .skip:
+                return ValidatedImportItem(
+                    row: row,
+                    resolution: .skip,
+                    existing: nil
+                )
+            case .importNew:
+                if currentAssessments[row.id]?.candidates.contains(where: {
+                    $0.tier == .exactExternalID
+                }) == true {
+                    throw FinanceError.invalidImportResolution(
+                        "Eine bereits vorhandene externe Transaktions-ID kann nicht erneut importiert werden."
+                    )
+                }
+                return ValidatedImportItem(
+                    row: row,
+                    resolution: .importNew,
+                    existing: nil
+                )
+            case .match(let existingID):
+                guard
+                    let candidate = currentAssessments[row.id]?.candidates.first(
+                        where: { $0.transactionID == existingID }
+                    ),
+                    candidate.isFinanciallyCompatible,
+                    let existingValue = existingByID[existingID]
+                else {
+                    throw FinanceError.invalidImportResolution(
+                        "Der gewählte Treffer ist verschwunden oder Betrag und Währung stimmen nicht mehr überein."
+                    )
+                }
+                return ValidatedImportItem(
+                    row: row,
+                    resolution: .match(existingID),
+                    existing: existingValue
+                )
+            }
+        }
+    }
+
+    private func mergeImportedTransaction(
+        _ imported: FinanceTransaction,
+        into existingID: UUID,
+        existing: FinanceTransaction?,
+        now: String
+    ) throws {
+        guard var merged = existing, merged.id == existingID else {
+            throw FinanceError.invalidImportResolution(
+                "Die vorhandene Buchung wurde zwischen Vorschau und Import gelöscht."
+            )
+        }
+        guard merged.amountMinor == imported.amountMinor,
+              merged.currency.caseInsensitiveCompare(imported.currency)
+                == .orderedSame
+        else {
+            throw FinanceError.invalidImportResolution(
+                "Betrag oder Währung des Treffers wurden zwischenzeitlich geändert."
+            )
+        }
+        if merged.status != .reconciled {
+            merged.bookingDate = imported.bookingDate
+            merged.valueDate = imported.valueDate ?? merged.valueDate
+            if !imported.payee.isEmpty { merged.payee = imported.payee }
+            if !imported.purpose.isEmpty { merged.purpose = imported.purpose }
+            if !imported.reference.isEmpty {
+                merged.reference = imported.reference
+            }
+            if merged.status == .expected || merged.status == .pending {
+                merged.status = .booked
+            }
+        }
+        merged.importFingerprint = imported.importFingerprint
+        merged.origin = imported.externalTransactionID.isEmpty
+            ? .fileImport : .bankDownload
+        merged.externalProvider = imported.externalProvider
+        merged.externalTransactionID = imported.externalTransactionID
+        merged.counterpartyIBAN = imported.counterpartyIBAN
+        merged.endToEndID = imported.endToEndID
+        merged.mandateReference = imported.mandateReference
+        merged.duplicateFingerprint = ImportMatcher.strongFingerprint(imported)
+        merged.bankBalanceAfterMinor = imported.bankBalanceAfterMinor
+        merged.counterpartyBIC = imported.counterpartyBIC
+        merged.creditorID = imported.creditorID
+        merged.bookingText = imported.bookingText
+        try writeTransaction(merged, now: now)
+        try audit(
+            entity: "transaction",
+            id: merged.id,
+            action: "match-import",
+            details: imported.importFingerprint ?? "ohne Paketfingerabdruck"
+        )
+    }
+
     func backup(to target: URL) throws {
+        let sourcePath = fileURL.standardizedFileURL.path
+        let targetPath = target.standardizedFileURL.path
+        guard sourcePath != targetPath else {
+            throw FinanceError.database("Die Finanzdatei kann nicht als eigene Sicherung überschrieben werden.")
+        }
+        guard !FileManager.default.fileExists(atPath: targetPath) else {
+            throw FinanceError.database("Am Sicherungsziel existiert bereits eine Datei.")
+        }
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         var targetDatabase: OpaquePointer?
         guard sqlite3_open(target.path, &targetDatabase) == SQLITE_OK else {
             throw FinanceError.database("Sicherungsdatei konnte nicht angelegt werden.")
         }
-        defer { sqlite3_close(targetDatabase) }
+        defer {
+            if let targetDatabase { sqlite3_close(targetDatabase) }
+        }
         guard let backup = sqlite3_backup_init(targetDatabase, "main", database, "main") else {
             throw FinanceError.database("Sicherung konnte nicht gestartet werden.")
         }
-        defer { sqlite3_backup_finish(backup) }
-        guard sqlite3_backup_step(backup, -1) == SQLITE_DONE else {
+        let stepResult = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        guard stepResult == SQLITE_DONE, finishResult == SQLITE_OK else {
             throw FinanceError.database("Sicherung konnte nicht abgeschlossen werden.")
+        }
+        guard sqlite3_exec(
+            targetDatabase,
+            "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database("Die Sicherung konnte nicht als eigenständige Datei abgeschlossen werden.")
         }
         var check: OpaquePointer?
         guard sqlite3_prepare_v2(targetDatabase, "PRAGMA integrity_check", -1, &check, nil) == SQLITE_OK else {
             throw FinanceError.invalidBackup
         }
-        defer { sqlite3_finalize(check) }
+        defer {
+            if let check { sqlite3_finalize(check) }
+        }
         guard sqlite3_step(check) == SQLITE_ROW, Self.text(check, 0) == "ok" else {
             throw FinanceError.invalidBackup
         }
+        sqlite3_finalize(check)
+        check = nil
+        guard sqlite3_close(targetDatabase) == SQLITE_OK else {
+            throw FinanceError.database("Die Sicherungsdatei konnte nicht geschlossen werden.")
+        }
+        targetDatabase = nil
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: target.path + suffix)
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                try FileManager.default.removeItem(at: sidecar)
+            }
+        }
+    }
+
+    func exportOpenDataArchive(
+        to rawTarget: URL,
+        settings: [String: String],
+        exportedAt: Date = .now,
+        fileManager: FileManager = .default
+    ) throws -> OpenDataArchiveSummary {
+        let target = rawTarget.standardizedFileURL
+        guard target.pathExtension.lowercased() == "finanzarchiv" else {
+            throw FinanceError.database(
+                "Das offene Datenarchiv muss die Endung .finanzarchiv besitzen."
+            )
+        }
+        guard target.path != fileURL.standardizedFileURL.path else {
+            throw FinanceError.database(
+                "Die aktive Finanzdatei darf nicht als Exportziel verwendet werden."
+            )
+        }
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw FinanceError.database("Am Exportziel existiert bereits eine Datei.")
+        }
+        let parent = target.deletingLastPathComponent()
+        let parentValues = try parent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard parentValues.isDirectory == true,
+              parentValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Der Exportordner ist kein regulärer, direkter Ordner."
+            )
+        }
+
+        let stage = parent.appendingPathComponent(
+            ".finanzverwalter-export-\(UUID().uuidString).tmp",
+            isDirectory: true
+        )
+        let snapshotURL = stage.appendingPathComponent("snapshot.qdata")
+        var published = false
+        defer {
+            try? fileManager.removeItem(at: stage)
+            if !published { try? fileManager.removeItem(at: target) }
+        }
+        try fileManager.createDirectory(
+            at: stage, withIntermediateDirectories: false
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stage.path
+        )
+        try backup(to: snapshotURL)
+
+        var exportDatabase: OpaquePointer?
+        let immutableURI = snapshotURL.absoluteString + "?immutable=1"
+        guard sqlite3_open_v2(
+            immutableURI,
+            &exportDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let database = exportDatabase else {
+            if let exportDatabase { sqlite3_close(exportDatabase) }
+            throw FinanceError.database(
+                "Der konsistente Exportsnapshot konnte nicht geöffnet werden."
+            )
+        }
+        defer {
+            if let exportDatabase { sqlite3_close(exportDatabase) }
+        }
+
+        func quotedIdentifier(_ value: String) -> String {
+            "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+
+        func sha256(_ data: Data) -> String {
+            SHA256.hash(data: data)
+                .map { String(format: "%02x", $0) }
+                .joined()
+        }
+
+        var generatedChecksums: [String: String] = [:]
+        func writeFile(_ data: Data, relativePath: String) throws {
+            let components = relativePath.split(separator: "/").map(String.init)
+            guard !components.isEmpty,
+                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+                throw FinanceError.database("Der Exportpfad ist ungültig.")
+            }
+            let url = components.reduce(stage) { $0.appendingPathComponent($1) }
+            let directory = url.deletingLastPathComponent()
+            try fileManager.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            try fileManager.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path
+            )
+            try data.write(to: url, options: .atomic)
+            try fileManager.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
+            generatedChecksums[relativePath] = sha256(data)
+        }
+
+        func mimeExtension(_ mimeType: String) -> String {
+            switch mimeType.lowercased() {
+            case "application/pdf": "pdf"
+            case "image/png": "png"
+            case "image/jpeg": "jpg"
+            case "text/csv": "csv"
+            case "application/x-qif": "qif"
+            case "application/xml", "text/xml": "xml"
+            default: "bin"
+            }
+        }
+
+        var attachmentPaths: [String: String] = [:]
+        var attachmentCount = 0
+        var attachmentStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT sha256,mime_type,byte_count,payload FROM attachment_blobs ORDER BY sha256",
+            -1,
+            &attachmentStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database("Das Anhängemanifest konnte nicht gelesen werden.")
+        }
+        while sqlite3_step(attachmentStatement) == SQLITE_ROW {
+            let digest = Self.text(attachmentStatement, 0).lowercased()
+            let mimeType = Self.text(attachmentStatement, 1)
+            let byteCount = sqlite3_column_int64(attachmentStatement, 2)
+            let payload = Self.data(attachmentStatement, 3)
+            guard digest.count == 64,
+                  digest.allSatisfy({ $0.isHexDigit }),
+                  byteCount == Int64(payload.count),
+                  sha256(payload) == digest else {
+                sqlite3_finalize(attachmentStatement)
+                throw FinanceError.database(
+                    "Ein Anhang stimmt nicht mit seinem SHA-256-Manifest überein."
+                )
+            }
+            let relativePath = "attachments/\(digest).\(mimeExtension(mimeType))"
+            try writeFile(payload, relativePath: relativePath)
+            attachmentPaths[digest] = relativePath
+            attachmentCount += 1
+        }
+        sqlite3_finalize(attachmentStatement)
+
+        var tables: [String] = []
+        var tableStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            -1,
+            &tableStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database("Die Exporttabellen konnten nicht ermittelt werden.")
+        }
+        while sqlite3_step(tableStatement) == SQLITE_ROW {
+            tables.append(Self.text(tableStatement, 0))
+        }
+        sqlite3_finalize(tableStatement)
+
+        let omittedColumns: [String: Set<String>] = [
+            "attachment_blobs": ["payload"],
+            "contract_documents": ["bookmark_data"],
+            "inventory_attachments": ["bookmark_data"]
+        ]
+        var tablePayloads: [[String: Any]] = []
+        var schemaTables: [[String: Any]] = []
+        var totalRowCount = 0
+
+        func csvField(_ value: String) -> String {
+            guard value.contains(",") || value.contains("\"")
+                    || value.contains("\n") || value.contains("\r") else {
+                return value
+            }
+            return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+
+        for table in tables {
+            var columns: [(name: String, type: String, primaryKeyOrder: Int)] = []
+            var infoStatement: OpaquePointer?
+            let infoSQL = "PRAGMA table_info(\(quotedIdentifier(table)))"
+            guard sqlite3_prepare_v2(
+                database, infoSQL, -1, &infoStatement, nil
+            ) == SQLITE_OK else {
+                throw FinanceError.database("Das Schema von \(table) konnte nicht gelesen werden.")
+            }
+            while sqlite3_step(infoStatement) == SQLITE_ROW {
+                let name = Self.text(infoStatement, 1)
+                guard omittedColumns[table]?.contains(name) != true else { continue }
+                columns.append(
+                    (
+                        name: name,
+                        type: Self.text(infoStatement, 2),
+                        primaryKeyOrder: Int(sqlite3_column_int(infoStatement, 5))
+                    )
+                )
+            }
+            sqlite3_finalize(infoStatement)
+            guard !columns.isEmpty else { continue }
+
+            var exportColumns = columns
+            if table == "attachment_blobs" {
+                exportColumns.append(("relative_path", "TEXT", 0))
+            }
+            let selectedColumns = columns.map { quotedIdentifier($0.name) }
+                .joined(separator: ",")
+            let primaryKeys = columns.filter { $0.primaryKeyOrder > 0 }
+                .sorted { $0.primaryKeyOrder < $1.primaryKeyOrder }
+            let orderClause = primaryKeys.isEmpty
+                ? " ORDER BY rowid"
+                : " ORDER BY " + primaryKeys.map { quotedIdentifier($0.name) }
+                    .joined(separator: ",")
+            let sql = "SELECT \(selectedColumns) FROM \(quotedIdentifier(table))\(orderClause)"
+            var rowStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &rowStatement, nil) == SQLITE_OK else {
+                throw FinanceError.database("Die Daten aus \(table) konnten nicht gelesen werden.")
+            }
+            var rows: [[Any]] = []
+            var csvLines = [exportColumns.map { csvField($0.name) }.joined(separator: ",")]
+            while sqlite3_step(rowStatement) == SQLITE_ROW {
+                var jsonRow: [Any] = []
+                var csvRow: [String] = []
+                for index in columns.indices {
+                    let type = sqlite3_column_type(rowStatement, Int32(index))
+                    switch type {
+                    case SQLITE_NULL:
+                        jsonRow.append(NSNull())
+                        csvRow.append("")
+                    case SQLITE_INTEGER:
+                        let value = sqlite3_column_int64(rowStatement, Int32(index))
+                        jsonRow.append(NSNumber(value: value))
+                        csvRow.append(String(value))
+                    case SQLITE_FLOAT:
+                        let value = sqlite3_column_double(rowStatement, Int32(index))
+                        jsonRow.append(NSNumber(value: value))
+                        csvRow.append(String(format: "%.17g", locale: Locale(identifier: "en_US_POSIX"), value))
+                    case SQLITE_BLOB:
+                        let value = Self.data(rowStatement, Int32(index)).base64EncodedString()
+                        jsonRow.append(["encoding": "base64", "value": value])
+                        csvRow.append("base64:" + value)
+                    default:
+                        let value = Self.text(rowStatement, Int32(index))
+                        jsonRow.append(value)
+                        csvRow.append(value)
+                    }
+                }
+                if table == "attachment_blobs",
+                   let shaIndex = columns.firstIndex(where: { $0.name == "sha256" }),
+                   let digest = jsonRow[shaIndex] as? String,
+                   let relativePath = attachmentPaths[digest.lowercased()] {
+                    jsonRow.append(relativePath)
+                    csvRow.append(relativePath)
+                } else if table == "attachment_blobs" {
+                    sqlite3_finalize(rowStatement)
+                    throw FinanceError.database(
+                        "Ein Anhangeintrag besitzt keine exportierte Originaldatei."
+                    )
+                }
+                rows.append(jsonRow)
+                csvLines.append(csvRow.map(csvField).joined(separator: ","))
+            }
+            sqlite3_finalize(rowStatement)
+            totalRowCount += rows.count
+            tablePayloads.append([
+                "name": table,
+                "columns": exportColumns.map(\.name),
+                "rows": rows
+            ])
+            schemaTables.append([
+                "name": table,
+                "columns": exportColumns.map {
+                    [
+                        "name": $0.name,
+                        "sqlite_type": $0.type,
+                        "primary_key_order": $0.primaryKeyOrder
+                    ] as [String: Any]
+                },
+                "omitted_columns": Array(omittedColumns[table] ?? []).sorted(),
+                "row_count": rows.count
+            ])
+            let csv = "\u{feff}" + csvLines.joined(separator: "\r\n") + "\r\n"
+            try writeFile(
+                Data(csv.utf8), relativePath: "csv/\(table).csv"
+            )
+        }
+
+        let exportedTimestamp = Self.timestamp(exportedAt)
+        let dataRoot: [String: Any] = [
+            "format": "de.pixelpuxel.finanzverwalter.open-data",
+            "format_version": 1,
+            "database_schema_version": try scalarInt("PRAGMA user_version"),
+            "exported_at": exportedTimestamp,
+            "table_count": tablePayloads.count,
+            "row_count": totalRowCount,
+            "attachment_count": attachmentCount,
+            "tables": tablePayloads
+        ]
+        let schemaRoot: [String: Any] = [
+            "format": "de.pixelpuxel.finanzverwalter.open-data-schema",
+            "format_version": 1,
+            "value_encoding": [
+                "NULL": "JSON null / leeres CSV-Feld",
+                "INTEGER": "JSON number / dezimale Ganzzahl",
+                "REAL": "JSON number / POSIX-Dezimalzahl",
+                "TEXT": "JSON string / RFC-4180-Feld",
+                "BLOB": "JSON-Objekt mit encoding=base64 / CSV-Präfix base64:"
+            ],
+            "tables": schemaTables,
+            "notes": [
+                "attachment_blobs.payload liegt dedupliziert unter attachments/ und wird über relative_path referenziert.",
+                "contract_documents.bookmark_data und inventory_attachments.bookmark_data sind gerätegebundene Sicherheitsbookmarks und werden nicht exportiert.",
+                "settings.json enthält ausschließlich freigegebene Darstellungs-, Register-, Import- und Sicherungseinstellungen; keine Dateipfade oder Zugangsdaten."
+            ]
+        ]
+        let jsonOptions: JSONSerialization.WritingOptions = [
+            .prettyPrinted, .sortedKeys, .withoutEscapingSlashes
+        ]
+        try writeFile(
+            try JSONSerialization.data(withJSONObject: dataRoot, options: jsonOptions),
+            relativePath: "data.json"
+        )
+        try writeFile(
+            try JSONSerialization.data(withJSONObject: schemaRoot, options: jsonOptions),
+            relativePath: "schema.json"
+        )
+        try writeFile(
+            try JSONSerialization.data(
+                withJSONObject: [
+                    "format": "de.pixelpuxel.finanzverwalter.settings",
+                    "format_version": 1,
+                    "values": settings
+                ],
+                options: jsonOptions
+            ),
+            relativePath: "settings.json"
+        )
+        let readme = """
+        FinanzVerwalter – offenes Datenarchiv, Formatversion 1
+
+        data.json enthält den vollständigen portablen Tabellenstand des konsistenten Exportsnapshots.
+        schema.json dokumentiert Spalten, SQLite-Typen, Primärschlüssel und bewusst ausgelassene gerätegebundene Felder.
+        csv/ enthält jede exportierte Tabelle zusätzlich als UTF-8/RFC-4180-Datei.
+        attachments/ enthält Originalanhänge dedupliziert nach SHA-256; attachment_links erhält Dateiname und Fachbezug.
+        settings.json enthält ausschließlich freigegebene Einstellungen ohne Dateipfade oder Zugangsdaten.
+        checksums.sha256 schützt alle Nutzdateien des Archivs. Pfade sind relativ zum Archivwurzelordner.
+
+        Exportzeitpunkt (UTC): \(exportedTimestamp)
+        Datenbankschema: \(try scalarInt("PRAGMA user_version"))
+        """
+        try writeFile(Data(readme.utf8), relativePath: "README.txt")
+
+        guard sqlite3_close(database) == SQLITE_OK else {
+            throw FinanceError.database("Der Exportsnapshot konnte nicht geschlossen werden.")
+        }
+        exportDatabase = nil
+        try fileManager.removeItem(at: snapshotURL)
+
+        let checksumLines = generatedChecksums.keys.sorted().map {
+            "\(generatedChecksums[$0]!)  \($0)"
+        }
+        let checksumData = Data((checksumLines.joined(separator: "\n") + "\n").utf8)
+        let checksumManifestSHA256 = sha256(checksumData)
+        try checksumData.write(
+            to: stage.appendingPathComponent("checksums.sha256"), options: .atomic
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stage.appendingPathComponent("checksums.sha256").path
+        )
+
+        let renameResult = stage.withUnsafeFileSystemRepresentation { source in
+            target.withUnsafeFileSystemRepresentation { destination in
+                guard let source, let destination else { return Int32(-1) }
+                return Darwin.renamex_np(
+                    source, destination, UInt32(RENAME_EXCL)
+                )
+            }
+        }
+        guard renameResult == 0 else {
+            let message = String(cString: strerror(errno))
+            throw FinanceError.database(
+                "Das Datenarchiv konnte nicht atomar freigegeben werden: \(message)"
+            )
+        }
+        let expectedFiles = Set(generatedChecksums.keys).union(["checksums.sha256"])
+        let validationRoot = target.resolvingSymlinksInPath()
+        var actualFiles = Set<String>()
+        var totalBytes: Int64 = 0
+        func validateDirectory(_ directory: URL, prefix: String) throws {
+            let children = try fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .fileSizeKey
+                ],
+                options: []
+            )
+            for url in children {
+                let values = try url.resourceValues(
+                    forKeys: [
+                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                        .fileSizeKey
+                    ]
+                )
+                guard values.isSymbolicLink != true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Symlink."
+                    )
+                }
+                let relative = prefix.isEmpty
+                    ? url.lastPathComponent
+                    : prefix + "/" + url.lastPathComponent
+                if values.isDirectory == true {
+                    try validateDirectory(url, prefix: relative)
+                    continue
+                }
+                guard values.isRegularFile == true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Dateityp."
+                    )
+                }
+                actualFiles.insert(relative)
+                totalBytes += Int64(values.fileSize ?? 0)
+                if let expected = generatedChecksums[relative] {
+                    let payload = try Data(
+                        contentsOf: url, options: [.mappedIfSafe]
+                    )
+                    guard sha256(payload) == expected else {
+                        throw FinanceError.database(
+                            "Die Prüfsumme von \(relative) stimmt nach der Freigabe nicht."
+                        )
+                    }
+                }
+            }
+        }
+        try validateDirectory(validationRoot, prefix: "")
+        guard actualFiles == expectedFiles else {
+            let missing = expectedFiles.subtracting(actualFiles).sorted()
+            let unexpected = actualFiles.subtracting(expectedFiles).sorted()
+            throw FinanceError.database(
+                "Das fertige Datenarchiv ist unvollständig (fehlend: \(missing.joined(separator: ", ")); unerwartet: \(unexpected.joined(separator: ", ")))."
+            )
+        }
+        guard sha256(
+            try Data(contentsOf: target.appendingPathComponent("checksums.sha256"))
+        ) == checksumManifestSHA256 else {
+            throw FinanceError.database(
+                "Das Prüfsummenmanifest wurde nach der Freigabe verändert."
+            )
+        }
+        let rootValues = try target.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard rootValues.isDirectory == true,
+              rootValues.isSymbolicLink != true else {
+            throw FinanceError.database("Das fertige Datenarchiv ist kein reguläres Paket.")
+        }
+        published = true
+        return OpenDataArchiveSummary(
+            url: target,
+            formatVersion: 1,
+            tableCount: tablePayloads.count,
+            rowCount: totalRowCount,
+            attachmentCount: attachmentCount,
+            fileCount: expectedFiles.count,
+            byteCount: totalBytes,
+            checksumManifestSHA256: checksumManifestSHA256
+        )
+    }
+
+    func importOpenDataArchive(
+        from rawArchive: URL,
+        to rawTarget: URL,
+        fileManager: FileManager = .default
+    ) throws -> OpenDataArchiveImportSummary {
+        let archive = rawArchive.standardizedFileURL
+        let target = rawTarget.standardizedFileURL
+        guard archive.pathExtension.lowercased() == "finanzarchiv" else {
+            throw FinanceError.database(
+                "Das offene Datenarchiv muss die Endung .finanzarchiv besitzen."
+            )
+        }
+        guard target.pathExtension.lowercased() == "qdata" else {
+            throw FinanceError.database(
+                "Das Importziel muss die Endung .qdata besitzen."
+            )
+        }
+        guard target.path != fileURL.standardizedFileURL.path else {
+            throw FinanceError.database(
+                "Der Rückimport darf die aktive Finanzdatei nicht überschreiben."
+            )
+        }
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw FinanceError.database("Am Importziel existiert bereits eine Datei.")
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            guard !fileManager.fileExists(atPath: target.path + suffix) else {
+                throw FinanceError.database(
+                    "Am Importziel existiert eine verwaiste SQLite-Begleitdatei."
+                )
+            }
+        }
+        let archiveValues = try archive.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard archiveValues.isDirectory == true,
+              archiveValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Das gewählte Datenarchiv ist kein reguläres, direktes Paket."
+            )
+        }
+        let parent = target.deletingLastPathComponent()
+        let parentValues = try parent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard parentValues.isDirectory == true,
+              parentValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Der Zielordner ist kein regulärer, direkter Ordner."
+            )
+        }
+        guard !target.path.hasPrefix(archive.path + "/") else {
+            throw FinanceError.database(
+                "Die neue Finanzdatei darf nicht innerhalb des Datenarchivs liegen."
+            )
+        }
+
+        func digest(_ data: Data) -> String {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        func fileDigest(_ url: URL) throws -> String {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while let chunk = try handle.read(upToCount: 1_048_576),
+                  !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().map {
+                String(format: "%02x", $0)
+            }.joined()
+        }
+        func validatedRelativePath(_ value: String) throws -> String {
+            guard !value.isEmpty, !value.hasPrefix("/"),
+                  !value.contains("\\"), !value.contains("\0"),
+                  value.unicodeScalars.allSatisfy({
+                      $0.value >= 32 && $0.value != 127
+                  }) else {
+                throw FinanceError.database(
+                    "Das Datenarchiv enthält einen ungültigen relativen Pfad."
+                )
+            }
+            let parts = value.split(
+                separator: "/", omittingEmptySubsequences: false
+            )
+            guard parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+                throw FinanceError.database(
+                    "Das Datenarchiv enthält einen unsicheren relativen Pfad."
+                )
+            }
+            return value
+        }
+
+        let manifestURL = archive.appendingPathComponent("checksums.sha256")
+        let manifestValues = try manifestURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard manifestValues.isRegularFile == true,
+              manifestValues.isSymbolicLink != true,
+              (manifestValues.fileSize ?? 0) <= 16 * 1_024 * 1_024 else {
+            throw FinanceError.database(
+                "Das Prüfsummenmanifest fehlt oder ist unzulässig groß."
+            )
+        }
+        let manifestData = try Data(contentsOf: manifestURL)
+        guard let manifestText = String(data: manifestData, encoding: .utf8),
+              manifestText.hasSuffix("\n") else {
+            throw FinanceError.database(
+                "Das Prüfsummenmanifest ist nicht gültiges UTF-8."
+            )
+        }
+        var checksums: [String: String] = [:]
+        for rawLine in manifestText.split(
+            separator: "\n", omittingEmptySubsequences: true
+        ) {
+            let line = String(rawLine)
+            guard line.count >= 67,
+                  line.dropFirst(64).hasPrefix("  ") else {
+                throw FinanceError.database(
+                    "Eine Zeile des Prüfsummenmanifests ist beschädigt."
+                )
+            }
+            let expected = String(line.prefix(64)).lowercased()
+            let relative = try validatedRelativePath(
+                String(line.dropFirst(66))
+            )
+            guard expected.count == 64,
+                  expected.allSatisfy(\.isHexDigit),
+                  checksums.updateValue(expected, forKey: relative) == nil,
+                  relative != "checksums.sha256" else {
+                throw FinanceError.database(
+                    "Das Prüfsummenmanifest enthält einen ungültigen oder doppelten Eintrag."
+                )
+            }
+        }
+        guard !checksums.isEmpty else {
+            throw FinanceError.database("Das Prüfsummenmanifest ist leer.")
+        }
+
+        var actualFiles = Set<String>()
+        var totalArchiveBytes: Int64 = 0
+        func inspectDirectory(_ directory: URL, prefix: String) throws {
+            let children = try fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .fileSizeKey
+                ],
+                options: []
+            )
+            for child in children {
+                let values = try child.resourceValues(
+                    forKeys: [
+                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                        .fileSizeKey
+                    ]
+                )
+                guard values.isSymbolicLink != true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Symlink."
+                    )
+                }
+                let relative = try validatedRelativePath(
+                    prefix.isEmpty
+                        ? child.lastPathComponent
+                        : prefix + "/" + child.lastPathComponent
+                )
+                if values.isDirectory == true {
+                    try inspectDirectory(child, prefix: relative)
+                    continue
+                }
+                guard values.isRegularFile == true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Dateityp."
+                    )
+                }
+                guard actualFiles.insert(relative).inserted else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen doppelten Dateipfad."
+                    )
+                }
+                totalArchiveBytes += Int64(values.fileSize ?? 0)
+                guard totalArchiveBytes <= 16 * 1_024 * 1_024 * 1_024 else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv überschreitet die Sicherheitsgrenze von 16 GB."
+                    )
+                }
+            }
+        }
+        try inspectDirectory(archive, prefix: "")
+        let expectedFiles = Set(checksums.keys).union(["checksums.sha256"])
+        guard actualFiles == expectedFiles else {
+            throw FinanceError.database(
+                "Dateimenge und Prüfsummenmanifest des Datenarchivs stimmen nicht überein."
+            )
+        }
+        for (relative, expected) in checksums {
+            let url = archive.appendingPathComponent(relative)
+            guard try fileDigest(url) == expected else {
+                throw FinanceError.database(
+                    "Die Prüfsumme von \(relative) stimmt nicht."
+                )
+            }
+        }
+        let requiredRootFiles: Set<String> = [
+            "data.json", "schema.json", "settings.json", "README.txt"
+        ]
+        guard requiredRootFiles.isSubset(of: Set(checksums.keys)) else {
+            throw FinanceError.database(
+                "Das Datenarchiv enthält nicht alle Pflichtdateien."
+            )
+        }
+
+        func verifiedData(relative: String, maximumBytes: Int) throws -> Data {
+            let url = archive.appendingPathComponent(relative)
+            let values = try url.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  (values.fileSize ?? 0) <= maximumBytes,
+                  let expected = checksums[relative] else {
+                throw FinanceError.database(
+                    "\(relative) fehlt oder überschreitet die Sicherheitsgrenze."
+                )
+            }
+            let data = try Data(contentsOf: url)
+            guard data.count <= maximumBytes,
+                  digest(data) == expected else {
+                throw FinanceError.database(
+                    "\(relative) wurde während des Imports verändert."
+                )
+            }
+            return data
+        }
+
+        let dataURL = archive.appendingPathComponent("data.json")
+        let dataSize = try dataURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard dataSize <= 1_073_741_824 else {
+            throw FinanceError.database("data.json überschreitet die Sicherheitsgrenze von 1 GB.")
+        }
+        let schemaURL = archive.appendingPathComponent("schema.json")
+        let settingsURL = archive.appendingPathComponent("settings.json")
+        let schemaSize = try schemaURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let settingsSize = try settingsURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard schemaSize <= 64 * 1_024 * 1_024,
+              settingsSize <= 16 * 1_024 * 1_024 else {
+            throw FinanceError.database(
+                "Schema oder Einstellungen überschreiten die Sicherheitsgrenze."
+            )
+        }
+        let dataPayload = try verifiedData(
+            relative: "data.json", maximumBytes: 1_073_741_824
+        )
+        let root = try JSONSerialization.jsonObject(
+            with: dataPayload
+        ) as? [String: Any]
+        guard let root,
+              root["format"] as? String
+                == "de.pixelpuxel.finanzverwalter.open-data",
+              (root["format_version"] as? NSNumber)?.intValue == 1,
+              (root["database_schema_version"] as? NSNumber)?.intValue
+                == Self.currentSchemaVersion,
+              let archiveTables = root["tables"] as? [[String: Any]],
+              archiveTables.count <= 256,
+              let declaredTableCount = (root["table_count"] as? NSNumber)?.intValue,
+              declaredTableCount == archiveTables.count,
+              let declaredRowCount = (root["row_count"] as? NSNumber)?.intValue,
+              declaredRowCount >= 0, declaredRowCount <= 10_000_000,
+              let declaredAttachmentCount = (root["attachment_count"] as? NSNumber)?.intValue,
+              declaredAttachmentCount >= 0 else {
+            throw FinanceError.database(
+                "data.json besitzt kein unterstütztes FinanzVerwalter-Format."
+            )
+        }
+        let schemaPayload = try verifiedData(
+            relative: "schema.json", maximumBytes: 64 * 1_024 * 1_024
+        )
+        let schemaRoot = try JSONSerialization.jsonObject(
+            with: schemaPayload
+        ) as? [String: Any]
+        guard let schemaRoot,
+              schemaRoot["format"] as? String
+                == "de.pixelpuxel.finanzverwalter.open-data-schema",
+              (schemaRoot["format_version"] as? NSNumber)?.intValue == 1,
+              let schemaTables = schemaRoot["tables"] as? [[String: Any]] else {
+            throw FinanceError.database("schema.json ist beschädigt oder nicht unterstützt.")
+        }
+        let settingsPayload = try verifiedData(
+            relative: "settings.json", maximumBytes: 16 * 1_024 * 1_024
+        )
+        let settingsRoot = try JSONSerialization.jsonObject(
+            with: settingsPayload
+        ) as? [String: Any]
+        guard let settingsRoot,
+              settingsRoot["format"] as? String
+                == "de.pixelpuxel.finanzverwalter.settings",
+              (settingsRoot["format_version"] as? NSNumber)?.intValue == 1,
+              let importedSettings = settingsRoot["values"] as? [String: String] else {
+            throw FinanceError.database("settings.json ist beschädigt oder nicht unterstützt.")
+        }
+
+        let stage = parent.appendingPathComponent(
+            ".finanzverwalter-import-\(UUID().uuidString).tmp.qdata"
+        )
+        var published = false
+        var targetCreatedByImport = false
+        defer {
+            if targetCreatedByImport && !published {
+                try? fileManager.removeItem(at: target)
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    try? fileManager.removeItem(
+                        at: URL(fileURLWithPath: target.path + suffix)
+                    )
+                }
+            }
+            try? fileManager.removeItem(at: stage)
+            for suffix in ["-wal", "-shm", "-journal"] {
+                try? fileManager.removeItem(
+                    at: URL(fileURLWithPath: stage.path + suffix)
+                )
+            }
+        }
+
+        let template = try SQLiteFinanceStore(fileURL: stage)
+        template.close()
+        var importDatabase: OpaquePointer?
+        guard sqlite3_open_v2(
+            stage.path, &importDatabase,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
+        ) == SQLITE_OK, let database = importDatabase else {
+            if let importDatabase { sqlite3_close(importDatabase) }
+            throw FinanceError.database(
+                "Die neue Finanzdatei konnte nicht zum Rückimport geöffnet werden."
+            )
+        }
+        defer {
+            if let importDatabase { sqlite3_close(importDatabase) }
+        }
+        func databaseMessage() -> String {
+            String(cString: sqlite3_errmsg(database))
+        }
+        func executeImport(_ sql: String) throws {
+            var error: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(database, sql, nil, nil, &error) == SQLITE_OK else {
+                let message = error.map { String(cString: $0) }
+                    ?? databaseMessage()
+                sqlite3_free(error)
+                throw FinanceError.database(message)
+            }
+        }
+        func quoted(_ value: String) -> String {
+            "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        func tableColumns(_ table: String) throws
+            -> [(name: String, type: String, primaryKeyOrder: Int)] {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                database, "PRAGMA table_info(\(quoted(table)))",
+                -1, &statement, nil
+            ) == SQLITE_OK else {
+                throw FinanceError.database(databaseMessage())
+            }
+            defer { sqlite3_finalize(statement) }
+            var values: [(String, String, Int)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                values.append((
+                    Self.text(statement, 1), Self.text(statement, 2),
+                    Int(sqlite3_column_int(statement, 5))
+                ))
+            }
+            return values
+        }
+        var currentTables: [String] = []
+        var tableStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            -1, &tableStatement, nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database(databaseMessage())
+        }
+        while sqlite3_step(tableStatement) == SQLITE_ROW {
+            currentTables.append(Self.text(tableStatement, 0))
+        }
+        sqlite3_finalize(tableStatement)
+
+        let archivedNames = archiveTables.compactMap { $0["name"] as? String }
+        let schemaNames = schemaTables.compactMap { $0["name"] as? String }
+        guard archivedNames.count == archiveTables.count,
+              Set(archivedNames).count == archivedNames.count,
+              Set(archivedNames) == Set(currentTables),
+              Set(schemaNames) == Set(currentTables),
+              schemaNames.count == schemaTables.count else {
+            throw FinanceError.database(
+                "Tabellenmenge und aktuelles FinanzVerwalter-Schema stimmen nicht überein."
+            )
+        }
+        for table in currentTables {
+            guard checksums["csv/\(table).csv"] != nil else {
+                throw FinanceError.database(
+                    "Die CSV-Repräsentation von \(table) fehlt."
+                )
+            }
+        }
+
+        let omittedColumns: [String: Set<String>] = [
+            "attachment_blobs": ["payload"],
+            "contract_documents": ["bookmark_data"],
+            "inventory_attachments": ["bookmark_data"]
+        ]
+        var archiveByName: [String: (columns: [String], rows: [[Any]])] = [:]
+        var calculatedRows = 0
+        for payload in archiveTables {
+            guard let name = payload["name"] as? String,
+                  let columns = payload["columns"] as? [String],
+                  let rows = payload["rows"] as? [[Any]],
+                  columns.count <= 256,
+                  rows.allSatisfy({ $0.count == columns.count }) else {
+                throw FinanceError.database(
+                    "Eine Tabelle in data.json besitzt ungültige Spalten oder Zeilen."
+                )
+            }
+            let actual = try tableColumns(name)
+            var expected = actual.filter {
+                omittedColumns[name]?.contains($0.name) != true
+            }.map(\.name)
+            if name == "attachment_blobs" { expected.append("relative_path") }
+            guard columns == expected,
+                  let schemaPayload = schemaTables.first(where: {
+                      ($0["name"] as? String) == name
+                  }),
+                  let schemaColumns = schemaPayload["columns"] as? [[String: Any]],
+                  schemaColumns.compactMap({ $0["name"] as? String }) == columns,
+                  (schemaPayload["row_count"] as? NSNumber)?.intValue == rows.count else {
+                throw FinanceError.database(
+                    "Die Spaltenbeschreibung von \(name) stimmt nicht mit dem aktuellen Schema überein."
+                )
+            }
+            calculatedRows += rows.count
+            archiveByName[name] = (columns, rows)
+        }
+        guard calculatedRows == declaredRowCount,
+              archiveByName["attachment_blobs"]?.rows.count
+                == declaredAttachmentCount else {
+            throw FinanceError.database(
+                "Die deklarierten Zeilen- oder Anhangszahlen sind widersprüchlich."
+            )
+        }
+
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        func bind(_ value: Any, type: String, to statement: OpaquePointer?, at index: Int32) throws {
+            let code: Int32
+            if value is NSNull {
+                code = sqlite3_bind_null(statement, index)
+            } else if let text = value as? String {
+                code = sqlite3_bind_text(statement, index, text, -1, transient)
+            } else if let number = value as? NSNumber {
+                guard CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                    throw FinanceError.database("Ein unerwarteter JSON-Wahrheitswert wurde gefunden.")
+                }
+                if type.uppercased().contains("INT") {
+                    guard let integer = Int64(number.stringValue) else {
+                        throw FinanceError.database("Eine Ganzzahl liegt außerhalb des unterstützten Bereichs.")
+                    }
+                    code = sqlite3_bind_int64(statement, index, integer)
+                } else {
+                    let double = number.doubleValue
+                    guard double.isFinite else {
+                        throw FinanceError.database("Eine Fließkommazahl ist nicht endlich.")
+                    }
+                    code = sqlite3_bind_double(statement, index, double)
+                }
+            } else if let blob = value as? Data,
+                      blob.count <= 256 * 1_024 * 1_024 {
+                code = blob.withUnsafeBytes {
+                    sqlite3_bind_blob(
+                        statement, index, $0.baseAddress,
+                        Int32($0.count), transient
+                    )
+                }
+            } else if let encoded = value as? [String: Any],
+                      encoded["encoding"] as? String == "base64",
+                      let base64 = encoded["value"] as? String,
+                      let blob = Data(base64Encoded: base64),
+                      blob.count <= 256 * 1_024 * 1_024 {
+                code = blob.withUnsafeBytes {
+                    sqlite3_bind_blob(
+                        statement, index, $0.baseAddress,
+                        Int32($0.count), transient
+                    )
+                }
+            } else {
+                throw FinanceError.database(
+                    "Ein Tabellenwert besitzt eine nicht unterstützte JSON-Kodierung."
+                )
+            }
+            guard code == SQLITE_OK else {
+                throw FinanceError.database(databaseMessage())
+            }
+        }
+
+        var referencedAttachments = Set<String>()
+        var transactionStarted = false
+        do {
+            try executeImport("PRAGMA foreign_keys=OFF")
+            try executeImport("BEGIN IMMEDIATE")
+            transactionStarted = true
+            for table in currentTables {
+                try executeImport("DELETE FROM \(quoted(table))")
+            }
+            for table in currentTables {
+                guard let payload = archiveByName[table] else {
+                    throw FinanceError.database("Die Tabelle \(table) fehlt im Archiv.")
+                }
+                let actualColumns = try tableColumns(table)
+                let insertColumns: [(name: String, type: String)]
+                if table == "attachment_blobs" {
+                    insertColumns = actualColumns.map { ($0.name, $0.type) }
+                } else {
+                    insertColumns = actualColumns.filter {
+                        omittedColumns[table]?.contains($0.name) != true
+                    }.map { ($0.name, $0.type) }
+                }
+                let placeholders = Array(
+                    repeating: "?", count: insertColumns.count
+                ).joined(separator: ",")
+                let sql = "INSERT INTO \(quoted(table)) ("
+                    + insertColumns.map { quoted($0.name) }.joined(separator: ",")
+                    + ") VALUES (\(placeholders))"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+                        == SQLITE_OK else {
+                    throw FinanceError.database(databaseMessage())
+                }
+                defer { sqlite3_finalize(statement) }
+                let columnIndexes = Dictionary(
+                    uniqueKeysWithValues: payload.columns.enumerated().map {
+                        ($0.element, $0.offset)
+                    }
+                )
+                for row in payload.rows {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    for (offset, column) in insertColumns.enumerated() {
+                        let value: Any
+                        if table == "attachment_blobs", column.name == "payload" {
+                            guard let shaIndex = columnIndexes["sha256"],
+                                  let mimeIndex = columnIndexes["mime_type"],
+                                  let countIndex = columnIndexes["byte_count"],
+                                  let pathIndex = columnIndexes["relative_path"],
+                                  let sha = row[shaIndex] as? String,
+                                  let mime = row[mimeIndex] as? String,
+                                  let byteCount = row[countIndex] as? NSNumber,
+                                  let relative = row[pathIndex] as? String else {
+                                throw FinanceError.database("Ein Anhangeintrag ist unvollständig.")
+                            }
+                            let extensionValue: String = switch mime.lowercased() {
+                            case "application/pdf": "pdf"
+                            case "image/png": "png"
+                            case "image/jpeg": "jpg"
+                            case "text/csv": "csv"
+                            case "application/x-qif": "qif"
+                            case "application/xml", "text/xml": "xml"
+                            default: "bin"
+                            }
+                            let normalizedSHA = sha.lowercased()
+                            guard normalizedSHA.count == 64,
+                                  normalizedSHA.allSatisfy(\.isHexDigit),
+                                  relative == "attachments/\(normalizedSHA).\(extensionValue)",
+                                  checksums[relative] != nil,
+                                  referencedAttachments.insert(relative).inserted else {
+                                throw FinanceError.database("Ein Anhangspfad ist ungültig oder doppelt.")
+                            }
+                            let blob = try Data(
+                                contentsOf: archive.appendingPathComponent(relative),
+                                options: [.mappedIfSafe]
+                            )
+                            guard blob.count > 0,
+                                  blob.count <= Self.maximumAttachmentBytes,
+                                  byteCount.int64Value == Int64(blob.count),
+                                  digest(blob) == normalizedSHA else {
+                                throw FinanceError.database("Ein Anhang stimmt nicht mit seinen Metadaten überein.")
+                            }
+                            value = blob
+                        } else {
+                            guard let sourceIndex = columnIndexes[column.name] else {
+                                throw FinanceError.database(
+                                    "Die Spalte \(table).\(column.name) fehlt im Archiv."
+                                )
+                            }
+                            value = row[sourceIndex]
+                        }
+                        try bind(
+                            value, type: column.type, to: statement,
+                            at: Int32(offset + 1)
+                        )
+                    }
+                    guard sqlite3_step(statement) == SQLITE_DONE else {
+                        throw FinanceError.database(databaseMessage())
+                    }
+                }
+            }
+            let archivedAttachmentFiles = Set(
+                checksums.keys.filter { $0.hasPrefix("attachments/") }
+            )
+            guard referencedAttachments == archivedAttachmentFiles else {
+                throw FinanceError.database(
+                    "Das Archiv enthält fehlende oder nicht referenzierte Anhänge."
+                )
+            }
+            let allowedFiles = requiredRootFiles
+                .union(["checksums.sha256"])
+                .union(currentTables.map { "csv/\($0).csv" })
+                .union(referencedAttachments)
+            guard actualFiles == allowedFiles else {
+                throw FinanceError.database(
+                    "Das Archiv enthält Dateien außerhalb der dokumentierten Paketstruktur."
+                )
+            }
+            for table in currentTables {
+                var countStatement: OpaquePointer?
+                guard sqlite3_prepare_v2(
+                    database,
+                    "SELECT COUNT(*) FROM \(quoted(table))",
+                    -1, &countStatement, nil
+                ) == SQLITE_OK,
+                      sqlite3_step(countStatement) == SQLITE_ROW else {
+                    if let countStatement { sqlite3_finalize(countStatement) }
+                    throw FinanceError.database(databaseMessage())
+                }
+                let importedCount = Int(sqlite3_column_int64(countStatement, 0))
+                sqlite3_finalize(countStatement)
+                guard importedCount == archiveByName[table]?.rows.count else {
+                    throw FinanceError.database(
+                        "Die importierte Zeilenzahl von \(table) ist widersprüchlich."
+                    )
+                }
+            }
+            var foreignKeyStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                database, "PRAGMA foreign_key_check", -1,
+                &foreignKeyStatement, nil
+            ) == SQLITE_OK else {
+                throw FinanceError.database(databaseMessage())
+            }
+            let foreignKeyResult = sqlite3_step(foreignKeyStatement)
+            sqlite3_finalize(foreignKeyStatement)
+            guard foreignKeyResult == SQLITE_DONE else {
+                throw FinanceError.database(
+                    "Der Rückimport verletzt mindestens eine Tabellenbeziehung."
+                )
+            }
+            var integrityStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                database, "PRAGMA integrity_check", -1,
+                &integrityStatement, nil
+            ) == SQLITE_OK,
+                  sqlite3_step(integrityStatement) == SQLITE_ROW,
+                  Self.text(integrityStatement, 0) == "ok" else {
+                if let integrityStatement { sqlite3_finalize(integrityStatement) }
+                throw FinanceError.database(
+                    "Die importierte Finanzdatei besteht die Integritätsprüfung nicht."
+                )
+            }
+            sqlite3_finalize(integrityStatement)
+            try executeImport("COMMIT")
+            transactionStarted = false
+            try executeImport("PRAGMA foreign_keys=ON")
+            try executeImport("PRAGMA journal_mode=DELETE")
+        } catch {
+            if transactionStarted { try? executeImport("ROLLBACK") }
+            throw error
+        }
+        guard sqlite3_close(database) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Die importierte Finanzdatei konnte nicht geschlossen werden."
+            )
+        }
+        importDatabase = nil
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: stage.path + suffix)
+            if fileManager.fileExists(atPath: sidecar.path) {
+                try fileManager.removeItem(at: sidecar)
+            }
+        }
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: stage.path
+        )
+        let renameResult = stage.withUnsafeFileSystemRepresentation { source in
+            target.withUnsafeFileSystemRepresentation { destination in
+                guard let source, let destination else { return Int32(-1) }
+                return Darwin.rename(source, destination)
+            }
+        }
+        guard renameResult == 0 else {
+            let message = String(cString: strerror(errno))
+            throw FinanceError.database(
+                "Die neue Finanzdatei konnte nicht atomar freigegeben werden: \(message)"
+            )
+        }
+        targetCreatedByImport = true
+        try Self.validateBackup(at: target)
+        let targetValues = try target.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard targetValues.isRegularFile == true,
+              targetValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Das fertige Importziel ist keine reguläre, direkte Datei."
+            )
+        }
+        published = true
+        return OpenDataArchiveImportSummary(
+            archiveURL: archive,
+            financeFileURL: target,
+            formatVersion: 1,
+            tableCount: archiveTables.count,
+            rowCount: calculatedRows,
+            attachmentCount: declaredAttachmentCount,
+            importedSettings: importedSettings,
+            checksumManifestSHA256: digest(manifestData)
+        )
+    }
+
+    /// Erzeugt eine gewartete, eigenständig geprüfte Kopie. Die aktive
+    /// Verbindung und ihre Quelldatei werden dabei niemals ersetzt.
+    func repairCopy(to target: URL) throws {
+        let manager = FileManager.default
+        let sourcePath = fileURL.standardizedFileURL.path
+        let targetPath = target.standardizedFileURL.path
+        guard sourcePath != targetPath else {
+            throw FinanceError.database(
+                "Die aktive Finanzdatei darf nicht als Reparaturziel verwendet werden."
+            )
+        }
+        guard !manager.fileExists(atPath: targetPath) else {
+            throw FinanceError.database(
+                "Am Ziel der Reparaturkopie existiert bereits eine Datei."
+            )
+        }
+        var completed = false
+        defer {
+            if !completed {
+                try? manager.removeItem(at: target)
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    try? manager.removeItem(
+                        at: URL(fileURLWithPath: target.path + suffix)
+                    )
+                }
+            }
+        }
+
+        try backup(to: target)
+
+        var repairDatabase: OpaquePointer?
+        guard sqlite3_open_v2(
+            target.path,
+            &repairDatabase,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let database = repairDatabase else {
+            if let repairDatabase { sqlite3_close(repairDatabase) }
+            throw FinanceError.database(
+                "Die Reparaturkopie konnte nicht zur Wartung geöffnet werden."
+            )
+        }
+        defer {
+            if let repairDatabase { sqlite3_close(repairDatabase) }
+        }
+
+        guard sqlite3_busy_timeout(database, 5_000) == SQLITE_OK,
+              sqlite3_db_readonly(database, "main") == 0 else {
+            throw FinanceError.database(
+                "Die Reparaturkopie konnte nicht exklusiv gewartet werden."
+            )
+        }
+        guard sqlite3_exec(
+            database,
+            "PRAGMA foreign_keys=ON; REINDEX; VACUUM; PRAGMA optimize; PRAGMA journal_mode=DELETE;",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Indizes oder Seiten der Reparaturkopie konnten nicht neu aufgebaut werden."
+            )
+        }
+
+        var foreignKeyCheck: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database, "PRAGMA foreign_key_check", -1, &foreignKeyCheck, nil
+        ) == SQLITE_OK else {
+            throw FinanceError.invalidBackup
+        }
+        guard sqlite3_step(foreignKeyCheck) == SQLITE_DONE else {
+            sqlite3_finalize(foreignKeyCheck)
+            throw FinanceError.database(
+                "Die Reparaturkopie enthält verletzte Datenbeziehungen."
+            )
+        }
+        sqlite3_finalize(foreignKeyCheck)
+
+        var integrityCheck: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database, "PRAGMA integrity_check", -1, &integrityCheck, nil
+        ) == SQLITE_OK else {
+            throw FinanceError.invalidBackup
+        }
+        guard sqlite3_step(integrityCheck) == SQLITE_ROW,
+              Self.text(integrityCheck, 0) == "ok" else {
+            sqlite3_finalize(integrityCheck)
+            throw FinanceError.invalidBackup
+        }
+        sqlite3_finalize(integrityCheck)
+
+        guard sqlite3_close(database) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Die geprüfte Reparaturkopie konnte nicht geschlossen werden."
+            )
+        }
+        repairDatabase = nil
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: target.path + suffix)
+            if manager.fileExists(atPath: sidecar.path) {
+                try manager.removeItem(at: sidecar)
+            }
+        }
+        try Self.validateBackup(at: target)
+        completed = true
     }
 
     func integrityCheck() throws -> Bool {
@@ -2543,15 +11832,57 @@ final class SQLiteFinanceStore {
         return result == "ok"
     }
 
-    private func writeTransaction(_ value: FinanceTransaction, now: String) throws {
+    private func writeTransaction(
+        _ value: FinanceTransaction,
+        now: String,
+        computeFingerprint: Bool = true
+    ) throws {
+        try value.validate()
+        var accountCurrency: String?
+        try query(
+            "SELECT currency FROM accounts WHERE id=?",
+            [.text(value.accountID.uuidString)]
+        ) { accountCurrency = Self.text($0, 0).uppercased() }
+        guard accountCurrency == value.currency.uppercased() else {
+            throw FinanceError.invalidExchangeRate(
+                "Die Buchungswährung muss der Währung des Kontos entsprechen."
+            )
+        }
         try run(
             """
-            INSERT INTO transactions(id,account_id,booking_date,value_date,payee,purpose,category_id,amount_minor,currency,status,memo,reference,transfer_id,import_fingerprint,payee_id,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO transactions(
+                id,account_id,booking_date,value_date,payee,purpose,category_id,
+                amount_minor,currency,status,memo,reference,transfer_id,
+                import_fingerprint,payee_id,created_at,updated_at,
+                vat_code_id,vat_mode,net_minor,tax_minor,
+                origin,external_provider,external_transaction_id,
+                counterparty_iban,end_to_end_id,mandate_reference,
+                duplicate_fingerprint,bank_balance_after_minor,
+                counterparty_bic,creditor_id,booking_text,
+                original_amount_minor,original_currency,exchange_rate_scaled,flag_color
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET booking_date=excluded.booking_date,value_date=excluded.value_date,
                 payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                 amount_minor=excluded.amount_minor,currency=excluded.currency,status=excluded.status,
                 memo=excluded.memo,reference=excluded.reference,payee_id=excluded.payee_id,
+                vat_code_id=excluded.vat_code_id,vat_mode=excluded.vat_mode,
+                net_minor=excluded.net_minor,tax_minor=excluded.tax_minor,
+                origin=excluded.origin,
+                external_provider=excluded.external_provider,
+                external_transaction_id=excluded.external_transaction_id,
+                counterparty_iban=excluded.counterparty_iban,
+                end_to_end_id=excluded.end_to_end_id,
+                mandate_reference=excluded.mandate_reference,
+                duplicate_fingerprint=excluded.duplicate_fingerprint,
+                bank_balance_after_minor=excluded.bank_balance_after_minor,
+                counterparty_bic=excluded.counterparty_bic,
+                creditor_id=excluded.creditor_id,
+                booking_text=excluded.booking_text,
+                original_amount_minor=excluded.original_amount_minor,
+                original_currency=excluded.original_currency,
+                exchange_rate_scaled=excluded.exchange_rate_scaled,
+                flag_color=excluded.flag_color,
                 updated_at=excluded.updated_at,version=version+1
             """,
             [
@@ -2564,7 +11895,30 @@ final class SQLiteFinanceStore {
                 value.transferID.map { .text($0.uuidString) } ?? .null,
                 value.importFingerprint.map(SQLiteValue.text) ?? .null,
                 value.payeeID.map { .text($0.uuidString) } ?? .null,
-                .text(now), .text(now)
+                .text(now), .text(now),
+                value.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                .text(value.vatMode.rawValue),
+                .integer(value.netMinor),
+                .integer(value.taxMinor),
+                .text(value.origin.rawValue),
+                .text(value.externalProvider),
+                .text(value.externalTransactionID),
+                .text(value.counterpartyIBAN),
+                .text(value.endToEndID),
+                .text(value.mandateReference),
+                .text(
+                    value.duplicateFingerprint.isEmpty && computeFingerprint
+                        ? ImportMatcher.strongFingerprint(value)
+                        : value.duplicateFingerprint
+                ),
+                value.bankBalanceAfterMinor.map(SQLiteValue.integer) ?? .null,
+                .text(value.counterpartyBIC),
+                .text(value.creditorID),
+                .text(value.bookingText),
+                value.originalAmountMinor.map(SQLiteValue.integer) ?? .null,
+                .text(value.originalCurrency.uppercased()),
+                value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null,
+                .text(value.flag?.rawValue ?? "")
             ]
         )
         try run("DELETE FROM transaction_tags WHERE transaction_id=?", [.text(value.id.uuidString)])
@@ -2577,11 +11931,21 @@ final class SQLiteFinanceStore {
         try run("DELETE FROM transaction_splits WHERE transaction_id=?", [.text(value.id.uuidString)])
         for split in value.splits {
             try run(
-                "INSERT INTO transaction_splits(id,transaction_id,category_id,amount_minor,memo,sort_order) VALUES(?,?,?,?,?,?)",
+                """
+                INSERT INTO transaction_splits(
+                    id,transaction_id,category_id,amount_minor,memo,sort_order,
+                    vat_code_id,vat_mode,net_minor,tax_minor
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
                 [
                     .text(split.id.uuidString), .text(value.id.uuidString),
                     split.categoryID.map { .text($0.uuidString) } ?? .null,
-                    .integer(split.amountMinor), .text(split.memo), .integer(Int64(split.sortOrder))
+                    .integer(split.amountMinor), .text(split.memo),
+                    .integer(Int64(split.sortOrder)),
+                    split.vatCodeID.map { .text($0.uuidString) } ?? .null,
+                    .text(split.vatMode.rawValue),
+                    .integer(split.netMinor),
+                    .integer(split.taxMinor)
                 ]
             )
             for tagID in Set(split.tagIDs) {
@@ -2596,10 +11960,18 @@ final class SQLiteFinanceStore {
     private func splits(transactionID: UUID) throws -> [FinanceSplit] {
         var values: [FinanceSplit] = []
         try query(
-            "SELECT id,category_id,amount_minor,memo,sort_order FROM transaction_splits WHERE transaction_id=? ORDER BY sort_order",
+            """
+            SELECT id,category_id,amount_minor,memo,sort_order,
+                   vat_code_id,vat_mode,net_minor,tax_minor
+            FROM transaction_splits
+            WHERE transaction_id=? ORDER BY sort_order
+            """,
             [.text(transactionID.uuidString)]
         ) {
-            guard let id = UUID(uuidString: Self.text($0, 0)) else { return }
+            guard
+                let id = UUID(uuidString: Self.text($0, 0)),
+                let vatMode = VATMode(rawValue: Self.text($0, 6))
+            else { return }
             values.append(
                 FinanceSplit(
                     id: id,
@@ -2607,7 +11979,11 @@ final class SQLiteFinanceStore {
                     amountMinor: sqlite3_column_int64($0, 2),
                     memo: Self.text($0, 3),
                     sortOrder: Int(sqlite3_column_int($0, 4)),
-                    tagIDs: []
+                    tagIDs: [],
+                    vatCodeID: Self.optionalText($0, 5).flatMap(UUID.init(uuidString:)),
+                    vatMode: vatMode,
+                    netMinor: sqlite3_column_int64($0, 7),
+                    taxMinor: sqlite3_column_int64($0, 8)
                 )
             )
         }
@@ -2630,6 +12006,20 @@ final class SQLiteFinanceStore {
             if let id = UUID(uuidString: Self.text($0, 0)) { values.append(id) }
         }
         return values
+    }
+
+    private func validateVATReferences(_ value: FinanceTransaction) throws {
+        var referenced = Set(value.splits.compactMap(\.vatCodeID))
+        if let vatCodeID = value.vatCodeID {
+            referenced.insert(vatCodeID)
+        }
+        guard !referenced.isEmpty else { return }
+        let existing = Set(try vatCodes().map(\.id))
+        guard referenced.isSubset(of: existing) else {
+            throw FinanceError.invalidVAT(
+                "Mindestens ein verwendeter MwSt.-Schlüssel existiert nicht."
+            )
+        }
     }
 
     private func seedCategories(financeFileID: UUID) throws {
@@ -2656,12 +12046,30 @@ final class SQLiteFinanceStore {
     }
 
     private func transaction(_ operation: () throws -> Void) throws {
-        try execute("BEGIN IMMEDIATE")
+        let nested = transactionDepth > 0
+        let savepoint = "fv_nested_\(transactionDepth)"
+        if nested {
+            try execute("SAVEPOINT \(savepoint)")
+        } else {
+            try execute("BEGIN IMMEDIATE")
+        }
+        transactionDepth += 1
         do {
             try operation()
-            try execute("COMMIT")
+            transactionDepth -= 1
+            if nested {
+                try execute("RELEASE SAVEPOINT \(savepoint)")
+            } else {
+                try execute("COMMIT")
+            }
         } catch {
-            try? execute("ROLLBACK")
+            transactionDepth -= 1
+            if nested {
+                try? execute("ROLLBACK TO SAVEPOINT \(savepoint)")
+                try? execute("RELEASE SAVEPOINT \(savepoint)")
+            } else {
+                try? execute("ROLLBACK")
+            }
             throw error
         }
     }
@@ -2721,6 +12129,13 @@ final class SQLiteFinanceStore {
                 code = sqlite3_bind_int64(statement, index, number)
             case .text(let text):
                 code = sqlite3_bind_text(statement, index, text, -1, transient)
+            case .blob(let data):
+                code = data.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(
+                        statement, index, bytes.baseAddress,
+                        Int32(bytes.count), transient
+                    )
+                }
             case .null:
                 code = sqlite3_bind_null(statement, index)
             }
@@ -2741,6 +12156,14 @@ final class SQLiteFinanceStore {
         sqlite3_column_type(statement, column) == SQLITE_NULL ? nil : text(statement, column)
     }
 
+    private static func data(_ statement: OpaquePointer?, _ column: Int32) -> Data {
+        let count = Int(sqlite3_column_bytes(statement, column))
+        guard count > 0, let bytes = sqlite3_column_blob(statement, column) else {
+            return Data()
+        }
+        return Data(bytes: bytes, count: count)
+    }
+
     private static let dayFormatter: DateFormatter = {
         let value = DateFormatter()
         value.calendar = Calendar(identifier: .gregorian)
@@ -2751,10 +12174,63 @@ final class SQLiteFinanceStore {
     }()
 
     private static func day(_ date: Date) -> String { dayFormatter.string(from: date) }
-    private static func date(_ text: String) -> Date? { dayFormatter.date(from: text) }
+    private static func date(_ text: String) -> Date? {
+        let bytes = Array(text.utf8)
+        guard bytes.count == 10, bytes[4] == 45, bytes[7] == 45 else {
+            return nil
+        }
+        func number(_ range: Range<Int>) -> Int? {
+            var result = 0
+            for index in range {
+                let byte = bytes[index]
+                guard byte >= 48, byte <= 57 else { return nil }
+                result = result * 10 + Int(byte - 48)
+            }
+            return result
+        }
+        guard let year = number(0..<4),
+              let month = number(5..<7),
+              let day = number(8..<10),
+              (1...12).contains(month) else { return nil }
+        let leapYear = year.isMultiple(of: 4)
+            && (!year.isMultiple(of: 100) || year.isMultiple(of: 400))
+        let daysInMonth = [
+            31, leapYear ? 29 : 28, 31, 30, 31, 30,
+            31, 31, 30, 31, 30, 31
+        ]
+        guard (1...daysInMonth[month - 1]).contains(day) else { return nil }
+
+        let adjustedYear = year - (month <= 2 ? 1 : 0)
+        let era = adjustedYear >= 0
+            ? adjustedYear / 400
+            : (adjustedYear - 399) / 400
+        let yearOfEra = adjustedYear - era * 400
+        let adjustedMonth = month + (month > 2 ? -3 : 9)
+        let dayOfYear = (153 * adjustedMonth + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4
+            - yearOfEra / 100 + dayOfYear
+        let daysSinceEpoch = era * 146_097 + dayOfEra - 719_468
+        return Date(timeIntervalSince1970: TimeInterval(daysSinceEpoch * 86_400))
+    }
     private static func timestamp(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
     private static func timestampDate(_ text: String) -> Date? {
         ISO8601DateFormatter().date(from: text)
+    }
+
+    private static func bankingOperationsText(
+        _ operations: Set<BankingOperation>
+    ) -> String {
+        operations.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    private static func bankingOperations(
+        _ text: String
+    ) -> Set<BankingOperation> {
+        Set(
+            text.split(separator: ",").compactMap {
+                BankingOperation(rawValue: String($0))
+            }
+        )
     }
 
     private static func scaledProduct(_ quantityMicro: Int64, _ priceMinor: Int64) -> Int64 {
@@ -2788,89 +12264,488 @@ final class SQLiteFinanceStore {
 private enum SQLiteValue {
     case integer(Int64)
     case text(String)
+    case blob(Data)
     case null
 }
 
 enum CSVFinanceImporter {
-    static func preview(data: Data, account: FinanceAccount) throws -> ImportPreview {
-        let text = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .isoLatin1)
-            ?? ""
-        let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        guard let header = lines.first else {
-            return ImportPreview(rows: [], rejectedRows: ["Die Datei ist leer."], fingerprint: fingerprint)
+    static func suggestedProfile(data: Data) throws -> CSVImportProfile {
+        let encoding: CSVImportEncoding
+        if String(data: data, encoding: .utf8) != nil {
+            encoding = .utf8
+        } else if String(data: data, encoding: .windowsCP1252) != nil {
+            encoding = .windows1252
+        } else if String(data: data, encoding: .isoLatin1) != nil {
+            encoding = .isoLatin1
+        } else {
+            throw FinanceError.invalidCSVImport(
+                "Die Textkodierung konnte nicht erkannt werden."
+            )
         }
-        let separator: Character = header.filter { $0 == ";" }.count >= header.filter { $0 == "," }.count ? ";" : ","
-        let headings = fields(header, separator: separator).map { $0.lowercased() }
+        let text = try decodedText(data, encoding: encoding)
+        let firstLine = text.components(separatedBy: .newlines).first ?? ""
+        let separator: CSVImportSeparator
+        let candidates: [(CSVImportSeparator, Int)] = [
+            (.semicolon, firstLine.filter { $0 == ";" }.count),
+            (.comma, firstLine.filter { $0 == "," }.count),
+            (.tab, firstLine.filter { $0 == "\t" }.count)
+        ]
+        separator = candidates.max {
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return CSVImportSeparator.allCases.firstIndex(of: $0.0)!
+                > CSVImportSeparator.allCases.firstIndex(of: $1.0)!
+        }?.0 ?? .semicolon
+        var profile = CSVImportProfile(
+            encoding: encoding,
+            separator: separator
+        )
+        let inspection = try inspect(data: data, profile: profile)
+        profile.mappings = suggestedMappings(for: inspection.columns)
+        if let dateColumn = profile.column(for: .bookingDate),
+           let sample = inspection.sampleRows.first(where: {
+               dateColumn < $0.count && !$0[dateColumn].isEmpty
+           })?[dateColumn] {
+            profile.dateFormat = detectedDateFormat(sample) ?? .germanLong
+        }
+        let amountFields: [CSVImportField] = [.amount, .debit, .credit]
+        if let amountColumn = amountFields.compactMap({ profile.column(for: $0) }).first,
+           let sample = inspection.sampleRows.first(where: {
+               amountColumn < $0.count && !$0[amountColumn].isEmpty
+           })?[amountColumn] {
+            if sample.contains(",") {
+                profile.decimalSeparator = ","
+                profile.thousandsSeparator = "."
+            } else if sample.contains(".") {
+                profile.decimalSeparator = "."
+                profile.thousandsSeparator = ","
+            }
+        }
+        profile.amountMode = profile.column(for: .amount) == nil
+            && (profile.column(for: .debit) != nil || profile.column(for: .credit) != nil)
+            ? .debitCredit : .signed
+        return profile
+    }
+
+    static func inspect(
+        data: Data,
+        profile: CSVImportProfile
+    ) throws -> CSVImportInspection {
+        let rows = try parsedRows(
+            try decodedText(data, encoding: profile.encoding),
+            separator: profile.separator.character
+        )
+        guard let first = rows.first else {
+            throw FinanceError.invalidCSVImport("Die Datei ist leer.")
+        }
+        let width = rows.map(\.count).max() ?? first.count
+        let columns: [String]
+        if profile.hasHeader {
+            columns = (0..<width).map { index in
+                guard index < first.count else { return "Spalte \(index + 1)" }
+                let value = first[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? "Spalte \(index + 1)" : value
+            }
+        } else {
+            columns = (0..<width).map { "Spalte \($0 + 1)" }
+        }
+        let content = profile.hasHeader ? Array(rows.dropFirst()) : rows
+        return CSVImportInspection(
+            columns: columns,
+            sampleRows: Array(content.prefix(20)),
+            rowCount: content.count
+        )
+    }
+
+    static func preview(
+        data: Data,
+        account: FinanceAccount,
+        profile: CSVImportProfile,
+        categories: [FinanceCategory] = []
+    ) throws -> ImportPreview {
+        guard profile.schema == CSVImportProfile.schemaVersion else {
+            throw FinanceError.invalidCSVImport(
+                "Profilversion \(profile.schema) wird nicht unterstützt."
+            )
+        }
+        guard profile.column(for: .bookingDate) != nil else {
+            throw FinanceError.invalidCSVImport(
+                "Das Buchungsdatum ist keiner Quellspalte zugeordnet."
+            )
+        }
+        switch profile.amountMode {
+        case .signed:
+            guard profile.column(for: .amount) != nil else {
+                throw FinanceError.invalidCSVImport(
+                    "Der Betrag ist keiner Quellspalte zugeordnet."
+                )
+            }
+        case .debitCredit:
+            guard profile.column(for: .debit) != nil
+                    || profile.column(for: .credit) != nil else {
+                throw FinanceError.invalidCSVImport(
+                    "Weder Soll noch Haben ist einer Quellspalte zugeordnet."
+                )
+            }
+        }
+        let text = try decodedText(data, encoding: profile.encoding)
+        let parsed = try parsedRows(text, separator: profile.separator.character)
+        let content = profile.hasHeader ? parsed.dropFirst() : parsed[...]
+        let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         var rows: [FinanceTransaction] = []
         var rejected: [String] = []
-        for (offset, line) in lines.dropFirst().enumerated() {
-            let values = fields(line, separator: separator)
-            let record = Dictionary(uniqueKeysWithValues: zip(headings, values))
+        for (offset, values) in content.enumerated() {
+            let lineNumber = offset + (profile.hasHeader ? 2 : 1)
             do {
-                guard
-                    let dateText = record["datum"] ?? record["date"],
-                    let date = parseDate(dateText),
-                    let amountText = record["betrag"] ?? record["amount"]
-                else { throw FinanceError.invalidAmount(line) }
-                let amount = try Money(parsing: amountText, currency: account.currency)
+                let dateText = value(.bookingDate, in: values, profile: profile)
+                guard !dateText.isEmpty,
+                      let date = parseDate(dateText, format: profile.dateFormat)
+                else {
+                    throw FinanceError.invalidCSVImport(
+                        "Buchungsdatum „\(dateText)“ passt nicht zu \(profile.dateFormat.title)."
+                    )
+                }
+                let rawValueDate = value(.valueDate, in: values, profile: profile)
+                let valueDate: Date?
+                if rawValueDate.isEmpty {
+                    valueDate = nil
+                } else if let parsedDate = parseDate(
+                    rawValueDate, format: profile.dateFormat
+                ) {
+                    valueDate = parsedDate
+                } else {
+                    throw FinanceError.invalidCSVImport(
+                        "Wertstellung „\(rawValueDate)“ passt nicht zu \(profile.dateFormat.title)."
+                    )
+                }
+                let amountMinor = try parsedAmount(
+                    values: values, profile: profile, currency: account.currency
+                )
+                let externalID = value(
+                    .externalTransactionID, in: values, profile: profile
+                )
+                let explicitProvider = value(.provider, in: values, profile: profile)
+                let provider = explicitProvider.isEmpty && !externalID.isEmpty
+                    ? "CSV" : explicitProvider
+                let rawBankBalance = value(
+                    .bankBalanceAfter, in: values, profile: profile
+                )
+                let bankBalance = rawBankBalance.isEmpty ? nil : try parseMoney(
+                    rawBankBalance, profile: profile,
+                    currency: account.currency
+                ).minorUnits
+                let categoryText = value(.category, in: values, profile: profile)
+                let categoryID = try categoryID(
+                    for: categoryText, categories: categories
+                )
                 rows.append(
                     FinanceTransaction(
-                        id: UUID(), accountID: account.id, bookingDate: date, valueDate: nil,
-                        payee: record["empfänger"] ?? record["empfaenger"] ?? record["payee"] ?? "",
-                        purpose: record["verwendungszweck"] ?? record["purpose"] ?? "",
-                        categoryID: nil, amountMinor: amount.minorUnits, currency: account.currency,
-                        status: .booked, memo: record["notiz"] ?? record["memo"] ?? "",
-                        reference: record["referenz"] ?? record["reference"] ?? "",
-                        transferID: nil, importFingerprint: fingerprint, splits: []
+                        id: UUID(), accountID: account.id, bookingDate: date,
+                        valueDate: valueDate,
+                        payee: value(.payee, in: values, profile: profile),
+                        purpose: value(.purpose, in: values, profile: profile),
+                        categoryID: categoryID, amountMinor: amountMinor,
+                        currency: account.currency,
+                        status: .booked,
+                        memo: value(.memo, in: values, profile: profile),
+                        reference: value(.reference, in: values, profile: profile),
+                        transferID: nil, importFingerprint: fingerprint, splits: [],
+                        origin: .fileImport,
+                        externalProvider: provider,
+                        externalTransactionID: externalID,
+                        counterpartyIBAN: value(
+                            .counterpartyIBAN, in: values, profile: profile
+                        ),
+                        endToEndID: value(.endToEndID, in: values, profile: profile),
+                        mandateReference: value(
+                            .mandateReference, in: values, profile: profile
+                        ),
+                        bankBalanceAfterMinor: bankBalance,
+                        counterpartyBIC: value(
+                            .counterpartyBIC, in: values, profile: profile
+                        ),
+                        creditorID: value(.creditorID, in: values, profile: profile),
+                        bookingText: value(.bookingText, in: values, profile: profile)
                     )
                 )
             } catch {
-                rejected.append("Zeile \(offset + 2): \(line)")
+                rejected.append("Zeile \(lineNumber): \(error.localizedDescription)")
             }
         }
         return ImportPreview(rows: rows, rejectedRows: rejected, fingerprint: fingerprint)
     }
 
-    private static func fields(_ line: String, separator: Character) -> [String] {
-        var values: [String] = []
-        var current = ""
+    static func preview(data: Data, account: FinanceAccount) throws -> ImportPreview {
+        let profile = try suggestedProfile(data: data)
+        return try preview(data: data, account: account, profile: profile)
+    }
+
+    private static func decodedText(
+        _ data: Data,
+        encoding: CSVImportEncoding
+    ) throws -> String {
+        let foundationEncoding: String.Encoding = switch encoding {
+        case .utf8: .utf8
+        case .windows1252: .windowsCP1252
+        case .isoLatin1: .isoLatin1
+        }
+        guard let text = String(data: data, encoding: foundationEncoding) else {
+            throw FinanceError.invalidCSVImport(
+                "Die Datei ist nicht gültig als \(encoding.title) kodiert."
+            )
+        }
+        return text.replacingOccurrences(of: "\u{feff}", with: "")
+    }
+
+    private static func parsedRows(
+        _ text: String,
+        separator: Character
+    ) throws -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
         var quoted = false
-        var index = line.startIndex
-        while index < line.endIndex {
-            let character = line[index]
+        let characters = Array(text)
+        var index = 0
+        func appendField() {
+            row.append(field.trimmingCharacters(in: .whitespacesAndNewlines))
+            field = ""
+        }
+        func appendRow() {
+            appendField()
+            if row.contains(where: { !$0.isEmpty }) { rows.append(row) }
+            row = []
+        }
+        while index < characters.count {
+            let character = characters[index]
             if character == "\"" {
-                let next = line.index(after: index)
-                if quoted, next < line.endIndex, line[next] == "\"" {
-                    current.append("\"")
-                    index = next
+                if quoted, index + 1 < characters.count,
+                   characters[index + 1] == "\"" {
+                    field.append("\"")
+                    index += 1
                 } else {
                     quoted.toggle()
                 }
             } else if character == separator, !quoted {
-                values.append(current.trimmingCharacters(in: .whitespaces))
-                current = ""
+                appendField()
+            } else if (character == "\n" || character == "\r"), !quoted {
+                if character == "\r", index + 1 < characters.count,
+                   characters[index + 1] == "\n" {
+                    index += 1
+                }
+                appendRow()
             } else {
-                current.append(character)
+                field.append(character)
             }
-            index = line.index(after: index)
+            index += 1
         }
-        values.append(current.trimmingCharacters(in: .whitespaces))
-        return values
+        guard !quoted else {
+            throw FinanceError.invalidCSVImport(
+                "Ein Anführungszeichen wurde nicht geschlossen."
+            )
+        }
+        if !field.isEmpty || !row.isEmpty {
+            appendRow()
+        }
+        return rows
     }
 
-    private static func parseDate(_ text: String) -> Date? {
-        for format in ["dd.MM.yyyy", "yyyy-MM-dd", "dd.MM.yy"] {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "de_DE")
-            formatter.timeZone = TimeZone.current
-            formatter.dateFormat = format
-            if let date = formatter.date(from: text.trimmingCharacters(in: .whitespaces)) {
-                return date
+    private static func suggestedMappings(for columns: [String]) -> [String: Int] {
+        let aliases: [CSVImportField: [String]] = [
+            .bookingDate: ["datum", "date", "buchungsdatum"],
+            .valueDate: ["wertstellung", "valuta", "value date", "value_date"],
+            .payee: ["empfänger", "empfaenger", "payee", "auftraggeber"],
+            .purpose: ["verwendungszweck", "purpose", "buchungsbeschreibung"],
+            .amount: ["betrag", "amount", "umsatz"],
+            .debit: ["soll", "belastung", "debit"],
+            .credit: ["haben", "gutschrift", "credit"],
+            .category: ["kategorie", "category", "kategoriepfad"],
+            .memo: ["notiz", "memo"],
+            .reference: ["referenz", "reference", "belegnummer"],
+            .externalTransactionID: [
+                "transaktions-id", "transaktionsid", "bank-id",
+                "transaction id", "transaction_id"
+            ],
+            .provider: ["provider", "anbieter", "bank"],
+            .counterpartyIBAN: ["iban", "gegenkonto iban", "counterparty iban"],
+            .counterpartyBIC: ["bic", "gegenkonto bic", "counterparty bic"],
+            .endToEndID: ["end-to-end-id", "endtoendid", "end_to_end_id"],
+            .mandateReference: [
+                "mandatsreferenz", "mandate reference", "mandate_reference"
+            ],
+            .creditorID: [
+                "gläubiger-id", "glaeubiger-id", "creditor id", "creditor_id"
+            ],
+            .bookingText: ["buchungstext", "booking text", "booking_text"],
+            .bankBalanceAfter: ["saldo danach", "banksaldo", "balance after"]
+        ]
+        var result: [String: Int] = [:]
+        for (index, heading) in columns.enumerated() {
+            let normalized = normalizedHeading(heading)
+            if let field = aliases.first(where: {
+                $0.value.map(normalizedHeading).contains(normalized)
+            })?.key, result[field.rawValue] == nil {
+                result[field.rawValue] = index
             }
         }
-        return nil
+        return result
+    }
+
+    private static func normalizedHeading(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "de_DE")
+        )
+    }
+
+    private static func detectedDateFormat(_ value: String) -> CSVImportDateFormat? {
+        CSVImportDateFormat.allCases.first { parseDate(value, format: $0) != nil }
+    }
+
+    private static func parseDate(
+        _ text: String,
+        format: CSVImportDateFormat
+    ) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone.current
+        formatter.isLenient = false
+        formatter.dateFormat = format.pattern
+        return formatter.date(
+            from: text.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private static func value(
+        _ field: CSVImportField,
+        in row: [String],
+        profile: CSVImportProfile
+    ) -> String {
+        guard let index = profile.column(for: field), index >= 0,
+              index < row.count else { return "" }
+        return row[index].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parsedAmount(
+        values: [String],
+        profile: CSVImportProfile,
+        currency: String
+    ) throws -> Int64 {
+        switch profile.amountMode {
+        case .signed:
+            return try parseMoney(
+                value(.amount, in: values, profile: profile),
+                profile: profile, currency: currency
+            ).minorUnits
+        case .debitCredit:
+            let debitText = value(.debit, in: values, profile: profile)
+            let creditText = value(.credit, in: values, profile: profile)
+            let debit = debitText.isEmpty ? nil : try parseMoney(
+                debitText, profile: profile, currency: currency
+            ).minorUnits
+            let credit = creditText.isEmpty ? nil : try parseMoney(
+                creditText, profile: profile, currency: currency
+            ).minorUnits
+            if let debit, debit != 0, let credit, credit != 0 {
+                throw FinanceError.invalidCSVImport(
+                    "Soll und Haben sind gleichzeitig befüllt."
+                )
+            }
+            if let debit {
+                guard debit != Int64.min else {
+                    throw FinanceError.invalidCSVImport("Der Sollbetrag ist zu groß.")
+                }
+                return -Swift.abs(debit)
+            }
+            if let credit {
+                guard credit != Int64.min else {
+                    throw FinanceError.invalidCSVImport("Der Habenbetrag ist zu groß.")
+                }
+                return Swift.abs(credit)
+            }
+            throw FinanceError.invalidCSVImport("Soll und Haben sind leer.")
+        }
+    }
+
+    private static func parseMoney(
+        _ raw: String,
+        profile: CSVImportProfile,
+        currency: String
+    ) throws -> Money {
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FinanceError.invalidCSVImport("Der Betrag ist leer.")
+        }
+        guard [",", "."].contains(profile.decimalSeparator),
+              profile.thousandsSeparator != profile.decimalSeparator else {
+            throw FinanceError.invalidCSVImport(
+                "Dezimal- und Tausendertrennzeichen sind ungültig."
+            )
+        }
+        var normalized = raw
+            .replacingOccurrences(of: "\u{00a0}", with: "")
+            .replacingOccurrences(of: " ", with: "")
+        if !profile.thousandsSeparator.isEmpty {
+            normalized = normalized.replacingOccurrences(
+                of: profile.thousandsSeparator, with: ""
+            )
+        }
+        if profile.decimalSeparator == "." {
+            normalized = normalized.replacingOccurrences(of: ".", with: ",")
+        }
+        return try Money(parsing: normalized, currency: currency)
+    }
+
+    private static func categoryID(
+        for rawPath: String,
+        categories: [FinanceCategory]
+    ) throws -> UUID? {
+        guard !rawPath.isEmpty else { return nil }
+        let normalizedTarget = normalizedCategoryPath(rawPath)
+        let byID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let matches = categories.filter { category in
+            normalizedCategoryPath(categoryPath(category, byID: byID))
+                == normalizedTarget
+        }
+        if matches.count == 1 { return matches[0].id }
+        let leafMatches = categories.filter {
+            normalizedCategoryPath($0.name) == normalizedTarget
+        }
+        if leafMatches.count == 1 { return leafMatches[0].id }
+        throw FinanceError.invalidCSVImport(
+            matches.isEmpty && leafMatches.isEmpty
+                ? "Kategorie „\(rawPath)“ wurde nicht gefunden."
+                : "Kategorie „\(rawPath)“ ist ohne vollständigen Pfad nicht eindeutig."
+        )
+    }
+
+    private static func categoryPath(
+        _ category: FinanceCategory,
+        byID: [UUID: FinanceCategory]
+    ) -> String {
+        var names = [category.name]
+        var parentID = category.parentID
+        var visited = Set<UUID>([category.id])
+        while let id = parentID, visited.insert(id).inserted,
+              let parent = byID[id] {
+            names.append(parent.name)
+            parentID = parent.parentID
+        }
+        return names.reversed().joined(separator: ":")
+    }
+
+    private static func normalizedCategoryPath(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: " › ", with: ":")
+            .replacingOccurrences(of: ">", with: ":")
+            .split(separator: ":")
+            .map {
+                String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .joined(separator: ":")
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "de_DE")
+            )
     }
 }
 
@@ -2883,8 +12758,21 @@ enum QIFFinanceImporter {
         let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1)
             ?? ""
+        let normalizedText = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let accountDirectiveCount = normalizedText
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces) == "!Account" }
+            .count
+        let typeDirectives = normalizedText
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("!Type:") }
+        if accountDirectiveCount > 0 || Set(typeDirectives).count > 1 {
+            throw FinanceError.qifPackageRequiresPackageImport
+        }
         let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let records = text.components(separatedBy: "\n^")
+        let records = normalizedText.components(separatedBy: "\n^")
         var rows: [FinanceTransaction] = []
         var rejected: [String] = []
         for (offset, rawRecord) in records.enumerated() {
@@ -2950,7 +12838,8 @@ enum QIFFinanceImporter {
                     payee: payee, purpose: memo, categoryID: splits.isEmpty ? categoryID : nil,
                     amountMinor: amount.minorUnits, currency: account.currency, status: .booked,
                     memo: "", reference: reference, transferID: nil,
-                    importFingerprint: fingerprint, splits: splits
+                    importFingerprint: fingerprint, splits: splits,
+                    origin: .fileImport
                 )
                 try transaction.validate()
                 rows.append(transaction)
@@ -2977,6 +12866,443 @@ enum QIFFinanceImporter {
             formatter.timeZone = TimeZone.current
             formatter.dateFormat = format
             if let date = formatter.date(from: cleaned) { return date }
+        }
+        return nil
+    }
+}
+
+enum QIFPackageImporter {
+    private struct RawRecord {
+        let section: String
+        let lines: [String]
+    }
+
+    private struct AccountRecord {
+        let account: FinanceAccount
+    }
+
+    private struct CategoryDraft {
+        let path: String
+        let kind: CategoryKind
+    }
+
+    static func isPackage(data: Data) -> Bool {
+        let text = decodedText(data)
+        let lines = normalizedLines(text)
+        return lines.contains("!Account")
+            || Set(lines.filter { $0.hasPrefix("!Type:") }).count > 1
+    }
+
+    static func preview(
+        data: Data,
+        existingAccounts: [FinanceAccount],
+        existingCategories: [FinanceCategory],
+        currency: String = "EUR"
+    ) throws -> QIFPackagePreview {
+        let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let records = records(in: decodedText(data))
+        var sectionCounts: [String: Int] = [:]
+        for record in records {
+            sectionCounts[displaySection(record.section), default: 0] += 1
+        }
+
+        var accountRecords: [AccountRecord] = []
+        var accountByKey: [String: FinanceAccount] = [:]
+        for record in records where normalizedSection(record.section) == "account" {
+            let fields = firstValues(record.lines)
+            guard let rawName = fields["N"], !rawName.trimmingCharacters(in: .whitespaces).isEmpty else {
+                continue
+            }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let type = accountType(fields["T"] ?? "")
+            let key = accountKey(name)
+            if accountByKey[key] != nil { continue }
+            let existing = existingAccounts.first {
+                accountKey($0.name) == key
+            }
+            let account = existing ?? FinanceAccount(
+                id: UUID(), name: name,
+                institution: (fields["D"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                type: type, currency: currency, openingBalanceMinor: 0,
+                isHidden: false, isClosed: false,
+                sortOrder: existingAccounts.count + accountRecords.count
+            )
+            accountByKey[key] = account
+            accountRecords.append(AccountRecord(account: account))
+        }
+        guard !accountRecords.isEmpty else { throw FinanceError.invalidQIFPackage }
+
+        let explicitCategoryDrafts = records
+            .filter { normalizedSection($0.section) == "cat" }
+            .compactMap(categoryDraft)
+        var inferredCategoryDrafts: [CategoryDraft] = []
+        var currentAccountName: String?
+        for record in records {
+            let section = normalizedSection(record.section)
+            if section == "account" {
+                currentAccountName = firstValues(record.lines)["N"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                continue
+            }
+            guard isTransactionSection(section), currentAccountName != nil else { continue }
+            let amount = try? transactionAmount(record.lines, currency: currency)
+            let kind: CategoryKind = (amount?.minorUnits ?? 0) >= 0 ? .income : .expense
+            for line in record.lines where line.first == "L" || line.first == "S" {
+                if let path = categoryPath(String(line.dropFirst())) {
+                    inferredCategoryDrafts.append(CategoryDraft(path: path, kind: kind))
+                }
+            }
+        }
+
+        let categories = categoryMapping(
+            existing: existingCategories,
+            drafts: explicitCategoryDrafts + inferredCategoryDrafts
+        )
+        let existingCategoryIDs = Set(existingCategories.map(\.id))
+        let categoriesToCreate = categories.ordered.filter { !existingCategoryIDs.contains($0.id) }
+
+        var rows: [FinanceTransaction] = []
+        var rejected: [String] = []
+        var unsupportedSectionCounts: [String: Int] = [:]
+        var supportedRecordCount = 0
+        currentAccountName = nil
+        for record in records {
+            let section = normalizedSection(record.section)
+            if section == "account" {
+                currentAccountName = firstValues(record.lines)["N"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                continue
+            }
+            guard !["cat", "class", "memorized"].contains(section) else {
+                if section != "cat" {
+                    unsupportedSectionCounts[displaySection(record.section), default: 0] += 1
+                }
+                continue
+            }
+            guard isTransactionSection(section) else { continue }
+            guard
+                let currentAccountName,
+                let account = accountByKey[accountKey(currentAccountName)]
+            else {
+                unsupportedSectionCounts[displaySection(record.section), default: 0] += 1
+                continue
+            }
+            if account.type == .investment || section == "invst" {
+                unsupportedSectionCounts[displaySection(record.section), default: 0] += 1
+                continue
+            }
+            supportedRecordCount += 1
+            do {
+                rows.append(
+                    try transaction(
+                        record.lines,
+                        account: account,
+                        categoryIDs: categories.idsByPath,
+                        fingerprint: fingerprint
+                    )
+                )
+            } catch {
+                rejected.append(
+                    "\(displaySection(record.section))-Datensatz \(supportedRecordCount): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        let newAccountIDs = Set(existingAccounts.map(\.id))
+        let accountsToCreate = accountRecords.map(\.account).filter { !newAccountIDs.contains($0.id) }
+        let unsupportedCount = unsupportedSectionCounts.values.reduce(0, +)
+        var warnings: [String] = []
+        if unsupportedCount > 0 {
+            warnings.append(
+                "\(unsupportedCount) Datensätze aus Depot-, Klassen- oder Merkpostenbereichen werden nicht übernommen."
+            )
+        }
+        if !rejected.isEmpty {
+            warnings.append("\(rejected.count) Buchungen müssen wegen unvollständiger oder widersprüchlicher Felder ausgelassen werden.")
+        }
+        return QIFPackagePreview(
+            accountsToCreate: accountsToCreate,
+            categoriesToCreate: categoriesToCreate,
+            importPreview: ImportPreview(
+                rows: rows, rejectedRows: rejected, fingerprint: fingerprint
+            ),
+            summary: QIFPackageSummary(
+                accountDefinitions: accountRecords.count,
+                categoryRecords: explicitCategoryDrafts.count,
+                transactionRecords: supportedRecordCount + unsupportedCount,
+                supportedTransactionRecords: rows.count,
+                sectionCounts: sectionCounts,
+                unsupportedSectionCounts: unsupportedSectionCounts
+            ),
+            warnings: warnings
+        )
+    }
+
+    private static func decodedText(_ data: Data) -> String {
+        String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? ""
+    }
+
+    private static func normalizedLines(_ text: String) -> [String] {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private static func records(in text: String) -> [RawRecord] {
+        var section = ""
+        var pendingLines: [String] = []
+        var values: [RawRecord] = []
+        func flush() {
+            guard !pendingLines.isEmpty else { return }
+            values.append(RawRecord(section: section, lines: pendingLines))
+            pendingLines.removeAll(keepingCapacity: true)
+        }
+        for line in normalizedLines(text) where !line.isEmpty {
+            if line == "^" {
+                flush()
+            } else if line.hasPrefix("!") {
+                flush()
+                if line == "!Account" {
+                    section = "Account"
+                } else if line.hasPrefix("!Type:") {
+                    section = String(line.dropFirst("!Type:".count))
+                }
+            } else {
+                pendingLines.append(line)
+            }
+        }
+        flush()
+        return values
+    }
+
+    private static func normalizedSection(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func displaySection(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Unbekannt" : trimmed
+    }
+
+    private static func firstValues(_ lines: [String]) -> [String: String] {
+        var values: [String: String] = [:]
+        for line in lines {
+            guard let code = line.first, values[String(code)] == nil else { continue }
+            values[String(code)] = String(line.dropFirst())
+        }
+        return values
+    }
+
+    private static func accountKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private static func accountType(_ value: String) -> AccountType {
+        switch normalizedSection(value) {
+        case "bank": .checking
+        case "cash": .cash
+        case "ccard": .creditCard
+        case "invst": .investment
+        case "oth l": .liability
+        case "loan": .loan
+        default: .asset
+        }
+    }
+
+    private static func isTransactionSection(_ section: String) -> Bool {
+        !section.isEmpty
+            && !["account", "cat", "class", "memorized"].contains(section)
+    }
+
+    private static func categoryDraft(_ record: RawRecord) -> CategoryDraft? {
+        let fields = firstValues(record.lines)
+        guard let rawName = fields["N"], let path = categoryPath(rawName) else { return nil }
+        let kind: CategoryKind = fields["I"] != nil ? .income : .expense
+        return CategoryDraft(path: path, kind: kind)
+    }
+
+    private static func categoryPath(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("[") else { return nil }
+        let withoutClass = trimmed.components(separatedBy: "/").first ?? trimmed
+        let parts = withoutClass
+            .components(separatedBy: ":")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: ":")
+    }
+
+    private static func categoryKey(_ path: String) -> String {
+        path.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private static func categoryMapping(
+        existing: [FinanceCategory],
+        drafts: [CategoryDraft]
+    ) -> (ordered: [FinanceCategory], idsByPath: [String: UUID]) {
+        var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        func path(for category: FinanceCategory) -> String {
+            var names = [category.name]
+            var parentID = category.parentID
+            var visited = Set([category.id])
+            while let id = parentID,
+                  visited.insert(id).inserted,
+                  let parent = byID[id] {
+                names.insert(parent.name, at: 0)
+                parentID = parent.parentID
+            }
+            return names.joined(separator: ":")
+        }
+        var idsByPath: [String: UUID] = [:]
+        for category in existing {
+            idsByPath[categoryKey(path(for: category))] = category.id
+        }
+        var ordered = existing
+        let sortedDrafts = drafts.sorted {
+            $0.path.components(separatedBy: ":").count
+                < $1.path.components(separatedBy: ":").count
+        }
+        for draft in sortedDrafts {
+            let parts = draft.path.components(separatedBy: ":")
+            var accumulated: [String] = []
+            var parentID: UUID?
+            for part in parts {
+                accumulated.append(part)
+                let fullPath = accumulated.joined(separator: ":")
+                let key = categoryKey(fullPath)
+                if let existingID = idsByPath[key] {
+                    parentID = existingID
+                    continue
+                }
+                let category = FinanceCategory(
+                    id: UUID(), parentID: parentID, name: part, kind: draft.kind,
+                    color: draft.kind == .income ? "green" : "blue", isActive: true
+                )
+                byID[category.id] = category
+                idsByPath[key] = category.id
+                ordered.append(category)
+                parentID = category.id
+            }
+        }
+        return (ordered, idsByPath)
+    }
+
+    private static func transactionAmount(_ lines: [String], currency: String) throws -> Money {
+        for line in lines where line.first == "T" || line.first == "U" {
+            return try qifMoney(String(line.dropFirst()), currency: currency)
+        }
+        throw FinanceError.invalidAmount("")
+    }
+
+    private static func transaction(
+        _ lines: [String],
+        account: FinanceAccount,
+        categoryIDs: [String: UUID],
+        fingerprint: String
+    ) throws -> FinanceTransaction {
+        var date: Date?
+        var amount: Money?
+        var payee = ""
+        var memo = ""
+        var reference = ""
+        var categoryID: UUID?
+        var splitDrafts: [(categoryID: UUID?, memo: String, amount: Money)] = []
+        var pendingSplitCategoryID: UUID?
+        var pendingSplitMemo = ""
+        for line in lines {
+            guard let code = line.first else { continue }
+            let value = String(line.dropFirst())
+            switch code {
+            case "D": date = parseDate(value)
+            case "T", "U":
+                if amount == nil { amount = try qifMoney(value, currency: account.currency) }
+            case "P": payee = value
+            case "M": memo = value
+            case "N": reference = value
+            case "L":
+                categoryID = categoryPath(value).flatMap { categoryIDs[categoryKey($0)] }
+            case "S":
+                pendingSplitCategoryID = categoryPath(value).flatMap { categoryIDs[categoryKey($0)] }
+            case "E": pendingSplitMemo = value
+            case "$":
+                splitDrafts.append(
+                    (
+                        pendingSplitCategoryID,
+                        pendingSplitMemo,
+                        try qifMoney(value, currency: account.currency)
+                    )
+                )
+                pendingSplitCategoryID = nil
+                pendingSplitMemo = ""
+            default: break
+            }
+        }
+        guard let date, let amount else { throw FinanceError.invalidAmount("") }
+        let splits = splitDrafts.enumerated().map {
+            FinanceSplit(
+                id: UUID(), categoryID: $0.element.categoryID,
+                amountMinor: $0.element.amount.minorUnits,
+                memo: $0.element.memo, sortOrder: $0.offset
+            )
+        }
+        let value = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: date, valueDate: nil,
+            payee: payee, purpose: memo, categoryID: splits.isEmpty ? categoryID : nil,
+            amountMinor: amount.minorUnits, currency: account.currency,
+            status: .booked, memo: "", reference: reference,
+            transferID: nil, importFingerprint: fingerprint, splits: splits,
+            origin: .fileImport
+        )
+        try value.validate()
+        return value
+    }
+
+    private static func qifMoney(_ text: String, currency: String) throws -> Money {
+        var normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\u{00a0}", with: "")
+            .replacingOccurrences(of: "€", with: "")
+        let negativeParentheses = normalized.hasPrefix("(") && normalized.hasSuffix(")")
+        if negativeParentheses {
+            normalized.removeFirst()
+            normalized.removeLast()
+        }
+        if let comma = normalized.lastIndex(of: ","),
+           let dot = normalized.lastIndex(of: ".") {
+            if comma < dot {
+                normalized = normalized.replacingOccurrences(of: ",", with: "")
+            } else {
+                normalized = normalized.replacingOccurrences(of: ".", with: "")
+                    .replacingOccurrences(of: ",", with: ".")
+            }
+        } else if let comma = normalized.lastIndex(of: ",") {
+            let decimals = normalized.distance(from: comma, to: normalized.endIndex) - 1
+            normalized = decimals <= 2
+                ? normalized.replacingOccurrences(of: ",", with: ".")
+                : normalized.replacingOccurrences(of: ",", with: "")
+        }
+        if negativeParentheses { normalized = "-" + normalized }
+        return try Money(parsing: normalized, currency: currency)
+    }
+
+    private static func parseDate(_ text: String) -> Date? {
+        let cleaned = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "'", with: "/")
+            .replacingOccurrences(of: ".", with: "/")
+        for format in ["M/d/yyyy", "M/d/yy", "MM/dd/yyyy", "MM/dd/yy", "dd/MM/yyyy"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = format
+            if let value = formatter.date(from: cleaned) { return value }
         }
         return nil
     }
