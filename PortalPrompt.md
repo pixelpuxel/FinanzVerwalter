@@ -2400,3 +2400,21 @@ Tabellen-, Beziehungs-, Split-, Hierarchie-, Tag- und Anhangsrundlauf,
 Quellunveränderlichkeit, Zielschutz, Rechte, fehlende Sidecars sowie die
 Abweisung manipulierter Hashes, Pfad-Ausbrüche, Symlinks und selbst korrekt im
 Manifest eingetragener Zusatzdateien.
+
+Ergänze Buchungen um ein optionales farbiges Kennzeichen mit den stabilen
+Werten `red`, `orange`, `yellow`, `green`, `blue` und `purple`. Migriere die
+SQLite-Datenbank additiv auf Schema 40: `transactions.flag_color` ist nicht
+NULL, nutzt für „ohne Kennzeichen“ den Leerstring, besitzt eine CHECK-Constraint
+auf exakt diese Werte und einen partiellen Index für markierte Buchungen.
+Altdaten aus Schema 39 müssen unverändert und ohne Kennzeichen erhalten bleiben.
+
+Führe das Kennzeichen durch sämtliche Buchungspfade: Laden und Speichern,
+Vorlagen, Duplikate, vollständige Undo-Snapshots, Sicherungen, Massenimport und
+offenes Gesamtdatenarchiv. Zeige im Kontoblatt eine sortierbare, konfigurierbare
+Spalte mit farbiger Fahne; migriere bestehende Spaltenkonfigurationen und
+gespeicherte Ansichten einmalig um diese Standardspalte. Ergänze Buchungs- und
+Splitbuchungseditor, Volltextsuche, Filter „alle/ohne/eine Farbe“, gespeicherte
+Ansichten, CSV-/PDF-Kontenblattausgabe und die atomare Massenorganisation.
+Kennzeichen-Massenänderungen müssen Schutzprüfung, Audit und vollständiges Undo
+nutzen. Teste Schema-39→40, Persistenz, Suche, Vorlagen, Bulk-Änderung und Undo;
+verwende für Zukunftsschema-Abweisungen ab dann Schema 41.

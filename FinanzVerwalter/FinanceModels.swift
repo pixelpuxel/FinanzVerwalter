@@ -285,6 +285,7 @@ struct FinanceTransaction: Identifiable, Hashable, Codable, Sendable {
     var originalAmountMinor: Int64? = nil
     var originalCurrency: String = ""
     var exchangeRateScaled: Int64? = nil
+    var flag: TransactionFlag? = nil
 
     func validate() throws {
         try validateForeignCurrency()
@@ -374,6 +375,22 @@ struct FinanceTransaction: Identifiable, Hashable, Codable, Sendable {
             throw FinanceError.invalidExchangeRate(
                 "Originalbetrag und Wechselkurs ergeben nicht den Kontobetrag."
             )
+        }
+    }
+}
+
+enum TransactionFlag: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
+    case red, orange, yellow, green, blue, purple
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .red: "Rot"
+        case .orange: "Orange"
+        case .yellow: "Gelb"
+        case .green: "Grün"
+        case .blue: "Blau"
+        case .purple: "Violett"
         }
     }
 }
@@ -541,6 +558,7 @@ struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
     var originalAmountMinor: Int64?
     var originalCurrency: String?
     var exchangeRateScaled: Int64?
+    var flag: TransactionFlag?
 
     init(id: UUID = UUID(), name: String, transaction: FinanceTransaction) {
         self.id = id
@@ -568,6 +586,7 @@ struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
         originalCurrency = transaction.originalCurrency.isEmpty
             ? nil : transaction.originalCurrency
         exchangeRateScaled = transaction.exchangeRateScaled
+        flag = transaction.flag
         splits = transaction.splits.map {
             TransactionTemplateSplit(
                 categoryID: $0.categoryID,
@@ -621,7 +640,8 @@ struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
             taxMinor: taxMinor ?? 0,
             originalAmountMinor: originalAmountMinor,
             originalCurrency: originalCurrency ?? "",
-            exchangeRateScaled: exchangeRateScaled
+            exchangeRateScaled: exchangeRateScaled,
+            flag: flag
         )
     }
 }

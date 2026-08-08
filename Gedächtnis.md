@@ -4651,3 +4651,48 @@ Rechtsberatung.
 - Telegram-Nachricht 1190 meldet den Stand im `/quicken`-Thread 894. Wegen
   der gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 27.539.177 Tokens.
+
+## 08.08.2026 – Farbige Buchungskennzeichen in Schema 40
+
+- `FinanceTransaction` besitzt nun ein optionales, typisiertes Kennzeichen in
+  Rot, Orange, Gelb, Grün, Blau oder Violett. Buchungsvorlagen übernehmen es;
+  ältere Codable-Snapshots bleiben durch das optionale Feld lesbar.
+- Die additive Migration 39→40 ergänzt `transactions.flag_color` mit enger
+  CHECK-Constraint und partiellem Index. Bestehende Buchungen werden als
+  „ohne Kennzeichen“ bewahrt. Lesen, Schreiben, Massenimport, Sicherung und
+  offenes Gesamtdatenarchiv führen die Spalte vollständig mit.
+- Das Kontoblatt zeigt eine sortierbare Kennzeichen-Spalte mit farbiger Fahne,
+  filtert nach allen, keinem oder einer bestimmten Farbe und nimmt Farbe und
+  deutsche Bezeichnung in die Volltextsuche auf. Filter und Spalte werden in
+  gespeicherten Ansichten bewahrt; bestehende Ansichten erhalten die neue
+  Standardspalte einmalig.
+- Einzel- und Splitbuchungseditor sowie die atomare Massenorganisation können
+  Kennzeichen setzen oder entfernen. Die Massenänderung bleibt geschützt,
+  auditiert und vollständig rücknehmbar. Die konfigurierbaren CSV- und
+  PDF-Kontenblattausgaben übernehmen die sichtbare Kennzeichen-Spalte.
+- Zwei neue Tests belegen Migration, Persistenz, Suche, Vorlagen,
+  Massenänderung und Undo. Zwei Zukunftsschema-Fixtures wurden korrekt von 40
+  auf 41 angehoben. Der vollständige Lauf meldet 182 Tests: 180 bestanden,
+  2 ausdrücklich opt-in übersprungen und 0 fehlgeschlagen.
+- Exakter kumulativer Zielzählerstand vor der Dokumentation: 27.638.446 Tokens.
+- Der vollständige finale Lauf ist in `build/full-schema40-test.log`
+  protokolliert: 182 Tests, 180 bestanden, 2 opt-in übersprungen, 0 Fehler.
+- Der optimierte arm64-Release wurde erfolgreich gebaut, lokal signiert und
+  streng verifiziert. Seine ausführbare Datei hat SHA-256
+  `8f56d9381d06b82a7031e3a36489b293bbfd3e34d0b70d9e977bae7d5eea25de`.
+  Die Vorinstallationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0622-schema40-flags/`.
+- `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch; der Desktop-Link
+  zeigt auf `/Applications`. Prozess 6053 läuft aus der systemweiten
+  Installation im Light Mode.
+- Die echte Produktdatei wurde mit automatischer Schema-39-Sicherung auf
+  Schema 40 migriert. Sie meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung und unverändert 97 Konten, 2.170 Buchungen sowie
+  782 Kategorien.
+- Die Computer-Steuerung meldet weiterhin eine gesperrte macOS-Sitzung;
+  deshalb wurde keine sichtbare UI-Abnahme und kein neuer Screenshot
+  behauptet. Telegram-Nachricht 1197 meldet den belegten Stand im
+  `/quicken`-Thread 894.
+- Exakter kumulativer Zielzählerstand vor Release und Veröffentlichung:
+  27.906.940 Tokens.

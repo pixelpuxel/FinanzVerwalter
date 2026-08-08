@@ -5,6 +5,7 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
     case valueDate
     case reference
     case status
+    case flag
     case payee
     case purpose
     case category
@@ -23,6 +24,7 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
         case .valueDate: "Wertstellung"
         case .reference: "Belegnummer"
         case .status: "Status"
+        case .flag: "Kennzeichen"
         case .payee: "Empfänger"
         case .purpose: "Verwendungszweck"
         case .category: "Kategorie"
@@ -39,7 +41,7 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
         switch self {
         case .date, .valueDate: 82
         case .reference: 90
-        case .status: 44
+        case .status, .flag: 44
         case .payee: 130
         case .purpose: 170
         case .category: 150
@@ -54,6 +56,7 @@ enum RegisterColumn: String, CaseIterable, Codable, Hashable, Identifiable, Send
         case .date, .valueDate: 92
         case .reference: 120
         case .status: 70
+        case .flag: 88
         case .payee: 180
         case .purpose: 260
         case .category: 220
@@ -322,6 +325,9 @@ struct RegisterSearchIndex: Equatable, Sendable {
             transaction.creditorID, transaction.bookingText,
             transaction.origin.rawValue, transaction.duplicateFingerprint
         ]
+        if let flag = transaction.flag {
+            fields.append(contentsOf: [flag.title, flag.rawValue, "Kennzeichen", "Fahne"])
+        }
         fields.append(contentsOf: dateFields(transaction.bookingDate))
         if let valueDate = transaction.valueDate {
             fields.append(contentsOf: dateFields(valueDate))
@@ -698,6 +704,8 @@ enum RegisterSorter {
             compare(left.reference, right.reference)
         case .status:
             compare(statusRank(left.status), statusRank(right.status))
+        case .flag:
+            compare(left.flag?.rawValue ?? "", right.flag?.rawValue ?? "")
         case .payee:
             compare(left.payee, right.payee)
         case .purpose:
@@ -922,6 +930,7 @@ struct SavedRegisterView: Identifiable, Codable, Equatable, Sendable {
     var sortColumnRawValue: String? = nil
     var sortAscending: Bool? = nil
     var amountColumnModeRawValue: String? = nil
+    var flagFilterRawValue: String? = nil
 }
 
 struct SavedCombinedRegisterView: Identifiable, Codable, Equatable, Sendable {
@@ -985,6 +994,21 @@ enum RegisterPreferencesCodec {
         let migrated = decodeViews(value).map { view in
             var migratedView = view
             migratedView.visibleColumns.insert(.balance)
+            return migratedView
+        }
+        return (try? encodeViews(migrated)) ?? value
+    }
+
+    static func addingFlagColumn(to value: String) -> String {
+        var columns = decodeColumns(value)
+        columns.insert(.flag)
+        return encodeColumns(columns)
+    }
+
+    static func addingFlagColumnToViews(_ value: String) -> String {
+        let migrated = decodeViews(value).map { view in
+            var migratedView = view
+            migratedView.visibleColumns.insert(.flag)
             return migratedView
         }
         return (try? encodeViews(migrated)) ?? value

@@ -1370,6 +1370,7 @@ final class FinanceAppStore: ObservableObject {
         amount: String,
         status: TransactionStatus,
         memo: String = "",
+        flag: TransactionFlag? = nil,
         reference: String = "",
         payeeID: UUID? = nil,
         tagIDs: [UUID] = [],
@@ -1464,7 +1465,8 @@ final class FinanceAppStore: ObservableObject {
                 bookingText: existing?.bookingText ?? "",
                 originalAmountMinor: originalMoney?.minorUnits,
                 originalCurrency: originalMoney?.currency ?? "",
-                exchangeRateScaled: exchangeRate?.scaledValue
+                exchangeRateScaled: exchangeRate?.scaledValue,
+                flag: flag
             )
             try repository.saveTransaction(value)
             try load()
@@ -1522,7 +1524,9 @@ final class FinanceAppStore: ObservableObject {
         transactionIDs: Set<UUID>,
         updateCategory: Bool,
         categoryID: UUID?,
-        replacementTagIDs: Set<UUID>?
+        replacementTagIDs: Set<UUID>?,
+        updateFlag: Bool = false,
+        flag: TransactionFlag? = nil
     ) -> Bool {
         guard let repository else { return false }
         do {
@@ -1530,7 +1534,9 @@ final class FinanceAppStore: ObservableObject {
                 ids: transactionIDs,
                 updateCategory: updateCategory,
                 categoryID: categoryID,
-                replacementTagIDs: replacementTagIDs
+                replacementTagIDs: replacementTagIDs,
+                updateFlag: updateFlag,
+                flag: flag
             )
             try load()
             statusText = "\(result.updatedCount) Buchungen organisiert"

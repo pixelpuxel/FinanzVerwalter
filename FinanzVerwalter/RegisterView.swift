@@ -3,6 +3,17 @@ import UniformTypeIdentifiers
 import AppKit
 import Charts
 
+private func transactionFlagColor(_ flag: TransactionFlag) -> Color {
+    switch flag {
+    case .red: .red
+    case .orange: .orange
+    case .yellow: .yellow
+    case .green: .green
+    case .blue: .blue
+    case .purple: .purple
+    }
+}
+
 struct RegisterView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @State private var selection = Set<UUID>()
@@ -20,6 +31,7 @@ struct RegisterView: View {
     @State private var showDeleteConfirmation = false
     @State private var showTransactionUndoConfirmation = false
     @State private var statusFilter: TransactionStatus?
+    @State private var flagFilterRaw = "all"
     @State private var categoryFilter: RegisterCategoryFilter = .all
     @State private var tagFilterID: UUID?
     @State private var periodFilter: RegisterPeriodFilter = .all
@@ -55,6 +67,8 @@ struct RegisterView: View {
     private var amountColumnModeRaw = RegisterAmountColumnMode.amount.rawValue
     @AppStorage("registerVisibleColumnsIncludesBalanceV4")
     private var visibleColumnsIncludesBalance = false
+    @AppStorage("registerVisibleColumnsIncludesFlagV5")
+    private var visibleColumnsIncludesFlag = false
     @AppStorage("savedRegisterViewsV1") private var savedViewsRaw = ""
     @AppStorage("registerOpenAccountTabsV1") private var openAccountTabsRaw = ""
     @AppStorage("registerF3FieldV1")
@@ -119,6 +133,9 @@ struct RegisterView: View {
     private var visibleTransactions: [FinanceTransaction] {
         let filtered = store.filteredTransactions.filter { transaction in
             let statusMatches = statusFilter == nil || transaction.status == statusFilter
+            let flagMatches = flagFilterRaw == "all"
+                || (flagFilterRaw == "none" && transaction.flag == nil)
+                || transaction.flag?.rawValue == flagFilterRaw
             let categoryMatches: Bool
             switch categoryFilter {
             case .all:
@@ -136,7 +153,7 @@ struct RegisterView: View {
             } else {
                 tagMatches = true
             }
-            return statusMatches && categoryMatches && tagMatches && periodFilter.contains(
+            return statusMatches && flagMatches && categoryMatches && tagMatches && periodFilter.contains(
                 transaction.bookingDate,
                 customStart: customStart,
                 customEnd: customEnd
@@ -222,6 +239,16 @@ struct RegisterView: View {
                 }
                 .frame(width: 150)
                 .accessibilityIdentifier("register.statusFilter")
+                Picker("Kennzeichen", selection: $flagFilterRaw) {
+                    Text("Alle Kennzeichen").tag("all")
+                    Text("Ohne Kennzeichen").tag("none")
+                    Divider()
+                    ForEach(TransactionFlag.allCases) { flag in
+                        Label(flag.title, systemImage: "flag.fill").tag(flag.rawValue)
+                    }
+                }
+                .frame(width: 170)
+                .accessibilityIdentifier("register.flagFilter")
                 Picker("Kategorie", selection: $categoryFilter) {
                     Text("Alle Kategorien").tag(RegisterCategoryFilter.all)
                     Text("Nicht kategorisiert").tag(RegisterCategoryFilter.uncategorized)
@@ -394,12 +421,13 @@ struct RegisterView: View {
                     Spacer()
                     Button("Filter zurücksetzen", systemImage: "line.3.horizontal.decrease.circle") {
                         statusFilter = nil
+                        flagFilterRaw = "all"
                         categoryFilter = .all
                         tagFilterID = nil
                         periodFilter = .all
                     }
                     .disabled(
-                        statusFilter == nil && categoryFilter == .all
+                        statusFilter == nil && flagFilterRaw == "all" && categoryFilter == .all
                             && tagFilterID == nil && periodFilter == .all
                     )
                 }
@@ -698,6 +726,7 @@ struct RegisterView: View {
         }
         .onAppear {
             migrateBalanceColumnIfNeeded()
+            migrateFlagColumnIfNeeded()
             synchronizeAccountTabs()
             addSelectedAccountTabIfNeeded()
             synchronizeQuickEntryAccount(preferSelected: false)
@@ -1179,6 +1208,17 @@ struct RegisterView: View {
         visibleColumnsIncludesBalance = true
     }
 
+    private func migrateFlagColumnIfNeeded() {
+        guard !visibleColumnsIncludesFlag else { return }
+        visibleColumnsRaw = RegisterPreferencesCodec.addingFlagColumn(
+            to: visibleColumnsRaw
+        )
+        savedViewsRaw = RegisterPreferencesCodec.addingFlagColumnToViews(
+            savedViewsRaw
+        )
+        visibleColumnsIncludesFlag = true
+    }
+
     private func accessibleRegisterCell(
         _ value: FinanceTransaction,
         column: RegisterColumn,
@@ -1232,6 +1272,11 @@ struct RegisterView: View {
             Image(systemName: statusIcon(value.status))
                 .foregroundStyle(statusColor(value.status))
                 .help(value.status.title)
+                .frame(height: rowMode.rowHeight)
+        case .flag:
+            Image(systemName: value.flag == nil ? "flag" : "flag.fill")
+                .foregroundStyle(value.flag.map(transactionFlagColor) ?? .secondary)
+                .help(value.flag?.title ?? "Ohne Kennzeichen")
                 .frame(height: rowMode.rowHeight)
         case .payee:
             VStack(alignment: .leading, spacing: 1) {
@@ -1539,6 +1584,8 @@ struct RegisterView: View {
             return value.reference.isEmpty ? "–" : value.reference
         case .status:
             return value.status.title
+        case .flag:
+            return value.flag?.title ?? "Ohne Kennzeichen"
         case .payee:
             return value.payee
         case .purpose:
@@ -1626,7 +1673,8 @@ struct RegisterView: View {
             visibleColumns: visibleColumns,
             sortColumnRawValue: sortColumnRaw,
             sortAscending: sortAscending,
-            amountColumnModeRawValue: amountColumnMode.rawValue
+            amountColumnModeRawValue: amountColumnMode.rawValue,
+            flagFilterRawValue: flagFilterRaw
         )
         var values = savedViews.filter { $0.id != id }
         values.append(view)
@@ -1651,6 +1699,9 @@ struct RegisterView: View {
             store.selectedAccountID = nil
         }
         statusFilter = view.statusRawValue.flatMap(TransactionStatus.init(rawValue:))
+        let savedFlag = view.flagFilterRawValue ?? "all"
+        flagFilterRaw = savedFlag == "all" || savedFlag == "none"
+            || TransactionFlag(rawValue: savedFlag) != nil ? savedFlag : "all"
         let savedCategoryFilter = RegisterCategoryFilter(view.categorySelection)
         if case .category(let categoryID) = savedCategoryFilter,
            !store.categories.contains(where: { $0.id == categoryID }) {
@@ -2145,6 +2196,8 @@ private struct BulkCategoryEditorView: View {
     @State private var categoryID: UUID?
     @State private var updateCategory = true
     @State private var updateTags = false
+    @State private var updateFlag = false
+    @State private var flag: TransactionFlag?
     @State private var selectedTagIDs = Set<UUID>()
     @State private var showConfirmation = false
 
@@ -2191,6 +2244,20 @@ private struct BulkCategoryEditorView: View {
                         }
                     }
                     .disabled(!updateCategory)
+                }
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Kennzeichen ersetzen", isOn: $updateFlag)
+                    Picker("Neues Kennzeichen", selection: $flag) {
+                        Text("Kennzeichen entfernen").tag(TransactionFlag?.none)
+                        ForEach(TransactionFlag.allCases) { value in
+                            Label(value.title, systemImage: "flag.fill")
+                                .tag(TransactionFlag?.some(value))
+                        }
+                    }
+                    .disabled(!updateFlag)
                 }
             }
 
@@ -2257,7 +2324,7 @@ private struct BulkCategoryEditorView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     transactions.isEmpty || !protectedTransactions.isEmpty
-                        || (!updateCategory && !updateTags)
+                        || (!updateCategory && !updateTags && !updateFlag)
                 )
             }
         }
@@ -2273,7 +2340,9 @@ private struct BulkCategoryEditorView: View {
                     transactionIDs: transactionIDs,
                     updateCategory: updateCategory,
                     categoryID: categoryID,
-                    replacementTagIDs: updateTags ? selectedTagIDs : nil
+                    replacementTagIDs: updateTags ? selectedTagIDs : nil,
+                    updateFlag: updateFlag,
+                    flag: flag
                 ) {
                     onCompletion()
                     dismiss()
@@ -2310,6 +2379,7 @@ struct TransactionEditorView: View {
     @State private var vatMode: VATMode = .none
     @State private var manualTax = ""
     @State private var status: TransactionStatus = .booked
+    @State private var flag: TransactionFlag?
     @State private var memo = ""
     @State private var selectedTagIDs = Set<UUID>()
     @State private var useSplits = false
@@ -2520,6 +2590,13 @@ struct TransactionEditorView: View {
                 Picker("Status", selection: $status) {
                     ForEach(TransactionStatus.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
+                Picker("Kennzeichen", selection: $flag) {
+                    Text("Ohne Kennzeichen").tag(TransactionFlag?.none)
+                    ForEach(TransactionFlag.allCases) { value in
+                        Label(value.title, systemImage: "flag.fill")
+                            .tag(TransactionFlag?.some(value))
+                    }
+                }
                 TextField("Notiz", text: $memo)
                 SecureNoteView(text: memo, showsText: false)
                 if let transaction {
@@ -2713,6 +2790,7 @@ struct TransactionEditorView: View {
                 ).editingString
                 : ""
             status = source?.status ?? .booked
+            flag = source?.flag
             memo = source?.memo ?? ""
             selectedTagIDs = Set(source?.tagIDs ?? [])
             useSplits = startWithSplits || !(source?.splits.isEmpty ?? true)
@@ -2848,6 +2926,7 @@ struct TransactionEditorView: View {
                     purpose: purpose, categoryID: categoryID,
                     amount: booked.editingString,
                     status: status, memo: memo,
+                    flag: flag,
                     reference: transaction?.reference ?? "",
                     payeeID: payeeID, tagIDs: Array(selectedTagIDs),
                     creditorID: creditorID,
@@ -3042,7 +3121,8 @@ struct TransactionEditorView: View {
                 bookingText: transaction?.bookingText ?? "",
                 originalAmountMinor: foreignCurrency?.amountMinor,
                 originalCurrency: foreignCurrency?.currency ?? "",
-                exchangeRateScaled: foreignCurrency?.rate.scaledValue
+                exchangeRateScaled: foreignCurrency?.rate.scaledValue,
+                flag: flag
             )
             if store.saveSplitTransaction(value) {
                 dismiss()
@@ -5131,6 +5211,10 @@ struct CombinedRegisterView: View {
         case .status:
             Text(value.status.title)
                 .frame(height: rowMode.rowHeight, alignment: .leading)
+        case .flag:
+            Label(value.flag?.title ?? "Ohne", systemImage: value.flag == nil ? "flag" : "flag.fill")
+                .foregroundStyle(value.flag.map(transactionFlagColor) ?? .secondary)
+                .frame(height: rowMode.rowHeight, alignment: .leading)
         case .payee:
             Text(value.payee)
                 .lineLimit(rowMode == .twoLines ? 2 : 1)
@@ -5217,6 +5301,8 @@ struct CombinedRegisterView: View {
             return value.reference.isEmpty ? "–" : value.reference
         case .status:
             return value.status.title
+        case .flag:
+            return value.flag?.title ?? "Ohne Kennzeichen"
         case .payee:
             return value.payee
         case .purpose:

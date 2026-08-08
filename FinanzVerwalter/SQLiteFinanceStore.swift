@@ -41,7 +41,7 @@ struct OpenDataArchiveImportSummary: Equatable, Sendable {
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 39
+    static let currentSchemaVersion = 40
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -2236,6 +2236,23 @@ final class SQLiteFinanceStore {
                     "CREATE INDEX IF NOT EXISTS accounts_linked_account ON accounts(linked_account_id)"
                 )
                 try execute("PRAGMA user_version = 39")
+            }
+        }
+        if version < 40 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(transactions)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("flag_color") {
+                    try execute(
+                        "ALTER TABLE transactions ADD COLUMN flag_color TEXT NOT NULL DEFAULT '' CHECK(flag_color IN ('','red','orange','yellow','green','blue','purple'))"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS transactions_flag ON transactions(flag_color,booking_date,id) WHERE flag_color<>''"
+                )
+                try execute("PRAGMA user_version = 40")
             }
         }
     }
@@ -7590,7 +7607,7 @@ final class SQLiteFinanceStore {
                    end_to_end_id,mandate_reference,duplicate_fingerprint,
                    bank_balance_after_minor,counterparty_bic,creditor_id,
                    booking_text,original_amount_minor,original_currency,
-                   exchange_rate_scaled
+                   exchange_rate_scaled,flag_color
             FROM transactions
             \(accountID == nil ? "" : "WHERE account_id = ?")
             ORDER BY booking_date DESC,id DESC
@@ -7644,7 +7661,8 @@ final class SQLiteFinanceStore {
                         == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 30),
                     originalCurrency: Self.text(statement, 31),
                     exchangeRateScaled: sqlite3_column_type(statement, 32)
-                        == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 32)
+                        == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 32),
+                    flag: TransactionFlag(rawValue: Self.text(statement, 33))
                 )
             )
         }
@@ -8711,8 +8729,8 @@ final class SQLiteFinanceStore {
                 counterparty_iban,end_to_end_id,mandate_reference,
                 duplicate_fingerprint,bank_balance_after_minor,
                 counterparty_bic,creditor_id,booking_text,
-                original_amount_minor,original_currency,exchange_rate_scaled
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                original_amount_minor,original_currency,exchange_rate_scaled,flag_color
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             -1,
             &transactionStatement,
@@ -8764,7 +8782,8 @@ final class SQLiteFinanceStore {
                         .text(value.bookingText),
                         value.originalAmountMinor.map(SQLiteValue.integer) ?? .null,
                         .text(value.originalCurrency.uppercased()),
-                        value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null
+                        value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null,
+                        .text(value.flag?.rawValue ?? "")
                     ],
                     to: transactionStatement
                 )
@@ -8902,12 +8921,14 @@ final class SQLiteFinanceStore {
         ids: Set<UUID>,
         updateCategory: Bool,
         categoryID: UUID?,
-        replacementTagIDs: Set<UUID>?
+        replacementTagIDs: Set<UUID>?,
+        updateFlag: Bool = false,
+        flag: TransactionFlag? = nil
     ) throws -> BulkCategoryUpdateResult {
         guard !ids.isEmpty else {
             return BulkCategoryUpdateResult(updatedCount: 0, totalsByCurrency: [:])
         }
-        guard updateCategory || replacementTagIDs != nil else {
+        guard updateCategory || replacementTagIDs != nil || updateFlag else {
             throw FinanceError.database("Es wurde keine Massenänderung ausgewählt.")
         }
         if updateCategory, let categoryID {
@@ -9002,6 +9023,12 @@ final class SQLiteFinanceStore {
                         )
                     }
                 }
+                if updateFlag {
+                    try run(
+                        "UPDATE transactions SET flag_color=?,updated_at=?,version=version+1 WHERE id=?",
+                        [.text(flag?.rawValue ?? ""), .text(now), .text(value.id.uuidString)]
+                    )
+                }
                 try audit(
                     entity: "transaction",
                     id: value.id,
@@ -9012,7 +9039,8 @@ final class SQLiteFinanceStore {
                             : "category=unchanged",
                         replacementTagIDs.map {
                             "tags=" + $0.map(\.uuidString).sorted().joined(separator: ",")
-                        } ?? "tags=unchanged"
+                        } ?? "tags=unchanged",
+                        updateFlag ? "flag=\(flag?.rawValue ?? "none")" : "flag=unchanged"
                     ].joined(separator: ";")
                 )
             }
@@ -11740,9 +11768,9 @@ final class SQLiteFinanceStore {
                 counterparty_iban,end_to_end_id,mandate_reference,
                 duplicate_fingerprint,bank_balance_after_minor,
                 counterparty_bic,creditor_id,booking_text,
-                original_amount_minor,original_currency,exchange_rate_scaled
+                original_amount_minor,original_currency,exchange_rate_scaled,flag_color
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET booking_date=excluded.booking_date,value_date=excluded.value_date,
                 payee=excluded.payee,purpose=excluded.purpose,category_id=excluded.category_id,
                 amount_minor=excluded.amount_minor,currency=excluded.currency,status=excluded.status,
@@ -11763,6 +11791,7 @@ final class SQLiteFinanceStore {
                 original_amount_minor=excluded.original_amount_minor,
                 original_currency=excluded.original_currency,
                 exchange_rate_scaled=excluded.exchange_rate_scaled,
+                flag_color=excluded.flag_color,
                 updated_at=excluded.updated_at,version=version+1
             """,
             [
@@ -11797,7 +11826,8 @@ final class SQLiteFinanceStore {
                 .text(value.bookingText),
                 value.originalAmountMinor.map(SQLiteValue.integer) ?? .null,
                 .text(value.originalCurrency.uppercased()),
-                value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null
+                value.exchangeRateScaled.map(SQLiteValue.integer) ?? .null,
+                .text(value.flag?.rawValue ?? "")
             ]
         )
         try run("DELETE FROM transaction_tags WHERE transaction_id=?", [.text(value.id.uuidString)])

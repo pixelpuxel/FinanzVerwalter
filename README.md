@@ -102,6 +102,15 @@ Gegenkonto. Das Gegenkonto muss vorhanden und vom bearbeiteten Konto
 verschieden sein. Schließen setzt im direkten Übersichtsablauf den heutigen
 Tag; Wiederöffnen entfernt das Schließdatum.
 
+Schema 40 ergänzt Buchungen um ein optionales farbiges Kennzeichen. Sechs
+Farben werden als stabile Werte gespeichert und im Kontoblatt als eigene
+sortierbare Spalte dargestellt. Kennzeichen sind im Buchungseditor, in der
+Volltextsuche, als Filter, in gespeicherten Ansichten, in der atomaren
+Massenänderung und damit auch im konfigurierbaren CSV-/PDF-Kontenblattexport
+verfügbar. Vorlagen, Sicherungen, das offene Gesamtdatenarchiv und das
+vollständige Buchungs-Undo erhalten das Feld; Schema 39 wird verlustfrei mit
+„ohne Kennzeichen“ migriert.
+
 ## CSV-/TSV-Profilassistent
 
 Beim Öffnen einer CSV- oder TSV-Datei zeigt FinanzVerwalter vor der
