@@ -4273,3 +4273,46 @@ Rechtsberatung.
   Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
   Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
   24.990.919 Tokens.
+
+## 08.08.2026 – Lotneutrale Wertpapiererträge und Gebühren
+
+- Der Wertpapierdialog heißt nun übergreifend `Vorgang` und erfasst neben
+  Kauf und Verkauf auch `Dividende/Zins` mit Bruttoertrag, Gebühren und
+  Steuern sowie eine eigenständige Wertpapiergebühr. Die Oberfläche zeigt je
+  Vorgang nur die fachlich benötigten Eingabefelder.
+- Ertrag und Gebühr werden atomar in `security_trades` gespeichert. Sie
+  verlangen ein offenes Depot und ein aktives Wertpapier, verwenden dessen
+  Währung, besitzen keine Stückzahl und keinen Kurs und verändern deshalb
+  weder FIFO-Lots noch Depotbestand. Bruttoerträge müssen positiv und
+  mindestens so hoch wie Gebühren plus Steuern sein; auch ein Überlauf der
+  Abzugssumme wird sicher abgewiesen.
+- Die kompakte Historie zeigt Erträge netto und Gebühren negativ. Die
+  Währungssummen des Depotberichts weisen nun realisierten Gewinn,
+  Nettoertrag, Gebühren und Steuern gleichzeitig sichtbar aus. Bestehende
+  CSV- und PDF-Exporte übernehmen die neuen Vorgänge über dieselbe
+  Transaktionshistorie. ADR 0053 hält fest, dass noch keine automatische
+  Verrechnungskontobuchung entsteht.
+- Die gezielten FIFO-/Berichtstests bestehen. Der vollständige Lauf unter
+  `build/TestResults/IncomeFees-full-20260808-0300.xcresult` umfasst 175
+  Tests: 173 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler. Nach der zusätzlichen Überlaufhärtung bestand der
+  betroffene FIFO-/Cashflow-Test erneut unter
+  `build/TestResults/IncomeFees-final-targeted-20260808-0303.xcresult`.
+- Der native arm64-Release unter
+  `build/DerivedData-IncomeFees-Product` wurde erfolgreich gebaut, lokal
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `adcba818636ec7c8559fec1a37d6bfe797084f39999bb5a2d0a27e042049caed`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0302-income-fees/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0302-income-fees/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch, der Desktop-Link
+  zeigt auf `/Applications`, Finder wurde auf die App gelenkt und Prozess
+  81707 läuft daraus. Light Mode ist in den App-Einstellungen aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, keine
+  Fremdschlüsselverletzung, Schema 39 und unverändert 97 Konten, 2.170
+  Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  deshalb ist keine sichtbare UI-Abnahme und kein neuer Screenshot zulässig.
+  Exakter kumulativer Zielzählerstand nach Installation: 25.200.620 Tokens.
