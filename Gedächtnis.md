@@ -4120,5 +4120,11 @@ Rechtsberatung.
 - `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
   daher wird keine sichtbare UI-Abnahme oder ein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand nach Installation: 24.373.364 Tokens.
-- Die Implementierung ist im Commit `f3ad40a` gesichert. Veröffentlichung auf
-  GitHub und Telegram-Nachweis folgen im nächsten Evidenzschritt.
+- Implementierung, Test, ADR und Reproduktionsdokumentation wurden mit den
+  Commits `f3ad40a` und `95711b3` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. GitHub Draft-PR #1 zeigt
+  denselben Head, ist sauber und mergebar.
+- Telegram-Nachricht 1145 meldet den geprüften Stand im `/quicken`-Thread 894.
+  Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
+  Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
+  24.383.545 Tokens.
