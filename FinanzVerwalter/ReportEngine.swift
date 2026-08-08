@@ -296,6 +296,7 @@ enum SpecializedReportKind: String, Codable, CaseIterable, Hashable, Sendable {
     case loans
     case periodComparison
     case budgetComparison
+    case portfolio
     case assetRegister
     case taxAllowances
 
@@ -306,6 +307,7 @@ enum SpecializedReportKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .loans: "Kredit-, Zins- und Tilgungsbericht"
         case .periodComparison: "Zeitvergleich"
         case .budgetComparison: "Budget Plan/Ist/Abweichung"
+        case .portfolio: "Depotbestand und Erträge"
         case .assetRegister: "Vertrags- und Inventarübersicht"
         case .taxAllowances: "Freistellungsaufträge"
         }
@@ -323,6 +325,7 @@ enum SpecializedReportLaunchPayload: Codable, Equatable, Sendable {
     case loans(LoanReportQuery)
     case periodComparison(PeriodComparisonQuery)
     case budgetComparison(BudgetReportWindowPayload)
+    case portfolio(PortfolioReportQuery)
     case assetRegister(AssetRegisterReportQuery)
     case taxAllowances(TaxAllowanceReportQuery)
 
@@ -333,6 +336,7 @@ enum SpecializedReportLaunchPayload: Codable, Equatable, Sendable {
         case .loans: .loans
         case .periodComparison: .periodComparison
         case .budgetComparison: .budgetComparison
+        case .portfolio: .portfolio
         case .assetRegister: .assetRegister
         case .taxAllowances: .taxAllowances
         }

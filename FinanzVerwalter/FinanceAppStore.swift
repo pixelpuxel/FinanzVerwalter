@@ -902,6 +902,14 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    func portfolioReport(_ query: PortfolioReportQuery) -> PortfolioReportSnapshot {
+        PortfolioReportEngine.snapshot(
+            query: query, positions: portfolioPositions,
+            trades: securityTrades, accounts: accounts,
+            securities: securities
+        )
+    }
+
     func saveReportTemplate(_ template: SavedReportTemplate) -> Bool {
         guard let repository else { return false }
         do {

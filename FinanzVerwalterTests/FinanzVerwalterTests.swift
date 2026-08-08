@@ -6794,6 +6794,19 @@ final class FinanzVerwalterTests: XCTestCase {
             )
         )
         try assertRoundTrip(
+            .portfolio,
+            payload: PortfolioReportQuery(
+                dateFrom: from,
+                dateThrough: through,
+                accountIDs: [accountID],
+                securityIDs: [UUID()],
+                securityTypes: [.etf],
+                currencies: ["EUR"],
+                includeInactiveSecurities: true,
+                includeClosedAccounts: true
+            )
+        )
+        try assertRoundTrip(
             .assetRegister,
             payload: AssetRegisterReportQuery(
                 referenceDate: through,
@@ -6813,7 +6826,7 @@ final class FinanzVerwalterTests: XCTestCase {
                 includeInactive: true
             )
         )
-        XCTAssertEqual(SpecializedReportKind.allCases.count, 7)
+        XCTAssertEqual(SpecializedReportKind.allCases.count, 8)
     }
 
     func testSpecializedReportLaunchRequestsPreserveEveryEditedQuery() throws {
@@ -6885,6 +6898,16 @@ final class FinanzVerwalterTests: XCTestCase {
             kind: .budgetComparison
         )
         try assertLaunch(
+            .portfolio(PortfolioReportQuery(
+                dateFrom: from, dateThrough: through,
+                accountIDs: [UUID()], securityIDs: [UUID()],
+                securityTypes: [.stock], currencies: ["EUR"],
+                includeInactiveSecurities: true,
+                includeClosedAccounts: true
+            )),
+            kind: .portfolio
+        )
+        try assertLaunch(
             .assetRegister(AssetRegisterReportQuery(
                 referenceDate: through, horizon: .next30Days,
                 includeInactive: true, text: "Versicherung"
@@ -6898,6 +6921,129 @@ final class FinanzVerwalterTests: XCTestCase {
             )),
             kind: .taxAllowances
         )
+    }
+
+    func testPortfolioReportFiltersTotalsDrillDownAndExportsDeterministically() throws {
+        let accountID = UUID()
+        let closedAccountID = UUID()
+        let securityID = UUID()
+        let inactiveSecurityID = UUID()
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let through = Date(timeIntervalSince1970: 1_710_000_000)
+        let account = FinanceAccount(
+            id: accountID, name: "Depot Köln", institution: "Bank",
+            type: .investment, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let closedAccount = FinanceAccount(
+            id: closedAccountID, name: "Altes Depot", institution: "Bank",
+            type: .investment, currency: "USD", openingBalanceMinor: 0,
+            isHidden: false, isClosed: true, sortOrder: 1
+        )
+        let security = Security(
+            id: securityID, name: "Europa ETF", shortName: "Europa",
+            isin: "DE0000000001", wkn: "ETF001", ticker: "EUETF",
+            type: .etf, currency: "EUR", exchange: "Xetra",
+            priceDecimals: 2, allowsShort: false, isActive: true, note: ""
+        )
+        let inactiveSecurity = Security(
+            id: inactiveSecurityID, name: "Altaktie", shortName: "Alt",
+            isin: "US0000000002", wkn: "ALT002", ticker: "ALT",
+            type: .stock, currency: "USD", exchange: "NYSE",
+            priceDecimals: 2, allowsShort: false, isActive: false, note: ""
+        )
+        let positions = [
+            PortfolioPosition(
+                security: security, accountID: accountID,
+                quantityMicro: 2_000_000, costBasisMinor: 18_000,
+                latestPriceMinor: 10_000
+            ),
+            PortfolioPosition(
+                security: inactiveSecurity, accountID: closedAccountID,
+                quantityMicro: 1_000_000, costBasisMinor: 5_000,
+                latestPriceMinor: nil
+            )
+        ]
+        let sell = SecurityTrade(
+            id: UUID(), accountID: accountID, securityID: securityID,
+            type: .sell, tradeDate: from.addingTimeInterval(100),
+            quantityMicro: -500_000, priceMinor: 11_000,
+            feesMinor: 100, taxesMinor: 200, grossMinor: 5_500,
+            realizedGainMinor: 700, currency: "EUR", note: "Teilveräußerung"
+        )
+        let dividend = SecurityTrade(
+            id: UUID(), accountID: accountID, securityID: securityID,
+            type: .dividend, tradeDate: through.addingTimeInterval(-100),
+            quantityMicro: 0, priceMinor: 0, feesMinor: 10, taxesMinor: 40,
+            grossMinor: 500, realizedGainMinor: 0, currency: "EUR", note: "Ausschüttung"
+        )
+        let outside = SecurityTrade(
+            id: UUID(), accountID: accountID, securityID: securityID,
+            type: .fee, tradeDate: from.addingTimeInterval(-100),
+            quantityMicro: 0, priceMinor: 0, feesMinor: 99, taxesMinor: 0,
+            grossMinor: 0, realizedGainMinor: 0, currency: "EUR", note: "Alt"
+        )
+
+        let query = PortfolioReportQuery(
+            dateFrom: from, dateThrough: through,
+            securityTypes: [.etf], currencies: ["eur"]
+        )
+        let snapshot = PortfolioReportEngine.snapshot(
+            query: query, positions: positions,
+            trades: [outside, dividend, sell],
+            accounts: [closedAccount, account],
+            securities: [inactiveSecurity, security]
+        )
+        XCTAssertEqual(snapshot.positions.map(\.securityID), [securityID])
+        XCTAssertEqual(snapshot.trades.map(\.id), [dividend.id, sell.id])
+        XCTAssertEqual(snapshot.trades(forSecurityID: securityID).count, 2)
+        let total = try XCTUnwrap(snapshot.totals.first)
+        XCTAssertEqual(total.currency, "EUR")
+        XCTAssertEqual(total.costBasisMinor, 18_000)
+        XCTAssertEqual(total.knownMarketValueMinor, 20_000)
+        XCTAssertEqual(total.knownUnrealizedGainMinor, 2_000)
+        XCTAssertEqual(total.realizedGainMinor, 700)
+        XCTAssertEqual(total.incomeMinor, 450)
+        XCTAssertEqual(total.feesMinor, 110)
+        XCTAssertEqual(total.taxesMinor, 240)
+        XCTAssertEqual(snapshot.positions.first?.gainBasisPoints, 1_111)
+
+        let all = PortfolioReportEngine.snapshot(
+            query: PortfolioReportQuery(
+                dateFrom: nil, dateThrough: nil,
+                includeInactiveSecurities: true,
+                includeClosedAccounts: true
+            ),
+            positions: positions, trades: [],
+            accounts: [account, closedAccount],
+            securities: [security, inactiveSecurity]
+        )
+        XCTAssertEqual(all.positions.count, 2)
+        XCTAssertEqual(all.totals.first { $0.currency == "USD" }?.missingPriceCount, 1)
+
+        let metadata = PortfolioReportExportMetadata(
+            title: "Depotbestand & Erträge", dateLabel: "2023/2024",
+            filterSummary: "ETF; aktiv", generatedAt: from
+        )
+        let csv = ComparisonReportCSVExporter.portfolioData(
+            snapshot: snapshot, metadata: metadata
+        )
+        XCTAssertEqual(
+            csv,
+            ComparisonReportCSVExporter.portfolioData(
+                snapshot: snapshot, metadata: metadata
+            )
+        )
+        let csvText = try XCTUnwrap(String(data: csv, encoding: .utf8))
+        XCTAssertTrue(csvText.contains("Depotbestand & Erträge"))
+        XCTAssertTrue(csvText.contains("Depot Köln;Europa ETF;ETF"))
+        XCTAssertTrue(csvText.contains("Teilveräußerung"))
+
+        let pdf = try ComparisonReportPDFExporter.portfolioData(
+            snapshot: snapshot, metadata: metadata
+        )
+        XCTAssertTrue(pdf.starts(with: Data("%PDF".utf8)))
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(PDFDocument(data: pdf)).pageCount, 1)
     }
 
     func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {

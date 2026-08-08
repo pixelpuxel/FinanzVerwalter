@@ -900,6 +900,198 @@ struct BudgetReportSnapshot: Equatable, Sendable {
     }
 }
 
+struct PortfolioReportQuery: Codable, Equatable, Sendable {
+    var dateFrom: Date?
+    var dateThrough: Date?
+    var accountIDs = Set<UUID>()
+    var securityIDs = Set<UUID>()
+    var securityTypes = Set<SecurityType>()
+    var currencies = Set<String>()
+    var includeInactiveSecurities = false
+    var includeClosedAccounts = false
+}
+
+struct PortfolioReportPositionRow: Identifiable, Equatable, Sendable {
+    let id: String
+    let accountID: UUID
+    let accountName: String
+    let securityID: UUID
+    let securityName: String
+    let securityType: SecurityType
+    let identifier: String
+    let quantityMicro: Int64
+    let latestPriceMinor: Int64?
+    let costBasisMinor: Int64
+    let marketValueMinor: Int64?
+    let unrealizedGainMinor: Int64?
+    let gainBasisPoints: Int64?
+    let currency: String
+}
+
+struct PortfolioReportTradeRow: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let accountID: UUID
+    let accountName: String
+    let securityID: UUID
+    let securityName: String
+    let tradeDate: Date
+    let type: SecurityTradeType
+    let quantityMicro: Int64
+    let priceMinor: Int64
+    let grossMinor: Int64
+    let feesMinor: Int64
+    let taxesMinor: Int64
+    let realizedGainMinor: Int64
+    let currency: String
+    let note: String
+}
+
+struct PortfolioReportCurrencyTotal: Identifiable, Equatable, Sendable {
+    var id: String { currency }
+    let currency: String
+    let positionCount: Int
+    let missingPriceCount: Int
+    let costBasisMinor: Int64
+    let knownMarketValueMinor: Int64
+    let knownUnrealizedGainMinor: Int64
+    let realizedGainMinor: Int64
+    let incomeMinor: Int64
+    let feesMinor: Int64
+    let taxesMinor: Int64
+}
+
+struct PortfolioReportSnapshot: Equatable, Sendable {
+    let dateFrom: Date?
+    let dateThrough: Date?
+    let positions: [PortfolioReportPositionRow]
+    let trades: [PortfolioReportTradeRow]
+    let totals: [PortfolioReportCurrencyTotal]
+
+    func trades(forSecurityID id: UUID?) -> [PortfolioReportTradeRow] {
+        guard let id else { return [] }
+        return trades.filter { $0.securityID == id }
+    }
+}
+
+enum PortfolioReportEngine {
+    static func snapshot(
+        query: PortfolioReportQuery,
+        positions: [PortfolioPosition],
+        trades: [SecurityTrade],
+        accounts: [FinanceAccount],
+        securities: [Security]
+    ) -> PortfolioReportSnapshot {
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        let securitiesByID = Dictionary(uniqueKeysWithValues: securities.map { ($0.id, $0) })
+        let currencies = Set(query.currencies.map { $0.uppercased() })
+
+        func includes(account: FinanceAccount, security: Security, currency: String) -> Bool {
+            (query.includeClosedAccounts || !account.isClosed)
+                && (query.includeInactiveSecurities || security.isActive)
+                && (query.accountIDs.isEmpty || query.accountIDs.contains(account.id))
+                && (query.securityIDs.isEmpty || query.securityIDs.contains(security.id))
+                && (query.securityTypes.isEmpty || query.securityTypes.contains(security.type))
+                && (currencies.isEmpty || currencies.contains(currency.uppercased()))
+        }
+
+        let positionRows = positions.compactMap { position -> PortfolioReportPositionRow? in
+            guard let account = accountsByID[position.accountID],
+                  includes(
+                    account: account,
+                    security: position.security,
+                    currency: position.security.currency
+                  ) else { return nil }
+            let gain = position.unrealizedGainMinor
+            return PortfolioReportPositionRow(
+                id: position.id, accountID: account.id, accountName: account.name,
+                securityID: position.security.id,
+                securityName: position.security.name,
+                securityType: position.security.type,
+                identifier: [position.security.isin, position.security.wkn,
+                             position.security.ticker]
+                    .first(where: { !$0.isEmpty }) ?? "—",
+                quantityMicro: position.quantityMicro,
+                latestPriceMinor: position.latestPriceMinor,
+                costBasisMinor: position.costBasisMinor,
+                marketValueMinor: position.marketValueMinor,
+                unrealizedGainMinor: gain,
+                gainBasisPoints: gain.flatMap {
+                    basisPoints($0, denominator: position.costBasisMinor)
+                },
+                currency: position.security.currency.uppercased()
+            )
+        }
+        .sorted {
+            let accountOrder = $0.accountName.localizedStandardCompare($1.accountName)
+            if accountOrder != .orderedSame { return accountOrder == .orderedAscending }
+            let securityOrder = $0.securityName.localizedStandardCompare($1.securityName)
+            return securityOrder == .orderedSame ? $0.id < $1.id : securityOrder == .orderedAscending
+        }
+
+        let tradeRows = trades.compactMap { trade -> PortfolioReportTradeRow? in
+            guard let account = accountsByID[trade.accountID],
+                  let security = securitiesByID[trade.securityID],
+                  includes(account: account, security: security, currency: trade.currency),
+                  query.dateFrom.map({ trade.tradeDate >= $0 }) ?? true,
+                  query.dateThrough.map({ trade.tradeDate <= $0 }) ?? true
+            else { return nil }
+            return PortfolioReportTradeRow(
+                id: trade.id, accountID: account.id, accountName: account.name,
+                securityID: security.id, securityName: security.name,
+                tradeDate: trade.tradeDate, type: trade.type,
+                quantityMicro: trade.quantityMicro, priceMinor: trade.priceMinor,
+                grossMinor: trade.grossMinor, feesMinor: trade.feesMinor,
+                taxesMinor: trade.taxesMinor,
+                realizedGainMinor: trade.realizedGainMinor,
+                currency: trade.currency.uppercased(), note: trade.note
+            )
+        }
+        .sorted {
+            $0.tradeDate == $1.tradeDate
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.tradeDate > $1.tradeDate
+        }
+
+        let positionCurrencies = Set(positionRows.map(\.currency))
+        let tradeCurrencies = Set(tradeRows.map(\.currency))
+        let totals = positionCurrencies.union(tradeCurrencies).sorted().map { currency in
+            let currencyPositions = positionRows.filter { $0.currency == currency }
+            let currencyTrades = tradeRows.filter { $0.currency == currency }
+            return PortfolioReportCurrencyTotal(
+                currency: currency,
+                positionCount: currencyPositions.count,
+                missingPriceCount: currencyPositions.filter { $0.marketValueMinor == nil }.count,
+                costBasisMinor: currencyPositions.reduce(0) { $0 + $1.costBasisMinor },
+                knownMarketValueMinor: currencyPositions.compactMap(\.marketValueMinor).reduce(0, +),
+                knownUnrealizedGainMinor: currencyPositions.compactMap(\.unrealizedGainMinor).reduce(0, +),
+                realizedGainMinor: currencyTrades.filter { $0.type == .sell }
+                    .reduce(0) { $0 + $1.realizedGainMinor },
+                incomeMinor: currencyTrades.filter { $0.type == .dividend }
+                    .reduce(0) { $0 + $1.grossMinor - $1.feesMinor - $1.taxesMinor },
+                feesMinor: currencyTrades.reduce(0) { $0 + $1.feesMinor },
+                taxesMinor: currencyTrades.reduce(0) { $0 + $1.taxesMinor }
+            )
+        }
+        return PortfolioReportSnapshot(
+            dateFrom: query.dateFrom, dateThrough: query.dateThrough,
+            positions: positionRows, trades: tradeRows, totals: totals
+        )
+    }
+
+    private static func basisPoints(_ numerator: Int64, denominator: Int64) -> Int64? {
+        guard denominator != 0 else { return nil }
+        return NSDecimalNumber(
+            decimal: Decimal(numerator) * 10_000 / Decimal(denominator)
+        ).rounding(
+            accordingToBehavior: NSDecimalNumberHandler(
+                roundingMode: .plain, scale: 0, raiseOnExactness: false,
+                raiseOnOverflow: true, raiseOnUnderflow: true,
+                raiseOnDivideByZero: true
+            )
+        ).int64Value
+    }
+}
+
 enum BudgetReportEngine {
     static func snapshot(
         budget: FinanceBudget,
@@ -989,6 +1181,13 @@ struct VATReportExportMetadata: Equatable, Sendable {
 }
 
 struct LoanReportExportMetadata: Equatable, Sendable {
+    let title: String
+    let dateLabel: String
+    let filterSummary: String
+    let generatedAt: Date
+}
+
+struct PortfolioReportExportMetadata: Equatable, Sendable {
     let title: String
     let dateLabel: String
     let filterSummary: String
@@ -1460,6 +1659,59 @@ enum VATReportCSVExporter {
 }
 
 enum ComparisonReportCSVExporter {
+    static func portfolioData(
+        snapshot: PortfolioReportSnapshot,
+        metadata: PortfolioReportExportMetadata
+    ) -> Data {
+        var lines = [
+            csv(["Bericht", metadata.title]),
+            csv(["Transaktionszeitraum", metadata.dateLabel]),
+            csv(["Filter", metadata.filterSummary]),
+            csv(["Erstellt", ISO8601DateFormatter().string(from: metadata.generatedAt)]),
+            "",
+            csv(["Depot", "Wertpapier", "Typ", "Kennung", "Bestand", "Kurs",
+                 "Kostenbasis", "Marktwert", "Unrealisiert", "Gewinn %", "Währung"])
+        ]
+        lines.append(contentsOf: snapshot.positions.map { row in
+            csv([
+                row.accountName, row.securityName, row.securityType.title,
+                row.identifier, quantity(row.quantityMicro),
+                row.latestPriceMinor.map(decimal) ?? "",
+                decimal(row.costBasisMinor), row.marketValueMinor.map(decimal) ?? "",
+                row.unrealizedGainMinor.map(decimal) ?? "",
+                percent(row.gainBasisPoints), row.currency
+            ])
+        })
+        lines.append("")
+        lines.append(csv(["Währung", "Positionen", "Ohne Kurs", "Kostenbasis",
+                          "Marktwert bekannt", "Unrealisiert", "Realisiert",
+                          "Erträge netto", "Gebühren", "Steuern"]))
+        lines.append(contentsOf: snapshot.totals.map { total in
+            csv([
+                total.currency, String(total.positionCount),
+                String(total.missingPriceCount), decimal(total.costBasisMinor),
+                decimal(total.knownMarketValueMinor),
+                decimal(total.knownUnrealizedGainMinor),
+                decimal(total.realizedGainMinor), decimal(total.incomeMinor),
+                decimal(total.feesMinor), decimal(total.taxesMinor)
+            ])
+        })
+        lines.append("")
+        lines.append(csv(["Datum", "Depot", "Wertpapier", "Art", "Bestand",
+                          "Kurs", "Brutto", "Gebühren", "Steuern",
+                          "Realisierter Gewinn", "Währung", "Notiz"]))
+        lines.append(contentsOf: snapshot.trades.map { row in
+            csv([
+                reportDate(row.tradeDate), row.accountName, row.securityName,
+                row.type.title, quantity(row.quantityMicro), decimal(row.priceMinor),
+                decimal(row.grossMinor), decimal(row.feesMinor),
+                decimal(row.taxesMinor), decimal(row.realizedGainMinor),
+                row.currency, row.note
+            ])
+        })
+        return data(lines)
+    }
+
     static func periodData(
         snapshot: PeriodComparisonSnapshot,
         metadata: ComparisonReportExportMetadata
@@ -1550,9 +1802,65 @@ enum ComparisonReportCSVExporter {
         guard let basisPoints else { return "" }
         return decimal(basisPoints)
     }
+
+    private static func quantity(_ micro: Int64) -> String {
+        let sign = micro < 0 ? "-" : ""
+        let magnitude = micro.magnitude
+        let fraction = String(format: "%06llu", magnitude % 1_000_000)
+            .replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
+        return fraction.isEmpty
+            ? "\(sign)\(magnitude / 1_000_000)"
+            : "\(sign)\(magnitude / 1_000_000),\(fraction)"
+    }
+
+    private static func reportDate(_ value: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter.string(from: value)
+    }
 }
 
 enum ComparisonReportPDFExporter {
+    static func portfolioData(
+        snapshot: PortfolioReportSnapshot,
+        metadata: PortfolioReportExportMetadata,
+        orientation: ReportPDFOrientation = .landscape
+    ) throws -> Data {
+        let rows = snapshot.positions.map { row in
+            [
+                row.accountName, row.securityName, row.securityType.title,
+                SecurityQuantity(microUnits: row.quantityMicro).formatted,
+                row.latestPriceMinor.map { money($0, row.currency) } ?? "—",
+                money(row.costBasisMinor, row.currency),
+                row.marketValueMinor.map { money($0, row.currency) } ?? "—",
+                row.unrealizedGainMinor.map { money($0, row.currency) } ?? "—",
+                percent(row.gainBasisPoints), row.currency
+            ]
+        } + snapshot.totals.map { total in
+            [
+                "Gesamt", "\(total.positionCount) Positionen", "",
+                "", "", money(total.costBasisMinor, total.currency),
+                money(total.knownMarketValueMinor, total.currency),
+                money(total.knownUnrealizedGainMinor, total.currency),
+                "\(total.missingPriceCount) ohne Kurs", total.currency
+            ]
+        }
+        return try data(
+            rows: rows,
+            headers: ["Depot", "Wertpapier", "Typ", "Bestand", "Kurs",
+                      "Kostenbasis", "Marktwert", "Unrealisiert", "%", "Währ."],
+            metadata: ComparisonReportExportMetadata(
+                title: metadata.title, currentLabel: metadata.dateLabel,
+                referenceLabel: metadata.filterSummary,
+                generatedAt: metadata.generatedAt
+            ),
+            orientation: orientation,
+            subtitle: "Bestand aktuell · Transaktionen \(metadata.dateLabel) · \(metadata.filterSummary)"
+        )
+    }
+
     static func taxAllowanceData(
         snapshot: TaxAllowanceReportSnapshot,
         generatedAt: Date,

@@ -685,9 +685,10 @@ Hauptfenster wird in den Vordergrund geholt. Jedes Außenfenster besitzt zudem
 einen UUID-basierten AppKit-Autosave-Namen; macOS speichert und restauriert
 damit Position und Größe dieser konkreten Fensteridentität.
 
-Auch die sieben Fachauswertungen `Kontosalden und Nettovermögen`,
+Auch die acht Fachauswertungen `Kontosalden und Nettovermögen`,
 `Umsatzsteuer`, `Kredite, Zins und Tilgung`, `Zeitraumvergleich`,
-`Budgetvergleich`, `Verträge und Inventar` sowie `Freistellungsaufträge`
+`Budgetvergleich`, `Depotbestand und Erträge`, `Verträge und Inventar` sowie
+`Freistellungsaufträge`
 besitzen `Neues Fenster`. Dabei wird nicht nur ein berechnetes Ergebnis,
 sondern der vollständige aktuelle Filterzustand codiert und an ein eigenes,
 an die aktive Finanzdatei gebundenes macOS-Fenster übergeben. Zwei gleiche
@@ -700,6 +701,19 @@ die Hauptnavigation übergeben, der passende Fachdialog öffnet sich mit allen
 Filtern, und das Außenfenster schließt. Die Übergabe wird nur einmal
 verbraucht, sodass ein später manuell geöffneter Bericht wieder mit seinen
 normalen Standardwerten beginnt.
+
+Der eigenständige Bericht `Depotbestand und Erträge` zeigt den aktuellen
+Depotbestand mit vollständiger Kostenbasis, letztem vorhandenem Kurs,
+Marktwert und unrealisiertem Gewinn. Depots, Wertpapiere, Wertpapierarten,
+Währungen sowie inaktive Wertpapiere und geschlossene Depots sind filterbar.
+Ein wählbarer Zeitraum gilt bewusst nur für die Transaktionshistorie; der
+Bestand bleibt eine aktuelle Momentaufnahme. Der Drill-down eines Bestands
+zeigt Käufe, Verkäufe, Dividenden und Gebühren. Realisierte Gewinne,
+Nettoerträge, Gebühren und Steuern werden je Währung getrennt ausgewiesen;
+fehlende Kurse kennzeichnen unvollständige Marktwertsummen sichtbar. CSV,
+mehrseitiges PDF und Systemdruck entstehen aus demselben Snapshot. Historische
+Bewertungen, TWR/IRR, Benchmarkvergleich und Allokationsbericht sind noch
+nicht implementiert.
 
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile

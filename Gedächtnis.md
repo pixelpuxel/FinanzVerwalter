@@ -4172,3 +4172,30 @@ Rechtsberatung.
   Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
   Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
   24.533.165 Tokens.
+
+## 08.08.2026 – Depotbestand und Erträge als achte Fachauswertung
+
+- `Depotbestand und Erträge` verbindet eine aktuelle Bestandsmomentaufnahme
+  mit einer separat zeitraumgefilterten Transaktionshistorie. Depot,
+  Wertpapier, Wertpapierart, Währung, Aktivstatus und geschlossene Depots sind
+  kombinierbar filterbar.
+- Die Positionstabelle zeigt Mikrobestand, Kennung, letzten vorhandenen Kurs,
+  Kostenbasis, Marktwert sowie unrealisierten absoluten und prozentualen
+  Gewinn. Ein fehlender Kurs bleibt fachlich `nil`; Bericht und Währungssumme
+  kennzeichnen den dadurch unvollständigen Marktwert ausdrücklich.
+- Der positionsgesteuerte Drill-down zeigt die gespeicherten Käufe, Verkäufe,
+  Dividenden und Gebühren absteigend nach Datum. Realisierte Verkaufsgewinne,
+  Dividenden abzüglich Gebühren und Steuern sowie gesamte Gebühren und Steuern
+  werden je Währung getrennt berechnet.
+- Oberfläche, deterministisches Semikolon-CSV, mehrseitiges PDF und
+  Systemdruck verwenden denselben Snapshot. Vollständige Queries lassen sich
+  als achter typisierter Fachbericht in ein dateigebundenes Außenfenster
+  auslagern und mit allen Änderungen wieder ins Hauptfenster integrieren.
+  ADR 0051 dokumentiert die bewusste Trennung zwischen aktuellem Bestand und
+  Transaktionszeitraum. Historische Bewertung, TWR/IRR, Benchmarks und
+  Allokationsbericht bleiben ausdrücklich offen.
+- Die drei gezielten Tests für Berechnung/Export, Fensterpayload und
+  Reintegration bestehen. Der vollständige Lauf unter
+  `build/TestResults/PortfolioReport-full-20260808-0228.xcresult` umfasst 175
+  Tests: 173 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler.

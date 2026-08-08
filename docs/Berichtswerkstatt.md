@@ -109,8 +109,19 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   wirksame Regelpaket, filtert nach Jahr, Person und Institut und erzeugt aus
   demselben Snapshot CSV, mehrseitiges PDF und Systemdruck.
 
-Noch offen sind insbesondere Depot-/Performance-/Ertrags- und
-Vermietungsberichte.
+Der Fachbericht `Depotbestand und Erträge` verbindet eine aktuelle
+Bestandsmomentaufnahme mit einer separat zeitraumgefilterten
+Transaktionshistorie. Er zeigt Kostenbasis, letzten vorhandenen Kurs,
+Marktwert und unrealisierten Gewinn je Position sowie realisierte Gewinne,
+Netto-Dividenden, Gebühren und Steuern je Währung. Depots, Wertpapiere,
+Wertpapierarten, Währungen, Aktivstatus und geschlossene Depots sind filterbar;
+die ausgewählte Position steuert den Transaktions-Drill-down. Fehlende Kurse
+bleiben als unvollständige Marktwertsumme sichtbar. CSV, mehrseitiges PDF und
+Systemdruck verwenden denselben Snapshot; der vollständige Queryzustand kann
+in ein dateigebundenes Außenfenster ausgelagert und wieder integriert werden.
+
+Noch offen sind insbesondere historische Depotbewertungen, TWR/IRR,
+Benchmark-/Allokations- und Vermietungsberichte.
 
 ## Verifizierte Referenzfunktionen
 

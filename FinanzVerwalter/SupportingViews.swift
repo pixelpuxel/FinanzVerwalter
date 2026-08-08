@@ -1704,6 +1704,17 @@ struct SpecializedReportWindow: View {
                     }
                 )
             } else { invalidQuery }
+        case .portfolio:
+            if let query = try? request.decodedPayload(
+                as: PortfolioReportQuery.self
+            ) {
+                PortfolioReportView(
+                    initialQuery: query,
+                    onIntegrateIntoMainWindow: {
+                        integrateIntoMainWindow(payload: .portfolio($0))
+                    }
+                )
+            } else { invalidQuery }
         case .assetRegister:
             if let query = try? request.decodedPayload(
                 as: AssetRegisterReportQuery.self
@@ -1831,6 +1842,7 @@ struct ReportsView: View {
     @State private var showLoanReport = false
     @State private var showPeriodComparisonReport = false
     @State private var showBudgetReport = false
+    @State private var showPortfolioReport = false
     @State private var showAssetRegisterReport = false
     @State private var showTaxAllowanceReport = false
     @State private var templateName = ""
@@ -1865,6 +1877,7 @@ struct ReportsView: View {
         _showLoanReport = State(initialValue: kind == .loans)
         _showPeriodComparisonReport = State(initialValue: kind == .periodComparison)
         _showBudgetReport = State(initialValue: kind == .budgetComparison)
+        _showPortfolioReport = State(initialValue: kind == .portfolio)
         _showAssetRegisterReport = State(initialValue: kind == .assetRegister)
         _showTaxAllowanceReport = State(initialValue: kind == .taxAllowances)
     }
@@ -1902,6 +1915,13 @@ struct ReportsView: View {
             return nil
         }
         return payload
+    }
+
+    private var launchedPortfolioQuery: PortfolioReportQuery? {
+        guard case let .portfolio(query) = specializedLaunch?.payload else {
+            return nil
+        }
+        return query
     }
 
     private var launchedAssetRegisterQuery: AssetRegisterReportQuery? {
@@ -2059,6 +2079,11 @@ struct ReportsView: View {
                             showBudgetReport = true
                         } label: {
                             Label("Budget Plan/Ist/Abweichung …", systemImage: "chart.bar.xaxis")
+                        }
+                        Button {
+                            showPortfolioReport = true
+                        } label: {
+                            Label("Depotbestand und Erträge …", systemImage: "chart.line.uptrend.xyaxis")
                         }
                         Button {
                             showAssetRegisterReport = true
@@ -2378,6 +2403,13 @@ struct ReportsView: View {
                 initialBudgetID: launchedBudgetPayload?.budgetID,
                 initialQuery: launchedBudgetPayload?.query ?? BudgetReportQuery()
             )
+                .environmentObject(store)
+        }
+        .sheet(
+            isPresented: $showPortfolioReport,
+            onDismiss: clearSpecializedLaunch
+        ) {
+            PortfolioReportView(initialQuery: launchedPortfolioQuery)
                 .environmentObject(store)
         }
         .sheet(
@@ -4714,6 +4746,392 @@ private struct VATReportView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return "FinanzVerwalter-Umsatzsteuer-\(formatter.string(from: query.dateFrom))-bis-"
             + formatter.string(from: query.dateThrough)
+    }
+}
+
+private struct PortfolioReportView: View {
+    @EnvironmentObject private var store: FinanceAppStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
+    let onIntegrateIntoMainWindow: ((PortfolioReportQuery) -> Void)?
+    @State private var limitPeriod = true
+    @State private var dateFrom: Date
+    @State private var dateThrough: Date
+    @State private var accountIDs = Set<UUID>()
+    @State private var securityIDs = Set<UUID>()
+    @State private var securityTypes = Set<SecurityType>()
+    @State private var currencies = Set<String>()
+    @State private var includeInactive = false
+    @State private var includeClosedAccounts = false
+    @State private var selectedPositionID: String?
+    @State private var orientation: ReportPDFOrientation = .landscape
+    @State private var csvDocument = ReportCSVDocument(data: Data())
+    @State private var pdfDocument = ReportPDFDocument(data: Data())
+    @State private var showCSVExporter = false
+    @State private var showPDFExporter = false
+
+    init(
+        initialQuery: PortfolioReportQuery? = nil,
+        now: Date = .now,
+        calendar: Calendar = .current,
+        onIntegrateIntoMainWindow: ((PortfolioReportQuery) -> Void)? = nil
+    ) {
+        self.onIntegrateIntoMainWindow = onIntegrateIntoMainWindow
+        let interval = calendar.dateInterval(of: .year, for: now)
+        _dateFrom = State(initialValue: initialQuery?.dateFrom ?? interval?.start ?? now)
+        _dateThrough = State(
+            initialValue: initialQuery?.dateThrough
+                ?? interval?.end.addingTimeInterval(-0.001)
+                ?? now
+        )
+        if let initialQuery {
+            _limitPeriod = State(
+                initialValue: initialQuery.dateFrom != nil
+                    || initialQuery.dateThrough != nil
+            )
+            _accountIDs = State(initialValue: initialQuery.accountIDs)
+            _securityIDs = State(initialValue: initialQuery.securityIDs)
+            _securityTypes = State(initialValue: initialQuery.securityTypes)
+            _currencies = State(initialValue: initialQuery.currencies)
+            _includeInactive = State(
+                initialValue: initialQuery.includeInactiveSecurities
+            )
+            _includeClosedAccounts = State(
+                initialValue: initialQuery.includeClosedAccounts
+            )
+        }
+    }
+
+    private var query: PortfolioReportQuery {
+        let calendar = Calendar.current
+        let first = min(dateFrom, dateThrough)
+        let last = max(dateFrom, dateThrough)
+        return PortfolioReportQuery(
+            dateFrom: limitPeriod ? calendar.startOfDay(for: first) : nil,
+            dateThrough: limitPeriod
+                ? calendar.date(
+                    byAdding: .day, value: 1,
+                    to: calendar.startOfDay(for: last)
+                  )?.addingTimeInterval(-0.001) ?? last
+                : nil,
+            accountIDs: accountIDs, securityIDs: securityIDs,
+            securityTypes: securityTypes, currencies: currencies,
+            includeInactiveSecurities: includeInactive,
+            includeClosedAccounts: includeClosedAccounts
+        )
+    }
+
+    private var snapshot: PortfolioReportSnapshot {
+        store.portfolioReport(query)
+    }
+
+    private var selectedPosition: PortfolioReportPositionRow? {
+        selectedPositionID.flatMap { id in snapshot.positions.first { $0.id == id } }
+    }
+
+    private var selectedTrades: [PortfolioReportTradeRow] {
+        snapshot.trades(forSecurityID: selectedPosition?.securityID)
+    }
+
+    var body: some View {
+        let value = snapshot
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Depotbestand und Erträge").font(.title2.bold())
+                    Text("Aktueller Bestand, Kostenbasis, Gewinne und Transaktionszeitraum")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(value.positions.count) Positionen · \(value.trades.count) Vorgänge")
+                    .font(.headline)
+                if let onIntegrateIntoMainWindow {
+                    Button(
+                        "Ins Hauptfenster",
+                        systemImage: "arrow.down.left.and.arrow.up.right"
+                    ) { onIntegrateIntoMainWindow(query) }
+                        .accessibilityIdentifier("integratePortfolioReportIntoMainWindow")
+                } else {
+                    Button("Neues Fenster", systemImage: "macwindow.badge.plus") {
+                        openSpecializedReportWindow(
+                            kind: .portfolio, payload: query,
+                            store: store, openWindow: openWindow
+                        )
+                    }
+                    .accessibilityIdentifier("openPortfolioReportWindow")
+                }
+                Button("Schließen") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider()
+            HStack(spacing: 10) {
+                Toggle("Transaktionszeitraum", isOn: $limitPeriod).toggleStyle(.switch)
+                DatePicker("Von", selection: $dateFrom, displayedComponents: .date)
+                    .disabled(!limitPeriod)
+                DatePicker("Bis", selection: $dateThrough, displayedComponents: .date)
+                    .disabled(!limitPeriod)
+                portfolioAccountMenu
+                portfolioSecurityMenu
+                portfolioTypeMenu
+                portfolioCurrencyMenu
+                Menu {
+                    Toggle("Inaktive Wertpapiere", isOn: $includeInactive)
+                    Toggle("Geschlossene Depots", isOn: $includeClosedAccounts)
+                } label: {
+                    Label("Optionen", systemImage: "slider.horizontal.3")
+                }
+                Spacer()
+                portfolioOutputMenu(value)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            Divider()
+            ScrollView(.horizontal) {
+                HStack(spacing: 20) {
+                    ForEach(value.totals) { total in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(total.currency).font(.headline)
+                            Text(
+                                "Marktwert \(Money(minorUnits: total.knownMarketValueMinor, currency: total.currency).formatted)"
+                                    + " · Kosten \(Money(minorUnits: total.costBasisMinor, currency: total.currency).formatted)"
+                                    + " · Gewinn \(Money(minorUnits: total.knownUnrealizedGainMinor, currency: total.currency).formatted)"
+                                    + " · realisiert \(Money(minorUnits: total.realizedGainMinor, currency: total.currency).formatted)"
+                                    + " · Erträge \(Money(minorUnits: total.incomeMinor, currency: total.currency).formatted)"
+                            )
+                            .font(.caption).monospacedDigit()
+                            if total.missingPriceCount > 0 {
+                                Text("\(total.missingPriceCount) Position(en) ohne Kurs; Marktwertsumme ist unvollständig.")
+                                    .font(.caption2).foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+            }
+            Divider()
+            HSplitView {
+                Table(value.positions, selection: $selectedPositionID) {
+                    TableColumn("Depot") { Text($0.accountName).lineLimit(1) }.width(125)
+                    TableColumn("Wertpapier") { row in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.securityName).lineLimit(1)
+                            Text(row.identifier).font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }.width(min: 180, ideal: 230)
+                    TableColumn("Typ") { Text($0.securityType.title) }.width(90)
+                    TableColumn("Bestand") { row in
+                        portfolioQuantity(row.quantityMicro)
+                    }.width(105)
+                    TableColumn("Kurs") { row in
+                        portfolioMoney(row.latestPriceMinor, row.currency)
+                    }.width(105)
+                    TableColumn("Kostenbasis") { row in
+                        portfolioMoney(row.costBasisMinor, row.currency)
+                    }.width(120)
+                    TableColumn("Marktwert") { row in
+                        portfolioMoney(row.marketValueMinor, row.currency)
+                    }.width(120)
+                    TableColumn("Gewinn") { row in
+                        portfolioMoney(row.unrealizedGainMinor, row.currency)
+                            .foregroundStyle((row.unrealizedGainMinor ?? 0) < 0 ? .red : .green)
+                    }.width(120)
+                    TableColumn("%") { row in
+                        Text(portfolioPercent(row.gainBasisPoints))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .monospacedDigit()
+                    }.width(80)
+                }
+                .overlay {
+                    if value.positions.isEmpty {
+                        ContentUnavailableView(
+                            "Keine Depotpositionen",
+                            systemImage: "chart.line.uptrend.xyaxis",
+                            description: Text("Die aktuellen Filter enthalten keinen Bestand.")
+                        )
+                    }
+                }
+                VStack(spacing: 0) {
+                    HStack {
+                        Text(selectedPosition?.securityName ?? "Transaktions-Drill-down")
+                            .font(.headline).lineLimit(1)
+                        Spacer()
+                        Text("\(selectedTrades.count) Vorgänge")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.padding(8)
+                    Divider()
+                    Table(selectedTrades) {
+                        TableColumn("Datum") {
+                            Text($0.tradeDate, format: .dateTime.day().month().year())
+                        }.width(95)
+                        TableColumn("Art") { Text($0.type.title) }.width(85)
+                        TableColumn("Bestand") { row in
+                            portfolioQuantity(row.quantityMicro)
+                        }.width(95)
+                        TableColumn("Brutto") { row in
+                            portfolioMoney(row.grossMinor, row.currency)
+                        }.width(110)
+                        TableColumn("Geb./Steuer") { row in
+                            portfolioMoney(row.feesMinor + row.taxesMinor, row.currency)
+                        }.width(110)
+                        TableColumn("Realisiert") { row in
+                            portfolioMoney(row.realizedGainMinor, row.currency)
+                        }.width(110)
+                        TableColumn("Notiz") { Text($0.note).lineLimit(1) }
+                    }
+                }
+                .frame(minWidth: 470)
+            }
+        }
+        .frame(minWidth: 1_280, minHeight: 720)
+        .onAppear { selectedPositionID = selectedPositionID ?? value.positions.first?.id }
+        .onChange(of: value.positions.map(\.id)) {
+            if selectedPositionID.map({ id in value.positions.contains { $0.id == id } }) != true {
+                selectedPositionID = value.positions.first?.id
+            }
+        }
+        .fileExporter(
+            isPresented: $showCSVExporter, document: csvDocument,
+            contentType: .commaSeparatedText, defaultFilename: portfolioFilename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+        .fileExporter(
+            isPresented: $showPDFExporter, document: pdfDocument,
+            contentType: .pdf, defaultFilename: portfolioFilename
+        ) { if case .failure(let error) = $0 { store.errorMessage = error.localizedDescription } }
+    }
+
+    private var portfolioMetadata: PortfolioReportExportMetadata {
+        PortfolioReportExportMetadata(
+            title: "Depotbestand und Erträge",
+            dateLabel: limitPeriod
+                ? "\(dateFrom.formatted(date: .numeric, time: .omitted)) – \(dateThrough.formatted(date: .numeric, time: .omitted))"
+                : "Alle Transaktionen",
+            filterSummary: "\(accountIDs.isEmpty ? "alle Depots" : "\(accountIDs.count) Depots") · "
+                + "\(securityIDs.isEmpty ? "alle Wertpapiere" : "\(securityIDs.count) Wertpapiere") · "
+                + "\(securityTypes.isEmpty ? "alle Typen" : "\(securityTypes.count) Typen")",
+            generatedAt: .now
+        )
+    }
+
+    private var portfolioFilename: String { "Depotbestand-und-Ertraege" }
+
+    private func portfolioOutputMenu(_ snapshot: PortfolioReportSnapshot) -> some View {
+        Menu {
+            Picker("Papierausrichtung", selection: $orientation) {
+                ForEach(ReportPDFOrientation.allCases) { Text($0.title).tag($0) }
+            }
+            Divider()
+            Button("CSV exportieren …", systemImage: "tablecells") {
+                csvDocument = ReportCSVDocument(
+                    data: ComparisonReportCSVExporter.portfolioData(
+                        snapshot: snapshot, metadata: portfolioMetadata
+                    )
+                )
+                showCSVExporter = true
+            }
+            Button("PDF exportieren …", systemImage: "doc.richtext") {
+                preparePortfolioPDF(snapshot)
+            }
+            Button("Drucken …", systemImage: "printer") {
+                do {
+                    try RegisterPrintService.printPDF(
+                        try ComparisonReportPDFExporter.portfolioData(
+                            snapshot: snapshot, metadata: portfolioMetadata,
+                            orientation: orientation
+                        )
+                    )
+                } catch { store.errorMessage = error.localizedDescription }
+            }
+        } label: { Label("Ausgabe", systemImage: "square.and.arrow.up") }
+    }
+
+    private func preparePortfolioPDF(_ snapshot: PortfolioReportSnapshot) {
+        do {
+            pdfDocument = ReportPDFDocument(
+                data: try ComparisonReportPDFExporter.portfolioData(
+                    snapshot: snapshot, metadata: portfolioMetadata,
+                    orientation: orientation
+                )
+            )
+            showPDFExporter = true
+        } catch { store.errorMessage = error.localizedDescription }
+    }
+
+    private var portfolioAccountMenu: some View {
+        Menu {
+            Button("Alle Depots") { accountIDs.removeAll() }
+            ForEach(store.accounts.filter { $0.type == .investment }) { account in
+                Toggle(account.name, isOn: member(account.id, in: $accountIDs))
+            }
+        } label: {
+            Label(accountIDs.isEmpty ? "Alle Depots" : "Depots (\(accountIDs.count))",
+                  systemImage: "building.columns")
+        }
+    }
+
+    private var portfolioSecurityMenu: some View {
+        Menu {
+            Button("Alle Wertpapiere") { securityIDs.removeAll() }
+            ForEach(store.securities) { security in
+                Toggle(security.name, isOn: member(security.id, in: $securityIDs))
+            }
+        } label: {
+            Label(securityIDs.isEmpty ? "Alle Wertpapiere" : "Wertpapiere (\(securityIDs.count))",
+                  systemImage: "chart.line.uptrend.xyaxis")
+        }
+    }
+
+    private var portfolioTypeMenu: some View {
+        Menu {
+            Button("Alle Typen") { securityTypes.removeAll() }
+            ForEach(SecurityType.allCases) { type in
+                Toggle(type.title, isOn: member(type, in: $securityTypes))
+            }
+        } label: {
+            Label(securityTypes.isEmpty ? "Alle Typen" : "Typen (\(securityTypes.count))",
+                  systemImage: "square.stack.3d.up")
+        }
+    }
+
+    private var portfolioCurrencyMenu: some View {
+        Menu {
+            Button("Alle Währungen") { currencies.removeAll() }
+            ForEach(Set(store.securities.map { $0.currency.uppercased() }).sorted(), id: \.self) {
+                currency in
+                Toggle(currency, isOn: member(currency, in: $currencies))
+            }
+        } label: {
+            Label(currencies.isEmpty ? "Alle Währungen" : "Währungen (\(currencies.count))",
+                  systemImage: "eurosign.arrow.circlepath")
+        }
+    }
+
+    private func member<Value: Hashable>(
+        _ value: Value, in selection: Binding<Set<Value>>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { selection.wrappedValue.contains(value) },
+            set: { included in
+                if included { selection.wrappedValue.insert(value) }
+                else { selection.wrappedValue.remove(value) }
+            }
+        )
+    }
+
+    private func portfolioMoney(_ minor: Int64?, _ currency: String) -> some View {
+        Text(minor.map { Money(minorUnits: $0, currency: currency).formatted } ?? "—")
+            .frame(maxWidth: .infinity, alignment: .trailing).monospacedDigit()
+    }
+
+    private func portfolioQuantity(_ micro: Int64) -> some View {
+        Text(SecurityQuantity(microUnits: micro).formatted)
+            .frame(maxWidth: .infinity, alignment: .trailing).monospacedDigit()
+    }
+
+    private func portfolioPercent(_ basisPoints: Int64?) -> String {
+        guard let basisPoints else { return "—" }
+        let sign = basisPoints < 0 ? "-" : ""
+        let magnitude = basisPoints.magnitude
+        return "\(sign)\(magnitude / 100),\(String(format: "%02llu", magnitude % 100)) %"
     }
 }
 

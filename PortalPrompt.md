@@ -2120,7 +2120,7 @@ Payload. Gleiche Abfragen müssen getrennte Fensteridentitäten erhalten.
 Sperre die Darstellung bei geschlossener oder abweichender Finanzdatei und
 zeige bei beschädigtem oder typfremdem Payload einen eigenen Fehlerzustand.
 Vergib einen stabilen Frame-Autosave-Namen aus Berichtstyp und UUID. Teste
-alle sieben Payloadtypen auf Codable-Rundlauf, Pfadbindung,
+alle sieben initialen Payloadtypen auf Codable-Rundlauf, Pfadbindung,
 Fensteridentität und deterministische Autosave-ID; führe danach den gesamten
 Testbestand aus.
 
@@ -2142,5 +2142,38 @@ Verbrauche den Launch nur einmal: Nach der initialen Präsentation darf ein
 später manuell geöffneter Fachbericht nicht erneut die alte Außenfenster-Query
 erhalten. Ein Finanzdateiwechsel setzt ausstehende Launches zurück. Sperre die
 Aktion bei Fremddatei und stelle sicher, dass der Payload-Typ stets dem
-Fenstertyp entspricht. Teste alle sieben Payloadfälle auf Typzuordnung,
+Fenstertyp entspricht. Teste alle sieben initialen Payloadfälle auf Typzuordnung,
 verlustfreien Codable-Rundlauf und jeweils frische Launch-Identitäten.
+
+# Depotbestand und Erträge als achte Fachauswertung
+
+Erweitere die typisierte Fachberichtsarchitektur um `Depotbestand und Erträge`.
+Die Query speichert einen optionalen Transaktionszeitraum, Depot-,
+Wertpapier-, Wertpapierart- und Währungsfilter sowie die Optionen für inaktive
+Wertpapiere und geschlossene Depots. Der Zeitraum filtert ausschließlich
+Transaktionen; kennzeichne den Bestand ausdrücklich als aktuelle
+Momentaufnahme und erfinde keine historische Bewertung.
+
+Erzeuge aus aktuellen `PortfolioPosition`-Werten Positionen mit Depot,
+Wertpapier, Kennung, Mikrobestand, letztem Kurs, Kostenbasis, Marktwert,
+unrealisiertem Gewinn und prozentualem Gewinn. Verbinde gespeicherte
+`SecurityTrade`-Datensätze zu einer absteigend datierten Historie und summiere
+Verkaufsgewinne, Dividenden abzüglich Gebühren und Steuern sowie Gebühren und
+Steuern strikt je Währung. Ein fehlender Kurs bleibt `nil`, wird gezählt und
+macht die Marktwertsumme sichtbar unvollständig; er darf niemals als
+Nullkurs oder vollständige Bewertung erscheinen. Die ausgewählte Position
+steuert einen Wertpapier-Drill-down.
+
+Erzeuge deterministisches Semikolon-CSV und ein mehrseitiges PDF samt
+Metadaten, Positions-, Währungssummen- und Transaktionstabelle; der
+Systemdruck verwendet exakt das PDF. Binde den vollständigen Queryzustand als
+achten Fall in `SpecializedReportWindowRequest` und
+`SpecializedReportLaunchPayload` ein, damit Außenfenster, Dateipfadsperre,
+Geometriespeicherung und verlustfreie Reintegration unverändert gelten.
+
+Teste Filter einschließlich Groß-/Kleinschreibung der Währung, geschlossene
+Depots und inaktive Wertpapiere, fehlende Kurse, Kostenbasis, Marktwert,
+realisierten/unrealisierten Gewinn, Nettoertrag, Gebühren, Steuern,
+Drill-down-Sortierung, deterministisches CSV, lesbares PDF und Codable-Rundlauf
+aller acht Fachberichtstypen. Dokumentiere historische Bewertung, TWR/IRR,
+Benchmarkvergleich und Allokationsbericht weiter ausdrücklich als offen.
