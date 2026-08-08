@@ -706,6 +706,11 @@ Der eigenständige Bericht `Depotbestand und Erträge` zeigt den aktuellen
 Depotbestand mit vollständiger Kostenbasis, letztem vorhandenem Kurs,
 Marktwert und unrealisiertem Gewinn. Depots, Wertpapiere, Wertpapierarten,
 Währungen sowie inaktive Wertpapiere und geschlossene Depots sind filterbar.
+Der Vorgangseditor erfasst neben Kauf und Verkauf auch Bruttoerträge mit
+Gebühren und Steuern sowie eigenständige Wertpapiergebühren. Diese Cashflows
+werden in der Währung des Wertpapiers gespeichert und verändern weder Bestand
+noch FIFO-Lots. Eine automatisch gekoppelte Buchung auf einem
+Verrechnungskonto ist noch nicht implementiert.
 Ein wählbarer Zeitraum gilt bewusst nur für die Transaktionshistorie; der
 Bestand bleibt eine aktuelle Momentaufnahme. Der Drill-down eines Bestands
 zeigt Käufe, Verkäufe, Dividenden und Gebühren. Realisierte Gewinne,

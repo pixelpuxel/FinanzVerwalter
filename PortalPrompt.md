@@ -2208,3 +2208,29 @@ Mischklassen, Summenerhalt, Prozentwerte, nicht zugeordnete Fehlkurspositionen,
 CSV- und PDF-Inhalte sowie den gemeinsamen SQLite-Ladevorgang. Kennzeichne
 Zielallokation, historische Bewertung, Benchmark und TWR/IRR weiterhin als
 offen.
+
+# Lotneutrale Wertpapiererträge und Gebühren
+
+Erweitere den bestehenden Wertpapier-Vorgangseditor um `Dividende/Zins` und
+`Gebühr`, ohne ein neues Schema oder eine zweite Cashflow-Wahrheit einzuführen.
+Ein Ertrag speichert positiven Bruttobetrag, nichtnegative Gebühren und
+Steuern sowie den daraus resultierenden Nettoertrag in `security_trades`; die
+Abzüge dürfen den Bruttobetrag nicht überschreiten. Eine eigenständige Gebühr
+speichert ihren positiven Betrag im Gebührenfeld. Beide Vorgänge besitzen
+Stückzahl und Kurs null, erzeugen oder verbrauchen keine Lots und verändern
+keinen Depotbestand. Depot und Wertpapier müssen existieren, offen
+beziehungsweise aktiv sein. Verwende durchgehend die Währung des Wertpapiers,
+weil ein Depot Wertpapiere verschiedener Währungen enthalten kann.
+
+Zeige im Editor abhängig vom Vorgang nur die fachlich benötigten Felder und
+nenne Kauf/Verkauf/Ertrag/Gebühr gemeinsam `Vorgang`. Die kompakte Historie
+zeigt für Erträge den Nettobetrag und für Gebühren einen negativen Betrag. Die
+Währungssummen des Depotberichts weisen realisierten Gewinn, Nettoertrag,
+Gebühren und Steuern gleichzeitig aus; CSV und PDF übernehmen die Vorgänge
+über die bestehende Transaktionshistorie.
+
+Eine gekoppelte Buchung auf einem Verrechnungskonto, Wiederanlage,
+Steuererstattung und Kapitalmaßnahmen bleiben ausdrücklich offen. Behaupte
+insbesondere nicht, dass ein erfasster Wertpapiercashflow bereits einen
+Bankkontosaldo verändert. Teste Validierung, Persistenz, unveränderte
+FIFO-Lots, Nettoertrag und währungsgetrennte Berichtssummen.

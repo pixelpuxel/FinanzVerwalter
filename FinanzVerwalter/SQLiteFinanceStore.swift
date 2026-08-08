@@ -5138,6 +5138,105 @@ final class SQLiteFinanceStore {
         }
     }
 
+    func recordSecurityIncome(
+        accountID: UUID,
+        securityID: UUID,
+        date: Date,
+        grossMinor: Int64,
+        feesMinor: Int64,
+        taxesMinor: Int64,
+        note: String = ""
+    ) throws {
+        let (deductionsMinor, deductionsOverflow) = feesMinor.addingReportingOverflow(taxesMinor)
+        guard grossMinor > 0, feesMinor >= 0, taxesMinor >= 0,
+              !deductionsOverflow, grossMinor >= deductionsMinor
+        else {
+            throw FinanceError.database(
+                "Der Bruttoertrag muss positiv und mindestens so hoch wie Gebühren und Steuern sein."
+            )
+        }
+        let currency = try validatedInvestmentCurrency(
+            accountID: accountID, securityID: securityID
+        )
+        try insertSecurityCashTrade(
+            accountID: accountID, securityID: securityID, type: .dividend,
+            date: date, grossMinor: grossMinor, feesMinor: feesMinor,
+            taxesMinor: taxesMinor, currency: currency, note: note
+        )
+    }
+
+    func recordSecurityFee(
+        accountID: UUID,
+        securityID: UUID,
+        date: Date,
+        feeMinor: Int64,
+        note: String = ""
+    ) throws {
+        guard feeMinor > 0 else {
+            throw FinanceError.database("Die Gebühr muss positiv sein.")
+        }
+        let currency = try validatedInvestmentCurrency(
+            accountID: accountID, securityID: securityID
+        )
+        try insertSecurityCashTrade(
+            accountID: accountID, securityID: securityID, type: .fee,
+            date: date, grossMinor: 0, feesMinor: feeMinor,
+            taxesMinor: 0, currency: currency, note: note
+        )
+    }
+
+    private func validatedInvestmentCurrency(
+        accountID: UUID, securityID: UUID
+    ) throws -> String {
+        guard let account = try accounts().first(where: { $0.id == accountID }),
+              account.type == .investment, !account.isClosed
+        else {
+            throw FinanceError.database("Das Depot fehlt oder ist geschlossen.")
+        }
+        guard let security = try securities().first(where: { $0.id == securityID }),
+              security.isActive
+        else {
+            throw FinanceError.database("Das Wertpapier fehlt oder ist inaktiv.")
+        }
+        return security.currency.uppercased()
+    }
+
+    private func insertSecurityCashTrade(
+        accountID: UUID,
+        securityID: UUID,
+        type: SecurityTradeType,
+        date: Date,
+        grossMinor: Int64,
+        feesMinor: Int64,
+        taxesMinor: Int64,
+        currency: String,
+        note: String
+    ) throws {
+        let tradeID = UUID()
+        try transaction {
+            try run(
+                """
+                INSERT INTO security_trades(
+                    id,account_id,security_id,type,trade_date,quantity_micro,price_minor,
+                    fees_minor,taxes_minor,gross_minor,realized_gain_minor,currency,note,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    .text(tradeID.uuidString), .text(accountID.uuidString),
+                    .text(securityID.uuidString), .text(type.rawValue),
+                    .text(Self.day(date)), .integer(0), .integer(0),
+                    .integer(feesMinor), .integer(taxesMinor), .integer(grossMinor),
+                    .integer(0), .text(currency), .text(note),
+                    .text(Self.timestamp(Date()))
+                ]
+            )
+            try audit(
+                entity: "security_trade", id: tradeID, action: type.rawValue,
+                details: "gross=\(grossMinor),fees=\(feesMinor),taxes=\(taxesMinor)"
+            )
+        }
+    }
+
     func saveSecurityPrice(
         securityID: UUID,
         date: Date,

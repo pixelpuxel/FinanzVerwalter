@@ -3239,18 +3239,25 @@ final class FinanceAppStore: ObservableObject {
         date: Date,
         quantity: String,
         price: String,
+        amount: String,
         fees: String,
         taxes: String,
         note: String
     ) -> Bool {
-        guard let repository else { return false }
+        guard let repository,
+              let security = securities.first(where: { $0.id == securityID })
+        else { return false }
         do {
-            let quantityValue = try SecurityQuantity(parsing: quantity)
-            let priceValue = try Money(parsing: price)
-            let feeValue = try Money(parsing: fees.isEmpty ? "0" : fees)
-            let taxValue = try Money(parsing: taxes.isEmpty ? "0" : taxes)
             switch type {
             case .buy:
+                let quantityValue = try SecurityQuantity(parsing: quantity)
+                let priceValue = try Money(parsing: price, currency: security.currency)
+                let feeValue = try Money(
+                    parsing: fees.isEmpty ? "0" : fees, currency: security.currency
+                )
+                let taxValue = try Money(
+                    parsing: taxes.isEmpty ? "0" : taxes, currency: security.currency
+                )
                 try repository.recordPurchase(
                     accountID: accountID, securityID: securityID, date: date,
                     quantityMicro: quantityValue.microUnits,
@@ -3259,6 +3266,14 @@ final class FinanceAppStore: ObservableObject {
                     note: note
                 )
             case .sell:
+                let quantityValue = try SecurityQuantity(parsing: quantity)
+                let priceValue = try Money(parsing: price, currency: security.currency)
+                let feeValue = try Money(
+                    parsing: fees.isEmpty ? "0" : fees, currency: security.currency
+                )
+                let taxValue = try Money(
+                    parsing: taxes.isEmpty ? "0" : taxes, currency: security.currency
+                )
                 try repository.recordSale(
                     accountID: accountID, securityID: securityID, date: date,
                     quantityMicro: quantityValue.microUnits,
@@ -3266,8 +3281,26 @@ final class FinanceAppStore: ObservableObject {
                     feesMinor: feeValue.minorUnits, taxesMinor: taxValue.minorUnits,
                     note: note
                 )
-            case .dividend, .fee:
-                throw FinanceError.database("Diese Transaktionsart folgt im Ertragsdialog.")
+            case .dividend:
+                let grossValue = try Money(parsing: amount, currency: security.currency)
+                let feeValue = try Money(
+                    parsing: fees.isEmpty ? "0" : fees, currency: security.currency
+                )
+                let taxValue = try Money(
+                    parsing: taxes.isEmpty ? "0" : taxes, currency: security.currency
+                )
+                try repository.recordSecurityIncome(
+                    accountID: accountID, securityID: securityID, date: date,
+                    grossMinor: grossValue.minorUnits,
+                    feesMinor: feeValue.minorUnits,
+                    taxesMinor: taxValue.minorUnits, note: note
+                )
+            case .fee:
+                let feeValue = try Money(parsing: amount, currency: security.currency)
+                try repository.recordSecurityFee(
+                    accountID: accountID, securityID: securityID, date: date,
+                    feeMinor: feeValue.minorUnits, note: note
+                )
             }
             try load()
             statusText = "\(type.title) gespeichert"

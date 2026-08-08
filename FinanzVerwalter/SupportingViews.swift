@@ -4897,6 +4897,8 @@ private struct PortfolioReportView: View {
                                     + " · Gewinn \(Money(minorUnits: total.knownUnrealizedGainMinor, currency: total.currency).formatted)"
                                     + " · realisiert \(Money(minorUnits: total.realizedGainMinor, currency: total.currency).formatted)"
                                     + " · Erträge \(Money(minorUnits: total.incomeMinor, currency: total.currency).formatted)"
+                                    + " · Gebühren \(Money(minorUnits: total.feesMinor, currency: total.currency).formatted)"
+                                    + " · Steuern \(Money(minorUnits: total.taxesMinor, currency: total.currency).formatted)"
                             )
                             .font(.caption).monospacedDigit()
                             if total.missingPriceCount > 0 {
@@ -14263,7 +14265,7 @@ struct InvestmentsView: View {
                 }
                 Spacer()
                 Button("Wertpapier", systemImage: "plus") { showSecurityEditor = true }
-                Button("Kauf/Verkauf", systemImage: "arrow.left.arrow.right") {
+                Button("Vorgang", systemImage: "arrow.left.arrow.right") {
                     showTradeEditor = true
                 }
                 .disabled(store.securities.isEmpty || investmentAccounts.isEmpty)
@@ -14385,7 +14387,7 @@ struct InvestmentsView: View {
                                     Text(trade.type.title).frame(width: 70, alignment: .leading)
                                     Text(SecurityQuantity(microUnits: abs(trade.quantityMicro)).formatted)
                                     Spacer()
-                                    Text(Money(minorUnits: trade.grossMinor).formatted)
+                                    Text(investmentTradeAmount(trade))
                                     if trade.type == .sell {
                                         Text("Gewinn \(Money(minorUnits: trade.realizedGainMinor).formatted)")
                                             .foregroundStyle(trade.realizedGainMinor < 0 ? .red : .green)
@@ -14428,6 +14430,19 @@ struct InvestmentsView: View {
 
     private var investmentAccounts: [FinanceAccount] {
         store.accounts.filter { $0.type == .investment && !$0.isClosed }
+    }
+
+    private func investmentTradeAmount(_ trade: SecurityTrade) -> String {
+        let value: Int64
+        switch trade.type {
+        case .dividend:
+            value = trade.grossMinor - trade.feesMinor - trade.taxesMinor
+        case .fee:
+            value = -trade.feesMinor
+        case .buy, .sell:
+            value = trade.grossMinor
+        }
+        return Money(minorUnits: value, currency: trade.currency).formatted
     }
 }
 
@@ -14510,10 +14525,19 @@ private struct SecurityTradeEditor: View {
     @State private var date = Date()
     @State private var quantity = ""
     @State private var price = ""
+    @State private var amount = ""
     @State private var fees = "0,00"
     @State private var taxes = "0,00"
     @State private var note = ""
     let initialSecurityID: UUID?
+
+    private var canSave: Bool {
+        guard accountID != nil, securityID != nil else { return false }
+        return switch type {
+        case .buy, .sell: !quantity.isEmpty && !price.isEmpty
+        case .dividend, .fee: !amount.isEmpty
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14526,11 +14550,12 @@ private struct SecurityTradeEditor: View {
                     if store.recordSecurityTrade(
                         accountID: accountID, securityID: securityID, type: type,
                         date: date, quantity: quantity, price: price,
+                        amount: amount,
                         fees: fees, taxes: taxes, note: note
                     ) { dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(accountID == nil || securityID == nil || quantity.isEmpty || price.isEmpty)
+                .disabled(!canSave)
             }
             .padding(14)
             Divider()
@@ -14548,16 +14573,31 @@ private struct SecurityTradeEditor: View {
                     }
                 }
                 Picker("Art", selection: $type) {
-                    Text(SecurityTradeType.buy.title).tag(SecurityTradeType.buy)
-                    Text(SecurityTradeType.sell.title).tag(SecurityTradeType.sell)
+                    ForEach(SecurityTradeType.allCases, id: \.self) { tradeType in
+                        Text(tradeType.title).tag(tradeType)
+                    }
                 }
-                DatePicker("Handelstag", selection: $date, displayedComponents: .date)
-                TextField("Stückzahl", text: $quantity)
-                TextField("Kurs je Stück", text: $price)
-                TextField("Gebühren", text: $fees)
-                TextField("Steuern", text: $taxes)
+                DatePicker("Vorgangsdatum", selection: $date, displayedComponents: .date)
+                if type == .buy || type == .sell {
+                    TextField("Stückzahl", text: $quantity)
+                    TextField("Kurs je Stück", text: $price)
+                    TextField("Gebühren", text: $fees)
+                    TextField("Steuern", text: $taxes)
+                } else if type == .dividend {
+                    TextField("Bruttoertrag", text: $amount)
+                    TextField("Gebühren", text: $fees)
+                    TextField("Steuern", text: $taxes)
+                } else {
+                    TextField("Gebühr", text: $amount)
+                }
                 TextField("Notiz", text: $note)
-                Text("Stückzahlen werden mit sechs Dezimalstellen, Geldwerte als Minor-Units gespeichert.")
+                Text(
+                    type == .dividend
+                        ? "Nettoertrag = Bruttoertrag minus Gebühren und Steuern."
+                        : type == .fee
+                            ? "Die Gebühr wird dem gewählten Wertpapier und Depot zugeordnet."
+                            : "Stückzahlen werden mit sechs Dezimalstellen und Geldwerte ohne binäre Rundungsfehler gespeichert."
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

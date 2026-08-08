@@ -4864,6 +4864,21 @@ final class FinanzVerwalterTests: XCTestCase {
             accountID: depot.id, securityID: security.id, date: Date(),
             quantityMicro: 12_000_000, priceMinor: 15_000, feesMinor: 1_000
         )
+        try context.store.recordSecurityIncome(
+            accountID: depot.id, securityID: security.id, date: secondDate,
+            grossMinor: 10_000, feesMinor: 100, taxesMinor: 2_500,
+            note: "Ausschüttung"
+        )
+        try context.store.recordSecurityFee(
+            accountID: depot.id, securityID: security.id, date: secondDate,
+            feeMinor: 250, note: "Depotgebühr"
+        )
+        XCTAssertThrowsError(
+            try context.store.recordSecurityIncome(
+                accountID: depot.id, securityID: security.id, date: secondDate,
+                grossMinor: 100, feesMinor: 80, taxesMinor: 30
+            )
+        )
         let lots = try context.store.portfolioLots(
             accountID: depot.id, securityID: security.id
         )
@@ -4884,6 +4899,23 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(position.costBasisMinor, 36_300)
         XCTAssertEqual(position.marketValueMinor, 42_000)
         XCTAssertEqual(position.unrealizedGainMinor, 5_700)
+        let trades = try context.store.securityTrades()
+        XCTAssertEqual(trades.filter { $0.type == .dividend }.count, 1)
+        XCTAssertEqual(trades.filter { $0.type == .fee }.count, 1)
+        XCTAssertEqual(trades.first { $0.type == .dividend }?.grossMinor, 10_000)
+        XCTAssertEqual(trades.first { $0.type == .dividend }?.feesMinor, 100)
+        XCTAssertEqual(trades.first { $0.type == .dividend }?.taxesMinor, 2_500)
+        XCTAssertEqual(trades.first { $0.type == .fee }?.feesMinor, 250)
+        let report = PortfolioReportEngine.snapshot(
+            query: PortfolioReportQuery(dateFrom: nil, dateThrough: nil),
+            positions: [position], trades: trades, accounts: [depot],
+            securities: [security]
+        )
+        let reportTotal = try XCTUnwrap(report.totals.first)
+        XCTAssertEqual(reportTotal.incomeMinor, 7_400)
+        XCTAssertEqual(reportTotal.realizedGainMinor, 53_800)
+        XCTAssertEqual(reportTotal.feesMinor, 2_850)
+        XCTAssertEqual(reportTotal.taxesMinor, 2_500)
 
         XCTAssertThrowsError(
             try context.store.recordSale(
