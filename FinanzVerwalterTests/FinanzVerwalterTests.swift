@@ -9768,6 +9768,81 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.transactionTemplates().isEmpty)
     }
 
+    func testGroupBankingLaunchSelectsOnlyMappedAccountsOnBestConnection() throws {
+        let firstID = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+        let secondID = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
+        let disabledID = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000003"))
+        let accounts = [UUID(), UUID(), UUID()]
+        let connections = [
+            BankingConnection(
+                id: firstID, name: "Erste", providerKind: .simulator,
+                adapterIdentifier: "sim.first", institutionName: "Bank A",
+                status: .ready, consentValidUntil: nil, lastSyncAt: nil,
+                lastUserMessage: "", isEnabled: true
+            ),
+            BankingConnection(
+                id: secondID, name: "Zweite", providerKind: .simulator,
+                adapterIdentifier: "sim.second", institutionName: "Bank B",
+                status: .ready, consentValidUntil: nil, lastSyncAt: nil,
+                lastUserMessage: "", isEnabled: true
+            ),
+            BankingConnection(
+                id: disabledID, name: "Inaktiv", providerKind: .simulator,
+                adapterIdentifier: "sim.disabled", institutionName: "Bank C",
+                status: .inactive, consentValidUntil: nil, lastSyncAt: nil,
+                lastUserMessage: "", isEnabled: false
+            )
+        ]
+        let mappings = [
+            BankingAccountMapping(
+                id: UUID(), connectionID: firstID, externalAccountID: "first-a",
+                remoteName: "A", remoteIBAN: "", currency: "EUR",
+                localAccountID: accounts[0], isEnabled: true
+            ),
+            BankingAccountMapping(
+                id: UUID(), connectionID: secondID, externalAccountID: "second-a",
+                remoteName: "A", remoteIBAN: "", currency: "EUR",
+                localAccountID: accounts[0], isEnabled: true
+            ),
+            BankingAccountMapping(
+                id: UUID(), connectionID: secondID, externalAccountID: "second-b",
+                remoteName: "B", remoteIBAN: "", currency: "EUR",
+                localAccountID: accounts[1], isEnabled: true
+            ),
+            BankingAccountMapping(
+                id: UUID(), connectionID: secondID, externalAccountID: "disabled-map",
+                remoteName: "C", remoteIBAN: "", currency: "EUR",
+                localAccountID: accounts[2], isEnabled: false
+            ),
+            BankingAccountMapping(
+                id: UUID(), connectionID: disabledID, externalAccountID: "disabled-connection",
+                remoteName: "C", remoteIBAN: "", currency: "EUR",
+                localAccountID: accounts[2], isEnabled: true
+            ),
+            BankingAccountMapping(
+                id: UUID(), connectionID: secondID, externalAccountID: "unrelated",
+                remoteName: "Fremd", remoteIBAN: "", currency: "EUR",
+                localAccountID: UUID(), isEnabled: true
+            )
+        ]
+
+        let selection = try XCTUnwrap(
+            BankingLaunchSelectionResolver.resolve(
+                scope: .group(
+                    id: UUID(), name: "Bankkonten",
+                    accountIDs: Set(accounts)
+                ),
+                connections: connections,
+                mappings: mappings
+            )
+        )
+
+        XCTAssertEqual(selection.connectionID, secondID)
+        XCTAssertEqual(selection.externalAccountIDs, ["second-a", "second-b"])
+        XCTAssertEqual(selection.matchedLocalAccountIDs, Set(accounts.prefix(2)))
+        XCTAssertEqual(selection.unmatchedLocalAccountIDs, [accounts[2]])
+    }
+
     func testReadOnlyBankingSimulatorIsDeterministicAndCancellable() async throws {
         let anchor = Date(timeIntervalSince1970: 1_767_225_600)
         let remote = BankingRemoteAccount(

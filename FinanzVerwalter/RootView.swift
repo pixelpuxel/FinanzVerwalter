@@ -93,6 +93,8 @@ struct RootView: View {
     @State private var reportLaunchTitle: String?
     @State private var specializedReportLaunch: SpecializedReportLaunchRequest?
     @State private var reportLaunchID = UUID()
+    @State private var bankingLaunchScope: BankingLaunchScope?
+    @State private var bankingLaunchID = UUID()
     @FocusState private var searchIsFocused: Bool
 
     var body: some View {
@@ -253,9 +255,22 @@ struct RootView: View {
         .onReceive(
             NotificationCenter.default.publisher(for: .openAccountBanking)
         ) { notification in
-            guard let accountID = notification.object as? UUID,
-                  store.accounts.contains(where: { $0.id == accountID }) else { return }
-            store.selectedAccountID = accountID
+            let scope: BankingLaunchScope
+            if let requested = notification.object as? BankingLaunchScope {
+                scope = requested
+            } else if let accountID = notification.object as? UUID {
+                scope = .account(accountID)
+            } else {
+                return
+            }
+            guard !scope.localAccountIDs.isDisjoint(
+                with: Set(store.accounts.map(\.id))
+            ) else { return }
+            if case let .account(accountID) = scope {
+                store.selectedAccountID = accountID
+            }
+            bankingLaunchScope = scope
+            bankingLaunchID = UUID()
             selectedSection = .banking
         }
     }
@@ -357,7 +372,9 @@ struct RootView: View {
         case .categories: CategoriesView()
         case .register: RegisterView()
         case .combinedRegister: CombinedRegisterView()
-        case .banking: BankingView()
+        case .banking:
+            BankingView(launchScope: bankingLaunchScope)
+                .id(bankingLaunchID)
         case .payments: PaymentsView()
         case .calendar: CalendarForecastView()
         case .budget: BudgetView()

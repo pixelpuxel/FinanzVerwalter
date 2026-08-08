@@ -85,6 +85,15 @@ wieder öffnen. Vor dem bestätigten Schließen werden der aktuelle Saldo und
 verknüpfte aktive Serien-, Dauer- und offene Zahlungsaufträge genannt;
 vorhandene Buchungen bleiben erhalten.
 
+Jede aktive Kontogruppenkarte startet außerdem einen gruppenweisen
+Umsatzabruf. FinanzVerwalter wählt dafür ausschließlich aktive externe
+Zuordnungen zu den offenen Online-Konten dieser Gruppe auf genau einer
+Verbindung. Die Verbindung mit den meisten passenden lokalen Konten gewinnt
+deterministisch; fremde Konten werden nicht stillschweigend mitgewählt.
+Vor dem Abruf nennt ein Hinweis die Zahl der ausgewählten und der noch nicht
+zugeordneten Gruppenkonten. Abrufauswahl und dauerhafter Aktivstatus einer
+Kontenzuordnung sind in der Kontenliste getrennte Steuerelemente.
+
 Schema 39 ergänzt die vollständigen Kontostammdaten um einen frei
 bezeichenbaren Untertyp, eine validierte achtstellige deutsche BLZ, einen vom
 Eröffnungsdatum unabhängigen Stichtag des Eröffnungssaldos, ein optionales

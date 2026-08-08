@@ -91,6 +91,68 @@ struct BankingAccountMapping: Identifiable, Hashable, Sendable {
     var isEnabled: Bool
 }
 
+enum BankingLaunchScope: Hashable, Sendable {
+    case account(UUID)
+    case group(id: UUID, name: String, accountIDs: Set<UUID>)
+
+    var localAccountIDs: Set<UUID> {
+        switch self {
+        case let .account(id): [id]
+        case let .group(_, _, accountIDs): accountIDs
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .account: "Kontoabruf"
+        case let .group(_, name, _): "Gruppenabruf: \(name)"
+        }
+    }
+}
+
+struct BankingLaunchSelection: Equatable, Sendable {
+    let connectionID: UUID
+    let externalAccountIDs: Set<String>
+    let requestedLocalAccountIDs: Set<UUID>
+    let matchedLocalAccountIDs: Set<UUID>
+
+    var unmatchedLocalAccountIDs: Set<UUID> {
+        requestedLocalAccountIDs.subtracting(matchedLocalAccountIDs)
+    }
+}
+
+enum BankingLaunchSelectionResolver {
+    static func resolve(
+        scope: BankingLaunchScope,
+        connections: [BankingConnection],
+        mappings: [BankingAccountMapping]
+    ) -> BankingLaunchSelection? {
+        let requested = scope.localAccountIDs
+        guard !requested.isEmpty else { return nil }
+        let enabledConnectionIDs = Set(
+            connections.filter(\.isEnabled).map(\.id)
+        )
+        let candidates = mappings.filter {
+            $0.isEnabled
+                && enabledConnectionIDs.contains($0.connectionID)
+                && $0.localAccountID.map(requested.contains) == true
+        }
+        let grouped = Dictionary(grouping: candidates, by: \.connectionID)
+        guard let best = grouped.max(by: { lhs, rhs in
+            let leftCount = Set(lhs.value.compactMap(\.localAccountID)).count
+            let rightCount = Set(rhs.value.compactMap(\.localAccountID)).count
+            if leftCount != rightCount { return leftCount < rightCount }
+            return lhs.key.uuidString > rhs.key.uuidString
+        }) else { return nil }
+        return BankingLaunchSelection(
+            connectionID: best.key,
+            externalAccountIDs: Set(best.value.map(\.externalAccountID)),
+            requestedLocalAccountIDs: requested,
+            matchedLocalAccountIDs: Set(best.value.compactMap(\.localAccountID))
+        )
+    }
+}
+
 struct BankingRemoteAccount: Identifiable, Hashable, Codable, Sendable {
     let id: String
     let name: String

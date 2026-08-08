@@ -178,13 +178,14 @@ wenn sie in der Sichtmenge enthalten sind.
 Migrationen 1 bis 38 sowie die in diesem Dokument beschriebenen lokalen
 Konto-, Buchungs-, Berichts-, Regel-, Banking-, Import-, Budget- und
 Sicherungs- und Prognosekerne sind implementiert. Die jüngste vollständige
-Abnahme umfasst 156 XCTest-Fälle: 155 bestanden, der private opt-in-Real-QIF-
-Test wurde ohne temporären Pfad erwartungsgemäß übersprungen, 0 Fehler. Der
-private echte 2025-QIF-Test bestand zusätzlich in einem früheren separaten
-Lauf mit einer danach gelöschten temporären Kopie. Die arm64-Release-App ist
-unter `/Applications/FinanzVerwalter.app` und `~/Applications` installiert.
-Die installierte ausführbare Datei besitzt SHA-256
-`332f7de344b7f6c9bc8f602a2e2563f915d16e8db2eb788fac9c840e5a735ad7`.
+Abnahme umfasst 180 XCTest-Fälle: 178 bestanden, zwei private opt-in-Tests
+wurden ohne ihre ausdrücklich benötigten lokalen Voraussetzungen
+erwartungsgemäß übersprungen, 0 Fehler. Der private echte 2025-QIF-Test
+bestand zusätzlich in einem früheren separaten Lauf mit einer danach
+gelöschten temporären Kopie. Die arm64-Release-App ist unter
+`/Applications/FinanzVerwalter.app` und `~/Applications` installiert. Die
+installierte ausführbare Datei besitzt SHA-256
+`52ba7894559e153ec3023bbb25c090fb32bb70d962ce03fcee8ca2a18c11b12e`.
 Details und der ehrliche Nachweis der wegen der gesperrten macOS-Sitzung noch
 ausstehenden sichtbaren Abnahme stehen in `Gedächtnis.md`.
 
@@ -203,6 +204,16 @@ zeigt ein Bestätigungsdialog Saldo und die Anzahl aktiver Serien,
 Daueraufträge und noch offener Zahlungsaufträge. Buchungen werden dabei nicht
 gelöscht; ein geschlossenes oder ausgeblendetes Konto darf nicht als aktive
 globale Kontoauswahl zurückbleiben.
+Jede aktive Gruppenkarte besitzt zusätzlich `Gruppe abrufen`. Übergib dabei
+die IDs ausschließlich ihrer offenen Online-Konten als typisierten
+`BankingLaunchScope`. Ein Resolver betrachtet nur aktive Verbindungen und
+aktive eindeutige Zuordnungen, wählt deterministisch die Verbindung mit den
+meisten passenden lokalen Konten und liefert ausschließlich deren externe
+IDs. Bei Gleichstand entscheidet die stabile Verbindungs-UUID. Andere aktive
+Kontenzuordnungen derselben Verbindung dürfen nicht in die Abrufauswahl
+gelangen. Zeige ausgewählte und nicht zugeordnete Gruppenkonten vor dem
+Abruf. Trenne in der Zuordnungszeile die temporäre Abrufauswahl von der
+persistierten Aktivierung der Zuordnung.
 Vermögenssumme, Budget-Ist, Berichte und Prognose müssen ihren jeweiligen
 Einbeziehungsschalter beachten. Konten- und Gruppensalden sind in ihrer
 jeweiligen Währung zu formatieren. Ohne FX-Tabelle darf das Nettovermögen nur
@@ -1408,6 +1419,12 @@ Gläubiger-ID, Buchungstext sowie optionalen Banksaldo. Wende alle passenden
 Regeln in Prioritäts-/UUID-Reihenfolge an. Bei einem Zielfeldkonflikt wende
 für diese Buchung keine Regel automatisch an und zeige den Hinweis. Zeige
 ansonsten alle angewandten Regeln in der Abrufvorschau.
+
+Ein konto- oder gruppenbezogener Einstieg darf diese Auswahl nicht wieder
+durch alle aktiven Zuordnungen der Verbindung ersetzen. Existiert keine
+passende aktive Zuordnung, bleibt die temporäre Abrufauswahl leer; der Nutzer
+erhält den sichtbaren Zuordnungshinweis und kann keinen unbeabsichtigten
+Fremdkontoabruf starten.
 
 Führe danach das gleiche gestufte Import-Matching wie beim Dateiimport aus.
 Die Vorschau zeigt Konten, Salden, Umsätze, Status, Regeln, konkrete

@@ -4540,3 +4540,44 @@ Rechtsberatung.
 - Telegram-Nachricht 1179 meldet den Stand im `/quicken`-Thread 894. Wegen der
   gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 26.703.288 Tokens.
+
+## 08.08.2026 – Gruppengenauer Umsatzabruf aus der Kontenübersicht
+
+- Der erneute Abgleich mit Abschnitt 5.4 des Master-Prompts hat bestätigt,
+  dass der einzelne Kontoabruf vorhanden war, der geforderte gruppenweise
+  Umsatzabruf aber tatsächlich fehlte. Jede aktive Kontogruppenkarte besitzt
+  nun `Gruppe abrufen` und übergibt ausschließlich ihre offenen Online-Konten
+  als typisierten `BankingLaunchScope`.
+- Der reine `BankingLaunchSelectionResolver` betrachtet nur aktive
+  Verbindungen und aktive lokale Zuordnungen. Er wählt deterministisch die
+  Verbindung mit der größten Zahl verschiedener Gruppentreffer und gibt nur
+  deren externe IDs zurück. Fremde Konten derselben Verbindung, inaktive
+  Mappings und inaktive Verbindungen werden ausgeschlossen; ohne Treffer
+  bleibt die Abrufauswahl sicher leer.
+- Der Banking-Bildschirm meldet vor dem Abruf ausgewählte und nicht
+  zugeordnete Gruppenkonten. Temporäre Abrufauswahl und persistierter
+  Mappingstatus sind jetzt getrennte Steuerelemente. ADR 0058 dokumentiert
+  die Sicherheits- und Mehrverbindungsentscheidung.
+- Der neue Resolver-Test prüft die größte Abdeckung, den Ausschluss fremder
+  und inaktiver Zuordnungen sowie die gemeldete Restmenge. Der vollständige,
+  frisch kompilierte direkte XCTest-Lauf unter
+  `build/TestResults/GroupFetch-full-direct-20260808-0505.log` umfasst 180
+  Tests: 178 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  unerwartete Fehler.
+- Der native optimierte arm64-Release unter
+  `build/DerivedData-GroupFetch-Product` wurde erfolgreich gebaut, lokal
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `52ba7894559e153ec3023bbb25c090fb32bb70d962ce03fcee8ca2a18c11b12e`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0509-group-fetch/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0509-group-fetch/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch. Der Desktop-Link
+  zeigt auf `/Applications`; Finder wurde auf die App gelenkt und Prozess
+  97869 läuft aus der systemweiten Installation. Light Mode ist aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt die gesperrte Sitzung; deshalb
+  wird keine sichtbare UI-Abnahme und kein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand nach Installation: 27.082.565 Tokens.

@@ -471,6 +471,12 @@ struct AccountsView: View {
                                     .foregroundStyle(.secondary)
                                 Text(groupBalanceText(accounts))
                                 .font(.title3.monospacedDigit())
+                                Button("Gruppe abrufen", systemImage: "arrow.triangle.2.circlepath") {
+                                    openBanking(group: group, accounts: accounts)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(!accounts.contains { $0.isOnline })
+                                .accessibilityIdentifier("fetchAccountGroup-\(group.id.uuidString)")
                             }
                             .padding(12)
                             .frame(width: 190, alignment: .leading)
@@ -619,7 +625,29 @@ struct AccountsView: View {
     private func openBanking(_ account: FinanceAccount) {
         guard account.isOnline, !account.isClosed else { return }
         store.selectedAccountID = account.id
-        NotificationCenter.default.post(name: .openAccountBanking, object: account.id)
+        NotificationCenter.default.post(
+            name: .openAccountBanking,
+            object: BankingLaunchScope.account(account.id)
+        )
+    }
+
+    private func openBanking(
+        group: AccountGroup,
+        accounts: [FinanceAccount]
+    ) {
+        let onlineAccountIDs = Set(
+            accounts.filter { $0.isOnline && !$0.isClosed }.map(\.id)
+        )
+        guard !onlineAccountIDs.isEmpty else { return }
+        selectedGroupID = group.id
+        NotificationCenter.default.post(
+            name: .openAccountBanking,
+            object: BankingLaunchScope.group(
+                id: group.id,
+                name: group.name,
+                accountIDs: onlineAccountIDs
+            )
+        )
     }
 
     private func reconcile(_ account: FinanceAccount) {
@@ -10999,6 +11027,7 @@ private struct BudgetLineEditor: View {
 
 struct BankingView: View {
     @EnvironmentObject private var store: FinanceAppStore
+    let launchScope: BankingLaunchScope?
     @State private var selectedConnectionID: UUID?
     @State private var selectedExternalAccountIDs = Set<String>()
     @State private var operations: Set<BankingOperation> = [
@@ -11007,6 +11036,8 @@ struct BankingView: View {
     ]
     @State private var preview: BankingDownloadPreview?
     @State private var fetchTask: Task<Void, Never>?
+    @State private var launchSelection: BankingLaunchSelection?
+    @State private var launchScopeActive = false
     @AppStorage("bankingMatchDateWindowDaysV1")
     private var dateWindowDays = ImportMatcher.defaultDateWindowDays
 
@@ -11079,6 +11110,7 @@ struct BankingView: View {
             if let connection = selectedConnection {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                        launchScopeNotice
                         connectionHeader(connection)
                         mappingsSection(connection)
                         operationsSection
@@ -11099,13 +11131,28 @@ struct BankingView: View {
             }
         }
         .onAppear {
-            if selectedConnectionID == nil {
+            if let launchScope {
+                launchScopeActive = true
+                let selection = BankingLaunchSelectionResolver.resolve(
+                    scope: launchScope,
+                    connections: store.bankingConnections,
+                    mappings: store.bankingMappings
+                )
+                launchSelection = selection
+                selectedConnectionID = selection?.connectionID
+                    ?? store.bankingConnections.first?.id
+                selectedExternalAccountIDs = selection?.externalAccountIDs ?? []
+            } else if selectedConnectionID == nil {
                 selectedConnectionID = store.bankingConnections.first?.id
+                synchronizeSelection()
             }
-            synchronizeSelection()
         }
-        .onChange(of: selectedConnectionID) {
-            synchronizeSelection()
+        .onChange(of: selectedConnectionID) { oldValue, _ in
+            if oldValue != nil {
+                launchSelection = nil
+                launchScopeActive = false
+                synchronizeSelection()
+            }
         }
         .sheet(item: $preview) { value in
             BankingDownloadPreviewSheet(preview: value)
@@ -11113,6 +11160,33 @@ struct BankingView: View {
         }
         .onDisappear {
             fetchTask?.cancel()
+        }
+    }
+
+    @ViewBuilder
+    private var launchScopeNotice: some View {
+        if let launchScope, launchScopeActive {
+            let requested = launchScope.localAccountIDs.count
+            let selected = Set(
+                selectedMappings.filter {
+                    selectedExternalAccountIDs.contains($0.externalAccountID)
+                }.compactMap(\.localAccountID)
+            ).intersection(launchScope.localAccountIDs).count
+            let missing = launchSelection?.unmatchedLocalAccountIDs.count
+                ?? requested
+            HStack(alignment: .top) {
+                Label(launchScope.title, systemImage: "folder.badge.gearshape")
+                    .fontWeight(.semibold)
+                Text("\(selected) von \(requested) Online-Konten für diesen Abruf ausgewählt.")
+                if missing > 0 {
+                    Text("\(missing) Konto\(missing == 1 ? " fehlt" : "en fehlen") eine aktive Zuordnung in dieser Verbindung.")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityIdentifier("bankingLaunchScopeNotice")
         }
     }
 
@@ -11158,9 +11232,10 @@ struct BankingView: View {
                     HStack {
                         Toggle(
                             "",
-                            isOn: mappingEnabledBinding(mapping)
+                            isOn: mappingSelectedBinding(mapping)
                         )
                         .labelsHidden()
+                        .disabled(!mapping.isEnabled)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(mapping.remoteName)
                             Text(
@@ -11190,6 +11265,8 @@ struct BankingView: View {
                         }
                         .labelsHidden()
                         .frame(maxWidth: 280)
+                        Toggle("Aktiv", isOn: mappingEnabledBinding(mapping))
+                            .toggleStyle(.checkbox)
                     }
                 }
                 if selectedMappings.isEmpty {
@@ -11377,6 +11454,23 @@ struct BankingView: View {
                             mapping.externalAccountID
                         )
                     }
+                }
+            }
+        )
+    }
+
+    private func mappingSelectedBinding(
+        _ mapping: BankingAccountMapping
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                selectedExternalAccountIDs.contains(mapping.externalAccountID)
+            },
+            set: { selected in
+                if selected {
+                    selectedExternalAccountIDs.insert(mapping.externalAccountID)
+                } else {
+                    selectedExternalAccountIDs.remove(mapping.externalAccountID)
                 }
             }
         )
