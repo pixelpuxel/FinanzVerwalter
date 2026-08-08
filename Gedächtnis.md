@@ -4870,3 +4870,13 @@ Rechtsberatung.
   sichtbare Screenshot-Abnahme noch nicht möglich und wird nicht behauptet.
 - Exakter kumulativer Zielzählerstand nach Release, Sicherung, Installation
   und Laufzeitprüfung: 28.737.269 Tokens.
+- Die Umsetzung wurde mit den Commits `b0d9e3d` und `7dd12f3` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Draft-PR #1 enthält den
+  aktuellen Profil-Austausch, die finale Suite und den Release-Hash und meldet
+  den Mergezustand `CLEAN`.
+- Telegram-Nachricht 1211 dokumentiert den Stand im richtigen
+  `/quicken`-Thread 894. Die zunächst wegen einer inzwischen abweichenden
+  lokalen FundOrt-Konfiguration in Thread 317 erzeugte Nachricht 1210 wurde
+  unmittelbar erfolgreich gelöscht; es besteht kein doppelter Zwischenstand.
+- Exakter kumulativer Zielzählerstand nach GitHub- und korrigierter
+  Telegram-Veröffentlichung: 28.770.407 Tokens.
