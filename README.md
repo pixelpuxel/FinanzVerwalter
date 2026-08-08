@@ -681,7 +681,10 @@ Konto, Empfänger, Verwendungszweck, Memo, vollständiger Kategoriepfad,
 Klasse/Tags, Status, Kennzeichen, Betrag, Währung und Splitstatus. Das Menü
 `Spalten` schaltet sie einzeln, als bewährten Standardsatz oder vollständig.
 Mindestens eine Spalte bleibt sichtbar. Auswahl und Reihenfolge gehören zur
-Query und damit zu Vorlagen und eigenständigen Berichtsfenstern.
+Query und damit zu Vorlagen und eigenständigen Berichtsfenstern. Im Untermenü
+`Reihenfolge` lässt sich jede sichtbare Spalte einzeln nach links oder rechts
+beziehungsweise direkt an den Anfang oder das Ende verschieben; neu
+eingeblendete Spalten werden ans Ende gesetzt.
 Buchungsdetails, primäre Zwischensummen und währungsgetrennte Gesamtsummen
 sind unabhängig ein- und ausblendbar; diese Darstellungseinstellungen werden
 ebenfalls in Vorlagen gespeichert. Das Menü `Standardberichte` setzt acht

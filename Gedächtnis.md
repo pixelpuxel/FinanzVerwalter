@@ -4784,3 +4784,34 @@ Rechtsberatung.
   Die gesperrte Sitzung verhindert weiterhin einen echten neuen Screenshot.
 - Exakter kumulativer Zielzählerstand nach GitHub- und Telegram-Übergabe:
   28.465.317 Tokens.
+
+## 08.08.2026 – Bedienbare Reihenfolge der Berichtsspalten
+
+- Der Nachaudit zeigte, dass die Query eine geordnete Auswahl speicherte, das
+  Spaltenmenü diese Reihenfolge aber noch nicht aktiv ändern konnte.
+- `TransactionReportDetailColumn` kapselt nun Normalisierung, invariant
+  geschütztes Ein-/Ausblenden und deterministisches Verschieben. Neu
+  eingeblendete Spalten werden ans Ende gesetzt; Ausblenden bewahrt die
+  relative Folge und die letzte sichtbare Spalte bleibt erhalten.
+- Das Untermenü `Reihenfolge` bietet für jede sichtbare Spalte „An den
+  Anfang“, „Nach links“, „Nach rechts“ und „Ans Ende“ mit deaktivierten
+  Randaktionen. Die geänderte Folge wirkt weiterhin identisch in Tabelle,
+  Vorlage, Außenfenster und allen Ausgaben.
+- Der gezielte Test in `build/report-column-order-targeted.log` und die
+  Vollsuite in `build/full-report-column-order-test.log` sind grün. Die
+  Vollsuite meldet 182 Tests: 180 bestanden, 2 opt-in übersprungen, 0 Fehler.
+- Exakter kumulativer Zielzählerstand nach der Vollsuite:
+  28.498.341 Tokens.
+- Der optimierte arm64-Release wurde laut
+  `build/release-report-column-order-build.log` erfolgreich gebaut, lokal
+  signiert und streng verifiziert. Die ausführbare Datei hat SHA-256
+  `2b7ccc051d1438ca82421fa605deba30ca21c2423bfa92a0e86cb3a116451645`.
+- Die vorherigen Installationen liegen unter
+  `build/InstallBackups/20260808-0718-report-column-order/`. Beide neuen
+  Installationen sind bytegleich, der Desktop-Link zeigt auf `/Applications`
+  und Prozess 12272 läuft daraus im Light Mode.
+- Die Produktdatei bleibt auf Schema 40 mit Integrität `ok`, ohne gemeldete
+  Fremdschlüsselverletzung und mit 97 Konten, 2.170 Buchungen sowie 782
+  Kategorien.
+- Exakter kumulativer Zielzählerstand nach Release und Installation:
+  28.519.813 Tokens.

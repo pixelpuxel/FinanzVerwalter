@@ -33,5 +33,7 @@ Definitionsversion 5. Es ist keine Datenbankschemamigration erforderlich.
 - Memo, vollständige Kategorie, Klasse/Tags, Kennzeichen, Währung und
   Splitstatus können gezielt ein- oder ausgeblendet werden.
 - Mindestens eine Spalte bleibt in der Oberfläche aktiv.
+- Die Oberfläche ändert die geordnete Auswahl explizit über Links-/Rechts-
+  sowie Anfang-/Ende-Aktionen; neu aktivierte Spalten werden ans Ende gesetzt.
 - Golden-Tests müssen eine bewusste Spaltenänderung als Layoutänderung
   erkennen; ältere Vorlagen erhalten ohne Migration den Standardsatz.

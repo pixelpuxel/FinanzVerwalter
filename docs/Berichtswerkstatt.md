@@ -35,6 +35,10 @@ Der erste echte Berichtswerkstatt-Slice ist umgesetzt:
   in einer älteren Query oder ist es leer, gilt der bewährte Standardsatz.
   CSV, PDF, HTML, XLSX und Zwischenablage erzeugen die Detailtabelle aus exakt
   derselben geordneten Auswahl.
+- Das Spaltenmenü bietet eine explizite Reihenfolgensteuerung je sichtbarer
+  Spalte: einen Schritt nach links/rechts oder direkt an Anfang/Ende. Neue
+  Spalten werden ans Ende angefügt, Ausblenden verändert die Reihenfolge der
+  übrigen Spalten nicht und die letzte sichtbare Spalte bleibt geschützt.
 - Acht editierbare Standardberichte konfigurieren aktuelle-Jahr-Abfragen für
   Kategorie, Empfänger, Buchungsjournal, Cashflow, Kontobewegungen und
   Kategorie/Klasse, monatlichen Cashflow sowie deutsche Steuerzuordnungen. Der Steuerbericht filtert

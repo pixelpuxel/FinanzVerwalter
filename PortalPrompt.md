@@ -2454,3 +2454,11 @@ derselben Spaltenfolge; XLSX lässt Beträge numerisch, PDF verteilt die
 verfügbare Breite gewichtet. Teste Query-/Vorlagenrundlauf, Legacy-Decodierung,
 Kennzeichenübernahme sowie semantische und deterministische Ausgaben aller
 Kanäle.
+
+Mache die gespeicherte Spaltenreihenfolge in der Oberfläche tatsächlich
+editierbar. Das Untermenü `Reihenfolge` bietet je sichtbarer Spalte „An den
+Anfang“, „Nach links“, „Nach rechts“ und „Ans Ende“ und deaktiviert unmögliche
+Randaktionen. Eine neu eingeblendete Spalte wird ans Ende angefügt; Ausblenden
+bewahrt die relative Folge der übrigen Spalten und darf die letzte sichtbare
+Spalte nicht entfernen. Kapsle Normalisierung, Sichtbarkeit und Verschieben in
+deterministische, direkt testbare Fachfunktionen.

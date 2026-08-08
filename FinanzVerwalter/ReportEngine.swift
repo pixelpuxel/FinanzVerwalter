@@ -146,6 +146,40 @@ enum TransactionReportDetailColumn: String, CaseIterable, Codable, Identifiable,
     }
 
     var idealWidth: CGFloat { max(minimumWidth, widthWeight * 112) }
+
+    static func settingVisibility(
+        of column: Self,
+        to isVisible: Bool,
+        in columns: [Self]
+    ) -> [Self] {
+        let normalized = normalized(columns)
+        if isVisible {
+            return normalized.contains(column) ? normalized : normalized + [column]
+        }
+        guard normalized.count > 1 else { return normalized }
+        return normalized.filter { $0 != column }
+    }
+
+    static func moving(
+        _ column: Self,
+        to targetIndex: Int,
+        in columns: [Self]
+    ) -> [Self] {
+        var result = normalized(columns)
+        guard let sourceIndex = result.firstIndex(of: column),
+              result.indices.contains(targetIndex),
+              sourceIndex != targetIndex
+        else { return result }
+        result.remove(at: sourceIndex)
+        result.insert(column, at: targetIndex)
+        return result
+    }
+
+    static func normalized(_ columns: [Self]) -> [Self] {
+        var seen = Set<Self>()
+        let unique = columns.filter { seen.insert($0).inserted }
+        return unique.isEmpty ? standard : unique
+    }
 }
 
 enum TransactionReportStandardPreset: String, CaseIterable, Identifiable, Sendable {
@@ -308,10 +342,9 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var selectedVisualization: ReportVisualization { visualization ?? .table }
     var selectedChartMetric: ReportChartMetric { chartMetric ?? .expense }
     var selectedDetailColumns: [TransactionReportDetailColumn] {
-        let requested = detailColumns ?? TransactionReportDetailColumn.standard
-        var seen = Set<TransactionReportDetailColumn>()
-        let sanitized = requested.filter { seen.insert($0).inserted }
-        return sanitized.isEmpty ? TransactionReportDetailColumn.standard : sanitized
+        TransactionReportDetailColumn.normalized(
+            detailColumns ?? TransactionReportDetailColumn.standard
+        )
     }
 }
 

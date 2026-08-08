@@ -7565,6 +7565,27 @@ final class FinanzVerwalterTests: XCTestCase {
             decoded.selectedDetailColumns,
             TransactionReportDetailColumn.standard
         )
+        let customColumns: [TransactionReportDetailColumn] = [
+            .flag, .amount, .date
+        ]
+        XCTAssertEqual(
+            TransactionReportDetailColumn.moving(
+                .date, to: 0, in: customColumns
+            ),
+            [.date, .flag, .amount]
+        )
+        XCTAssertEqual(
+            TransactionReportDetailColumn.settingVisibility(
+                of: .memo, to: true, in: customColumns
+            ),
+            [.flag, .amount, .date, .memo]
+        )
+        XCTAssertEqual(
+            TransactionReportDetailColumn.settingVisibility(
+                of: .flag, to: false, in: [.flag]
+            ),
+            [.flag]
+        )
     }
 
     func testTransactionReportStandardPresetsAreDeterministicAndDistinct() throws {

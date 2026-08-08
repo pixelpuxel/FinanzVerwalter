@@ -2769,23 +2769,57 @@ struct ReportsView: View {
                     isOn: Binding(
                         get: { detailColumns.contains(column) },
                         set: { isVisible in
-                            if isVisible {
-                                let selected = Set(detailColumns).union([column])
-                                detailColumns = TransactionReportDetailColumn.allCases
-                                    .filter(selected.contains)
-                            } else if detailColumns.count > 1 {
-                                detailColumns.removeAll { $0 == column }
-                            }
+                            detailColumns = TransactionReportDetailColumn
+                                .settingVisibility(
+                                    of: column,
+                                    to: isVisible,
+                                    in: detailColumns
+                                )
                         }
                     )
                 )
                 .disabled(detailColumns.count == 1 && detailColumns.contains(column))
+            }
+            Divider()
+            Menu("Reihenfolge") {
+                ForEach(detailColumns.indices, id: \.self) { index in
+                    let column = detailColumns[index]
+                    Menu(column.title) {
+                        Button("An den Anfang", systemImage: "arrow.left.to.line") {
+                            moveDetailColumn(column, to: 0)
+                        }
+                        .disabled(index == detailColumns.startIndex)
+                        Button("Nach links", systemImage: "arrow.left") {
+                            moveDetailColumn(column, to: index - 1)
+                        }
+                        .disabled(index == detailColumns.startIndex)
+                        Button("Nach rechts", systemImage: "arrow.right") {
+                            moveDetailColumn(column, to: index + 1)
+                        }
+                        .disabled(index == detailColumns.index(before: detailColumns.endIndex))
+                        Button("Ans Ende", systemImage: "arrow.right.to.line") {
+                            moveDetailColumn(column, to: detailColumns.count - 1)
+                        }
+                        .disabled(index == detailColumns.index(before: detailColumns.endIndex))
+                    }
+                }
             }
         } label: {
             Label("Spalten \(detailColumns.count)", systemImage: "rectangle.split.3x1")
         }
         .help("Sichtbare Detailspalten; die Auswahl wird in Berichtsvorlagen gespeichert")
         .accessibilityIdentifier("reports.detailColumns")
+    }
+
+    private func moveDetailColumn(
+        _ column: TransactionReportDetailColumn,
+        to targetIndex: Int
+    ) {
+        detailColumns = TransactionReportDetailColumn.moving(
+            column,
+            to: targetIndex,
+            in: detailColumns
+        )
     }
 
     private func reportGroupsTable(
