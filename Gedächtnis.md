@@ -4821,3 +4821,52 @@ Rechtsberatung.
   wegen der gesperrten Sitzung weiterhin ohne behaupteten Screenshot.
 - Exakter kumulativer Zielzählerstand nach GitHub- und Telegram-Übergabe:
   28.525.685 Tokens.
+
+## 08.08.2026 – Portabler CSV-/TSV-Profil-Austausch
+
+- Der erneute P0-Abgleich schloss die in der Anforderungsmatrix ausdrücklich
+  offene Lücke des Profil-Austauschs. Im CSV-/TSV-Profilassistenten lassen sich
+  die aktuell sichtbaren Regeln nun als `.fvimportprofil` exportieren und über
+  den nativen macOS-Dateidialog wieder importieren.
+- `CSVImportProfileExchangeEnvelope` kapselt eine feste Formatkennung,
+  Formatversion 1 und genau ein schema-versioniertes Profil. Die Datei enthält
+  ausschließlich Parser- und Feldzuordnungsregeln, keine Konten, Buchungen,
+  lokalen Pfade oder Zugangsdaten.
+- Vor dem Decoding werden reguläre Datei, Symlinkfreiheit und maximal 256 KiB
+  geprüft. Der begrenzte Dateileser liest auch bei unzuverlässiger
+  Dateigrößenangabe höchstens 256 KiB plus ein Prüfbyte. Wurzel- und
+  Profilschlüssel müssen exakt passen; Format-/Schemaversion, druckbarer
+  getrimmter Name, Revision, Zahlenzeichen, Mappingfelder und Spaltenindizes
+  werden anschließend fachlich validiert.
+- Identische Profile werden nicht dupliziert. Gleiche UUID oder gleicher
+  normalisierter Name führen zu einer ausdrücklichen Wahl zwischen Ersetzen
+  und Kopieren. Die Kopie erhält neue UUID, Revision 1 und einen
+  kollisionsfreien Namen. Treffen UUID und Name zwei unterschiedliche lokale
+  Profile, wird Ersetzen abgewiesen und kein vorhandenes Profil entfernt.
+- Drei neue Tests prüfen verlustfreien Austausch und Datenminimierung,
+  unerwartete/future/übergroße Eingaben sowie ID-/Namenskonflikte,
+  eindeutiges Ersetzen, Kopieren und den Doppelkonflikt. Der finale Gesamtlauf
+  in `build/full-profile-exchange-final-test.log` erfasst 185 Tests: 183
+  bestanden, 2 bewusst opt-in übersprungen, 0 Fehler.
+- Exakter kumulativer Zielzählerstand nach der finalen Vollsuite:
+  28.688.755 Tokens.
+- Quellcode, Tests, README, Matrix, PortalPrompt und ADR 0062 wurden als
+  Commit `b0d9e3d` festgeschrieben. Der optimierte native arm64-Release wurde
+  laut `build/release-profile-exchange-build.log` erfolgreich gebaut, lokal
+  signiert und streng geprüft. Seine ausführbare Datei hat SHA-256
+  `b9a0f61acf885ebbe5a82d957d982d5d3ba34f1c14c73a783d05a987e63685d3`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0741-profile-exchange/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0741-profile-exchange/Meine Finanzen.qdata`.
+  Beide neuen Installationen sind bytegleich, der Desktop-Link zeigt auf
+  `/Applications/FinanzVerwalter.app`, und Prozess 14752 läuft daraus im
+  Light Mode.
+- Produktivdatei und Sicherung melden Schema 40, Integrität `ok`, keine
+  Fremdschlüsselverletzung und jeweils 97 Konten, 2.170 Buchungen sowie 782
+  Kategorien. Der gestartete Prozess hält die echte Produktdatei geöffnet und
+  erzeugte nach dem Start keine Fehler- oder Fault-Logs.
+- Die macOS-Sitzung ist weiterhin nachweislich gesperrt. Deshalb ist eine neue
+  sichtbare Screenshot-Abnahme noch nicht möglich und wird nicht behauptet.
+- Exakter kumulativer Zielzählerstand nach Release, Sicherung, Installation
+  und Laufzeitprüfung: 28.737.269 Tokens.
