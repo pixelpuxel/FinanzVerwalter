@@ -4085,3 +4085,40 @@ Rechtsberatung.
   Draft-PR #1 zeigt denselben Head und ist mergebar.
 - Telegram-Nachricht 1142 meldet den geprüften Stand im `/quicken`-Thread 894.
   Exakter kumulativer Zielzählerstand vor dem Versand: 24.221.463 Tokens.
+
+## 08.08.2026 – Alle Fachauswertungen in eigenen Fenstern
+
+- Die sieben spezialisierten Berichte `Kontosalden und Nettovermögen`,
+  `Umsatzsteuer`, `Kredite, Zins und Tilgung`, `Zeitraumvergleich`,
+  `Budgetvergleich`, `Verträge und Inventar` sowie `Freistellungsaufträge`
+  besitzen nun `Neues Fenster`. Übergeben wird jeweils der vollständige
+  aktuelle Queryzustand an ein typisiertes, unabhängiges macOS-Fenster.
+- `SpecializedReportWindowRequest` hält Fachberichtstyp, codierten Payload,
+  kanonischen Finanzdateipfad und frische UUID. Der Budgetbericht bewahrt
+  zusätzlich die gewählte Budget-ID. Fremddateien und beschädigte Payloads
+  werden gesperrt; Geometrien erhalten typ- und UUID-basierte Autosave-Namen.
+  ADR 0049 dokumentiert die Entscheidung.
+- Der gezielte Test unter
+  `build/TestResults/SpecializedWindows-targeted-20260808-0157.xcresult`
+  prüft alle sieben Payloadtypen. Der vollständige Lauf unter
+  `build/TestResults/SpecializedWindows-full-20260808-0158.xcresult` umfasst
+  173 Tests: 171 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und
+  0 erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-SpecializedWindows-Product` wurde erfolgreich gebaut,
+  lokal ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `90d6a9aa21c4b089b5deb9ef0c7fc8bf6582f5ca4ae1b4a32579dbb2d05dc921`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0202-specialized-windows/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0202-specialized-windows/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und `~/Applications/FinanzVerwalter.app`
+  sind binär identisch, der Desktop-Link zeigt auf `/Applications`, Finder
+  wurde auf die App gelenkt und Prozess 74516 läuft daraus. Die Produktivdatei
+  meldet Integrität `ok`, keine Fremdschlüsselverletzung, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  daher wird keine sichtbare UI-Abnahme oder ein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand nach Installation: 24.373.364 Tokens.
+- Die Implementierung ist im Commit `f3ad40a` gesichert. Veröffentlichung auf
+  GitHub und Telegram-Nachweis folgen im nächsten Evidenzschritt.
