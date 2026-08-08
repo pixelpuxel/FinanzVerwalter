@@ -200,11 +200,20 @@ Option- und Control-Modifikator sind anpassbar. Doppelte Belegungen und
 ungeschützte Buchstaben-/Zifferntasten werden vor dem Anwenden abgelehnt.
 
 Eine im Kontoblatt markierte Buchung kann mit dem zugeordneten Befehl als
-Vorlage gespeichert und aus dem Menü `Vorlagen` als neuer Entwurf geöffnet
-werden. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen auch
-Splits, Tags und vorhandene Fremdwährungsangaben, aber niemals altes Datum,
-Belegnummer, Transfer- oder Importidentität. Eine einzelne Umbuchungsseite ist
-keine zulässige Vorlage.
+vollständige oder frei zusammengestellte Teilvorlage gespeichert und aus dem
+Menü `Vorlagen` als neuer Entwurf geöffnet werden. Konto, Empfänger,
+Verwendungszweck, Kategorie, Betrag, Status, Notiz, Klassen/Tags, Splitzeilen,
+MwSt., Fremdwährung und Kennzeichen sind einzeln wählbar. Vorlagen ohne Betrag
+öffnen ein leeres Betragsfeld; Splitzeilen, MwSt. und Fremdwährung erfordern
+den Betrag. Vorlagen gehören zur jeweiligen Finanzdatei. Sie übernehmen
+niemals altes Datum, Belegnummer, Transfer- oder Importidentität. Eine einzelne
+Umbuchungsseite ist keine zulässige Vorlage.
+
+Das Vorlagenmenü priorisiert aktive Vorlagen des aktuellen Kontos, danach
+häufig und zuletzt verwendete Vorlagen. Der Zähler steigt erst nach einer
+erfolgreich gespeicherten Buchung; Abbrechen zählt nicht. Vorlagen lassen sich
+deaktivieren, wieder aktivieren und löschen. Altvorlagen aus Schema 40 bleiben
+nach Migration 41 aktiv, vollständig und unverändert nutzbar.
 
 Über das Kontextmenü `Als regelmäßigen Vorgang …` entsteht aus genau einer
 markierten Buchung unmittelbar ein vorausgefüllter Serienentwurf. Die nächste

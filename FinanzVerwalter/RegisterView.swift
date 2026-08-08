@@ -24,9 +24,11 @@ struct RegisterView: View {
     @State private var showTransferEditor = false
     @State private var movingTransaction: FinanceTransaction?
     @State private var editorTemplate: TransactionTemplate?
+    @State private var editorTemplateUsageID: UUID?
     @State private var showTemplateNameEditor = false
     @State private var templateName = ""
     @State private var templateSource: FinanceTransaction?
+    @State private var templateFields = Set(TransactionTemplateField.allCases)
     @State private var scheduledDraft: ScheduledTransaction?
     @State private var showDeleteConfirmation = false
     @State private var showTransactionUndoConfirmation = false
@@ -603,7 +605,8 @@ struct RegisterView: View {
         .sheet(isPresented: $showEditor) {
             TransactionEditorView(
                 transaction: editingTransaction,
-                template: editorTemplate
+                template: editorTemplate,
+                templateUsageID: editorTemplateUsageID
             )
         }
         .sheet(isPresented: $showTransferEditor) {
@@ -661,6 +664,31 @@ struct RegisterView: View {
                 .foregroundStyle(.secondary)
                 TextField("Vorlagenname", text: $templateName)
                     .textFieldStyle(.roundedBorder)
+                GroupBox("Gespeicherte Felder") {
+                    LazyVGrid(
+                        columns: [GridItem(.flexible()), GridItem(.flexible())],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        ForEach(TransactionTemplateField.allCases) { field in
+                            Toggle(
+                                field.title,
+                                isOn: Binding(
+                                    get: { templateFields.contains(field) },
+                                    set: { setTemplateField(field, enabled: $0) }
+                                )
+                            )
+                        }
+                    }
+                    .padding(6)
+                }
+                Text(
+                    templateFields.count == TransactionTemplateField.allCases.count
+                        ? "Vollständige Vorlage"
+                        : "Teilvorlage · \(templateFields.count) von \(TransactionTemplateField.allCases.count) Feldern"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 HStack {
                     Spacer()
                     Button("Abbrechen", role: .cancel) {
@@ -670,7 +698,8 @@ struct RegisterView: View {
                         guard let templateSource else { return }
                         if store.saveTransactionTemplate(
                             name: templateName,
-                            from: templateSource
+                            from: templateSource,
+                            includedFields: templateFields
                         ) {
                             showTemplateNameEditor = false
                         }
@@ -679,7 +708,7 @@ struct RegisterView: View {
                     .disabled(
                         templateName.trimmingCharacters(
                             in: .whitespacesAndNewlines
-                        ).isEmpty
+                            ).isEmpty || templateFields.isEmpty
                     )
                 }
             }
@@ -794,17 +823,34 @@ struct RegisterView: View {
 
     private var transactionTemplateMenu: some View {
         Menu {
-            if store.transactionTemplates.isEmpty {
-                Text("Noch keine Vorlagen")
+            if activeTransactionTemplates.isEmpty {
+                Text("Keine aktiven Vorlagen")
             } else {
-                ForEach(store.transactionTemplates) { template in
-                    Button(template.name) {
+                ForEach(activeTransactionTemplates) { template in
+                    Button(transactionTemplateLabel(template)) {
                         editingTransaction = nil
                         editorTemplate = template
+                        editorTemplateUsageID = template.id
                         showEditor = true
                     }
                 }
+            }
+            if !store.transactionTemplates.isEmpty {
                 Divider()
+                Menu("Vorlagen verwalten") {
+                    ForEach(store.transactionTemplates) { template in
+                        Button(
+                            template.effectiveIsActive
+                                ? "\(template.name) deaktivieren"
+                                : "\(template.name) aktivieren"
+                        ) {
+                            store.setTransactionTemplateActive(
+                                template,
+                                isActive: !template.effectiveIsActive
+                            )
+                        }
+                    }
+                }
                 Menu("Vorlage löschen") {
                     ForEach(store.transactionTemplates) { template in
                         Button(template.name, role: .destructive) {
@@ -970,6 +1016,7 @@ struct RegisterView: View {
     private func edit(_ transaction: FinanceTransaction?) {
         guard let transaction else { return }
         editorTemplate = nil
+        editorTemplateUsageID = nil
         if let transferID = transaction.transferID {
             editingTransaction = nil
             editingTransferID = transferID
@@ -1011,6 +1058,7 @@ struct RegisterView: View {
         templateSource = value
         let suggested = value.payee.isEmpty ? value.purpose : value.payee
         templateName = suggested.isEmpty ? "Neue Buchungsvorlage" : suggested
+        templateFields = Set(TransactionTemplateField.allCases)
         showTemplateNameEditor = true
     }
 
@@ -1024,7 +1072,45 @@ struct RegisterView: View {
             name: "Duplikat",
             transaction: value
         )
+        editorTemplateUsageID = nil
         showEditor = true
+    }
+
+    private var activeTransactionTemplates: [TransactionTemplate] {
+        TransactionTemplateLibrary.orderedForUse(
+            store.transactionTemplates,
+            selectedAccountID: store.selectedAccountID
+        )
+    }
+
+    private func transactionTemplateLabel(_ template: TransactionTemplate) -> String {
+        var details: [String] = []
+        if template.isPartial { details.append("Teilvorlage") }
+        if template.effectiveUsageCount > 0 {
+            details.append("\(template.effectiveUsageCount)× verwendet")
+        }
+        return details.isEmpty
+            ? template.name
+            : "\(template.name) · \(details.joined(separator: " · "))"
+    }
+
+    private func setTemplateField(
+        _ field: TransactionTemplateField,
+        enabled: Bool
+    ) {
+        if enabled {
+            templateFields.insert(field)
+            if [.splits, .vat, .foreignCurrency].contains(field) {
+                templateFields.insert(.amount)
+            }
+        } else {
+            templateFields.remove(field)
+            if field == .amount {
+                templateFields.remove(.splits)
+                templateFields.remove(.foreignCurrency)
+                templateFields.remove(.vat)
+            }
+        }
     }
 
     private func prepareScheduledTransaction(from value: FinanceTransaction) {
@@ -2360,6 +2446,7 @@ struct TransactionEditorView: View {
     @Environment(\.dismiss) private var dismiss
     let transaction: FinanceTransaction?
     let template: TransactionTemplate?
+    let templateUsageID: UUID?
     let startWithSplits: Bool
 
     @State private var accountID: UUID?
@@ -2389,10 +2476,12 @@ struct TransactionEditorView: View {
     init(
         transaction: FinanceTransaction? = nil,
         template: TransactionTemplate? = nil,
+        templateUsageID: UUID? = nil,
         startWithSplits: Bool = false
     ) {
         self.transaction = transaction
         self.template = template
+        self.templateUsageID = templateUsageID
         self.startWithSplits = startWithSplits
     }
 
@@ -2752,7 +2841,16 @@ struct TransactionEditorView: View {
         .onAppear {
             guard !initialized else { return }
             initialized = true
-            let source = transaction ?? template?.transaction()
+            let compatibleAccountID = template.flatMap { template in
+                store.selectedAccountID.flatMap { selectedID in
+                    store.accounts.first(where: {
+                        $0.id == selectedID && $0.currency == template.currency
+                    })?.id
+                }
+            }
+            let source = transaction ?? template?.appliedTransaction(
+                compatibleAccountID: compatibleAccountID
+            )
             accountID = source?.accountID ?? store.selectedAccountID ?? store.accounts.first?.id
             date = transaction?.bookingDate ?? Date()
             payee = source?.payee ?? ""
@@ -2767,9 +2865,18 @@ struct TransactionEditorView: View {
             }
             purpose = source?.purpose ?? ""
             categoryID = source?.categoryID
-            amount = source.map {
-                Money(minorUnits: $0.amountMinor, currency: $0.currency).editingString
-            } ?? ""
+            if transaction == nil,
+               let template,
+               !template.effectiveFields.contains(.amount) {
+                amount = ""
+            } else {
+                amount = source.map {
+                    Money(
+                        minorUnits: $0.amountMinor,
+                        currency: $0.currency
+                    ).editingString
+                } ?? ""
+            }
             useForeignCurrency = source?.originalAmountMinor != nil
             originalAmount = source.flatMap { value in
                 value.originalAmountMinor.map {
@@ -2938,6 +3045,7 @@ struct TransactionEditorView: View {
                     originalAmount: normalizedOriginalAmount,
                     originalCurrency: useForeignCurrency ? originalCurrency : ""
                 ) {
+                    recordTemplateUseIfNeeded()
                     dismiss()
                 }
             } catch {
@@ -3125,11 +3233,17 @@ struct TransactionEditorView: View {
                 flag: flag
             )
             if store.saveSplitTransaction(value) {
+                recordTemplateUseIfNeeded()
                 dismiss()
             }
         } catch {
             store.errorMessage = error.localizedDescription
         }
+    }
+
+    private func recordTemplateUseIfNeeded() {
+        guard transaction == nil, let templateUsageID else { return }
+        store.recordTransactionTemplateUse(id: templateUsageID)
     }
 
     private func resolvedForeignCurrency(

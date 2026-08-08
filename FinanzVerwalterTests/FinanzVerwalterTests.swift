@@ -3117,7 +3117,7 @@ final class FinanzVerwalterTests: XCTestCase {
         sqlite3_close(database)
 
         let migrated = try SQLiteFinanceStore(fileURL: url)
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertEqual(
             try sqliteScalar(
                 url,
@@ -3165,7 +3165,7 @@ final class FinanzVerwalterTests: XCTestCase {
         sqlite3_close(database)
 
         let migrated = try SQLiteFinanceStore(fileURL: url)
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         for column in [
             "subtype", "bank_code", "opening_balance_date",
             "closing_date", "linked_account_id"
@@ -3223,7 +3223,7 @@ final class FinanzVerwalterTests: XCTestCase {
 
         let migrated = try SQLiteFinanceStore(fileURL: url)
         defer { migrated.close() }
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertEqual(
             try sqliteScalar(
                 url,
@@ -5542,7 +5542,7 @@ final class FinanzVerwalterTests: XCTestCase {
 
         let migrated = try SQLiteFinanceStore(fileURL: url)
         XCTAssertEqual(try migrated.accounts().map(\.id), [account.id])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         for column in [
             "extra_payment_minor", "source", "original_transaction_json",
             "matched_transaction_json"
@@ -6263,7 +6263,7 @@ final class FinanzVerwalterTests: XCTestCase {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
         XCTAssertEqual(
-            sqlite3_exec(database, "PRAGMA user_version=41", nil, nil, nil),
+            sqlite3_exec(database, "PRAGMA user_version=42", nil, nil, nil),
             SQLITE_OK
         )
         sqlite3_close(database)
@@ -6273,7 +6273,7 @@ final class FinanzVerwalterTests: XCTestCase {
                 return XCTFail("Unerwarteter Fehler: \(error)")
             }
             XCTAssertTrue(message.contains("Schema 41"))
-            XCTAssertTrue(message.contains("höchstens Schema 40"))
+            XCTAssertTrue(message.contains("höchstens Schema 41"))
         }
         XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
         var statement: OpaquePointer?
@@ -6282,7 +6282,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 41)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 42)
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -6332,7 +6332,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions(), [])
         XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -6390,7 +6390,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.scheduledTransactions().map(\.id), [schedule.id])
         XCTAssertEqual(try migrated.scheduledTransactionExceptions().map(\.id), [exception.id])
         XCTAssertEqual(try migrated.scheduledTransactionRevisions(), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -6462,7 +6462,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 40)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), Int32(SQLiteFinanceStore.currentSchemaVersion))
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -6584,7 +6584,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 40)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), Int32(SQLiteFinanceStore.currentSchemaVersion))
         sqlite3_finalize(statement)
     }
 
@@ -10068,6 +10068,238 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try context.store.integrityCheck())
     }
 
+    func testTransactionTemplatePartialApplicationUsageAndActivation() throws {
+        let context = try TestDatabase()
+        let sourceAccount = FinanceAccount(
+            id: UUID(), name: "Vorlagenkonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let targetAccount = FinanceAccount(
+            id: UUID(), name: "Aktuelles Konto", institution: "",
+            type: .savings, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(sourceAccount)
+        try context.store.saveAccount(targetAccount)
+        let source = FinanceTransaction(
+            id: UUID(), accountID: sourceAccount.id, bookingDate: .now,
+            valueDate: .now, payee: "Stadtwerke", purpose: "Abschlag",
+            categoryID: UUID(), amountMinor: -8_500, currency: "EUR",
+            status: .pending, memo: "Nicht übernehmen", reference: "ALT",
+            transferID: nil, importFingerprint: nil, splits: [],
+            tagIDs: [UUID()], flag: .blue
+        )
+        let fields: Set<TransactionTemplateField> = [
+            .payee, .purpose, .amount, .flag
+        ]
+        let template = TransactionTemplate(
+            name: "Energie-Teilvorlage",
+            transaction: source,
+            includedFields: fields
+        )
+        try context.store.saveTransactionTemplate(template)
+
+        var restored = try XCTUnwrap(context.store.transactionTemplates().first)
+        XCTAssertEqual(restored.effectiveFields, fields)
+        XCTAssertTrue(restored.isPartial)
+        XCTAssertTrue(restored.effectiveIsActive)
+        XCTAssertEqual(restored.effectiveUsageCount, 0)
+
+        let draft = restored.appliedTransaction(
+            on: Date(timeIntervalSince1970: 1_000),
+            compatibleAccountID: targetAccount.id
+        )
+        XCTAssertEqual(draft.accountID, targetAccount.id)
+        XCTAssertEqual(draft.payee, source.payee)
+        XCTAssertEqual(draft.purpose, source.purpose)
+        XCTAssertEqual(draft.amountMinor, source.amountMinor)
+        XCTAssertEqual(draft.flag, .blue)
+        XCTAssertNil(draft.categoryID)
+        XCTAssertEqual(draft.status, .booked)
+        XCTAssertEqual(draft.memo, "")
+        XCTAssertTrue(draft.tagIDs.isEmpty)
+        XCTAssertTrue(draft.splits.isEmpty)
+
+        try context.store.recordTransactionTemplateUse(id: template.id)
+        try context.store.recordTransactionTemplateUse(id: template.id)
+        restored = try XCTUnwrap(context.store.transactionTemplates().first)
+        XCTAssertEqual(restored.effectiveUsageCount, 2)
+        XCTAssertNotNil(restored.lastUsedAt)
+
+        try context.store.setTransactionTemplateActive(
+            id: template.id,
+            isActive: false
+        )
+        XCTAssertThrowsError(
+            try context.store.recordTransactionTemplateUse(id: template.id)
+        )
+        restored = try XCTUnwrap(context.store.transactionTemplates().first)
+        XCTAssertFalse(restored.effectiveIsActive)
+        XCTAssertEqual(restored.effectiveUsageCount, 2)
+
+        try context.store.setTransactionTemplateActive(
+            id: template.id,
+            isActive: true
+        )
+        try context.store.recordTransactionTemplateUse(id: template.id)
+        restored = try XCTUnwrap(context.store.transactionTemplates().first)
+        XCTAssertTrue(restored.effectiveIsActive)
+        XCTAssertEqual(restored.effectiveUsageCount, 3)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
+    func testTransactionTemplateRejectsEmptyOrAmountDependentFieldSets() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Vorlagenkonto", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let source = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: .now, payee: "Quelle", purpose: "Test",
+            categoryID: nil, amountMinor: -1_000, currency: "EUR",
+            status: .booked, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+
+        for fields in [
+            Set<TransactionTemplateField>(),
+            Set<TransactionTemplateField>([.splits]),
+            Set<TransactionTemplateField>([.vat]),
+            Set<TransactionTemplateField>([.foreignCurrency])
+        ] {
+            XCTAssertThrowsError(
+                try context.store.saveTransactionTemplate(
+                    TransactionTemplate(
+                        name: "Ungültig",
+                        transaction: source,
+                        includedFields: fields
+                    )
+                )
+            )
+        }
+        XCTAssertTrue(try context.store.transactionTemplates().isEmpty)
+    }
+
+    func testTransactionTemplateOrderingPrioritizesAccountUsageAndRecency() {
+        let selectedAccountID = UUID()
+        let otherAccountID = UUID()
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: otherAccountID, bookingDate: .now,
+            valueDate: .now, payee: "", purpose: "",
+            categoryID: nil, amountMinor: -1_000, currency: "EUR",
+            status: .booked, memo: "", reference: "",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        var selectedRecent = TransactionTemplate(
+            name: "Aktuelles Konto, neuer",
+            transaction: transaction,
+            usageCount: 2,
+            lastUsedAt: Date(timeIntervalSince1970: 200)
+        )
+        selectedRecent.accountID = selectedAccountID
+        var selectedOlder = TransactionTemplate(
+            name: "Aktuelles Konto, älter",
+            transaction: transaction,
+            usageCount: 2,
+            lastUsedAt: Date(timeIntervalSince1970: 100)
+        )
+        selectedOlder.accountID = selectedAccountID
+        let frequentOther = TransactionTemplate(
+            name: "Anderes Konto, häufig",
+            transaction: transaction,
+            usageCount: 50
+        )
+        let inactive = TransactionTemplate(
+            name: "Inaktiv",
+            transaction: transaction,
+            isActive: false,
+            usageCount: 100
+        )
+
+        let ordered = TransactionTemplateLibrary.orderedForUse(
+            [frequentOther, inactive, selectedOlder, selectedRecent],
+            selectedAccountID: selectedAccountID
+        )
+        XCTAssertEqual(
+            ordered.map(\.id),
+            [selectedRecent.id, selectedOlder.id, frequentOther.id]
+        )
+    }
+
+    func testMigration40To41PreservesLegacyTemplatesAsActiveAndComplete() throws {
+        let context = try TestDatabase()
+        let url = context.store.fileURL
+        let account = FinanceAccount(
+            id: UUID(), name: "Altbestand", institution: "",
+            type: .checking, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try context.store.saveAccount(account)
+        let source = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: .now,
+            valueDate: .now, payee: "Alt-Empfänger", purpose: "Alt-Zweck",
+            categoryID: nil, amountMinor: -1_234, currency: "EUR",
+            status: .booked, memo: "Alt-Notiz", reference: "",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        let template = TransactionTemplate(name: "Altvorlage", transaction: source)
+        try context.store.saveTransactionTemplate(template)
+        context.store.close()
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                """
+                UPDATE transaction_templates
+                SET payload_json=json_remove(
+                    payload_json,'$.includedFields','$.isActive',
+                    '$.usageCount','$.lastUsedAt'
+                );
+                DROP INDEX transaction_templates_active_usage;
+                ALTER TABLE transaction_templates DROP COLUMN last_used_at;
+                ALTER TABLE transaction_templates DROP COLUMN usage_count;
+                ALTER TABLE transaction_templates DROP COLUMN is_active;
+                PRAGMA user_version=40;
+                """,
+                nil, nil, nil
+            ),
+            SQLITE_OK
+        )
+        sqlite3_close(database)
+
+        let migrated = try SQLiteFinanceStore(fileURL: url)
+        defer { migrated.close() }
+        XCTAssertEqual(
+            try sqliteScalar(url, "PRAGMA user_version"),
+            Int64(SQLiteFinanceStore.currentSchemaVersion)
+        )
+        for column in ["is_active", "usage_count", "last_used_at"] {
+            XCTAssertEqual(
+                try sqliteScalar(
+                    url,
+                    "SELECT COUNT(*) FROM pragma_table_info('transaction_templates') WHERE name='\(column)'"
+                ),
+                1
+            )
+        }
+        let restored = try XCTUnwrap(migrated.transactionTemplates().first)
+        XCTAssertEqual(restored.id, template.id)
+        XCTAssertEqual(
+            restored.effectiveFields,
+            Set(TransactionTemplateField.allCases)
+        )
+        XCTAssertTrue(restored.effectiveIsActive)
+        XCTAssertEqual(restored.effectiveUsageCount, 0)
+        XCTAssertNil(restored.lastUsedAt)
+        XCTAssertTrue(try migrated.integrityCheck())
+    }
+
     @MainActor
     func testTransactionTemplateRejectsSingleTransferSide() throws {
         let context = try TestDatabase()
@@ -11661,7 +11893,7 @@ final class FinanzVerwalterTests: XCTestCase {
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 40)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), Int32(SQLiteFinanceStore.currentSchemaVersion))
         sqlite3_finalize(statement)
         sqlite3_close(database)
     }
@@ -11896,7 +12128,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.transactions().first?.id, value.id)
         XCTAssertEqual(try migrated.transactions().first?.amountMinor, -987)
         XCTAssertEqual(try migrated.attachments(entityType: .transaction, entityID: value.id), [])
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertEqual(try sqliteScalar(url, "SELECT COUNT(*) FROM attachment_blobs"), 0)
         XCTAssertTrue(try migrated.integrityCheck())
     }
@@ -12430,7 +12662,7 @@ final class FinanzVerwalterTests: XCTestCase {
         try context.store.saveForecastScenarioEntry(entry)
         XCTAssertEqual(try context.store.forecastScenarios().first?.name, "Umzug Berlin")
         XCTAssertEqual(try context.store.forecastScenarioEntries().first?.amountMinor, -130_000)
-        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(context.store.fileURL, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertEqual(try sqliteScalar(
             context.store.fileURL,
             "SELECT COUNT(*) FROM audit_events WHERE entity_type IN ('forecast_scenario','forecast_scenario_entry') AND action='save'"
@@ -12473,7 +12705,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try migrated.accounts().map(\.id), [account.id])
         XCTAssertTrue(try migrated.forecastScenarios().isEmpty)
         XCTAssertTrue(try migrated.forecastScenarioEntries().isEmpty)
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -12646,7 +12878,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(try migrated.taxAllowanceOrders().isEmpty)
         XCTAssertTrue(try migrated.taxAllowanceUsages().isEmpty)
         XCTAssertEqual(try migrated.taxAllowanceRules().count, 4)
-        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(url, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertTrue(try migrated.integrityCheck())
     }
 
@@ -13579,7 +13811,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(
             sqlite3_exec(
                 database,
-                "PRAGMA journal_mode=DELETE; PRAGMA user_version=41;",
+                "PRAGMA journal_mode=DELETE; PRAGMA user_version=42;",
                 nil, nil, nil
             ),
             SQLITE_OK
@@ -13591,12 +13823,12 @@ final class FinanzVerwalterTests: XCTestCase {
                 return XCTFail("Unerwarteter Fehler: \($0)")
             }
             XCTAssertTrue(message.contains("Schema 41"))
-            XCTAssertTrue(message.contains("höchstens Schema 40"))
+            XCTAssertTrue(message.contains("höchstens Schema 41"))
         }
         XCTAssertFalse(app.restoreBackup(from: futureURL))
         XCTAssertEqual(app.currentFinanceFileURL?.path, activeURL.path)
         XCTAssertEqual(app.accounts.map(\.name), ["Muss bleiben"])
-        XCTAssertEqual(try sqliteScalar(activeURL, "PRAGMA user_version"), 40)
+        XCTAssertEqual(try sqliteScalar(activeURL, "PRAGMA user_version"), Int64(SQLiteFinanceStore.currentSchemaVersion))
         XCTAssertFalse(
             try FileManager.default.contentsOfDirectory(atPath: directory.path)
                 .contains { $0.hasPrefix("Autosicherung-vor-Wiederherstellung-") }

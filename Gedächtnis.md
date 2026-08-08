@@ -4880,3 +4880,55 @@ Rechtsberatung.
   unmittelbar erfolgreich gelöscht; es besteht kein doppelter Zwischenstand.
 - Exakter kumulativer Zielzählerstand nach GitHub- und korrigierter
   Telegram-Veröffentlichung: 28.770.407 Tokens.
+
+## 08.08.2026 – Vollständige und feldselektive Buchungsvorlagen
+
+- Der P0-Schwerpunkt blieb auf Kontenblättern und Buchungen. Die bisher nur
+  vollständigen Buchungsvorlagen können jetzt als Voll- oder Teilvorlage mit
+  zwölf einzeln sichtbaren Feldern gespeichert werden: Konto, Empfänger,
+  Verwendungszweck, Kategorie, Betrag, Status, Notiz, Klassen/Tags, Splits,
+  MwSt., Fremdwährung und Kennzeichen.
+- Ein leerer Feldsatz wird an der SQLite-Grenze abgewiesen. Splitzeilen, MwSt.
+  und Fremdwährung setzen den Betrag automatisch in der Oberfläche und werden
+  ohne Betrag auch repositoryseitig abgewiesen. Vorlagen ohne Betrag öffnen
+  den Editor mit leerer Betragseingabe statt einem missverständlichen `0,00`.
+- Schema 41 ergänzt Aktivstatus, nichtnegativen Nutzungszähler und letzte
+  Verwendung. Altvorlagen aus Schema 40 ohne neue JSON-Felder migrieren als
+  aktive Vollvorlagen mit null Nutzungen. Deaktivieren und Reaktivieren sind
+  getrennt vom Löschen und werden auditiert.
+- Das Menü bietet nur aktive Vorlagen an und priorisiert reproduzierbar das
+  aktuelle Konto, danach Nutzungszahl, letzte Verwendung, Name und UUID. Der
+  Zähler steigt erst nach einer erfolgreich gespeicherten Buchung; bloßes
+  Öffnen oder Abbrechen zählt nicht.
+- Fünf gezielte Tests in `build/template-lifecycle-targeted-test-2.log`
+  belegen Altbestandsmigration, vollständigen Roundtrip, Teilanwendung,
+  Aktivstatus/Nutzung, Feldinvarianten und Reihenfolge. Der zunächst
+  unvollständig auf Schema 41 angepasste Zukunftsschema-Test erwartete nach
+  absichtlich erzeugtem Schema 42 noch fälschlich 41; ausschließlich diese
+  Testnachbedingung wurde auf 42 korrigiert und danach separat bestätigt.
+- Der finale Gesamtlauf in `build/template-lifecycle-full-test-final.log`
+  erfasst 189 Tests: 187 bestanden, 2 bewusst opt-in übersprungen, 0 Fehler.
+- README, Anforderungsmatrix, PortalPrompt und ADR 0063 dokumentieren Modell,
+  Migration, Bedienung, Priorisierung und reproduzierbare Nachimplementierung.
+- Exakter kumulativer Zielzählerstand nach Vollsuite und Dokumentation:
+  28.916.870 Tokens.
+- Der optimierte arm64-Release wurde laut
+  `build/release-template-lifecycle-build.log` erfolgreich gebaut, lokal
+  signiert und streng geprüft. Seine ausführbare Datei hat SHA-256
+  `ad16db8c8d08aa7ee270590172e5394216811024218a75b958e3916715d7340a`.
+- Die vorherigen App-Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0810-template-lifecycle/`. Die vor dem Start
+  konsistent kopierte Produktdatei liegt unter
+  `build/ProductionBackups/20260808-0810-template-lifecycle/Meine Finanzen.qdata`
+  und meldet Schema 40, Integrität `ok`, 97 Konten, 2.170 Buchungen und 782
+  Kategorien.
+- Beide neuen Installationen sind signaturgültig und bytegleich; der
+  Desktop-Link zeigt auf `/Applications/FinanzVerwalter.app`. Prozess 18533
+  läuft genau von dort im Light Mode und hält die echte Produktdatei geöffnet.
+- Die reale Startmigration endete auf Schema 41 mit Integrität `ok`, ohne
+  Fremdschlüsselverletzung und unverändert 97 Konten, 2.170 Buchungen, 782
+  Kategorien sowie 0 Buchungsvorlagen. `is_active`, `usage_count` und
+  `last_used_at` sind vorhanden; seit dem Start wurden keine Error-/Fault-Logs
+  erzeugt.
+- Exakter kumulativer Zielzählerstand nach Release, Sicherung, Installation
+  und Laufzeitprüfung: 29.140.660 Tokens.

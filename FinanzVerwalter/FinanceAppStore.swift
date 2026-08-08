@@ -1069,7 +1069,13 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
-    func saveTransactionTemplate(name: String, from transaction: FinanceTransaction) -> Bool {
+    func saveTransactionTemplate(
+        name: String,
+        from transaction: FinanceTransaction,
+        includedFields: Set<TransactionTemplateField> = Set(
+            TransactionTemplateField.allCases
+        )
+    ) -> Bool {
         guard let repository else { return false }
         guard transaction.transferID == nil else {
             errorMessage = "Umbuchungen können nur als zusammengehöriges Buchungspaar wiederverwendet werden und sind deshalb keine Einzelvorlage."
@@ -1078,7 +1084,8 @@ final class FinanceAppStore: ObservableObject {
         do {
             let template = TransactionTemplate(
                 name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                transaction: transaction
+                transaction: transaction,
+                includedFields: includedFields
             )
             try repository.saveTransactionTemplate(template)
             transactionTemplates = try repository.transactionTemplates()
@@ -1087,6 +1094,36 @@ final class FinanceAppStore: ObservableObject {
         } catch {
             present(error)
             return false
+        }
+    }
+
+    func setTransactionTemplateActive(
+        _ template: TransactionTemplate,
+        isActive: Bool
+    ) {
+        guard let repository else { return }
+        do {
+            try repository.setTransactionTemplateActive(
+                id: template.id,
+                isActive: isActive
+            )
+            transactionTemplates = try repository.transactionTemplates()
+            statusText = isActive
+                ? "Buchungsvorlage aktiviert"
+                : "Buchungsvorlage deaktiviert"
+        } catch {
+            present(error)
+        }
+    }
+
+    func recordTransactionTemplateUse(id: UUID) {
+        guard let repository else { return }
+        do {
+            try repository.recordTransactionTemplateUse(id: id)
+            transactionTemplates = try repository.transactionTemplates()
+            statusText = "Buchung aus Vorlage gespeichert"
+        } catch {
+            present(error)
         }
     }
 

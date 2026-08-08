@@ -41,7 +41,7 @@ struct OpenDataArchiveImportSummary: Equatable, Sendable {
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
-    static let currentSchemaVersion = 40
+    static let currentSchemaVersion = 41
     private var database: OpaquePointer?
     private var transactionDepth = 0
     private let attachmentScanHook: AttachmentScanHook
@@ -2253,6 +2253,33 @@ final class SQLiteFinanceStore {
                     "CREATE INDEX IF NOT EXISTS transactions_flag ON transactions(flag_color,booking_date,id) WHERE flag_color<>''"
                 )
                 try execute("PRAGMA user_version = 40")
+            }
+        }
+        if version < 41 {
+            try transaction {
+                var columns = Set<String>()
+                try query("PRAGMA table_info(transaction_templates)") {
+                    columns.insert(Self.text($0, 1))
+                }
+                if !columns.contains("is_active") {
+                    try execute(
+                        "ALTER TABLE transaction_templates ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1))"
+                    )
+                }
+                if !columns.contains("usage_count") {
+                    try execute(
+                        "ALTER TABLE transaction_templates ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0 CHECK(usage_count>=0)"
+                    )
+                }
+                if !columns.contains("last_used_at") {
+                    try execute(
+                        "ALTER TABLE transaction_templates ADD COLUMN last_used_at TEXT"
+                    )
+                }
+                try execute(
+                    "CREATE INDEX IF NOT EXISTS transaction_templates_active_usage ON transaction_templates(finance_file_id,is_active,usage_count DESC,last_used_at DESC,name COLLATE NOCASE,id)"
+                )
+                try execute("PRAGMA user_version = 41")
             }
         }
     }
@@ -7764,9 +7791,10 @@ final class SQLiteFinanceStore {
         let decoder = JSONDecoder()
         try query(
             """
-            SELECT id,name,payload_json
+            SELECT id,name,payload_json,is_active,usage_count,last_used_at
             FROM transaction_templates
-            ORDER BY name COLLATE NOCASE,id
+            ORDER BY is_active DESC,usage_count DESC,last_used_at DESC,
+                     name COLLATE NOCASE,id
             """
         ) { statement in
             guard
@@ -7776,11 +7804,15 @@ final class SQLiteFinanceStore {
                 throw FinanceError.database("Eine Buchungsvorlage ist beschädigt.")
             }
             do {
-                var value = try decoder.decode(TransactionTemplate.self, from: data)
-                value = TransactionTemplate(
+                let decoded = try decoder.decode(TransactionTemplate.self, from: data)
+                let value = TransactionTemplate(
                     id: id,
                     name: Self.text(statement, 1),
-                    transaction: value.transaction()
+                    transaction: decoded.transaction(),
+                    includedFields: decoded.effectiveFields,
+                    isActive: sqlite3_column_int(statement, 3) != 0,
+                    usageCount: Int(sqlite3_column_int64(statement, 4)),
+                    lastUsedAt: Self.optionalText(statement, 5).flatMap(Self.timestampDate)
                 )
                 values.append(value)
             } catch {
@@ -7795,6 +7827,21 @@ final class SQLiteFinanceStore {
         guard !name.isEmpty else {
             throw FinanceError.database("Der Name der Buchungsvorlage fehlt.")
         }
+        let fields = value.effectiveFields
+        guard !fields.isEmpty else {
+            throw FinanceError.database(
+                "Eine Buchungsvorlage muss mindestens ein Feld enthalten."
+            )
+        }
+        let amountDependentFields: Set<TransactionTemplateField> = [
+            .splits, .vat, .foreignCurrency
+        ]
+        guard fields.isDisjoint(with: amountDependentFields)
+                || fields.contains(.amount) else {
+            throw FinanceError.database(
+                "Splitzeilen, MwSt. und Fremdwährung benötigen das Feld Betrag."
+            )
+        }
         try value.transaction().validate()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -7808,15 +7855,18 @@ final class SQLiteFinanceStore {
             try run(
                 """
                 INSERT INTO transaction_templates(
-                    id,finance_file_id,name,payload_json,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?)
+                    id,finance_file_id,name,payload_json,created_at,updated_at,
+                    is_active
+                ) VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     name=excluded.name,payload_json=excluded.payload_json,
+                    is_active=excluded.is_active,
                     updated_at=excluded.updated_at,version=version+1
                 """,
                 [
                     .text(value.id.uuidString), .text(info.id.uuidString),
-                    .text(name), .text(payload), .text(now), .text(now)
+                    .text(name), .text(payload), .text(now), .text(now),
+                    .integer(value.effectiveIsActive ? 1 : 0)
                 ]
             )
             try audit(
@@ -7824,6 +7874,47 @@ final class SQLiteFinanceStore {
                 id: value.id,
                 action: "save",
                 details: name
+            )
+        }
+    }
+
+    func setTransactionTemplateActive(id: UUID, isActive: Bool) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                "UPDATE transaction_templates SET is_active=?,updated_at=?,version=version+1 WHERE id=?",
+                [.integer(isActive ? 1 : 0), .text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database("Die Buchungsvorlage wurde nicht gefunden.")
+            }
+            try audit(
+                entity: "transaction-template", id: id, action: "status",
+                details: isActive ? "active" : "inactive"
+            )
+        }
+    }
+
+    func recordTransactionTemplateUse(id: UUID) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            try run(
+                """
+                UPDATE transaction_templates
+                SET usage_count=usage_count+1,last_used_at=?,updated_at=?,
+                    version=version+1
+                WHERE id=? AND is_active=1
+                """,
+                [.text(now), .text(now), .text(id.uuidString)]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw FinanceError.database(
+                    "Nur eine aktive vorhandene Buchungsvorlage kann verwendet werden."
+                )
+            }
+            try audit(
+                entity: "transaction-template", id: id, action: "use",
+                details: ""
             )
         }
     }

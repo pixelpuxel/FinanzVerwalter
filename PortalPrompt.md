@@ -1213,6 +1213,25 @@ Vorlage gespeichert; eine einzelne Umbuchungsseite wird abgelehnt. Beim
 Anwenden entstehen neue Buchungs- und Split-IDs sowie das heutige Datum;
 Referenz, Transfer-ID und Importfingerprint bleiben leer.
 
+Erweitere Buchungsvorlagen in Migration 41 rückwärtskompatibel um
+`is_active`, `usage_count` und `last_used_at`. Der optionale JSON-Feldsatz
+`includedFields` unterscheidet vollständige Vorlagen von Teilvorlagen und darf
+Konto, Empfänger, Verwendungszweck, Kategorie, Betrag, Status, Notiz,
+Klassen/Tags, Splits, MwSt., Fremdwährung und Kennzeichen enthalten. Ein leerer
+Satz ist unzulässig; Splits, MwSt. und Fremdwährung dürfen nur zusammen mit
+dem Betrag gewählt werden. Fehlt der Feldsatz in einer Altvorlage, gelten alle
+Felder; fehlende Metadaten bedeuten aktiv, null Verwendungen und nie verwendet.
+
+Wende nur gewählte Felder an. Bei einer Teilvorlage ohne Konto darf das aktuell
+geöffnete Konto nur bei gleicher Währung eingesetzt werden; ohne Betrag bleibt
+die Eingabe leer. Biete ausschließlich aktive Vorlagen an und sortiere stabil
+zuerst nach aktuellem Konto, dann Nutzungszahl, letzter Verwendung, Name und
+UUID. Erhöhe den Nutzungszähler mit Audit erst nach erfolgreich gespeicherter
+Buchung, niemals beim Öffnen oder Abbrechen. Biete Aktivieren, Deaktivieren und
+Löschen getrennt an. Teste Teilanwendung, Invarianten, Reihenfolge,
+Aktivstatus/Nutzung sowie die Migration 40→41 mit einem Legacy-JSON ohne neue
+Felder.
+
 Das Kontoblatt bietet zusätzlich `Als regelmäßigen Vorgang …`. Erzeuge daraus
 über `ScheduledTransaction.draft(from:)` eine neue UUID, einen Namen aus
 Empfänger oder Zweck, den nächsten heute oder künftig liegenden Monatstermin

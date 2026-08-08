@@ -537,6 +537,40 @@ struct TransactionTemplateSplit: Codable, Hashable, Sendable {
     var taxMinor: Int64?
 }
 
+enum TransactionTemplateField: String, Codable, CaseIterable, Identifiable, Sendable {
+    case account
+    case payee
+    case purpose
+    case category
+    case amount
+    case status
+    case memo
+    case tags
+    case splits
+    case vat
+    case foreignCurrency
+    case flag
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .account: "Konto"
+        case .payee: "Empfänger"
+        case .purpose: "Verwendungszweck"
+        case .category: "Kategorie"
+        case .amount: "Betrag"
+        case .status: "Status"
+        case .memo: "Notiz"
+        case .tags: "Klassen/Tags"
+        case .splits: "Splitzeilen"
+        case .vat: "MwSt.-Angaben"
+        case .foreignCurrency: "Fremdwährung"
+        case .flag: "Kennzeichen"
+        }
+    }
+}
+
 struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
@@ -559,8 +593,32 @@ struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
     var originalCurrency: String?
     var exchangeRateScaled: Int64?
     var flag: TransactionFlag?
+    var includedFields: Set<TransactionTemplateField>?
+    var isActive: Bool?
+    var usageCount: Int?
+    var lastUsedAt: Date?
 
-    init(id: UUID = UUID(), name: String, transaction: FinanceTransaction) {
+    var effectiveFields: Set<TransactionTemplateField> {
+        includedFields ?? Set(TransactionTemplateField.allCases)
+    }
+
+    var effectiveIsActive: Bool { isActive ?? true }
+    var effectiveUsageCount: Int { usageCount ?? 0 }
+    var isPartial: Bool {
+        effectiveFields != Set(TransactionTemplateField.allCases)
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        transaction: FinanceTransaction,
+        includedFields: Set<TransactionTemplateField> = Set(
+            TransactionTemplateField.allCases
+        ),
+        isActive: Bool = true,
+        usageCount: Int = 0,
+        lastUsedAt: Date? = nil
+    ) {
         self.id = id
         self.name = name
         accountID = transaction.accountID
@@ -587,6 +645,10 @@ struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
             ? nil : transaction.originalCurrency
         exchangeRateScaled = transaction.exchangeRateScaled
         flag = transaction.flag
+        self.includedFields = includedFields
+        self.isActive = isActive
+        self.usageCount = max(0, usageCount)
+        self.lastUsedAt = lastUsedAt
         splits = transaction.splits.map {
             TransactionTemplateSplit(
                 categoryID: $0.categoryID,
@@ -643,6 +705,88 @@ struct TransactionTemplate: Identifiable, Codable, Hashable, Sendable {
             exchangeRateScaled: exchangeRateScaled,
             flag: flag
         )
+    }
+
+    func appliedTransaction(
+        on date: Date = .now,
+        compatibleAccountID: UUID? = nil
+    ) -> FinanceTransaction {
+        let fields = effectiveFields
+        var value = transaction(on: date)
+        if !fields.contains(.account), let compatibleAccountID {
+            value.accountID = compatibleAccountID
+        }
+        if !fields.contains(.payee) {
+            value.payee = ""
+            value.payeeID = nil
+            value.creditorID = ""
+            value.mandateReference = ""
+        }
+        if !fields.contains(.purpose) { value.purpose = "" }
+        if !fields.contains(.category) { value.categoryID = nil }
+        if !fields.contains(.status) { value.status = .booked }
+        if !fields.contains(.memo) { value.memo = "" }
+        if !fields.contains(.flag) { value.flag = nil }
+        if !fields.contains(.tags) {
+            value.tagIDs = []
+            for index in value.splits.indices {
+                value.splits[index].tagIDs = []
+            }
+        }
+        if !fields.contains(.vat) {
+            value.vatCodeID = nil
+            value.vatMode = .none
+            value.netMinor = 0
+            value.taxMinor = 0
+            for index in value.splits.indices {
+                value.splits[index].vatCodeID = nil
+                value.splits[index].vatMode = .none
+                value.splits[index].netMinor = 0
+                value.splits[index].taxMinor = 0
+            }
+        }
+        if !fields.contains(.foreignCurrency) {
+            value.originalAmountMinor = nil
+            value.originalCurrency = ""
+            value.exchangeRateScaled = nil
+        }
+        if !fields.contains(.splits) { value.splits = [] }
+        if !fields.contains(.amount) {
+            value.amountMinor = 0
+            value.splits = []
+            value.originalAmountMinor = nil
+            value.originalCurrency = ""
+            value.exchangeRateScaled = nil
+            value.vatCodeID = nil
+            value.vatMode = .none
+            value.netMinor = 0
+            value.taxMinor = 0
+        }
+        return value
+    }
+}
+
+enum TransactionTemplateLibrary {
+    static func orderedForUse(
+        _ templates: [TransactionTemplate],
+        selectedAccountID: UUID?
+    ) -> [TransactionTemplate] {
+        templates.filter(\.effectiveIsActive).sorted { lhs, rhs in
+            let lhsAccount = lhs.accountID == selectedAccountID
+            let rhsAccount = rhs.accountID == selectedAccountID
+            if lhsAccount != rhsAccount { return lhsAccount }
+            if lhs.effectiveUsageCount != rhs.effectiveUsageCount {
+                return lhs.effectiveUsageCount > rhs.effectiveUsageCount
+            }
+            if lhs.lastUsedAt != rhs.lastUsedAt {
+                return (lhs.lastUsedAt ?? .distantPast)
+                    > (rhs.lastUsedAt ?? .distantPast)
+            }
+            let comparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            return comparison == .orderedSame
+                ? lhs.id.uuidString < rhs.id.uuidString
+                : comparison == .orderedAscending
+        }
     }
 }
 
