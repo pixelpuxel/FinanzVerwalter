@@ -4941,6 +4941,31 @@ final class SQLiteFinanceStore {
         return values
     }
 
+    func securityAllocations() throws -> [SecurityAllocation] {
+        var values: [SecurityAllocation] = []
+        try query(
+            """
+            SELECT id,security_id,asset_class_id,basis_points
+            FROM security_allocations
+            ORDER BY security_id,asset_class_id,id
+            """
+        ) { statement in
+            guard
+                let id = UUID(uuidString: Self.text(statement, 0)),
+                let securityID = UUID(uuidString: Self.text(statement, 1)),
+                let assetClassID = UUID(uuidString: Self.text(statement, 2))
+            else { return }
+            values.append(
+                SecurityAllocation(
+                    id: id, securityID: securityID,
+                    assetClassID: assetClassID,
+                    basisPoints: Int(sqlite3_column_int(statement, 3))
+                )
+            )
+        }
+        return values
+    }
+
     func replaceAllocations(
         securityID: UUID,
         values: [(assetClassID: UUID, basisPoints: Int)]

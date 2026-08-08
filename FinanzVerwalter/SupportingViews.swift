@@ -4764,6 +4764,7 @@ private struct PortfolioReportView: View {
     @State private var includeInactive = false
     @State private var includeClosedAccounts = false
     @State private var selectedPositionID: String?
+    @State private var detailMode = 0
     @State private var orientation: ReportPDFOrientation = .landscape
     @State private var csvDocument = ReportCSVDocument(data: Data())
     @State private var pdfDocument = ReportPDFDocument(data: Data())
@@ -4952,34 +4953,45 @@ private struct PortfolioReportView: View {
                 }
                 VStack(spacing: 0) {
                     HStack {
-                        Text(selectedPosition?.securityName ?? "Transaktions-Drill-down")
-                            .font(.headline).lineLimit(1)
+                        Text(
+                            detailMode == 0
+                                ? selectedPosition?.securityName ?? "Transaktions-Drill-down"
+                                : "Asset Allocation"
+                        )
+                        .font(.headline).lineLimit(1)
                         Spacer()
-                        Text("\(selectedTrades.count) Vorgänge")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Picker("Detailansicht", selection: $detailMode) {
+                            Text("Transaktionen").tag(0)
+                            Text("Asset Allocation").tag(1)
+                        }
+                        .labelsHidden().pickerStyle(.segmented).frame(width: 250)
                     }.padding(8)
                     Divider()
-                    Table(selectedTrades) {
-                        TableColumn("Datum") {
-                            Text($0.tradeDate, format: .dateTime.day().month().year())
-                        }.width(95)
-                        TableColumn("Art") { Text($0.type.title) }.width(85)
-                        TableColumn("Bestand") { row in
-                            portfolioQuantity(row.quantityMicro)
-                        }.width(95)
-                        TableColumn("Brutto") { row in
-                            portfolioMoney(row.grossMinor, row.currency)
-                        }.width(110)
-                        TableColumn("Geb./Steuer") { row in
-                            portfolioMoney(row.feesMinor + row.taxesMinor, row.currency)
-                        }.width(110)
-                        TableColumn("Realisiert") { row in
-                            portfolioMoney(row.realizedGainMinor, row.currency)
-                        }.width(110)
-                        TableColumn("Notiz") { Text($0.note).lineLimit(1) }
+                    if detailMode == 0 {
+                        Table(selectedTrades) {
+                            TableColumn("Datum") {
+                                Text($0.tradeDate, format: .dateTime.day().month().year())
+                            }.width(95)
+                            TableColumn("Art") { Text($0.type.title) }.width(85)
+                            TableColumn("Bestand") { row in
+                                portfolioQuantity(row.quantityMicro)
+                            }.width(95)
+                            TableColumn("Brutto") { row in
+                                portfolioMoney(row.grossMinor, row.currency)
+                            }.width(110)
+                            TableColumn("Geb./Steuer") { row in
+                                portfolioMoney(row.feesMinor + row.taxesMinor, row.currency)
+                            }.width(110)
+                            TableColumn("Realisiert") { row in
+                                portfolioMoney(row.realizedGainMinor, row.currency)
+                            }.width(110)
+                            TableColumn("Notiz") { Text($0.note).lineLimit(1) }
+                        }
+                    } else {
+                        portfolioAllocation(value)
                     }
                 }
-                .frame(minWidth: 470)
+                .frame(minWidth: 540)
             }
         }
         .frame(minWidth: 1_280, minHeight: 720)
@@ -5125,6 +5137,63 @@ private struct PortfolioReportView: View {
     private func portfolioQuantity(_ micro: Int64) -> some View {
         Text(SecurityQuantity(microUnits: micro).formatted)
             .frame(maxWidth: .infinity, alignment: .trailing).monospacedDigit()
+    }
+
+    private func portfolioAllocation(_ snapshot: PortfolioReportSnapshot) -> some View {
+        VStack(spacing: 0) {
+            if snapshot.allocations.isEmpty {
+                ContentUnavailableView(
+                    "Keine Allokation",
+                    systemImage: "chart.pie",
+                    description: Text("Die aktuellen Filter enthalten keinen Depotbestand.")
+                )
+            } else {
+                Chart(snapshot.allocations.filter { ($0.marketShareBasisPoints ?? 0) > 0 }) { row in
+                    BarMark(
+                        x: .value("Anteil in Prozent", Double(row.marketShareBasisPoints ?? 0) / 100),
+                        y: .value("Vermögensklasse", "\(row.assetClassName) · \(row.currency)")
+                    )
+                    .foregroundStyle(categoryColor(row.color).gradient)
+                    .accessibilityLabel("\(row.assetClassName), \(row.currency)")
+                    .accessibilityValue(portfolioPercent(row.marketShareBasisPoints))
+                }
+                .chartXAxisLabel("Anteil am bekannten Marktwert in %")
+                .frame(height: min(250, max(120, CGFloat(snapshot.allocations.count * 30))))
+                .padding(10)
+                Divider()
+                Table(snapshot.allocations) {
+                    TableColumn("Vermögensklasse") { row in
+                        HStack(spacing: 6) {
+                            Circle().fill(categoryColor(row.color)).frame(width: 9, height: 9)
+                            Text(row.assetClassName).lineLimit(1)
+                        }
+                    }.width(min: 145, ideal: 180)
+                    TableColumn("Positionen") { Text("\($0.positionCount)") }.width(75)
+                    TableColumn("Kostenbasis") { row in
+                        portfolioMoney(row.costBasisMinor, row.currency)
+                    }.width(115)
+                    TableColumn("Marktwert") { row in
+                        portfolioMoney(row.knownMarketValueMinor, row.currency)
+                    }.width(115)
+                    TableColumn("Anteil") { row in
+                        Text(portfolioPercent(row.marketShareBasisPoints))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .monospacedDigit()
+                    }.width(80)
+                    TableColumn("Währ.") { Text($0.currency) }.width(55)
+                    TableColumn("Ohne Kurs") { Text("\($0.missingPriceCount)") }.width(75)
+                }
+                Divider()
+                Text(
+                    "Anteil = Klassenmarktwert ÷ bekannter Gesamtmarktwert derselben Währung. "
+                        + "Kostenbasis und Marktwert werden gemäß der gespeicherten Prozentmischung centgenau verteilt. "
+                        + "Positionen ohne Kurs bleiben sichtbar, zählen aber nicht zum Marktwertanteil."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(8)
+            }
+        }
+        .accessibilityIdentifier("portfolioAssetAllocation")
     }
 
     private func portfolioPercent(_ basisPoints: Int64?) -> String {

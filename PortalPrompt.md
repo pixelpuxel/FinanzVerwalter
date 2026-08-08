@@ -2176,4 +2176,35 @@ Depots und inaktive Wertpapiere, fehlende Kurse, Kostenbasis, Marktwert,
 realisierten/unrealisierten Gewinn, Nettoertrag, Gebühren, Steuern,
 Drill-down-Sortierung, deterministisches CSV, lesbares PDF und Codable-Rundlauf
 aller acht Fachberichtstypen. Dokumentiere historische Bewertung, TWR/IRR,
-Benchmarkvergleich und Allokationsbericht weiter ausdrücklich als offen.
+Benchmarkvergleich und Zielallokationsbericht weiter ausdrücklich als offen.
+
+# Ist-Asset-Allocation im Depotbericht
+
+Erweitere den Depotbericht um eine zwischen Transaktionshistorie und
+`Asset Allocation` umschaltbare Detailansicht. Lade alle
+`security_allocations` beim Finanzdatei-Reload in einem einzigen sortierten
+SQLite-Lesezugriff und halte sie gemeinsam mit Wertpapieren, Klassen und
+Positionen im publizierten Storezustand; die View darf nicht bei jeder
+Neuberechnung je Wertpapier erneut die Datenbank abfragen.
+
+Für jede gefilterte aktuelle Position gilt die gespeicherte
+Vermögensklassenmischung nur, wenn alle referenzierten Klassen existieren und
+die Summe exakt 10.000 Basispunkte beträgt. Andernfalls ordne die vollständige
+Position sichtbar `Nicht zugeordnet` zu. Teile Kostenbasis und bekannten
+Marktwert mit Dezimalarithmetik je Mischung auf und weise den letzten
+Rundungsrest deterministisch der letzten stabil sortierten Klasse zu, sodass
+die Klassensummen stets exakt der Positionssumme entsprechen.
+
+Aggregiere je Vermögensklasse und Währung: unterschiedliche Positionen,
+Positionen ohne Kurs, Kostenbasis, bekannten Marktwert und Anteil am bekannten
+Gesamtmarktwert derselben Währung. Ein fehlender oder nullwertiger Nenner
+ergibt keinen Prozentwert. Zeige Balkendiagramm, Tabelle und einen permanenten
+Formelhinweis; vermische niemals Währungen und lasse Fehlkurse nicht als
+Nullbewertung in den Prozentnenner einfließen.
+
+Erweitere Semikolon-CSV und das mehrseitige Druck-PDF um Bestände,
+Währungssummen, Ist-Allokation und vollständige Transaktionshistorie. Teste
+Mischklassen, Summenerhalt, Prozentwerte, nicht zugeordnete Fehlkurspositionen,
+CSV- und PDF-Inhalte sowie den gemeinsamen SQLite-Ladevorgang. Kennzeichne
+Zielallokation, historische Bewertung, Benchmark und TWR/IRR weiterhin als
+offen.

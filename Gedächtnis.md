@@ -4224,3 +4224,28 @@ Rechtsberatung.
   Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
   Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
   24.790.929 Tokens.
+
+## 08.08.2026 – Ist-Asset-Allocation im Depotbericht
+
+- Der Depotbericht besitzt nun eine direkt umschaltbare Detailansicht
+  `Asset Allocation` mit Balkendiagramm und Tabelle. Sie zeigt je
+  Vermögensklasse und Währung Positionenzahl, Kostenbasis, bekannten
+  Marktwert, Anteil am bekannten Gesamtmarktwert und Fehlkurszahl.
+- Gespeicherte Mischklassen werden mit Dezimalarithmetik centgenau aufgeteilt;
+  der deterministische Rundungsrest stellt sicher, dass alle Teilbeträge exakt
+  wieder die Position ergeben. Fehlende oder unvollständige Zuordnungen
+  erscheinen vollständig als `Nicht zugeordnet`. Fehlende Kurse bleiben aus
+  dem Prozentnenner heraus, aber mit Kostenbasis und Fehlkurszähler sichtbar.
+- Alle Wertpapierzuordnungen werden beim Finanzdatei-Reload in einem einzigen
+  sortierten SQLite-Lesevorgang publiziert. Reaktive Berichtsberechnungen
+  führen dadurch keine Datenbankabfrage je Wertpapier aus. ADR 0052
+  dokumentiert die Bewertungs- und Rundungsregeln.
+- Das deterministische Semikolon-CSV enthält Bestände, Währungssummen,
+  Allokation und Transaktionen. Das mehrseitige PDF und damit der Systemdruck
+  enthalten dieselben vier fachlichen Bereiche statt nur der Bestandstabelle.
+- Die gezielten Tests prüfen FIFO-/Zuordnungspersistenz, Mischklassen,
+  Summenerhalt, Marktwertanteile, nicht zugeordnete Fehlkurspositionen sowie
+  CSV- und PDF-Inhalte. Der vollständige Lauf unter
+  `build/TestResults/AssetAllocation-full-20260808-0245.xcresult` umfasst 175
+  Tests: 173 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler.

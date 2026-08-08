@@ -431,6 +431,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var tags: [FinanceTag] = []
     @Published private(set) var securities: [Security] = []
     @Published private(set) var assetClasses: [AssetClass] = []
+    @Published private(set) var securityAllocations: [SecurityAllocation] = []
     @Published private(set) var portfolioPositions: [PortfolioPosition] = []
     @Published private(set) var securityTrades: [SecurityTrade] = []
     @Published private(set) var loans: [FinanceLoan] = []
@@ -723,6 +724,7 @@ final class FinanceAppStore: ObservableObject {
         tags = []
         securities = []
         assetClasses = []
+        securityAllocations = []
         portfolioPositions = []
         securityTrades = []
         loans = []
@@ -903,10 +905,12 @@ final class FinanceAppStore: ObservableObject {
     }
 
     func portfolioReport(_ query: PortfolioReportQuery) -> PortfolioReportSnapshot {
-        PortfolioReportEngine.snapshot(
+        let allocations = Dictionary(grouping: securityAllocations, by: \.securityID)
+        return PortfolioReportEngine.snapshot(
             query: query, positions: portfolioPositions,
             trades: securityTrades, accounts: accounts,
-            securities: securities
+            securities: securities, allocationsBySecurityID: allocations,
+            assetClasses: assetClasses
         )
     }
 
@@ -3629,6 +3633,7 @@ final class FinanceAppStore: ObservableObject {
         tags = try repository.tags()
         securities = try repository.securities()
         assetClasses = try repository.assetClasses()
+        securityAllocations = try repository.securityAllocations()
         portfolioPositions = try repository.portfolioPositions()
         securityTrades = try repository.securityTrades()
         loans = try repository.loans()

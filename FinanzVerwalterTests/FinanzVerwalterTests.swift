@@ -4845,6 +4845,10 @@ final class FinanzVerwalterTests: XCTestCase {
                 .reduce(0) { $0 + $1.basisPoints },
             10_000
         )
+        XCTAssertEqual(
+            try context.store.securityAllocations(),
+            try context.store.allocations(securityID: security.id)
+        )
 
         let firstDate = Date(timeIntervalSince1970: 1_700_000_000)
         let secondDate = Date(timeIntervalSince1970: 1_710_000_000)
@@ -6928,6 +6932,8 @@ final class FinanzVerwalterTests: XCTestCase {
         let closedAccountID = UUID()
         let securityID = UUID()
         let inactiveSecurityID = UUID()
+        let equityClassID = UUID()
+        let bondClassID = UUID()
         let from = Date(timeIntervalSince1970: 1_700_000_000)
         let through = Date(timeIntervalSince1970: 1_710_000_000)
         let account = FinanceAccount(
@@ -6952,6 +6958,22 @@ final class FinanzVerwalterTests: XCTestCase {
             type: .stock, currency: "USD", exchange: "NYSE",
             priceDecimals: 2, allowsShort: false, isActive: false, note: ""
         )
+        let equityClass = AssetClass(
+            id: equityClassID, name: "Aktien Europa", color: "#3366CC", isActive: true
+        )
+        let bondClass = AssetClass(
+            id: bondClassID, name: "Anleihen", color: "#66AA44", isActive: true
+        )
+        let allocations = [
+            SecurityAllocation(
+                id: UUID(), securityID: securityID,
+                assetClassID: equityClassID, basisPoints: 6_000
+            ),
+            SecurityAllocation(
+                id: UUID(), securityID: securityID,
+                assetClassID: bondClassID, basisPoints: 4_000
+            )
+        ]
         let positions = [
             PortfolioPosition(
                 security: security, accountID: accountID,
@@ -6992,7 +7014,9 @@ final class FinanzVerwalterTests: XCTestCase {
             query: query, positions: positions,
             trades: [outside, dividend, sell],
             accounts: [closedAccount, account],
-            securities: [inactiveSecurity, security]
+            securities: [inactiveSecurity, security],
+            allocationsBySecurityID: [securityID: allocations],
+            assetClasses: [bondClass, equityClass]
         )
         XCTAssertEqual(snapshot.positions.map(\.securityID), [securityID])
         XCTAssertEqual(snapshot.trades.map(\.id), [dividend.id, sell.id])
@@ -7007,6 +7031,27 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(total.feesMinor, 110)
         XCTAssertEqual(total.taxesMinor, 240)
         XCTAssertEqual(snapshot.positions.first?.gainBasisPoints, 1_111)
+        XCTAssertEqual(snapshot.allocations.count, 2)
+        let equity = try XCTUnwrap(
+            snapshot.allocations.first { $0.assetClassID == equityClassID }
+        )
+        XCTAssertEqual(equity.positionCount, 1)
+        XCTAssertEqual(equity.costBasisMinor, 10_800)
+        XCTAssertEqual(equity.knownMarketValueMinor, 12_000)
+        XCTAssertEqual(equity.marketShareBasisPoints, 6_000)
+        XCTAssertEqual(equity.missingPriceCount, 0)
+        let bond = try XCTUnwrap(
+            snapshot.allocations.first { $0.assetClassID == bondClassID }
+        )
+        XCTAssertEqual(bond.costBasisMinor, 7_200)
+        XCTAssertEqual(bond.knownMarketValueMinor, 8_000)
+        XCTAssertEqual(bond.marketShareBasisPoints, 4_000)
+        XCTAssertEqual(
+            snapshot.allocations.reduce(0) { $0 + $1.costBasisMinor }, 18_000
+        )
+        XCTAssertEqual(
+            snapshot.allocations.reduce(0) { $0 + $1.knownMarketValueMinor }, 20_000
+        )
 
         let all = PortfolioReportEngine.snapshot(
             query: PortfolioReportQuery(
@@ -7016,10 +7061,19 @@ final class FinanzVerwalterTests: XCTestCase {
             ),
             positions: positions, trades: [],
             accounts: [account, closedAccount],
-            securities: [security, inactiveSecurity]
+            securities: [security, inactiveSecurity],
+            allocationsBySecurityID: [securityID: allocations],
+            assetClasses: [equityClass, bondClass]
         )
         XCTAssertEqual(all.positions.count, 2)
         XCTAssertEqual(all.totals.first { $0.currency == "USD" }?.missingPriceCount, 1)
+        let unassigned = try XCTUnwrap(
+            all.allocations.first { $0.assetClassID == nil && $0.currency == "USD" }
+        )
+        XCTAssertEqual(unassigned.costBasisMinor, 5_000)
+        XCTAssertEqual(unassigned.knownMarketValueMinor, 0)
+        XCTAssertEqual(unassigned.marketShareBasisPoints, nil)
+        XCTAssertEqual(unassigned.missingPriceCount, 1)
 
         let metadata = PortfolioReportExportMetadata(
             title: "Depotbestand & Erträge", dateLabel: "2023/2024",
@@ -7038,12 +7092,17 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertTrue(csvText.contains("Depotbestand & Erträge"))
         XCTAssertTrue(csvText.contains("Depot Köln;Europa ETF;ETF"))
         XCTAssertTrue(csvText.contains("Teilveräußerung"))
+        XCTAssertTrue(csvText.contains("Asset Allocation"))
+        XCTAssertTrue(csvText.contains("Aktien Europa;1;0;108,00;120,00;60,00;EUR"))
 
         let pdf = try ComparisonReportPDFExporter.portfolioData(
             snapshot: snapshot, metadata: metadata
         )
         XCTAssertTrue(pdf.starts(with: Data("%PDF".utf8)))
-        XCTAssertGreaterThanOrEqual(try XCTUnwrap(PDFDocument(data: pdf)).pageCount, 1)
+        let pdfDocument = try XCTUnwrap(PDFDocument(data: pdf))
+        XCTAssertGreaterThanOrEqual(pdfDocument.pageCount, 1)
+        XCTAssertTrue(pdfDocument.string?.contains("Allokation") == true)
+        XCTAssertTrue(pdfDocument.string?.contains("Teilveräußerung") == true)
     }
 
     func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {

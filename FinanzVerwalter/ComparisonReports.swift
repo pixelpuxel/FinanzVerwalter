@@ -960,12 +960,26 @@ struct PortfolioReportCurrencyTotal: Identifiable, Equatable, Sendable {
     let taxesMinor: Int64
 }
 
+struct PortfolioReportAllocationRow: Identifiable, Equatable, Sendable {
+    let id: String
+    let assetClassID: UUID?
+    let assetClassName: String
+    let color: String
+    let currency: String
+    let positionCount: Int
+    let missingPriceCount: Int
+    let costBasisMinor: Int64
+    let knownMarketValueMinor: Int64
+    let marketShareBasisPoints: Int64?
+}
+
 struct PortfolioReportSnapshot: Equatable, Sendable {
     let dateFrom: Date?
     let dateThrough: Date?
     let positions: [PortfolioReportPositionRow]
     let trades: [PortfolioReportTradeRow]
     let totals: [PortfolioReportCurrencyTotal]
+    let allocations: [PortfolioReportAllocationRow]
 
     func trades(forSecurityID id: UUID?) -> [PortfolioReportTradeRow] {
         guard let id else { return [] }
@@ -979,7 +993,9 @@ enum PortfolioReportEngine {
         positions: [PortfolioPosition],
         trades: [SecurityTrade],
         accounts: [FinanceAccount],
-        securities: [Security]
+        securities: [Security],
+        allocationsBySecurityID: [UUID: [SecurityAllocation]] = [:],
+        assetClasses: [AssetClass] = []
     ) -> PortfolioReportSnapshot {
         let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
         let securitiesByID = Dictionary(uniqueKeysWithValues: securities.map { ($0.id, $0) })
@@ -1072,10 +1088,98 @@ enum PortfolioReportEngine {
                 taxesMinor: currencyTrades.reduce(0) { $0 + $1.taxesMinor }
             )
         }
+        let classesByID = Dictionary(uniqueKeysWithValues: assetClasses.map { ($0.id, $0) })
+        struct AllocationAccumulator {
+            var positionIDs = Set<String>()
+            var missingPricePositionIDs = Set<String>()
+            var costBasisMinor: Int64 = 0
+            var knownMarketValueMinor: Int64 = 0
+        }
+        var allocationValues: [String: AllocationAccumulator] = [:]
+        var allocationMetadata: [String: (UUID?, String, String, String)] = [:]
+        for position in positionRows {
+            let stored = (allocationsBySecurityID[position.securityID] ?? [])
+                .filter { $0.basisPoints > 0 && classesByID[$0.assetClassID] != nil }
+                .sorted { $0.assetClassID.uuidString < $1.assetClassID.uuidString }
+            let valid = stored.reduce(0) { $0 + $1.basisPoints } == 10_000
+            let slices: [(UUID?, String, String, Int)] = valid
+                ? stored.map { allocation in
+                    let assetClass = classesByID[allocation.assetClassID]!
+                    return (assetClass.id, assetClass.name, assetClass.color,
+                            allocation.basisPoints)
+                }
+                : [(nil, "Nicht zugeordnet", "#8E8E93", 10_000)]
+            let weights = slices.map { $0.3 }
+            let costs = allocate(position.costBasisMinor, across: weights)
+            let markets = position.marketValueMinor.map { allocate($0, across: weights) }
+            for index in slices.indices {
+                let slice = slices[index]
+                let key = "\(position.currency):\(slice.0?.uuidString ?? "unassigned")"
+                allocationMetadata[key] = (slice.0, slice.1, slice.2, position.currency)
+                var accumulator = allocationValues[key] ?? AllocationAccumulator()
+                accumulator.positionIDs.insert(position.id)
+                accumulator.costBasisMinor += costs[index]
+                if let markets {
+                    accumulator.knownMarketValueMinor += markets[index]
+                } else {
+                    accumulator.missingPricePositionIDs.insert(position.id)
+                }
+                allocationValues[key] = accumulator
+            }
+        }
+        let knownMarketByCurrency = Dictionary(
+            uniqueKeysWithValues: totals.map { ($0.currency, $0.knownMarketValueMinor) }
+        )
+        let allocationRows = allocationValues.compactMap { key, value
+            -> PortfolioReportAllocationRow? in
+            guard let metadata = allocationMetadata[key] else { return nil }
+            return PortfolioReportAllocationRow(
+                id: key, assetClassID: metadata.0, assetClassName: metadata.1,
+                color: metadata.2, currency: metadata.3,
+                positionCount: value.positionIDs.count,
+                missingPriceCount: value.missingPricePositionIDs.count,
+                costBasisMinor: value.costBasisMinor,
+                knownMarketValueMinor: value.knownMarketValueMinor,
+                marketShareBasisPoints: basisPoints(
+                    value.knownMarketValueMinor,
+                    denominator: knownMarketByCurrency[metadata.3] ?? 0
+                )
+            )
+        }
+        .sorted {
+            if $0.currency != $1.currency { return $0.currency < $1.currency }
+            if $0.knownMarketValueMinor != $1.knownMarketValueMinor {
+                return $0.knownMarketValueMinor > $1.knownMarketValueMinor
+            }
+            return $0.assetClassName.localizedStandardCompare($1.assetClassName)
+                == .orderedAscending
+        }
         return PortfolioReportSnapshot(
             dateFrom: query.dateFrom, dateThrough: query.dateThrough,
-            positions: positionRows, trades: tradeRows, totals: totals
+            positions: positionRows, trades: tradeRows, totals: totals,
+            allocations: allocationRows
         )
+    }
+
+    private static func allocate(_ value: Int64, across basisPoints: [Int]) -> [Int64] {
+        guard !basisPoints.isEmpty else { return [] }
+        var result = Array(repeating: Int64.zero, count: basisPoints.count)
+        var assigned: Int64 = 0
+        for index in basisPoints.indices.dropLast() {
+            let part = NSDecimalNumber(
+                decimal: Decimal(value) * Decimal(basisPoints[index]) / 10_000
+            ).rounding(
+                accordingToBehavior: NSDecimalNumberHandler(
+                    roundingMode: .bankers, scale: 0, raiseOnExactness: false,
+                    raiseOnOverflow: true, raiseOnUnderflow: true,
+                    raiseOnDivideByZero: true
+                )
+            ).int64Value
+            result[index] = part
+            assigned += part
+        }
+        result[result.index(before: result.endIndex)] = value - assigned
+        return result
     }
 
     private static func basisPoints(_ numerator: Int64, denominator: Int64) -> Int64? {
@@ -1697,6 +1801,18 @@ enum ComparisonReportCSVExporter {
             ])
         })
         lines.append("")
+        lines.append(csv(["Asset Allocation"]))
+        lines.append(csv(["Vermögensklasse", "Positionen", "Ohne Kurs",
+                          "Kostenbasis", "Marktwert bekannt", "Anteil %", "Währung"]))
+        lines.append(contentsOf: snapshot.allocations.map { row in
+            csv([
+                row.assetClassName, String(row.positionCount),
+                String(row.missingPriceCount), decimal(row.costBasisMinor),
+                decimal(row.knownMarketValueMinor),
+                percent(row.marketShareBasisPoints), row.currency
+            ])
+        })
+        lines.append("")
         lines.append(csv(["Datum", "Depot", "Wertpapier", "Art", "Bestand",
                           "Kurs", "Brutto", "Gebühren", "Steuern",
                           "Realisierter Gewinn", "Währung", "Notiz"]))
@@ -1830,27 +1946,45 @@ enum ComparisonReportPDFExporter {
     ) throws -> Data {
         let rows = snapshot.positions.map { row in
             [
-                row.accountName, row.securityName, row.securityType.title,
+                "Bestand", row.accountName, row.securityName, row.securityType.title,
                 SecurityQuantity(microUnits: row.quantityMicro).formatted,
                 row.latestPriceMinor.map { money($0, row.currency) } ?? "—",
                 money(row.costBasisMinor, row.currency),
                 row.marketValueMinor.map { money($0, row.currency) } ?? "—",
                 row.unrealizedGainMinor.map { money($0, row.currency) } ?? "—",
-                percent(row.gainBasisPoints), row.currency
+                percent(row.gainBasisPoints), row.currency, row.identifier
+            ]
+        } + snapshot.allocations.map { row in
+            [
+                "Allokation", "", row.assetClassName,
+                "\(row.positionCount) Pos.", "", "",
+                money(row.costBasisMinor, row.currency),
+                money(row.knownMarketValueMinor, row.currency),
+                "\(row.missingPriceCount) ohne Kurs",
+                percent(row.marketShareBasisPoints), row.currency, ""
             ]
         } + snapshot.totals.map { total in
             [
-                "Gesamt", "\(total.positionCount) Positionen", "",
+                "Gesamt", "", "\(total.positionCount) Positionen", "",
                 "", "", money(total.costBasisMinor, total.currency),
                 money(total.knownMarketValueMinor, total.currency),
                 money(total.knownUnrealizedGainMinor, total.currency),
-                "\(total.missingPriceCount) ohne Kurs", total.currency
+                "\(total.missingPriceCount) ohne Kurs", total.currency, ""
+            ]
+        } + snapshot.trades.map { row in
+            [
+                "Vorgang", date(row.tradeDate), row.securityName, row.type.title,
+                SecurityQuantity(microUnits: row.quantityMicro).formatted,
+                money(row.priceMinor, row.currency), money(row.grossMinor, row.currency),
+                money(row.feesMinor, row.currency), money(row.taxesMinor, row.currency),
+                money(row.realizedGainMinor, row.currency), row.currency, row.note
             ]
         }
         return try data(
             rows: rows,
-            headers: ["Depot", "Wertpapier", "Typ", "Bestand", "Kurs",
-                      "Kostenbasis", "Marktwert", "Unrealisiert", "%", "Währ."],
+            headers: ["Bereich", "Datum/Depot", "Wertpapier/Klasse", "Typ/Art",
+                      "Bestand", "Kurs", "Kosten/Brutto", "Markt/Gebühr",
+                      "Ergebnis/Steuer", "%/realisiert", "Währ.", "Notiz/Kennung"],
             metadata: ComparisonReportExportMetadata(
                 title: metadata.title, currentLabel: metadata.dateLabel,
                 referenceLabel: metadata.filterSummary,

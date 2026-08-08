@@ -119,9 +119,15 @@ die ausgewählte Position steuert den Transaktions-Drill-down. Fehlende Kurse
 bleiben als unvollständige Marktwertsumme sichtbar. CSV, mehrseitiges PDF und
 Systemdruck verwenden denselben Snapshot; der vollständige Queryzustand kann
 in ein dateigebundenes Außenfenster ausgelagert und wieder integriert werden.
+Die umschaltbare `Asset Allocation` zerlegt Positionen anhand der gespeicherten
+Vermögensklassenmischung deterministisch und centgenau in Kostenbasis und
+bekannten Marktwert. Der Anteil wird ausschließlich gegen den bekannten
+Gesamtmarktwert derselben Währung berechnet; Positionen ohne Kurs bleiben mit
+Kostenbasis und Fehlkurszähler sichtbar. Fehlende oder ungültige Zuordnungen
+erscheinen vollständig unter `Nicht zugeordnet`.
 
 Noch offen sind insbesondere historische Depotbewertungen, TWR/IRR,
-Benchmark-/Allokations- und Vermietungsberichte.
+Benchmark-/Zielallokations- und Vermietungsberichte.
 
 ## Verifizierte Referenzfunktionen
 

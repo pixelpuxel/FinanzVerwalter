@@ -711,9 +711,12 @@ Bestand bleibt eine aktuelle Momentaufnahme. Der Drill-down eines Bestands
 zeigt Käufe, Verkäufe, Dividenden und Gebühren. Realisierte Gewinne,
 Nettoerträge, Gebühren und Steuern werden je Währung getrennt ausgewiesen;
 fehlende Kurse kennzeichnen unvollständige Marktwertsummen sichtbar. CSV,
-mehrseitiges PDF und Systemdruck entstehen aus demselben Snapshot. Historische
-Bewertungen, TWR/IRR, Benchmarkvergleich und Allokationsbericht sind noch
-nicht implementiert.
+mehrseitiges PDF und Systemdruck entstehen aus demselben Snapshot.
+`Asset Allocation` verteilt jede Position anhand ihrer gespeicherten
+Vermögensklassenmischung centgenau auf Kostenbasis und bekannten Marktwert,
+zeigt je Währung den Anteil am bekannten Gesamtmarktwert und führt nicht
+zugeordnete Positionen separat. Historische Bewertungen, TWR/IRR,
+Benchmarkvergleich und Zielallokation sind noch nicht implementiert.
 
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile
