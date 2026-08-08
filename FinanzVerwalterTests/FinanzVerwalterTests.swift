@@ -6816,6 +6816,90 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(SpecializedReportKind.allCases.count, 7)
     }
 
+    func testSpecializedReportLaunchRequestsPreserveEveryEditedQuery() throws {
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let through = Date(timeIntervalSince1970: 1_710_000_000)
+
+        func assertLaunch(
+            _ payload: SpecializedReportLaunchPayload,
+            kind: SpecializedReportKind,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) throws {
+            let id = UUID()
+            let request = SpecializedReportLaunchRequest(id: id, payload: payload)
+            XCTAssertEqual(request.id, id, file: file, line: line)
+            XCTAssertEqual(request.kind, kind, file: file, line: line)
+            let restored = try JSONDecoder().decode(
+                SpecializedReportLaunchRequest.self,
+                from: JSONEncoder().encode(request)
+            )
+            XCTAssertEqual(restored, request, file: file, line: line)
+            XCTAssertNotEqual(
+                SpecializedReportLaunchRequest(payload: payload).id,
+                SpecializedReportLaunchRequest(payload: payload).id,
+                file: file,
+                line: line
+            )
+        }
+
+        try assertLaunch(
+            .accountBalances(AccountBalanceReportQuery(
+                asOf: through, accountIDs: [UUID()], currencies: ["EUR"],
+                includeClosedAccounts: true
+            )),
+            kind: .accountBalances
+        )
+        try assertLaunch(
+            .valueAddedTax(VATReportQuery(
+                dateFrom: from, dateThrough: through,
+                statuses: [.booked], includeTransfers: true
+            )),
+            kind: .valueAddedTax
+        )
+        try assertLaunch(
+            .loans(LoanReportQuery(
+                dateFrom: from, dateThrough: through,
+                loanIDs: [UUID()], includeInactiveLoans: true
+            )),
+            kind: .loans
+        )
+        try assertLaunch(
+            .periodComparison(PeriodComparisonQuery(
+                currentFrom: from, currentThrough: through,
+                referenceFrom: from.addingTimeInterval(-86_400),
+                referenceThrough: through.addingTimeInterval(-86_400),
+                grouping: .payee, metric: .income,
+                referenceMode: .monthlyAverage,
+                baseQuery: TransactionReportQuery(text: "Miete")
+            )),
+            kind: .periodComparison
+        )
+        try assertLaunch(
+            .budgetComparison(BudgetReportWindowPayload(
+                budgetID: UUID(),
+                query: BudgetReportQuery(
+                    monthKeys: ["2026-08"], includeZeroRows: true
+                )
+            )),
+            kind: .budgetComparison
+        )
+        try assertLaunch(
+            .assetRegister(AssetRegisterReportQuery(
+                referenceDate: through, horizon: .next30Days,
+                includeInactive: true, text: "Versicherung"
+            )),
+            kind: .assetRegister
+        )
+        try assertLaunch(
+            .taxAllowances(TaxAllowanceReportQuery(
+                taxYear: 2026, personIDs: [UUID()],
+                institutionText: "Bank", includeInactive: true
+            )),
+            kind: .taxAllowances
+        )
+    }
+
     func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {
         let giro = FinanceAccount(
             id: UUID(), name: "Giro", institution: "", type: .checking,

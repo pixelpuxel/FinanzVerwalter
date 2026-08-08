@@ -91,6 +91,7 @@ struct RootView: View {
     @State private var newTransactionStartsWithSplits = false
     @State private var reportLaunchQuery: TransactionReportQuery?
     @State private var reportLaunchTitle: String?
+    @State private var specializedReportLaunch: SpecializedReportLaunchRequest?
     @State private var reportLaunchID = UUID()
     @FocusState private var searchIsFocused: Bool
 
@@ -204,6 +205,7 @@ struct RootView: View {
             showReconciliation = false
             reportLaunchQuery = nil
             reportLaunchTitle = nil
+            specializedReportLaunch = nil
             reportLaunchID = UUID()
             selectedSection = .cockpit
         }
@@ -221,7 +223,24 @@ struct RootView: View {
             } else {
                 return
             }
+            specializedReportLaunch = nil
             selectedSection = .reports
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .openSpecializedReport)
+        ) { notification in
+            guard let request = notification.object
+                as? SpecializedReportLaunchRequest else { return }
+            reportLaunchQuery = nil
+            reportLaunchTitle = nil
+            specializedReportLaunch = request
+            reportLaunchID = request.id
+            selectedSection = .reports
+            DispatchQueue.main.async {
+                if specializedReportLaunch?.id == request.id {
+                    specializedReportLaunch = nil
+                }
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .openAccountRegister)
@@ -345,7 +364,8 @@ struct RootView: View {
         case .reports:
             ReportsView(
                 launchQuery: reportLaunchQuery,
-                launchTitle: reportLaunchTitle
+                launchTitle: reportLaunchTitle,
+                specializedLaunch: specializedReportLaunch
             )
             .id(reportLaunchID)
         case .taxAllowances: TaxAllowancesView()

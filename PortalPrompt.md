@@ -2123,3 +2123,24 @@ Vergib einen stabilen Frame-Autosave-Namen aus Berichtstyp und UUID. Teste
 alle sieben Payloadtypen auf Codable-Rundlauf, Pfadbindung,
 Fensteridentität und deterministische Autosave-ID; führe danach den gesamten
 Testbestand aus.
+
+# Fachauswertungsfenster verlustfrei reintegrieren
+
+Gib jedem ausgelagerten Fachbericht die Aktion `Ins Hauptfenster`. Der
+Rückweg muss den aktuell bearbeiteten Zustand aus dem Außenfenster verwenden,
+nicht den ursprünglichen Öffnungspayload. Modelliere dafür eine codierbare
+Summe `SpecializedReportLaunchPayload` mit genau einem typisierten Fall je
+Fachbericht und einen `SpecializedReportLaunchRequest` mit frischer UUID.
+
+Sende den Launch über eine eigene interne Notification. Die Hauptansicht
+wechselt zu `Auswertungen`, erzeugt `ReportsView` mit der Launch-UUID neu und
+öffnet ausschließlich den zum Payload passenden Fachdialog. Initialisiere
+darin jeden Filter und beim Budget zusätzlich die Budget-ID. Schließe danach
+das Außenfenster und aktiviere das Hauptfenster.
+
+Verbrauche den Launch nur einmal: Nach der initialen Präsentation darf ein
+später manuell geöffneter Fachbericht nicht erneut die alte Außenfenster-Query
+erhalten. Ein Finanzdateiwechsel setzt ausstehende Launches zurück. Sperre die
+Aktion bei Fremddatei und stelle sicher, dass der Payload-Typ stets dem
+Fenstertyp entspricht. Teste alle sieben Payloadfälle auf Typzuordnung,
+verlustfreien Codable-Rundlauf und jeweils frische Launch-Identitäten.

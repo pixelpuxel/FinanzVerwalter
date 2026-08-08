@@ -694,6 +694,12 @@ an die aktive Finanzdatei gebundenes macOS-Fenster übergeben. Zwei gleiche
 Abfragen können deshalb bewusst nebeneinander geöffnet und anschließend
 unabhängig weitergefiltert, exportiert oder gedruckt werden. Beschädigte
 Payloads und ein Wechsel der Finanzdatei führen zu klaren Sperrzuständen.
+In einem solchen Außenfenster ersetzt `Ins Hauptfenster` die Auslagerungsaktion.
+Die dort inzwischen veränderte Query wird als typisierter Launch-Payload an
+die Hauptnavigation übergeben, der passende Fachdialog öffnet sich mit allen
+Filtern, und das Außenfenster schließt. Die Übergabe wird nur einmal
+verbraucht, sodass ein später manuell geöffneter Bericht wieder mit seinen
+normalen Standardwerten beginnt.
 
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile

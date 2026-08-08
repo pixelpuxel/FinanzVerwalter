@@ -317,6 +317,43 @@ struct BudgetReportWindowPayload: Codable, Equatable, Sendable {
     let query: BudgetReportQuery
 }
 
+enum SpecializedReportLaunchPayload: Codable, Equatable, Sendable {
+    case accountBalances(AccountBalanceReportQuery)
+    case valueAddedTax(VATReportQuery)
+    case loans(LoanReportQuery)
+    case periodComparison(PeriodComparisonQuery)
+    case budgetComparison(BudgetReportWindowPayload)
+    case assetRegister(AssetRegisterReportQuery)
+    case taxAllowances(TaxAllowanceReportQuery)
+
+    var kind: SpecializedReportKind {
+        switch self {
+        case .accountBalances: .accountBalances
+        case .valueAddedTax: .valueAddedTax
+        case .loans: .loans
+        case .periodComparison: .periodComparison
+        case .budgetComparison: .budgetComparison
+        case .assetRegister: .assetRegister
+        case .taxAllowances: .taxAllowances
+        }
+    }
+}
+
+struct SpecializedReportLaunchRequest: Codable, Equatable, Sendable {
+    let id: UUID
+    let payload: SpecializedReportLaunchPayload
+
+    init(
+        id: UUID = UUID(),
+        payload: SpecializedReportLaunchPayload
+    ) {
+        self.id = id
+        self.payload = payload
+    }
+
+    var kind: SpecializedReportKind { payload.kind }
+}
+
 struct SpecializedReportWindowRequest: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     let kind: SpecializedReportKind
