@@ -4249,3 +4249,20 @@ Rechtsberatung.
   `build/TestResults/AssetAllocation-full-20260808-0245.xcresult` umfasst 175
   Tests: 173 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
   erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-AssetAllocation-Product` wurde erfolgreich gebaut, lokal
+  ad-hoc signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `6d0ca49eda9fb88e464475e254154991ac4c04ebb4dc2db8d3cec362c73d72cc`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0249-asset-allocation/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0249-asset-allocation/Meine Finanzen.qdata`.
+  Beide installierten Apps sind binär identisch, der Desktop-Link zeigt auf
+  `/Applications`, Finder wurde auf die App gelenkt und Prozess 80136 läuft
+  daraus. Die Produktivdatei meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung, Schema 39 und unverändert 97 Konten, 2.170
+  Buchungen sowie 782 Kategorien. Sie enthält erwartungsgemäß keine
+  Wertpapierallokationen, da der reale QIF-Fall keine Depotzuordnungen liefert.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  daher wird keine sichtbare UI-Abnahme oder ein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand nach Installation: 24.986.620 Tokens.
