@@ -5340,6 +5340,29 @@ final class SQLiteFinanceStore {
         return values
     }
 
+    func securityPrices() throws -> [SecurityPrice] {
+        var values: [SecurityPrice] = []
+        try query(
+            """
+            SELECT security_id,price_date,price_minor,currency,source
+            FROM security_prices
+            ORDER BY security_id,price_date,source
+            """
+        ) {
+            guard let securityID = UUID(uuidString: Self.text($0, 0)),
+                  let date = Self.date(Self.text($0, 1))
+            else { return }
+            values.append(
+                SecurityPrice(
+                    securityID: securityID, priceDate: date,
+                    priceMinor: sqlite3_column_int64($0, 2),
+                    currency: Self.text($0, 3), source: Self.text($0, 4)
+                )
+            )
+        }
+        return values
+    }
+
     func portfolioPositions() throws -> [PortfolioPosition] {
         let securitiesByID = Dictionary(uniqueKeysWithValues: try securities().map { ($0.id, $0) })
         var values: [PortfolioPosition] = []

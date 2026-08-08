@@ -432,6 +432,7 @@ final class FinanceAppStore: ObservableObject {
     @Published private(set) var securities: [Security] = []
     @Published private(set) var assetClasses: [AssetClass] = []
     @Published private(set) var securityAllocations: [SecurityAllocation] = []
+    @Published private(set) var securityPrices: [SecurityPrice] = []
     @Published private(set) var portfolioPositions: [PortfolioPosition] = []
     @Published private(set) var securityTrades: [SecurityTrade] = []
     @Published private(set) var loans: [FinanceLoan] = []
@@ -725,6 +726,7 @@ final class FinanceAppStore: ObservableObject {
         securities = []
         assetClasses = []
         securityAllocations = []
+        securityPrices = []
         portfolioPositions = []
         securityTrades = []
         loans = []
@@ -910,7 +912,7 @@ final class FinanceAppStore: ObservableObject {
             query: query, positions: portfolioPositions,
             trades: securityTrades, accounts: accounts,
             securities: securities, allocationsBySecurityID: allocations,
-            assetClasses: assetClasses
+            assetClasses: assetClasses, prices: securityPrices
         )
     }
 
@@ -3667,6 +3669,7 @@ final class FinanceAppStore: ObservableObject {
         securities = try repository.securities()
         assetClasses = try repository.assetClasses()
         securityAllocations = try repository.securityAllocations()
+        securityPrices = try repository.securityPrices()
         portfolioPositions = try repository.portfolioPositions()
         securityTrades = try repository.securityTrades()
         loans = try repository.loans()

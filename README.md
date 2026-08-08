@@ -720,8 +720,16 @@ mehrseitiges PDF und Systemdruck entstehen aus demselben Snapshot.
 `Asset Allocation` verteilt jede Position anhand ihrer gespeicherten
 Vermögensklassenmischung centgenau auf Kostenbasis und bekannten Marktwert,
 zeigt je Währung den Anteil am bekannten Gesamtmarktwert und führt nicht
-zugeordnete Positionen separat. Historische Bewertungen, TWR/IRR,
-Benchmarkvergleich und Zielallokation sind noch nicht implementiert.
+zugeordnete Positionen separat. Der Reiter `Performance` bewertet den
+gefilterten Depotumfang zu Beginn, an jedem Cashflowtag und am Ende mit dem
+letzten gespeicherten Kurs am oder vor dem Stichtag. Er trennt absoluten
+Gewinn, einfache Rendite, zeitgewichtete Rendite (TWR), geldgewichtete
+Jahresrendite (XIRR) und annualisierte TWR, weist Ein-/Auszahlungen,
+Nettoerträge, Gebühren und Steuern je Währung getrennt aus und erklärt die
+Formeln direkt in Oberfläche, CSV und PDF. Fehlende oder veraltete Kurse
+werden sichtbar gekennzeichnet; es werden weder Kurse interpoliert noch
+Währungen vermischt. Benchmarkvergleich und Zielallokation sind noch nicht
+implementiert.
 
 Der eigenständige `Umsatzsteuerbericht` wertet ausschließlich tatsächlich
 gespeicherte MwSt.-Angaben aus. Gemischte Belege werden immer je Splitzeile

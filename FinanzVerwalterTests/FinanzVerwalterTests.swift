@@ -4894,6 +4894,12 @@ final class FinanzVerwalterTests: XCTestCase {
             securityID: security.id, date: Date(), priceMinor: 14_000,
             currency: "EUR", source: "Test"
         )
+        let prices = try context.store.securityPrices()
+        XCTAssertEqual(prices.count, 1)
+        XCTAssertEqual(prices.first?.securityID, security.id)
+        XCTAssertEqual(prices.first?.priceMinor, 14_000)
+        XCTAssertEqual(prices.first?.currency, "EUR")
+        XCTAssertEqual(prices.first?.source, "Test")
         let position = try XCTUnwrap(context.store.portfolioPositions().first)
         XCTAssertEqual(position.quantityMicro, 3_000_000)
         XCTAssertEqual(position.costBasisMinor, 36_300)
@@ -7135,6 +7141,100 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(pdfDocument.pageCount, 1)
         XCTAssertTrue(pdfDocument.string?.contains("Allokation") == true)
         XCTAssertTrue(pdfDocument.string?.contains("Teilveräußerung") == true)
+    }
+
+    func testPortfolioPerformanceSeparatesAbsoluteTWRAndXIRR() throws {
+        let accountID = UUID()
+        let securityID = UUID()
+        let from = Date(timeIntervalSince1970: 1_704_067_200) // 01.01.2024 UTC
+        let through = Date(timeIntervalSince1970: 1_735_689_600) // 01.01.2025 UTC
+        let account = FinanceAccount(
+            id: accountID, name: "Testdepot", institution: "Bank",
+            type: .investment, currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let security = Security(
+            id: securityID, name: "Renditefonds", shortName: "Fonds",
+            isin: "DE000PERF001", wkn: "PERF01", ticker: "PERF",
+            type: .fund, currency: "EUR", exchange: "Xetra",
+            priceDecimals: 2, allowsShort: false, isActive: true, note: ""
+        )
+        let buy = SecurityTrade(
+            id: UUID(), accountID: accountID, securityID: securityID,
+            type: .buy, tradeDate: from, quantityMicro: 1_000_000,
+            priceMinor: 10_000, feesMinor: 0, taxesMinor: 0,
+            grossMinor: 10_000, realizedGainMinor: 0,
+            currency: "EUR", note: "Start"
+        )
+        let dividend = SecurityTrade(
+            id: UUID(), accountID: accountID, securityID: securityID,
+            type: .dividend, tradeDate: through, quantityMicro: 0,
+            priceMinor: 0, feesMinor: 0, taxesMinor: 0,
+            grossMinor: 1_000, realizedGainMinor: 0,
+            currency: "EUR", note: "Ertrag"
+        )
+        let prices = [
+            SecurityPrice(
+                securityID: securityID, priceDate: from,
+                priceMinor: 10_000, currency: "EUR", source: "Test"
+            ),
+            SecurityPrice(
+                securityID: securityID, priceDate: through,
+                priceMinor: 11_000, currency: "EUR", source: "Test"
+            )
+        ]
+        let snapshot = PortfolioReportEngine.snapshot(
+            query: PortfolioReportQuery(dateFrom: from, dateThrough: through),
+            positions: [
+                PortfolioPosition(
+                    security: security, accountID: accountID,
+                    quantityMicro: 1_000_000, costBasisMinor: 10_000,
+                    latestPriceMinor: 11_000
+                )
+            ],
+            trades: [buy, dividend], accounts: [account], securities: [security],
+            prices: prices, valuationDate: through,
+            calendar: Calendar(identifier: .gregorian)
+        )
+        let result = try XCTUnwrap(snapshot.performance.first)
+        XCTAssertEqual(result.openingMarketValueMinor, 0)
+        XCTAssertEqual(result.closingMarketValueMinor, 11_000)
+        XCTAssertEqual(result.netContributionsMinor, 9_000)
+        XCTAssertEqual(result.absoluteGainMinor, 2_000)
+        XCTAssertEqual(result.absoluteReturnBasisPoints, 2_000)
+        XCTAssertEqual(result.timeWeightedReturnBasisPoints, 2_000)
+        XCTAssertEqual(result.incomeMinor, 1_000)
+        XCTAssertEqual(result.feesMinor, 0)
+        XCTAssertEqual(result.taxesMinor, 0)
+        XCTAssertEqual(result.missingPriceCount, 0)
+        XCTAssertEqual(result.oldestClosingPriceDate, through)
+        XCTAssertTrue(
+            (1_980...2_010).contains(
+                try XCTUnwrap(result.moneyWeightedAnnualReturnBasisPoints)
+            )
+        )
+        XCTAssertTrue(
+            (1_980...2_010).contains(
+                try XCTUnwrap(result.annualizedTimeWeightedReturnBasisPoints)
+            )
+        )
+
+        let metadata = PortfolioReportExportMetadata(
+            title: "Performance", dateLabel: "2024",
+            filterSummary: "Testdepot", generatedAt: through
+        )
+        let csv = try XCTUnwrap(String(
+            data: ComparisonReportCSVExporter.portfolioData(
+                snapshot: snapshot, metadata: metadata
+            ),
+            encoding: .utf8
+        ))
+        XCTAssertTrue(csv.contains("Absolute Rendite %;TWR %;IRR p. a. %"))
+        XCTAssertTrue(csv.contains("20,00;20,00"))
+        let pdf = try ComparisonReportPDFExporter.portfolioData(
+            snapshot: snapshot, metadata: metadata
+        )
+        XCTAssertTrue(PDFDocument(data: pdf)?.string?.contains("Performance") == true)
     }
 
     func testReportSecondaryGroupingIsStableAndLegacyQueryDecodes() throws {

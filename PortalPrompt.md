@@ -2175,8 +2175,8 @@ Teste Filter einschließlich Groß-/Kleinschreibung der Währung, geschlossene
 Depots und inaktive Wertpapiere, fehlende Kurse, Kostenbasis, Marktwert,
 realisierten/unrealisierten Gewinn, Nettoertrag, Gebühren, Steuern,
 Drill-down-Sortierung, deterministisches CSV, lesbares PDF und Codable-Rundlauf
-aller acht Fachberichtstypen. Dokumentiere historische Bewertung, TWR/IRR,
-Benchmarkvergleich und Zielallokationsbericht weiter ausdrücklich als offen.
+aller acht Fachberichtstypen. Dokumentiere Benchmarkvergleich und
+Zielallokationsbericht weiter ausdrücklich als offen.
 
 # Ist-Asset-Allocation im Depotbericht
 
@@ -2206,8 +2206,7 @@ Erweitere Semikolon-CSV und das mehrseitige Druck-PDF um Bestände,
 Währungssummen, Ist-Allokation und vollständige Transaktionshistorie. Teste
 Mischklassen, Summenerhalt, Prozentwerte, nicht zugeordnete Fehlkurspositionen,
 CSV- und PDF-Inhalte sowie den gemeinsamen SQLite-Ladevorgang. Kennzeichne
-Zielallokation, historische Bewertung, Benchmark und TWR/IRR weiterhin als
-offen.
+Zielallokation und Benchmark weiterhin als offen.
 
 # Lotneutrale Wertpapiererträge und Gebühren
 
@@ -2234,3 +2233,33 @@ Steuererstattung und Kapitalmaßnahmen bleiben ausdrücklich offen. Behaupte
 insbesondere nicht, dass ein erfasster Wertpapiercashflow bereits einen
 Bankkontosaldo verändert. Teste Validierung, Persistenz, unveränderte
 FIFO-Lots, Nettoertrag und währungsgetrennte Berichtssummen.
+
+# Historische Depotperformance mit getrennten Renditebegriffen
+
+Lade `security_prices` beim Finanzdatei-Reload vollständig und sortiert in den
+publizierten App-Zustand. Erzeuge im Depotbericht je gefilterter Währung eine
+Performance-Zeitreihe vom optionalen Beginn bis zum optionalen Ende oder
+Bewertungstag. Rekonstruiere Bestände aus Käufen und Verkäufen; bewerte einen
+Bestand ausschließlich mit dem letzten gespeicherten Kurs am oder vor dem
+Stichtag. Kauf-/Verkaufskurse dienen als nachrangiger historischer Kursbeleg,
+ein expliziter Kurs desselben Tages hat Vorrang. Interpoliere keine Werte und
+vermische niemals Währungen.
+
+Behandle Kauf als externe Einzahlung einschließlich Gebühren und Steuern,
+Verkauf und Nettoertrag als Auszahlung sowie eigenständige Gebühren als
+Einzahlung zur Kostendeckung. Berechne getrennt absoluten Gewinn, einfache
+Rendite auf Anfangswert plus positive Einzahlungen, geometrisch verknüpfte
+cashflowbereinigte TWR, exaktdatierte annualisierte XIRR und annualisierte TWR.
+Verwende für Geldbeträge und TWR deterministische Ganzzahl-/Dezimalarithmetik;
+Gleitkomma ist nur für Wurzel-/IRR-Lösung zulässig. Ist an irgendeinem
+Bewertungspunkt ein benötigter Kurs unbekannt, bleibt die betroffene Kennzahl
+`Nicht berechenbar` und die Zahl fehlender Positionen wird sichtbar.
+
+Ergänze im Depotdetail den Reiter `Performance`. Zeige Zeitraum, Anfangs- und
+Endwert, alle fünf Ergebnisgrößen, Nettoeinzahlungen, Erträge, Gebühren,
+Steuern sowie Formelhinweise. Weise auf fehlende Kurse und das älteste am
+Endstichtag verwendete Kursdatum hin. CSV, PDF und Druck müssen dieselben
+Kennzahlen und Formeln aus demselben Snapshot übernehmen. Teste persistente
+Kursreihen, einen deterministischen Einjahresfall mit Kauf, Ausschüttung und
+Endkurs, die Trennung von absoluter Rendite, TWR und XIRR sowie Exportinhalte.
+Benchmarkvergleich und Zielallokation bleiben ausdrücklich offen.

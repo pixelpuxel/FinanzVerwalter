@@ -2460,6 +2460,17 @@ struct SecurityTrade: Identifiable, Hashable, Sendable {
     var note: String
 }
 
+struct SecurityPrice: Identifiable, Hashable, Sendable {
+    var id: String {
+        "\(securityID.uuidString):\(priceDate.timeIntervalSince1970):\(source)"
+    }
+    var securityID: UUID
+    var priceDate: Date
+    var priceMinor: Int64
+    var currency: String
+    var source: String
+}
+
 struct PortfolioLot: Identifiable, Hashable, Sendable {
     let id: UUID
     var accountID: UUID

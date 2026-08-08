@@ -4958,15 +4958,16 @@ private struct PortfolioReportView: View {
                         Text(
                             detailMode == 0
                                 ? selectedPosition?.securityName ?? "Transaktions-Drill-down"
-                                : "Asset Allocation"
+                                : detailMode == 1 ? "Asset Allocation" : "Performance"
                         )
                         .font(.headline).lineLimit(1)
                         Spacer()
                         Picker("Detailansicht", selection: $detailMode) {
                             Text("Transaktionen").tag(0)
                             Text("Asset Allocation").tag(1)
+                            Text("Performance").tag(2)
                         }
-                        .labelsHidden().pickerStyle(.segmented).frame(width: 250)
+                        .labelsHidden().pickerStyle(.segmented).frame(width: 360)
                     }.padding(8)
                     Divider()
                     if detailMode == 0 {
@@ -4989,8 +4990,10 @@ private struct PortfolioReportView: View {
                             }.width(110)
                             TableColumn("Notiz") { Text($0.note).lineLimit(1) }
                         }
-                    } else {
+                    } else if detailMode == 1 {
                         portfolioAllocation(value)
+                    } else {
+                        portfolioPerformance(value)
                     }
                 }
                 .frame(minWidth: 540)
@@ -5196,6 +5199,110 @@ private struct PortfolioReportView: View {
             }
         }
         .accessibilityIdentifier("portfolioAssetAllocation")
+    }
+
+    private func portfolioPerformance(_ snapshot: PortfolioReportSnapshot) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                if snapshot.performance.isEmpty {
+                    ContentUnavailableView(
+                        "Keine Performance",
+                        systemImage: "chart.xyaxis.line",
+                        description: Text("Im gewählten Bereich sind keine Wertpapiercashflows vorhanden.")
+                    )
+                }
+                ForEach(snapshot.performance) { total in
+                    GroupBox {
+                        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                            performanceMetric(
+                                "Absoluter Gewinn",
+                                value: total.absoluteGainMinor.map {
+                                    Money(minorUnits: $0, currency: total.currency).formatted
+                                } ?? "Nicht berechenbar",
+                                formula: "Endwert − Anfangswert − Nettoeinzahlungen. Verkäufe und Nettoerträge zählen als Auszahlungen."
+                            )
+                            performanceMetric(
+                                "Absolute Rendite",
+                                value: portfolioPercent(total.absoluteReturnBasisPoints),
+                                formula: "Absoluter Gewinn ÷ (Anfangswert + positive Einzahlungen)."
+                            )
+                            performanceMetric(
+                                "Zeitgewichtet (TWR)",
+                                value: portfolioPercent(total.timeWeightedReturnBasisPoints),
+                                formula: "Verkettete Teilperiodenrenditen; Käufe/Verkäufe werden als externe Cashflows neutralisiert, Erträge und Gebühren wirken auf die Rendite."
+                            )
+                            performanceMetric(
+                                "Geldgewichtet (IRR p. a.)",
+                                value: portfolioPercent(total.moneyWeightedAnnualReturnBasisPoints),
+                                formula: "Datumsgenaue XIRR aller Ein-/Auszahlungen plus Anfangs- und Endwert."
+                            )
+                            performanceMetric(
+                                "Jährliche Gesamtrendite",
+                                value: portfolioPercent(total.annualizedTimeWeightedReturnBasisPoints),
+                                formula: "(1 + TWR)^(365,2425 ÷ Kalendertage) − 1."
+                            )
+                            performanceMetric(
+                                "Nettoeinzahlungen",
+                                value: Money(
+                                    minorUnits: total.netContributionsMinor,
+                                    currency: total.currency
+                                ).formatted,
+                                formula: "Käufe und Gebühren minus Nettoverkäufe und Nettoerträge."
+                            )
+                            performanceMetric(
+                                "Erträge / Gebühren / Steuern",
+                                value: "\(Money(minorUnits: total.incomeMinor, currency: total.currency).formatted) / "
+                                    + "\(Money(minorUnits: total.feesMinor, currency: total.currency).formatted) / "
+                                    + Money(minorUnits: total.taxesMinor, currency: total.currency).formatted,
+                                formula: "Gespeicherte Vorgänge innerhalb des angezeigten Zeitraums."
+                            )
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(total.currency).font(.headline)
+                            Text(
+                                "\(total.dateFrom.formatted(date: .numeric, time: .omitted)) – "
+                                    + total.dateThrough.formatted(date: .numeric, time: .omitted)
+                            )
+                            .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if total.missingPriceCount > 0 {
+                        Label(
+                            "Historische Bewertung unvollständig: \(total.missingPriceCount) Position(en) ohne passenden Kurs.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption).foregroundStyle(.orange)
+                    } else if let oldest = total.oldestClosingPriceDate,
+                              Calendar.current.startOfDay(for: oldest)
+                                < Calendar.current.startOfDay(for: total.dateThrough) {
+                        Text(
+                            "Endwert verwendet den letzten bekannten Kurs; ältester verwendeter Kurs vom "
+                                + oldest.formatted(date: .numeric, time: .omitted) + "."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(10)
+        }
+        .accessibilityIdentifier("portfolioPerformance")
+    }
+
+    @ViewBuilder
+    private func performanceMetric(
+        _ title: String, value: String, formula: String
+    ) -> some View {
+        GridRow {
+            Text(title).fontWeight(.medium).gridColumnAlignment(.leading)
+            Text(value).monospacedDigit().gridColumnAlignment(.trailing)
+        }
+        GridRow {
+            Text(formula)
+                .font(.caption2).foregroundStyle(.secondary)
+                .gridCellColumns(2)
+        }
+        Divider().gridCellColumns(2)
     }
 
     private func portfolioPercent(_ basisPoints: Int64?) -> String {

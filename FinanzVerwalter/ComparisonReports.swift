@@ -973,6 +973,26 @@ struct PortfolioReportAllocationRow: Identifiable, Equatable, Sendable {
     let marketShareBasisPoints: Int64?
 }
 
+struct PortfolioPerformanceTotal: Identifiable, Equatable, Sendable {
+    var id: String { currency }
+    let currency: String
+    let dateFrom: Date
+    let dateThrough: Date
+    let openingMarketValueMinor: Int64?
+    let closingMarketValueMinor: Int64?
+    let netContributionsMinor: Int64
+    let absoluteGainMinor: Int64?
+    let absoluteReturnBasisPoints: Int64?
+    let timeWeightedReturnBasisPoints: Int64?
+    let moneyWeightedAnnualReturnBasisPoints: Int64?
+    let annualizedTimeWeightedReturnBasisPoints: Int64?
+    let incomeMinor: Int64
+    let feesMinor: Int64
+    let taxesMinor: Int64
+    let missingPriceCount: Int
+    let oldestClosingPriceDate: Date?
+}
+
 struct PortfolioReportSnapshot: Equatable, Sendable {
     let dateFrom: Date?
     let dateThrough: Date?
@@ -980,6 +1000,7 @@ struct PortfolioReportSnapshot: Equatable, Sendable {
     let trades: [PortfolioReportTradeRow]
     let totals: [PortfolioReportCurrencyTotal]
     let allocations: [PortfolioReportAllocationRow]
+    let performance: [PortfolioPerformanceTotal]
 
     func trades(forSecurityID id: UUID?) -> [PortfolioReportTradeRow] {
         guard let id else { return [] }
@@ -995,7 +1016,10 @@ enum PortfolioReportEngine {
         accounts: [FinanceAccount],
         securities: [Security],
         allocationsBySecurityID: [UUID: [SecurityAllocation]] = [:],
-        assetClasses: [AssetClass] = []
+        assetClasses: [AssetClass] = [],
+        prices: [SecurityPrice] = [],
+        valuationDate: Date = .now,
+        calendar: Calendar = .current
     ) -> PortfolioReportSnapshot {
         let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
         let securitiesByID = Dictionary(uniqueKeysWithValues: securities.map { ($0.id, $0) })
@@ -1066,6 +1090,13 @@ enum PortfolioReportEngine {
             $0.tradeDate == $1.tradeDate
                 ? $0.id.uuidString < $1.id.uuidString
                 : $0.tradeDate > $1.tradeDate
+        }
+
+        let scopedTrades = trades.filter { trade in
+            guard let account = accountsByID[trade.accountID],
+                  let security = securitiesByID[trade.securityID]
+            else { return false }
+            return includes(account: account, security: security, currency: trade.currency)
         }
 
         let positionCurrencies = Set(positionRows.map(\.currency))
@@ -1154,11 +1185,341 @@ enum PortfolioReportEngine {
             return $0.assetClassName.localizedStandardCompare($1.assetClassName)
                 == .orderedAscending
         }
+        let performance = performanceTotals(
+            query: query, trades: scopedTrades, prices: prices,
+            securitiesByID: securitiesByID, valuationDate: valuationDate,
+            calendar: calendar
+        )
         return PortfolioReportSnapshot(
             dateFrom: query.dateFrom, dateThrough: query.dateThrough,
             positions: positionRows, trades: tradeRows, totals: totals,
-            allocations: allocationRows
+            allocations: allocationRows, performance: performance
         )
+    }
+
+    private struct HoldingKey: Hashable {
+        let accountID: UUID
+        let securityID: UUID
+    }
+
+    private struct PricePoint {
+        let date: Date
+        let priceMinor: Int64
+        let isExplicit: Bool
+        let source: String
+    }
+
+    private static func performanceTotals(
+        query: PortfolioReportQuery,
+        trades: [SecurityTrade],
+        prices: [SecurityPrice],
+        securitiesByID: [UUID: Security],
+        valuationDate: Date,
+        calendar: Calendar
+    ) -> [PortfolioPerformanceTotal] {
+        let through = query.dateThrough ?? valuationDate
+        let eligibleTrades = trades.filter { $0.tradeDate <= through }
+        let eligibleSecurityIDs = Set(eligibleTrades.map(\.securityID))
+        let eligiblePrices = prices.filter {
+            eligibleSecurityIDs.contains($0.securityID) && $0.priceDate <= through
+        }
+        let earliest = (eligibleTrades.map(\.tradeDate) + eligiblePrices.map(\.priceDate)).min()
+        let from = min(query.dateFrom ?? earliest ?? through, through)
+        let currencies = Set(
+            eligibleTrades.map { $0.currency.uppercased() }
+                + eligibleSecurityIDs.compactMap { securitiesByID[$0]?.currency.uppercased() }
+        )
+        return currencies.sorted().map { currency in
+            performanceTotal(
+                currency: currency, from: from, through: through,
+                trades: eligibleTrades.filter { $0.currency.uppercased() == currency },
+                prices: eligiblePrices.filter { $0.currency.uppercased() == currency },
+                securitiesByID: securitiesByID, calendar: calendar
+            )
+        }
+    }
+
+    private static func performanceTotal(
+        currency: String,
+        from: Date,
+        through: Date,
+        trades: [SecurityTrade],
+        prices: [SecurityPrice],
+        securitiesByID: [UUID: Security],
+        calendar: Calendar
+    ) -> PortfolioPerformanceTotal {
+        var pointsBySecurity: [UUID: [PricePoint]] = [:]
+        for price in prices {
+            pointsBySecurity[price.securityID, default: []].append(
+                PricePoint(
+                    date: price.priceDate, priceMinor: price.priceMinor,
+                    isExplicit: true, source: price.source
+                )
+            )
+        }
+        for trade in trades where trade.priceMinor > 0
+            && (trade.type == .buy || trade.type == .sell) {
+            pointsBySecurity[trade.securityID, default: []].append(
+                PricePoint(
+                    date: trade.tradeDate, priceMinor: trade.priceMinor,
+                    isExplicit: false, source: trade.id.uuidString
+                )
+            )
+        }
+        for key in pointsBySecurity.keys {
+            pointsBySecurity[key]?.sort {
+                if $0.date != $1.date { return $0.date < $1.date }
+                if $0.isExplicit != $1.isExplicit { return !$0.isExplicit }
+                return $0.source > $1.source
+            }
+        }
+
+        func price(_ securityID: UUID, onOrBefore date: Date) -> PricePoint? {
+            pointsBySecurity[securityID]?.last { $0.date <= date }
+        }
+
+        func value(
+            _ holdings: [HoldingKey: Int64], at date: Date
+        ) -> (minor: Int64?, missing: Int, oldestPriceDate: Date?) {
+            var total: Int64 = 0
+            var missing = 0
+            var oldest: Date?
+            for (key, quantity) in holdings where quantity != 0 {
+                guard let security = securitiesByID[key.securityID],
+                      security.currency.uppercased() == currency,
+                      let point = price(key.securityID, onOrBefore: date)
+                else {
+                    missing += 1
+                    continue
+                }
+                total += scaledProduct(quantity, point.priceMinor)
+                oldest = oldest.map { min($0, point.date) } ?? point.date
+            }
+            return (missing == 0 ? total : nil, missing, oldest)
+        }
+
+        let orderedTrades = trades.sorted {
+            $0.tradeDate == $1.tradeDate
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.tradeDate < $1.tradeDate
+        }
+        var holdings: [HoldingKey: Int64] = [:]
+        for trade in orderedTrades where trade.tradeDate < from {
+            applyQuantity(trade, to: &holdings)
+        }
+        let opening = value(holdings, at: from)
+        let periodTrades = orderedTrades.filter {
+            $0.tradeDate >= from && $0.tradeDate <= through
+        }
+        let grouped = Dictionary(grouping: periodTrades, by: \.tradeDate)
+        var twrFactor = Decimal(1)
+        var twrAvailable = opening.minor != nil
+        var missingPriceCount = opening.missing
+        var previousAfterValue = opening.minor ?? 0
+        var hasMeasuredEpisode = previousAfterValue > 0
+        var netContributions: Int64 = 0
+        var positiveContributions: Int64 = 0
+        var income: Int64 = 0
+        var fees: Int64 = 0
+        var taxes: Int64 = 0
+        var irrFlows: [(Date, Int64)] = []
+        if let openingMinor = opening.minor, openingMinor > 0 {
+            irrFlows.append((from, -openingMinor))
+        }
+
+        for date in grouped.keys.sorted() {
+            let dayTrades = grouped[date]!.sorted { $0.id.uuidString < $1.id.uuidString }
+            let before = value(holdings, at: date)
+            missingPriceCount = max(missingPriceCount, before.missing)
+            if twrAvailable, hasMeasuredEpisode, previousAfterValue > 0,
+               let beforeMinor = before.minor {
+                twrFactor *= Decimal(beforeMinor) / Decimal(previousAfterValue)
+            } else if hasMeasuredEpisode && before.minor == nil {
+                twrAvailable = false
+            }
+            var dayExternal: Int64 = 0
+            for trade in dayTrades {
+                let external = externalContribution(trade)
+                dayExternal += external
+                netContributions += external
+                positiveContributions += max(0, external)
+                irrFlows.append((date, -external))
+                fees += trade.feesMinor
+                taxes += trade.taxesMinor
+                if trade.type == .dividend {
+                    income += trade.grossMinor - trade.feesMinor - trade.taxesMinor
+                }
+                applyQuantity(trade, to: &holdings)
+            }
+            let after = value(holdings, at: date)
+            missingPriceCount = max(missingPriceCount, after.missing)
+            if twrAvailable, let beforeMinor = before.minor, let afterMinor = after.minor {
+                if beforeMinor > 0 {
+                    let numerator = afterMinor - dayExternal
+                    guard numerator >= 0 else {
+                        twrAvailable = false
+                        previousAfterValue = afterMinor
+                        continue
+                    }
+                    twrFactor *= Decimal(numerator) / Decimal(beforeMinor)
+                    hasMeasuredEpisode = true
+                } else if dayExternal > 0, afterMinor >= 0 {
+                    twrFactor *= Decimal(afterMinor) / Decimal(dayExternal)
+                    hasMeasuredEpisode = true
+                } else if afterMinor != 0 || dayExternal != 0 {
+                    twrAvailable = false
+                }
+                previousAfterValue = afterMinor
+            } else {
+                twrAvailable = false
+            }
+        }
+        let closing = value(holdings, at: through)
+        missingPriceCount = max(missingPriceCount, closing.missing)
+        if twrAvailable, hasMeasuredEpisode, previousAfterValue > 0,
+           let closingMinor = closing.minor {
+            twrFactor *= Decimal(closingMinor) / Decimal(previousAfterValue)
+        } else if hasMeasuredEpisode && closing.minor == nil {
+            twrAvailable = false
+        }
+        if let closingMinor = closing.minor, closingMinor > 0 {
+            irrFlows.append((through, closingMinor))
+        }
+
+        let absoluteGain = opening.minor.flatMap { openingMinor in
+            closing.minor.map { $0 - openingMinor - netContributions }
+        }
+        let absoluteDenominator = (opening.minor ?? 0) + positiveContributions
+        let absoluteReturn = absoluteGain.flatMap {
+            basisPoints($0, denominator: absoluteDenominator)
+        }
+        let twr = twrAvailable && hasMeasuredEpisode
+            ? decimalReturnBasisPoints(twrFactor)
+            : nil
+        let dayCount = max(0, calendar.dateComponents(
+            [.day], from: calendar.startOfDay(for: from),
+            to: calendar.startOfDay(for: through)
+        ).day ?? 0)
+        let annualizedTWR: Int64? = {
+            guard twrAvailable, hasMeasuredEpisode, dayCount > 0 else { return nil }
+            let factor = NSDecimalNumber(decimal: twrFactor).doubleValue
+            guard factor >= 0 else { return nil }
+            let annual = pow(factor, 365.2425 / Double(dayCount)) - 1
+            return finiteBasisPoints(annual)
+        }()
+        let irr = xirrBasisPoints(irrFlows, calendar: calendar)
+        return PortfolioPerformanceTotal(
+            currency: currency, dateFrom: from, dateThrough: through,
+            openingMarketValueMinor: opening.minor,
+            closingMarketValueMinor: closing.minor,
+            netContributionsMinor: netContributions,
+            absoluteGainMinor: absoluteGain,
+            absoluteReturnBasisPoints: absoluteReturn,
+            timeWeightedReturnBasisPoints: twr,
+            moneyWeightedAnnualReturnBasisPoints: irr,
+            annualizedTimeWeightedReturnBasisPoints: annualizedTWR,
+            incomeMinor: income, feesMinor: fees, taxesMinor: taxes,
+            missingPriceCount: missingPriceCount,
+            oldestClosingPriceDate: closing.oldestPriceDate
+        )
+    }
+
+    private static func applyQuantity(
+        _ trade: SecurityTrade, to holdings: inout [HoldingKey: Int64]
+    ) {
+        guard trade.type == .buy || trade.type == .sell else { return }
+        let key = HoldingKey(accountID: trade.accountID, securityID: trade.securityID)
+        holdings[key, default: 0] += trade.quantityMicro
+    }
+
+    private static func externalContribution(_ trade: SecurityTrade) -> Int64 {
+        switch trade.type {
+        case .buy:
+            return trade.grossMinor + trade.feesMinor + trade.taxesMinor
+        case .sell:
+            return -(trade.grossMinor - trade.feesMinor - trade.taxesMinor)
+        case .dividend:
+            return -(trade.grossMinor - trade.feesMinor - trade.taxesMinor)
+        case .fee:
+            return trade.feesMinor
+        }
+    }
+
+    private static func scaledProduct(_ quantityMicro: Int64, _ priceMinor: Int64) -> Int64 {
+        NSDecimalNumber(
+            decimal: Decimal(quantityMicro) * Decimal(priceMinor)
+                / Decimal(SecurityQuantity.scale)
+        ).rounding(
+            accordingToBehavior: NSDecimalNumberHandler(
+                roundingMode: .bankers, scale: 0, raiseOnExactness: false,
+                raiseOnOverflow: true, raiseOnUnderflow: true,
+                raiseOnDivideByZero: true
+            )
+        ).int64Value
+    }
+
+    private static func decimalReturnBasisPoints(_ factor: Decimal) -> Int64? {
+        let value = NSDecimalNumber(decimal: (factor - 1) * 10_000)
+        guard value != .notANumber else { return nil }
+        return value.rounding(
+            accordingToBehavior: NSDecimalNumberHandler(
+                roundingMode: .bankers, scale: 0, raiseOnExactness: false,
+                raiseOnOverflow: false, raiseOnUnderflow: false,
+                raiseOnDivideByZero: false
+            )
+        ).int64Value
+    }
+
+    private static func finiteBasisPoints(_ returnValue: Double) -> Int64? {
+        guard returnValue.isFinite,
+              returnValue <= Double(Int64.max) / 10_000,
+              returnValue >= Double(Int64.min) / 10_000
+        else { return nil }
+        return Int64((returnValue * 10_000).rounded(.toNearestOrEven))
+    }
+
+    private static func xirrBasisPoints(
+        _ rawFlows: [(Date, Int64)], calendar: Calendar
+    ) -> Int64? {
+        let grouped = Dictionary(grouping: rawFlows, by: { calendar.startOfDay(for: $0.0) })
+            .map { ($0.key, $0.value.reduce(Int64.zero) { $0 + $1.1 }) }
+            .filter { $0.1 != 0 }
+            .sorted { $0.0 < $1.0 }
+        guard let origin = grouped.first?.0,
+              grouped.contains(where: { $0.1 < 0 }),
+              grouped.contains(where: { $0.1 > 0 }),
+              grouped.last?.0 != origin
+        else { return nil }
+        func npv(_ rate: Double) -> Double {
+            grouped.reduce(0) { result, flow in
+                let days = flow.0.timeIntervalSince(origin) / 86_400
+                return result + Double(flow.1) / pow(1 + rate, days / 365.2425)
+            }
+        }
+        var low = -0.999_999
+        var high = 1.0
+        var lowValue = npv(low)
+        var highValue = npv(high)
+        for _ in 0..<32 where lowValue.sign == highValue.sign {
+            high = high * 2 + 1
+            highValue = npv(high)
+        }
+        guard lowValue.isFinite, highValue.isFinite,
+              lowValue.sign != highValue.sign else { return nil }
+        for _ in 0..<160 {
+            let middle = (low + high) / 2
+            let value = npv(middle)
+            if !value.isFinite { return nil }
+            if abs(value) < 0.000_001 { return finiteBasisPoints(middle) }
+            if value.sign == lowValue.sign {
+                low = middle
+                lowValue = value
+            } else {
+                high = middle
+                highValue = value
+            }
+        }
+        return finiteBasisPoints((low + high) / 2)
     }
 
     private static func allocate(_ value: Int64, across basisPoints: [Int]) -> [Int64] {
@@ -1813,6 +2174,38 @@ enum ComparisonReportCSVExporter {
             ])
         })
         lines.append("")
+        lines.append(csv(["Performance"]))
+        lines.append(csv([
+            "Von", "Bis", "Anfangswert", "Endwert", "Nettoeinzahlungen",
+            "Absoluter Gewinn", "Absolute Rendite %", "TWR %", "IRR p. a. %",
+            "TWR p. a. %", "Erträge", "Gebühren", "Steuern", "Ohne Kurs",
+            "Ältester Endkurs", "Währung"
+        ]))
+        lines.append(contentsOf: snapshot.performance.map { total in
+            csv([
+                reportDate(total.dateFrom), reportDate(total.dateThrough),
+                total.openingMarketValueMinor.map(decimal) ?? "",
+                total.closingMarketValueMinor.map(decimal) ?? "",
+                decimal(total.netContributionsMinor),
+                total.absoluteGainMinor.map(decimal) ?? "",
+                percent(total.absoluteReturnBasisPoints),
+                percent(total.timeWeightedReturnBasisPoints),
+                percent(total.moneyWeightedAnnualReturnBasisPoints),
+                percent(total.annualizedTimeWeightedReturnBasisPoints),
+                decimal(total.incomeMinor), decimal(total.feesMinor),
+                decimal(total.taxesMinor), String(total.missingPriceCount),
+                total.oldestClosingPriceDate.map(reportDate) ?? "", total.currency
+            ])
+        })
+        lines.append(csv([
+            "Formeln",
+            "Absolut: Endwert - Anfangswert - Nettoeinzahlungen",
+            "Absolute Rendite: Gewinn / (Anfangswert + positive Einzahlungen)",
+            "TWR: verkettete Teilperioden mit cashflowneutralisierten Käufen/Verkäufen",
+            "IRR: datumsgenaue XIRR aller Cashflows plus Anfangs-/Endwert",
+            "TWR p. a.: (1 + TWR)^(365,2425 / Tage) - 1"
+        ]))
+        lines.append("")
         lines.append(csv(["Datum", "Depot", "Wertpapier", "Art", "Bestand",
                           "Kurs", "Brutto", "Gebühren", "Steuern",
                           "Realisierter Gewinn", "Währung", "Notiz"]))
@@ -1944,7 +2337,7 @@ enum ComparisonReportPDFExporter {
         metadata: PortfolioReportExportMetadata,
         orientation: ReportPDFOrientation = .landscape
     ) throws -> Data {
-        let rows = snapshot.positions.map { row in
+        let positionRows: [[String]] = snapshot.positions.map { row in
             [
                 "Bestand", row.accountName, row.securityName, row.securityType.title,
                 SecurityQuantity(microUnits: row.quantityMicro).formatted,
@@ -1954,7 +2347,8 @@ enum ComparisonReportPDFExporter {
                 row.unrealizedGainMinor.map { money($0, row.currency) } ?? "—",
                 percent(row.gainBasisPoints), row.currency, row.identifier
             ]
-        } + snapshot.allocations.map { row in
+        }
+        let allocationRows: [[String]] = snapshot.allocations.map { row in
             [
                 "Allokation", "", row.assetClassName,
                 "\(row.positionCount) Pos.", "", "",
@@ -1963,7 +2357,8 @@ enum ComparisonReportPDFExporter {
                 "\(row.missingPriceCount) ohne Kurs",
                 percent(row.marketShareBasisPoints), row.currency, ""
             ]
-        } + snapshot.totals.map { total in
+        }
+        let totalRows: [[String]] = snapshot.totals.map { total in
             [
                 "Gesamt", "", "\(total.positionCount) Positionen", "",
                 "", "", money(total.costBasisMinor, total.currency),
@@ -1971,7 +2366,31 @@ enum ComparisonReportPDFExporter {
                 money(total.knownUnrealizedGainMinor, total.currency),
                 "\(total.missingPriceCount) ohne Kurs", total.currency, ""
             ]
-        } + snapshot.trades.map { row in
+        }
+        let performanceRows: [[String]] = snapshot.performance.flatMap { total in
+            [
+                [
+                    "Performance", date(total.dateFrom), date(total.dateThrough),
+                    "Absolut / TWR / IRR p.a.", "",
+                    percent(total.absoluteReturnBasisPoints),
+                    total.absoluteGainMinor.map { money($0, total.currency) } ?? "—",
+                    percent(total.timeWeightedReturnBasisPoints),
+                    percent(total.moneyWeightedAnnualReturnBasisPoints),
+                    percent(total.annualizedTimeWeightedReturnBasisPoints),
+                    total.currency, "\(total.missingPriceCount) ohne Kurs"
+                ],
+                [
+                    "Performance-Flüsse", "", "", "",
+                    "", "",
+                    money(total.netContributionsMinor, total.currency),
+                    money(total.incomeMinor, total.currency),
+                    money(total.feesMinor, total.currency),
+                    money(total.taxesMinor, total.currency), total.currency,
+                    "Absolut: End-Anfang-Flüsse; TWR verkettet; IRR datumsgenau"
+                ]
+            ]
+        }
+        let tradeRows: [[String]] = snapshot.trades.map { row in
             [
                 "Vorgang", date(row.tradeDate), row.securityName, row.type.title,
                 SecurityQuantity(microUnits: row.quantityMicro).formatted,
@@ -1980,6 +2399,7 @@ enum ComparisonReportPDFExporter {
                 money(row.realizedGainMinor, row.currency), row.currency, row.note
             ]
         }
+        let rows = positionRows + allocationRows + totalRows + performanceRows + tradeRows
         return try data(
             rows: rows,
             headers: ["Bereich", "Datum/Depot", "Wertpapier/Klasse", "Typ/Art",
