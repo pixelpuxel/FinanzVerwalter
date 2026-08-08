@@ -4532,3 +4532,11 @@ Rechtsberatung.
 - `CGSSessionScreenIsLocked=Yes` bestätigt die gesperrte Sitzung; deshalb wird
   keine sichtbare UI-Abnahme und kein neuer Screenshot behauptet. Exakter
   kumulativer Zielzählerstand nach finaler Installation: 26.673.779 Tokens.
+- Die Implementierung, Dokumentation sowie der Test- und Installationsnachweis
+  sind im Commit `b461e1e` veröffentlicht. Lokaler HEAD, Remote-Branch und
+  GitHub Draft-PR #1 zeigten anschließend exakt
+  `b461e1ed3d86ba4f4b78b55be0e04e42ac894371`; die PR-Beschreibung enthält
+  den aktuellen Gesamtexport-, Datenschutz-, Test- und Installationsnachweis.
+- Telegram-Nachricht 1179 meldet den Stand im `/quicken`-Thread 894. Wegen der
+  gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand vor dem Versand: 26.703.288 Tokens.
