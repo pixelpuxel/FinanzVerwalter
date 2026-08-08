@@ -4696,3 +4696,40 @@ Rechtsberatung.
   `/quicken`-Thread 894.
 - Exakter kumulativer Zielzählerstand vor Release und Veröffentlichung:
   27.906.940 Tokens.
+
+## 08.08.2026 – Kennzeichenfilter in der Berichtswerkstatt
+
+- `TransactionReportQuery` besitzt eine optionale, rückwärtskompatible
+  `TransactionReportFlagSelection`. `nil` bedeutet unverändert alle Farben
+  einschließlich unmarkierter Buchungen; ansonsten werden beliebige Farben
+  und „ohne Kennzeichen“ unabhängig ausgewählt.
+- Die Snapshot-Engine filtert das Kennzeichen gemeinsam mit Konto,
+  Kontengruppe, Kategoriebaum, Klasse/Tag, Empfänger, Status, Betrag, Text,
+  Währung, Umbuchungen und Splitauflösung.
+- Die Berichtswerkstatt bietet „alle“, „nur gekennzeichnet“, „ohne“ sowie jede
+  Farbkombination. Reset, Filteraktiv-Anzeige, Filterzusammenfassung,
+  Berichtsvorlagen, neue Außenfenster und Rückintegration erhalten die
+  Auswahl. CSV, PDF, HTML, XLSX, Zwischenablage und Druck arbeiten dadurch
+  automatisch auf exakt derselben gefilterten Momentaufnahme.
+- Bestehende Vorlagen ohne `flagSelection` decodieren weiterhin als „alle“.
+  Gezielte Filter-, Vorlagen- und Legacy-Tests sowie der Komplettlauf sind
+  grün. `build/full-report-flag-test.log` meldet 182 Tests: 180 bestanden,
+  2 opt-in übersprungen, 0 Fehler.
+- Exakter kumulativer Zielzählerstand zu Beginn dieses Schritts:
+  27.977.613 Tokens.
+- Der vollständige Abschlusslauf in `build/full-report-flag-test.log` bestätigt
+  182 Tests: 180 bestanden, 2 bewusst opt-in übersprungen und 0 Fehler.
+- Der optimierte arm64-Release wurde erfolgreich gebaut, lokal signiert und
+  streng verifiziert. Seine ausführbare Datei hat SHA-256
+  `4a0673e7a94ab127f95e046ceb3b916c80d74e38c93e5630c28d6bdb28096655`.
+  Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0634-report-flags/`.
+- `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` enthalten diesen Release; der
+  Desktop-Link zeigt auf die systemweite Installation. Prozess 7312 läuft
+  daraus im Light Mode.
+- Die echte Produktdatei bleibt auf Schema 40, meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung und unverändert 97 Konten, 2.170 Buchungen sowie
+  782 Kategorien.
+- Exakter kumulativer Zielzählerstand bei der Abschlussprüfung:
+  28.068.739 Tokens.

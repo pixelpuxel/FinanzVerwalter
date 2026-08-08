@@ -6724,7 +6724,8 @@ final class FinanzVerwalterTests: XCTestCase {
         func transaction(
             accountID: UUID,
             status: TransactionStatus = .booked,
-            transferID: UUID? = nil
+            transferID: UUID? = nil,
+            flag: TransactionFlag? = nil
         ) -> FinanceTransaction {
             FinanceTransaction(
                 id: UUID(), accountID: accountID, bookingDate: date, valueDate: nil,
@@ -6732,12 +6733,14 @@ final class FinanzVerwalterTests: XCTestCase {
                 categoryID: tax.id, amountMinor: -600, currency: "EUR", status: status,
                 memo: "Bescheid", reference: "", transferID: transferID,
                 importFingerprint: nil, splits: [], payeeID: payeeID,
-                tagIDs: [propertyATag.id]
+                tagIDs: [propertyATag.id], flag: flag
             )
         }
-        let normal = transaction(accountID: visible.id)
-        let hiddenValue = transaction(accountID: hidden.id)
-        let transfer = transaction(accountID: visible.id, transferID: UUID())
+        let normal = transaction(accountID: visible.id, flag: .red)
+        let hiddenValue = transaction(accountID: hidden.id, flag: .blue)
+        let transfer = transaction(
+            accountID: visible.id, transferID: UUID(), flag: .red
+        )
         let cancelled = transaction(accountID: visible.id, status: .cancelled)
 
         var query = TransactionReportQuery(
@@ -6791,6 +6794,29 @@ final class FinanzVerwalterTests: XCTestCase {
         )
         XCTAssertEqual(explicitlyIncluded.facts.count, 4)
         XCTAssertEqual(Set(explicitlyIncluded.groups.map(\.label)), ["Giro", "Archiv"])
+
+        query.flagSelection = TransactionReportFlagSelection(
+            flags: [.red], includeUnflagged: false
+        )
+        XCTAssertEqual(
+            Set(TransactionReportEngine.snapshot(
+                query: query, transactions: allTransactions,
+                accounts: [visible, hidden], categories: [housing, tax],
+                tags: [propertyTag, propertyATag]
+            ).facts.map(\.transactionID)),
+            [normal.id, transfer.id]
+        )
+        query.flagSelection = TransactionReportFlagSelection(
+            flags: [], includeUnflagged: true
+        )
+        XCTAssertEqual(
+            TransactionReportEngine.snapshot(
+                query: query, transactions: allTransactions,
+                accounts: [visible, hidden], categories: [housing, tax],
+                tags: [propertyTag, propertyATag]
+            ).facts.map(\.transactionID),
+            [cancelled.id]
+        )
     }
 
     func testSavedReportTemplateRoundTripsVersionedQueryAndCanBeDeleted() throws {
@@ -6818,6 +6844,9 @@ final class FinanzVerwalterTests: XCTestCase {
             sort: .dateAscending
         )
         query.requireGermanTaxAssignment = true
+        query.flagSelection = TransactionReportFlagSelection(
+            flags: [.orange, .purple], includeUnflagged: false
+        )
         query.visualization = .pie
         query.chartMetric = .income
         let id = UUID()
@@ -7513,6 +7542,7 @@ final class FinanzVerwalterTests: XCTestCase {
         legacyObject.removeValue(forKey: "requireGermanTaxAssignment")
         legacyObject.removeValue(forKey: "visualization")
         legacyObject.removeValue(forKey: "chartMetric")
+        legacyObject.removeValue(forKey: "flagSelection")
         let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
         let decoded = try JSONDecoder().decode(
             TransactionReportQuery.self, from: legacyData
@@ -7524,6 +7554,7 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertFalse(decoded.requireGermanTaxAssignment == true)
         XCTAssertEqual(decoded.selectedVisualization, .table)
         XCTAssertEqual(decoded.selectedChartMetric, .expense)
+        XCTAssertNil(decoded.flagSelection)
     }
 
     func testTransactionReportStandardPresetsAreDeterministicAndDistinct() throws {

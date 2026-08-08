@@ -1894,6 +1894,8 @@ struct ReportsView: View {
     @State private var statuses = Set(
         TransactionStatus.allCases.filter { $0 != .cancelled }
     )
+    @State private var selectedFlags = Set(TransactionFlag.allCases)
+    @State private var includeUnflagged = true
     @State private var selectedCurrencies = Set<String>()
     @State private var minimumAmount = ""
     @State private var maximumAmount = ""
@@ -2028,6 +2030,13 @@ struct ReportsView: View {
             tagIDs: selectedTagIDs,
             payeeIDs: selectedPayeeIDs,
             statuses: statuses,
+            flagSelection: selectedFlags == Set(TransactionFlag.allCases)
+                    && includeUnflagged
+                ? nil
+                : TransactionReportFlagSelection(
+                    flags: selectedFlags,
+                    includeUnflagged: includeUnflagged
+                ),
             minimumAmountMinor: parsedAbsoluteAmount(minimumAmount),
             maximumAmountMinor: parsedAbsoluteAmount(maximumAmount),
             text: reportText,
@@ -2265,6 +2274,7 @@ struct ReportsView: View {
                     tagFilterMenu
                     payeeFilterMenu
                     statusFilterMenu
+                    flagFilterMenu
                     currencyFilterMenu
                     Spacer()
                 }
@@ -2672,6 +2682,33 @@ struct ReportsView: View {
         }
     }
 
+    private var flagFilterMenu: some View {
+        Menu {
+            Button("Alle Kennzeichen einschließlich ohne") {
+                selectedFlags = Set(TransactionFlag.allCases)
+                includeUnflagged = true
+            }
+            Button("Nur gekennzeichnete Buchungen") {
+                selectedFlags = Set(TransactionFlag.allCases)
+                includeUnflagged = false
+            }
+            Divider()
+            Toggle("Ohne Kennzeichen", isOn: $includeUnflagged)
+            ForEach(TransactionFlag.allCases) { flag in
+                Toggle(
+                    flag.title,
+                    isOn: memberBinding(flag, in: $selectedFlags)
+                )
+            }
+        } label: {
+            let count = selectedFlags.count + (includeUnflagged ? 1 : 0)
+            Label(
+                "Kennzeichen \(count)/\(TransactionFlag.allCases.count + 1)",
+                systemImage: "flag"
+            )
+        }
+    }
+
     private var currencyFilterMenu: some View {
         let currencies = Set(store.transactions.map { $0.currency.uppercased() }).sorted()
         return Menu {
@@ -3046,6 +3083,8 @@ struct ReportsView: View {
             || !selectedTagIDs.isEmpty
             || !selectedPayeeIDs.isEmpty
             || statuses != Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+            || selectedFlags != Set(TransactionFlag.allCases)
+            || !includeUnflagged
             || !selectedCurrencies.isEmpty
             || !minimumAmount.isEmpty
             || !maximumAmount.isEmpty
@@ -3077,6 +3116,8 @@ struct ReportsView: View {
         selectedTagIDs.removeAll()
         selectedPayeeIDs.removeAll()
         statuses = Set(TransactionStatus.allCases.filter { $0 != .cancelled })
+        selectedFlags = Set(TransactionFlag.allCases)
+        includeUnflagged = true
         selectedCurrencies.removeAll()
         minimumAmount = ""
         maximumAmount = ""
@@ -3160,6 +3201,9 @@ struct ReportsView: View {
         selectedTagIDs = savedQuery.tagIDs
         selectedPayeeIDs = savedQuery.payeeIDs
         statuses = savedQuery.statuses
+        selectedFlags = savedQuery.flagSelection?.flags
+            ?? Set(TransactionFlag.allCases)
+        includeUnflagged = savedQuery.flagSelection?.includeUnflagged ?? true
         selectedCurrencies = savedQuery.currencies
         minimumAmount = savedQuery.minimumAmountMinor.map(decimalAmount) ?? ""
         maximumAmount = savedQuery.maximumAmountMinor.map(decimalAmount) ?? ""
@@ -3298,6 +3342,7 @@ struct ReportsView: View {
             selectedTagIDs.isEmpty ? "alle Klassen/Tags" : "\(selectedTagIDs.count) Klassen/Tags",
             selectedPayeeIDs.isEmpty ? "alle Empfänger" : "\(selectedPayeeIDs.count) Empfänger",
             "Status \(statuses.count)/\(TransactionStatus.allCases.count)",
+            "Kennzeichen \(selectedFlags.count + (includeUnflagged ? 1 : 0))/\(TransactionFlag.allCases.count + 1)",
             reportText.isEmpty ? "kein Volltext" : "Volltext: \(reportText)",
             includeTransfers ? "mit Umbuchungen" : "ohne Umbuchungen",
             requireGermanTaxAssignment

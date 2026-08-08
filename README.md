@@ -663,7 +663,8 @@ Ausgleichsbuchung wird storniert, aber nicht gelöscht.
 
 Die Berichtswerkstatt wertet Buchungen als unveränderliche Live-Momentaufnahme
 aus. Filter kombinieren Zeitraum, Konten und Gruppen, Kategorieunterbäume,
-Klassen/Tags, Empfänger, Status, Betragsspanne, Volltext und Währung.
+Klassen/Tags, Empfänger, Status, farbige Kennzeichen einschließlich
+„ohne Kennzeichen“, Betragsspanne, Volltext und Währung.
 Ausgeblendete Konten, von Berichten ausgeschlossene Konten, Umbuchungen und
 die Einzelauflösung von Splits sind explizite Optionen. Gruppiert wird nach
 Kategorie, Empfänger, Konto, Klasse/Tag, Monat oder deutscher Steuerzuordnung;
@@ -672,7 +673,9 @@ abweichende Dimension jede Primärgruppe weiter auf. Kombinierte Bezeichnungen
 wie `Kategorie › Konto` bleiben in Tabelle, Drill-down, CSV, PDF und Druck
 identisch. Jede Gruppe besitzt einen Drill-down bis zu ihren Buchungen und
 Splitzeilen. Währungen werden niemals unbemerkt addiert. Filter, Gruppierung
-und Sortierung lassen sich als versionierte Vorlage speichern.
+und Sortierung lassen sich als versionierte Vorlage speichern. Die
+Kennzeichenauswahl bleibt dabei ebenso in Haupt- und eigenständigen
+Berichtsfenstern sowie in allen Exporten wirksam.
 Buchungsdetails, primäre Zwischensummen und währungsgetrennte Gesamtsummen
 sind unabhängig ein- und ausblendbar; diese Darstellungseinstellungen werden
 ebenfalls in Vorlagen gespeichert. Das Menü `Standardberichte` setzt acht

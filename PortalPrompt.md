@@ -2418,3 +2418,19 @@ Ansichten, CSV-/PDF-Kontenblattausgabe und die atomare Massenorganisation.
 Kennzeichen-Massenänderungen müssen Schutzprüfung, Audit und vollständiges Undo
 nutzen. Teste Schema-39→40, Persistenz, Suche, Vorlagen, Bulk-Änderung und Undo;
 verwende für Zukunftsschema-Abweisungen ab dann Schema 41.
+
+Erweitere die buchungsbasierte Berichtswerkstatt um einen vollständig
+kombinierbaren Kennzeichenfilter. Speichere in `TransactionReportQuery`
+optional die Menge der sechs Kennzeichenfarben und unabhängig davon, ob
+unmarkierte Buchungen enthalten sind. `nil` muss aus Rückwärtskompatibilität
+„alle Farben einschließlich ohne Kennzeichen“ bedeuten. Biete in der
+Oberfläche Aktionen für alle, nur gekennzeichnete und jede einzelne Farbe
+sowie einen unabhängigen Schalter für „ohne Kennzeichen“.
+
+Führe diese Auswahl durch Query-Snapshot, Filteraktiv-Anzeige, Reset,
+Filterzusammenfassung, versionierte Berichtsvorlagen, eigenständige
+Berichtsfenster und Rückintegration. Da CSV, PDF, HTML, XLSX,
+Zwischenablage und Systemdruck denselben unveränderlichen Snapshot verwenden,
+müssen alle Ausgaben exakt dieselbe gefilterte Buchungsmenge zeigen. Teste
+Farbauswahl, ausschließlich unmarkierte Buchungen, Vorlagenrundlauf und die
+Dekodierung älterer Queries ohne das neue Feld.

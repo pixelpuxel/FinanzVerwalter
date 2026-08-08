@@ -214,6 +214,7 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var statuses: Set<TransactionStatus> = Set(
         TransactionStatus.allCases.filter { $0 != .cancelled }
     )
+    var flagSelection: TransactionReportFlagSelection? = nil
     var minimumAmountMinor: Int64?
     var maximumAmountMinor: Int64?
     var text = ""
@@ -240,6 +241,15 @@ struct TransactionReportQuery: Codable, Equatable, Sendable {
     var showsGrandTotals: Bool { includeGrandTotals ?? true }
     var selectedVisualization: ReportVisualization { visualization ?? .table }
     var selectedChartMetric: ReportChartMetric { chartMetric ?? .expense }
+}
+
+struct TransactionReportFlagSelection: Codable, Equatable, Sendable {
+    var flags: Set<TransactionFlag>
+    var includeUnflagged: Bool
+
+    func contains(_ flag: TransactionFlag?) -> Bool {
+        flag.map(flags.contains) ?? includeUnflagged
+    }
 }
 
 struct ReportWindowRequest: Codable, Hashable, Identifiable, Sendable {
@@ -503,6 +513,9 @@ enum TransactionReportEngine {
             guard let account = accountsByID[transaction.accountID] else { continue }
             guard accountMatches(account, query: query) else { continue }
             guard query.statuses.contains(transaction.status) else { continue }
+            guard query.flagSelection?.contains(transaction.flag) ?? true else {
+                continue
+            }
             guard query.includeTransfers || transaction.transferID == nil else { continue }
             guard query.dateFrom.map({ transaction.bookingDate >= $0 }) ?? true else { continue }
             guard query.dateThrough.map({ transaction.bookingDate <= $0 }) ?? true else { continue }

@@ -16,6 +16,13 @@ Vorlagen, Undo, Sicherungen und dem offenen Gesamtdatenarchiv erhalten und ist
 in Suche, Sortierung, Filter, Editor, Massenänderung sowie konfigurierbaren
 Kontenblattausgaben verfügbar.
 
+Die zentrale Berichtswerkstatt behandelt Kennzeichen ebenfalls als
+kombinierbaren Queryfilter. Eine fehlende Auswahl bedeutet aus
+Rückwärtskompatibilität alle Farben einschließlich unmarkierter Buchungen;
+eine vorhandene Auswahl speichert Farben und die Einbeziehung unmarkierter
+Buchungen getrennt. Sämtliche Exporte verwenden denselben gefilterten
+Snapshot.
+
 ## Folgen
 
 Schema 39 wird additiv und ohne fachliche Änderung migriert. Unbekannte
