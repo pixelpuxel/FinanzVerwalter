@@ -4932,3 +4932,12 @@ Rechtsberatung.
   erzeugt.
 - Exakter kumulativer Zielzählerstand nach Release, Sicherung, Installation
   und Laufzeitprüfung: 29.140.660 Tokens.
+- Quellcode, Tests und Dokumentation wurden als Commit `9874348` auf
+  `origin/agent/qif-mehrkontenimport` veröffentlicht. Lokaler und entfernter
+  SHA sind bytegleich; Draft-PR #1 ist offen, enthält die Schema-41-/Test-/
+  Release-Evidenz und meldet `MERGEABLE`.
+- Telegram-Nachricht 1217 dokumentiert den Stand im richtigen
+  `/quicken`-Thread 894. Wegen der gesperrten macOS-Sitzung wurde ausdrücklich
+  kein neuer Screenshot behauptet.
+- Exakter kumulativer Zielzählerstand nach GitHub- und Telegram-Veröffentlichung:
+  29.140.660 Tokens.
