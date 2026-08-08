@@ -116,6 +116,10 @@ struct FinanzVerwalterApp: App {
                     exportOpenDataArchive()
                 }
                 .disabled(store.currentFinanceFileURL == nil)
+                Button("Offenes Datenarchiv importieren …") {
+                    importOpenDataArchive()
+                }
+                .disabled(store.currentFinanceFileURL == nil)
                 Button("Finanzdatei archivieren …") {
                     archiveFinanceFile()
                 }
@@ -336,6 +340,51 @@ struct FinanzVerwalterApp: App {
             url.appendPathExtension("finanzarchiv")
         }
         _ = store.exportOpenDataArchive(at: url)
+    }
+
+    private func importOpenDataArchive() {
+        let archiveType = UTType(
+            exportedAs: "de.pixelpuxel.finanzverwalter.open-data-archive",
+            conformingTo: .package
+        )
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Offenes Finanzdatenarchiv importieren"
+        openPanel.prompt = "Auswählen"
+        openPanel.allowedContentTypes = [archiveType]
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        openPanel.treatsFilePackagesAsDirectories = false
+        guard openPanel.runModal() == .OK,
+              let archiveURL = openPanel.url else { return }
+
+        let explanation = NSAlert()
+        explanation.messageText = "Unabhängige Finanzdatei aufbauen?"
+        explanation.informativeText =
+            "FinanzVerwalter prüft sämtliche SHA-256-Prüfsummen, die dokumentierte Paketstruktur, Tabellenbeziehungen und die SQLite-Integrität. Erst nach vollständigem Erfolg wird eine neue .qdata-Datei veröffentlicht und geöffnet. Die aktive Finanzdatei bleibt unverändert; archivierte Oberflächeneinstellungen werden nicht automatisch übernommen."
+        explanation.alertStyle = .informational
+        explanation.addButton(withTitle: "Ziel wählen …")
+        explanation.addButton(withTitle: "Abbrechen")
+        guard explanation.runModal() == .alertFirstButtonReturn else { return }
+
+        let savePanel = NSSavePanel()
+        savePanel.title = "Neue Finanzdatei aus Datenarchiv"
+        savePanel.prompt = "Importieren"
+        savePanel.allowedContentTypes = [financeFileType]
+        savePanel.canCreateDirectories = true
+        savePanel.nameFieldStringValue =
+            "\(archiveURL.deletingPathExtension().lastPathComponent) Rückimport.qdata"
+        guard savePanel.runModal() == .OK,
+              var targetURL = savePanel.url else { return }
+        if targetURL.pathExtension.lowercased() != "qdata" {
+            targetURL.appendPathExtension("qdata")
+        }
+        prepareForFinanceFileChange()
+        _ = store.importOpenDataArchive(
+            from: archiveURL,
+            to: targetURL,
+            openAfterImport: true
+        )
     }
 
     private func closeFinanceFile() {

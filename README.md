@@ -869,8 +869,21 @@ andere Datei ab. Der Export entsteht in einem privaten `0700`-Zwischenordner
 aus einem konsistenten SQLite-Online-Snapshot, prüft Anhangsgröße und -hash,
 setzt Dateien auf `0600`, wird nur an ein neues Ziel atomar freigegeben und
 validiert danach Dateimenge und sämtliche Prüfsummen erneut. Die geöffnete
-Finanzdatei bleibt unverändert. Das Paket ist bewusst offen; ein
-Rückimport-Assistent ist noch nicht implementiert.
+Finanzdatei bleibt unverändert.
+
+`Ablage > Offenes Datenarchiv importieren …` und derselbe Bereich bauen aus
+einem solchen Paket eine neue, unabhängige `.qdata`-Datei auf. Der Import
+akzeptiert ausschließlich Format- und Datenbankschema-Version 1/39, verifiziert
+vor dem Lesen die exakte Paketdateimenge und jede SHA-256-Prüfsumme, begrenzt
+Größen und Zeilenzahlen und lehnt Symlinks, Pfad-Ausbrüche, Zusatzdateien,
+unbekannte Tabellen oder Spalten sowie unvollständige Anhänge ab. Alle
+Tabellen werden innerhalb einer Transaktion mit unveränderten Schlüsseln
+rekonstruiert; Originalanhänge müssen erneut Größe und Inhalts-Hash bestehen.
+Erst nach exakten Zeilenzahlen, `foreign_key_check` und `integrity_check = ok`
+wird die private `0600`-Zieldatei atomar veröffentlicht und geöffnet. Ein
+vorhandenes Ziel und die aktive Finanzdatei werden nie überschrieben. Die im
+Archiv dokumentierten Oberflächeneinstellungen werden bewusst nicht
+automatisch übernommen.
 
 `Import/Export` erstellt manuelle vollständige SQLite-Sicherungen und prüft
 sie vor der Ausgabe. Vor einem Restore zeigt eine modale, tastaturbedienbare

@@ -736,6 +736,37 @@ final class FinanceAppStore: ObservableObject {
         }
     }
 
+    /// Baut aus dem dokumentierten Gesamtdatenarchiv eine unabhängige
+    /// Finanzdatei auf. Die enthaltenen Oberflächeneinstellungen werden aus
+    /// Sicherheitsgründen nur gemeldet und niemals ungefragt übernommen.
+    @discardableResult
+    func importOpenDataArchive(
+        from archiveURL: URL,
+        to financeFileURL: URL,
+        openAfterImport: Bool = true
+    ) -> OpenDataArchiveImportSummary? {
+        guard let repository else { return nil }
+        do {
+            let summary = try repository.importOpenDataArchive(
+                from: archiveURL,
+                to: financeFileURL
+            )
+            errorMessage = nil
+            if openAfterImport {
+                guard openFinanceFile(at: summary.financeFileURL) else {
+                    return summary
+                }
+                statusText = "Datenarchiv vollständig importiert und geöffnet: \(summary.tableCount) Tabellen · \(summary.rowCount) Zeilen · \(summary.attachmentCount) Anhänge"
+            } else {
+                statusText = "Datenarchiv vollständig importiert: \(summary.financeFileURL.lastPathComponent) · \(summary.rowCount) Zeilen"
+            }
+            return summary
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
     @discardableResult
     func closeFinanceFile() -> Bool {
         guard let repository else { return true }

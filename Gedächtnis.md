@@ -4590,3 +4590,55 @@ Rechtsberatung.
 - Telegram-Nachricht 1183 meldet den Stand im `/quicken`-Thread 894. Wegen
   der gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 27.112.321 Tokens.
+
+## 08.08.2026 – Vollständiger Rückimport des offenen Datenarchivs
+
+- Der in ADR 0057 noch ausdrücklich offene Rückimport ist umgesetzt.
+  `Ablage > Offenes Datenarchiv importieren …` und der Bereich
+  `Import/Export > Offenes Gesamtdatenarchiv` wählen ein `.finanzarchiv` und
+  bauen daraus ausschließlich eine neue, unabhängige `.qdata`-Datei auf.
+  Nach Erfolg wird sie über den normalen, vorab sichernden Dateiwechsel
+  geöffnet. Archivierte Oberflächeneinstellungen werden nicht ungefragt
+  übernommen.
+- Der Import akzeptiert nur Paketformat 1 und exakt Schema 39. Er prüft vor
+  der Auswertung reguläre Dateien ohne Symlinks, sichere relative Pfade,
+  feste Ressourcenlimits, das vollständige SHA-256-Manifest und die exakte
+  dokumentierte Paketstruktur. Unbekannte Tabellen, Spalten, CSV-Spiegel,
+  Anhangspfade oder Zusatzdateien sind harte Fehler.
+- `data.json` ist die autoritative Rekonstruktionsquelle. Ein frisch erzeugtes
+  Anwendungsschema wird in einer Transaktion tabellenweise mit unveränderten
+  Schlüsseln befüllt. Hashadressierte Originalanhänge werden erneut nach
+  MIME-Erweiterung, Größe und Inhalts-Hash geprüft. Exakte Zeilenzahlen,
+  `foreign_key_check` und `integrity_check = ok` sind Freigabebedingungen;
+  erst danach entsteht atomar das private `0600`-Ziel. Aktive und vorhandene
+  Dateien bleiben geschützt, Fehler entfernen nur eigene Zwischenartefakte.
+  ADR 0059 dokumentiert diese Entscheidung; README, Anforderungsmatrix und
+  PortalPrompt sind reproduzierbar fortgeschrieben.
+- Der neue Rundlauftest vergleicht sämtliche Anwendungstabellen und deren
+  Zeilenzahlen, Konten, Kategorien, Tags, Splits, Buchungen und byteidentische
+  PDF-Anhänge zwischen Quelle und Rückimport. Er prüft außerdem Quellschutz,
+  Rechte, fehlende SQLite-Sidecars, ein belegtes Ziel sowie die Abweisung
+  manipulierter Hashes, Pfad-Ausbrüche, Symlinks und einer sogar korrekt im
+  Manifest eingetragenen, aber undokumentierten Zusatzdatei.
+- Der vollständige, frisch kompilierte direkte XCTest-Lauf ist unter
+  `build/TestResults/OpenArchiveImport-final-direct-20260808-0544.log`
+  protokolliert: 181 Tests ausgeführt, 179 bestanden, 2 ausdrücklich opt-in
+  übersprungen, 0 Fehler und 0 unerwartete Fehler.
+- Der native optimierte arm64-Release unter
+  `build/DerivedData-OpenArchiveImport-Product` wurde sauber gebaut, lokal
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `5d62cf42ed59d6a46f19479901e3f749d13859df82c1ebd9a4f7691167e66b47`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0537-open-archive-import/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0537-open-archive-import/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch. Der Desktop-Link
+  zeigt auf `/Applications`; Prozess 2163 läuft aus der systemweiten
+  Installation. Light Mode ist aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- Die Computer-Steuerung meldet weiterhin eine gesperrte macOS-Sitzung. Daher
+  ist die sichtbare UI-Abnahme samt neuem Screenshot noch nicht möglich und
+  wird nicht behauptet. Exakter kumulativer Zielzählerstand nach Installation:
+  27.448.633 Tokens.

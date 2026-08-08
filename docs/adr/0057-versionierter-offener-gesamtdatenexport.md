@@ -35,5 +35,6 @@ und wird erst nach atomarer Freigabe am Ziel erneut vollständig validiert.
 - Stabile Schlüssel und Reihenfolgen machen gleiche Exporte vergleichbar.
 - Anhänge bleiben verlustfrei erhalten, ohne das JSON unnötig aufzublähen.
 - Sicherheitsrelevante lokale Zustände werden bewusst nicht transportiert.
-- Das Archiv ist ein Exportvertrag, noch kein Wiederherstellungsformat; ein
-  geprüfter Rückimport braucht eine eigene spätere Entscheidung.
+- Der später ergänzte geprüfte Rückimport ist getrennt in ADR 0059
+  entschieden; `data.json` ist dabei die autoritative Rekonstruktionsquelle,
+  während die CSV-Dateien menschen- und werkzeuglesbare Spiegel bleiben.

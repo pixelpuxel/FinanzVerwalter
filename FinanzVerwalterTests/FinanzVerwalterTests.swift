@@ -12927,6 +12927,238 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testOpenDataArchiveImportsEveryTableAttachmentAndRejectsManipulation() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Rückimportkonto", institution: "Archivbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 45_600,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Archivkategorie",
+            kind: .expense, color: "purple", isActive: true
+        )
+        let tag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Archivklasse", color: "teal",
+            description: "Roundtrip", isActive: true
+        )
+        try context.store.saveAccount(account)
+        try context.store.saveCategory(category)
+        try context.store.saveTag(tag)
+        let split = FinanceSplit(
+            id: UUID(), categoryID: category.id, amountMinor: -7_890,
+            memo: "Archivsplit", sortOrder: 0, tagIDs: [tag.id]
+        )
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: account.id,
+            bookingDate: Date(timeIntervalSince1970: 1_767_225_600),
+            valueDate: Date(timeIntervalSince1970: 1_767_312_000),
+            payee: "Archivempfänger", purpose: "Vollständiger Rückimport",
+            categoryID: nil, amountMinor: -7_890, currency: "EUR",
+            status: .cleared, memo: "JSON-Roundtrip", reference: "ARC-1",
+            transferID: nil, importFingerprint: nil, splits: [split],
+            tagIDs: [tag.id]
+        )
+        try context.store.saveTransaction(transaction)
+        let attachmentPayload = Data(
+            "%PDF-1.7\nRückimportierter Originalbeleg\n%%EOF\n".utf8
+        )
+        let attachmentSource = context.directory.appendingPathComponent(
+            "rueckimport.pdf"
+        )
+        try attachmentPayload.write(to: attachmentSource)
+        let attachment = try context.store.addAttachment(
+            from: attachmentSource, to: .transaction,
+            entityID: transaction.id
+        )
+
+        let archiveURL = context.directory.appendingPathComponent(
+            "Roundtrip.finanzarchiv", isDirectory: true
+        )
+        let export = try context.store.exportOpenDataArchive(
+            to: archiveURL,
+            settings: ["appearanceMode": "dark", "registerRowDensity": "compact"],
+            exportedAt: Date(timeIntervalSince1970: 1_775_001_600)
+        )
+        let sourceBeforeImport = try FinanceFileSnapshotManager.snapshot(
+            for: context.store.fileURL
+        )
+        let sourceCounts = try sqliteTableCounts(context.store.fileURL)
+        let importedURL = context.directory.appendingPathComponent(
+            "Aus offenem Archiv.qdata"
+        )
+        let summary = try context.store.importOpenDataArchive(
+            from: archiveURL, to: importedURL
+        )
+
+        XCTAssertEqual(summary.archiveURL, archiveURL.standardizedFileURL)
+        XCTAssertEqual(summary.financeFileURL, importedURL.standardizedFileURL)
+        XCTAssertEqual(summary.formatVersion, 1)
+        XCTAssertEqual(summary.tableCount, export.tableCount)
+        XCTAssertEqual(summary.rowCount, export.rowCount)
+        XCTAssertEqual(summary.attachmentCount, 1)
+        XCTAssertEqual(summary.importedSettings["appearanceMode"], "dark")
+        XCTAssertEqual(summary.importedSettings["registerRowDensity"], "compact")
+        XCTAssertEqual(
+            summary.checksumManifestSHA256,
+            export.checksumManifestSHA256
+        )
+        XCTAssertEqual(
+            try FinanceFileSnapshotManager.snapshot(for: context.store.fileURL),
+            sourceBeforeImport
+        )
+        XCTAssertEqual(try sqliteTableCounts(importedURL), sourceCounts)
+        XCTAssertEqual(
+            try XCTUnwrap(
+                FileManager.default.attributesOfItem(
+                    atPath: importedURL.path
+                )[.posixPermissions] as? NSNumber
+            ).intValue & 0o777,
+            0o600
+        )
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: importedURL.path + suffix
+            ))
+        }
+
+        let importedStore = try SQLiteFinanceStore(fileURL: importedURL)
+        defer { importedStore.close() }
+        XCTAssertEqual(try importedStore.accounts(), try context.store.accounts())
+        XCTAssertEqual(try importedStore.categories(), try context.store.categories())
+        XCTAssertEqual(try importedStore.tags(), try context.store.tags())
+        XCTAssertEqual(
+            try importedStore.transactions(), try context.store.transactions()
+        )
+        let importedAttachment = try XCTUnwrap(
+            importedStore.attachments(
+                entityType: .transaction, entityID: transaction.id
+            ).first
+        )
+        XCTAssertEqual(importedAttachment.id, attachment.id)
+        XCTAssertEqual(importedAttachment.sha256, attachment.sha256)
+        let restoredAttachmentURL = context.directory.appendingPathComponent(
+            "wiederhergestellt.pdf"
+        )
+        _ = try importedStore.exportAttachment(
+            id: importedAttachment.id, to: restoredAttachmentURL
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: restoredAttachmentURL), attachmentPayload
+        )
+        XCTAssertTrue(try importedStore.integrityCheck())
+
+        let occupiedURL = context.directory.appendingPathComponent(
+            "Belegtes Importziel.qdata"
+        )
+        let sentinel = Data("bestehendes Ziel bleibt".utf8)
+        try sentinel.write(to: occupiedURL)
+        XCTAssertThrowsError(try context.store.importOpenDataArchive(
+            from: archiveURL, to: occupiedURL
+        ))
+        XCTAssertEqual(try Data(contentsOf: occupiedURL), sentinel)
+
+        let sidecarTarget = context.directory.appendingPathComponent(
+            "Ziel mit Sidecar.qdata"
+        )
+        let sidecarURL = URL(fileURLWithPath: sidecarTarget.path + "-wal")
+        let sidecarSentinel = Data("fremdes SQLite-Sidecar bleibt".utf8)
+        try sidecarSentinel.write(to: sidecarURL)
+        XCTAssertThrowsError(try context.store.importOpenDataArchive(
+            from: archiveURL, to: sidecarTarget
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecarTarget.path))
+        XCTAssertEqual(try Data(contentsOf: sidecarURL), sidecarSentinel)
+
+        let corruptArchive = context.directory.appendingPathComponent(
+            "Manipuliert.finanzarchiv", isDirectory: true
+        )
+        try FileManager.default.copyItem(at: archiveURL, to: corruptArchive)
+        let corruptDataURL = corruptArchive.appendingPathComponent("data.json")
+        var corruptData = try Data(contentsOf: corruptDataURL)
+        corruptData.append(0x20)
+        try corruptData.write(to: corruptDataURL, options: .atomic)
+        let corruptTarget = context.directory.appendingPathComponent(
+            "Manipuliert.qdata"
+        )
+        XCTAssertThrowsError(try context.store.importOpenDataArchive(
+            from: corruptArchive, to: corruptTarget
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corruptTarget.path))
+
+        let traversalArchive = context.directory.appendingPathComponent(
+            "Traversal.finanzarchiv", isDirectory: true
+        )
+        try FileManager.default.copyItem(at: archiveURL, to: traversalArchive)
+        let traversalManifest = traversalArchive.appendingPathComponent(
+            "checksums.sha256"
+        )
+        var traversalText = try String(
+            contentsOf: traversalManifest, encoding: .utf8
+        )
+        traversalText += String(repeating: "0", count: 64)
+            + "  ../ausbruch\n"
+        try Data(traversalText.utf8).write(
+            to: traversalManifest, options: .atomic
+        )
+        let traversalTarget = context.directory.appendingPathComponent(
+            "Traversal.qdata"
+        )
+        XCTAssertThrowsError(try context.store.importOpenDataArchive(
+            from: traversalArchive, to: traversalTarget
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: traversalTarget.path))
+
+        let symlinkArchive = context.directory.appendingPathComponent(
+            "Symlink.finanzarchiv", isDirectory: true
+        )
+        try FileManager.default.copyItem(at: archiveURL, to: symlinkArchive)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkArchive.appendingPathComponent("unerlaubt"),
+            withDestinationURL: context.store.fileURL
+        )
+        let symlinkTarget = context.directory.appendingPathComponent(
+            "Symlink.qdata"
+        )
+        XCTAssertThrowsError(try context.store.importOpenDataArchive(
+            from: symlinkArchive, to: symlinkTarget
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: symlinkTarget.path))
+
+        let extraFileArchive = context.directory.appendingPathComponent(
+            "Zusatzdatei.finanzarchiv", isDirectory: true
+        )
+        try FileManager.default.copyItem(at: archiveURL, to: extraFileArchive)
+        let extraPayload = Data("nicht dokumentierte Nutzlast".utf8)
+        try extraPayload.write(
+            to: extraFileArchive.appendingPathComponent("unerwartet.bin")
+        )
+        let extraManifestURL = extraFileArchive.appendingPathComponent(
+            "checksums.sha256"
+        )
+        var extraManifest = try String(
+            contentsOf: extraManifestURL, encoding: .utf8
+        )
+        extraManifest += SHA256.hash(data: extraPayload).hexString
+            + "  unerwartet.bin\n"
+        try Data(extraManifest.utf8).write(
+            to: extraManifestURL, options: .atomic
+        )
+        let extraFileTarget = context.directory.appendingPathComponent(
+            "Zusatzdatei.qdata"
+        )
+        XCTAssertThrowsError(try context.store.importOpenDataArchive(
+            from: extraFileArchive, to: extraFileTarget
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: extraFileTarget.path
+        ))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: context.directory.path)
+                .contains { $0.hasPrefix(".finanzverwalter-import-") }
+        )
+    }
+
     func testBackupPreviewIsReadOnlyAndSummarizesRestoreContents() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -13113,6 +13345,50 @@ private func sqliteScalar(_ url: URL, _ sql: String) throws -> Int64 {
         throw FinanceError.database("Testabfrage lieferte keinen Wert.")
     }
     return sqlite3_column_int64(statement, 0)
+}
+
+private func sqliteTableCounts(_ url: URL) throws -> [String: Int64] {
+    var database: OpaquePointer?
+    guard sqlite3_open_v2(
+        url.path, &database, SQLITE_OPEN_READONLY, nil
+    ) == SQLITE_OK else {
+        throw FinanceError.database("Testdatenbank konnte nicht gelesen werden.")
+    }
+    defer { sqlite3_close(database) }
+    var namesStatement: OpaquePointer?
+    guard sqlite3_prepare_v2(
+        database,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        -1, &namesStatement, nil
+    ) == SQLITE_OK else {
+        throw FinanceError.database("Testtabellen konnten nicht gelesen werden.")
+    }
+    var names: [String] = []
+    while sqlite3_step(namesStatement) == SQLITE_ROW,
+          let raw = sqlite3_column_text(namesStatement, 0) {
+        names.append(String(cString: raw))
+    }
+    sqlite3_finalize(namesStatement)
+    var result: [String: Int64] = [:]
+    for name in names {
+        let quoted = "\"" + name.replacingOccurrences(
+            of: "\"", with: "\"\""
+        ) + "\""
+        var countStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database, "SELECT COUNT(*) FROM \(quoted)",
+            -1, &countStatement, nil
+        ) == SQLITE_OK,
+              sqlite3_step(countStatement) == SQLITE_ROW else {
+            if let countStatement { sqlite3_finalize(countStatement) }
+            throw FinanceError.database(
+                "Testzeilen von \(name) konnten nicht gelesen werden."
+            )
+        }
+        result[name] = sqlite3_column_int64(countStatement, 0)
+        sqlite3_finalize(countStatement)
+    }
+    return result
 }
 
 private final class TestDatabase {

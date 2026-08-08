@@ -6505,15 +6505,18 @@ struct ImportExportView: View {
                     }
                 }
 
-                GroupBox("Offener Gesamtexport") {
+                GroupBox("Offenes Gesamtdatenarchiv") {
                     HStack {
                         VStack(alignment: .leading) {
                             Text("Versioniertes JSON-Archiv mit CSV und Originalanhängen")
-                            Text("Exportiert einen konsistenten, dokumentierten Tabellenstand und freigegebene Einstellungen ohne Dateipfade oder Zugangsdaten.")
+                            Text("Exportiert oder importiert einen vollständigen, dokumentierten Tabellenstand. Beim Import entsteht nach strenger Prüfung eine neue, unabhängige Finanzdatei.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Button("Datenarchiv importieren …", systemImage: "shippingbox.and.arrow.backward") {
+                            importOpenDataArchive()
+                        }
                         Button("Datenarchiv exportieren …", systemImage: "shippingbox") {
                             exportOpenDataArchive()
                         }
@@ -6729,6 +6732,52 @@ struct ImportExportView: View {
             url.appendPathExtension("finanzarchiv")
         }
         _ = store.exportOpenDataArchive(at: url)
+    }
+
+    private func importOpenDataArchive() {
+        let archiveType = UTType(
+            exportedAs: "de.pixelpuxel.finanzverwalter.open-data-archive",
+            conformingTo: .package
+        )
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Offenes Finanzdatenarchiv importieren"
+        openPanel.prompt = "Auswählen"
+        openPanel.allowedContentTypes = [archiveType]
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        openPanel.treatsFilePackagesAsDirectories = false
+        guard openPanel.runModal() == .OK,
+              let archiveURL = openPanel.url else { return }
+
+        let explanation = NSAlert()
+        explanation.messageText = "Unabhängige Finanzdatei aufbauen?"
+        explanation.informativeText =
+            "Alle Prüfsummen, Tabellenbeziehungen und Anhänge werden kontrolliert. Erst nach vollständigem Erfolg wird eine neue .qdata-Datei veröffentlicht und geöffnet. Die aktive Finanzdatei und Ihre Oberflächeneinstellungen bleiben unverändert."
+        explanation.alertStyle = .informational
+        explanation.addButton(withTitle: "Ziel wählen …")
+        explanation.addButton(withTitle: "Abbrechen")
+        guard explanation.runModal() == .alertFirstButtonReturn else { return }
+
+        let financeFileType = UTType(filenameExtension: "qdata") ?? .data
+        let savePanel = NSSavePanel()
+        savePanel.title = "Neue Finanzdatei aus Datenarchiv"
+        savePanel.prompt = "Importieren"
+        savePanel.allowedContentTypes = [financeFileType]
+        savePanel.canCreateDirectories = true
+        savePanel.nameFieldStringValue =
+            "\(archiveURL.deletingPathExtension().lastPathComponent) Rückimport.qdata"
+        guard savePanel.runModal() == .OK,
+              var targetURL = savePanel.url else { return }
+        if targetURL.pathExtension.lowercased() != "qdata" {
+            targetURL.appendPathExtension("qdata")
+        }
+        NotificationCenter.default.post(name: .cancelCurrentEditor, object: nil)
+        _ = store.importOpenDataArchive(
+            from: archiveURL,
+            to: targetURL,
+            openAfterImport: true
+        )
     }
 
     private func loadCSVProfiles() {

@@ -27,6 +27,17 @@ struct OpenDataArchiveSummary: Equatable, Sendable {
     let checksumManifestSHA256: String
 }
 
+struct OpenDataArchiveImportSummary: Equatable, Sendable {
+    let archiveURL: URL
+    let financeFileURL: URL
+    let formatVersion: Int
+    let tableCount: Int
+    let rowCount: Int
+    let attachmentCount: Int
+    let importedSettings: [String: String]
+    let checksumManifestSHA256: String
+}
+
 final class SQLiteFinanceStore {
     typealias AttachmentScanHook = (Data, String) throws -> Void
 
@@ -10767,7 +10778,9 @@ final class SQLiteFinanceStore {
         let renameResult = stage.withUnsafeFileSystemRepresentation { source in
             target.withUnsafeFileSystemRepresentation { destination in
                 guard let source, let destination else { return Int32(-1) }
-                return Darwin.rename(source, destination)
+                return Darwin.renamex_np(
+                    source, destination, UInt32(RENAME_EXCL)
+                )
             }
         }
         guard renameResult == 0 else {
@@ -10859,6 +10872,731 @@ final class SQLiteFinanceStore {
             fileCount: expectedFiles.count,
             byteCount: totalBytes,
             checksumManifestSHA256: checksumManifestSHA256
+        )
+    }
+
+    func importOpenDataArchive(
+        from rawArchive: URL,
+        to rawTarget: URL,
+        fileManager: FileManager = .default
+    ) throws -> OpenDataArchiveImportSummary {
+        let archive = rawArchive.standardizedFileURL
+        let target = rawTarget.standardizedFileURL
+        guard archive.pathExtension.lowercased() == "finanzarchiv" else {
+            throw FinanceError.database(
+                "Das offene Datenarchiv muss die Endung .finanzarchiv besitzen."
+            )
+        }
+        guard target.pathExtension.lowercased() == "qdata" else {
+            throw FinanceError.database(
+                "Das Importziel muss die Endung .qdata besitzen."
+            )
+        }
+        guard target.path != fileURL.standardizedFileURL.path else {
+            throw FinanceError.database(
+                "Der Rückimport darf die aktive Finanzdatei nicht überschreiben."
+            )
+        }
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw FinanceError.database("Am Importziel existiert bereits eine Datei.")
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            guard !fileManager.fileExists(atPath: target.path + suffix) else {
+                throw FinanceError.database(
+                    "Am Importziel existiert eine verwaiste SQLite-Begleitdatei."
+                )
+            }
+        }
+        let archiveValues = try archive.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard archiveValues.isDirectory == true,
+              archiveValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Das gewählte Datenarchiv ist kein reguläres, direktes Paket."
+            )
+        }
+        let parent = target.deletingLastPathComponent()
+        let parentValues = try parent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard parentValues.isDirectory == true,
+              parentValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Der Zielordner ist kein regulärer, direkter Ordner."
+            )
+        }
+        guard !target.path.hasPrefix(archive.path + "/") else {
+            throw FinanceError.database(
+                "Die neue Finanzdatei darf nicht innerhalb des Datenarchivs liegen."
+            )
+        }
+
+        func digest(_ data: Data) -> String {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        func fileDigest(_ url: URL) throws -> String {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while let chunk = try handle.read(upToCount: 1_048_576),
+                  !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().map {
+                String(format: "%02x", $0)
+            }.joined()
+        }
+        func validatedRelativePath(_ value: String) throws -> String {
+            guard !value.isEmpty, !value.hasPrefix("/"),
+                  !value.contains("\\"), !value.contains("\0"),
+                  value.unicodeScalars.allSatisfy({
+                      $0.value >= 32 && $0.value != 127
+                  }) else {
+                throw FinanceError.database(
+                    "Das Datenarchiv enthält einen ungültigen relativen Pfad."
+                )
+            }
+            let parts = value.split(
+                separator: "/", omittingEmptySubsequences: false
+            )
+            guard parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+                throw FinanceError.database(
+                    "Das Datenarchiv enthält einen unsicheren relativen Pfad."
+                )
+            }
+            return value
+        }
+
+        let manifestURL = archive.appendingPathComponent("checksums.sha256")
+        let manifestValues = try manifestURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard manifestValues.isRegularFile == true,
+              manifestValues.isSymbolicLink != true,
+              (manifestValues.fileSize ?? 0) <= 16 * 1_024 * 1_024 else {
+            throw FinanceError.database(
+                "Das Prüfsummenmanifest fehlt oder ist unzulässig groß."
+            )
+        }
+        let manifestData = try Data(contentsOf: manifestURL)
+        guard let manifestText = String(data: manifestData, encoding: .utf8),
+              manifestText.hasSuffix("\n") else {
+            throw FinanceError.database(
+                "Das Prüfsummenmanifest ist nicht gültiges UTF-8."
+            )
+        }
+        var checksums: [String: String] = [:]
+        for rawLine in manifestText.split(
+            separator: "\n", omittingEmptySubsequences: true
+        ) {
+            let line = String(rawLine)
+            guard line.count >= 67,
+                  line.dropFirst(64).hasPrefix("  ") else {
+                throw FinanceError.database(
+                    "Eine Zeile des Prüfsummenmanifests ist beschädigt."
+                )
+            }
+            let expected = String(line.prefix(64)).lowercased()
+            let relative = try validatedRelativePath(
+                String(line.dropFirst(66))
+            )
+            guard expected.count == 64,
+                  expected.allSatisfy(\.isHexDigit),
+                  checksums.updateValue(expected, forKey: relative) == nil,
+                  relative != "checksums.sha256" else {
+                throw FinanceError.database(
+                    "Das Prüfsummenmanifest enthält einen ungültigen oder doppelten Eintrag."
+                )
+            }
+        }
+        guard !checksums.isEmpty else {
+            throw FinanceError.database("Das Prüfsummenmanifest ist leer.")
+        }
+
+        var actualFiles = Set<String>()
+        var totalArchiveBytes: Int64 = 0
+        func inspectDirectory(_ directory: URL, prefix: String) throws {
+            let children = try fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .fileSizeKey
+                ],
+                options: []
+            )
+            for child in children {
+                let values = try child.resourceValues(
+                    forKeys: [
+                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                        .fileSizeKey
+                    ]
+                )
+                guard values.isSymbolicLink != true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Symlink."
+                    )
+                }
+                let relative = try validatedRelativePath(
+                    prefix.isEmpty
+                        ? child.lastPathComponent
+                        : prefix + "/" + child.lastPathComponent
+                )
+                if values.isDirectory == true {
+                    try inspectDirectory(child, prefix: relative)
+                    continue
+                }
+                guard values.isRegularFile == true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Dateityp."
+                    )
+                }
+                guard actualFiles.insert(relative).inserted else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen doppelten Dateipfad."
+                    )
+                }
+                totalArchiveBytes += Int64(values.fileSize ?? 0)
+                guard totalArchiveBytes <= 16 * 1_024 * 1_024 * 1_024 else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv überschreitet die Sicherheitsgrenze von 16 GB."
+                    )
+                }
+            }
+        }
+        try inspectDirectory(archive, prefix: "")
+        let expectedFiles = Set(checksums.keys).union(["checksums.sha256"])
+        guard actualFiles == expectedFiles else {
+            throw FinanceError.database(
+                "Dateimenge und Prüfsummenmanifest des Datenarchivs stimmen nicht überein."
+            )
+        }
+        for (relative, expected) in checksums {
+            let url = archive.appendingPathComponent(relative)
+            guard try fileDigest(url) == expected else {
+                throw FinanceError.database(
+                    "Die Prüfsumme von \(relative) stimmt nicht."
+                )
+            }
+        }
+        let requiredRootFiles: Set<String> = [
+            "data.json", "schema.json", "settings.json", "README.txt"
+        ]
+        guard requiredRootFiles.isSubset(of: Set(checksums.keys)) else {
+            throw FinanceError.database(
+                "Das Datenarchiv enthält nicht alle Pflichtdateien."
+            )
+        }
+
+        func verifiedData(relative: String, maximumBytes: Int) throws -> Data {
+            let url = archive.appendingPathComponent(relative)
+            let values = try url.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  (values.fileSize ?? 0) <= maximumBytes,
+                  let expected = checksums[relative] else {
+                throw FinanceError.database(
+                    "\(relative) fehlt oder überschreitet die Sicherheitsgrenze."
+                )
+            }
+            let data = try Data(contentsOf: url)
+            guard data.count <= maximumBytes,
+                  digest(data) == expected else {
+                throw FinanceError.database(
+                    "\(relative) wurde während des Imports verändert."
+                )
+            }
+            return data
+        }
+
+        let dataURL = archive.appendingPathComponent("data.json")
+        let dataSize = try dataURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard dataSize <= 1_073_741_824 else {
+            throw FinanceError.database("data.json überschreitet die Sicherheitsgrenze von 1 GB.")
+        }
+        let schemaURL = archive.appendingPathComponent("schema.json")
+        let settingsURL = archive.appendingPathComponent("settings.json")
+        let schemaSize = try schemaURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let settingsSize = try settingsURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard schemaSize <= 64 * 1_024 * 1_024,
+              settingsSize <= 16 * 1_024 * 1_024 else {
+            throw FinanceError.database(
+                "Schema oder Einstellungen überschreiten die Sicherheitsgrenze."
+            )
+        }
+        let dataPayload = try verifiedData(
+            relative: "data.json", maximumBytes: 1_073_741_824
+        )
+        let root = try JSONSerialization.jsonObject(
+            with: dataPayload
+        ) as? [String: Any]
+        guard let root,
+              root["format"] as? String
+                == "de.pixelpuxel.finanzverwalter.open-data",
+              (root["format_version"] as? NSNumber)?.intValue == 1,
+              (root["database_schema_version"] as? NSNumber)?.intValue
+                == Self.currentSchemaVersion,
+              let archiveTables = root["tables"] as? [[String: Any]],
+              archiveTables.count <= 256,
+              let declaredTableCount = (root["table_count"] as? NSNumber)?.intValue,
+              declaredTableCount == archiveTables.count,
+              let declaredRowCount = (root["row_count"] as? NSNumber)?.intValue,
+              declaredRowCount >= 0, declaredRowCount <= 10_000_000,
+              let declaredAttachmentCount = (root["attachment_count"] as? NSNumber)?.intValue,
+              declaredAttachmentCount >= 0 else {
+            throw FinanceError.database(
+                "data.json besitzt kein unterstütztes FinanzVerwalter-Format."
+            )
+        }
+        let schemaPayload = try verifiedData(
+            relative: "schema.json", maximumBytes: 64 * 1_024 * 1_024
+        )
+        let schemaRoot = try JSONSerialization.jsonObject(
+            with: schemaPayload
+        ) as? [String: Any]
+        guard let schemaRoot,
+              schemaRoot["format"] as? String
+                == "de.pixelpuxel.finanzverwalter.open-data-schema",
+              (schemaRoot["format_version"] as? NSNumber)?.intValue == 1,
+              let schemaTables = schemaRoot["tables"] as? [[String: Any]] else {
+            throw FinanceError.database("schema.json ist beschädigt oder nicht unterstützt.")
+        }
+        let settingsPayload = try verifiedData(
+            relative: "settings.json", maximumBytes: 16 * 1_024 * 1_024
+        )
+        let settingsRoot = try JSONSerialization.jsonObject(
+            with: settingsPayload
+        ) as? [String: Any]
+        guard let settingsRoot,
+              settingsRoot["format"] as? String
+                == "de.pixelpuxel.finanzverwalter.settings",
+              (settingsRoot["format_version"] as? NSNumber)?.intValue == 1,
+              let importedSettings = settingsRoot["values"] as? [String: String] else {
+            throw FinanceError.database("settings.json ist beschädigt oder nicht unterstützt.")
+        }
+
+        let stage = parent.appendingPathComponent(
+            ".finanzverwalter-import-\(UUID().uuidString).tmp.qdata"
+        )
+        var published = false
+        var targetCreatedByImport = false
+        defer {
+            if targetCreatedByImport && !published {
+                try? fileManager.removeItem(at: target)
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    try? fileManager.removeItem(
+                        at: URL(fileURLWithPath: target.path + suffix)
+                    )
+                }
+            }
+            try? fileManager.removeItem(at: stage)
+            for suffix in ["-wal", "-shm", "-journal"] {
+                try? fileManager.removeItem(
+                    at: URL(fileURLWithPath: stage.path + suffix)
+                )
+            }
+        }
+
+        let template = try SQLiteFinanceStore(fileURL: stage)
+        template.close()
+        var importDatabase: OpaquePointer?
+        guard sqlite3_open_v2(
+            stage.path, &importDatabase,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
+        ) == SQLITE_OK, let database = importDatabase else {
+            if let importDatabase { sqlite3_close(importDatabase) }
+            throw FinanceError.database(
+                "Die neue Finanzdatei konnte nicht zum Rückimport geöffnet werden."
+            )
+        }
+        defer {
+            if let importDatabase { sqlite3_close(importDatabase) }
+        }
+        func databaseMessage() -> String {
+            String(cString: sqlite3_errmsg(database))
+        }
+        func executeImport(_ sql: String) throws {
+            var error: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(database, sql, nil, nil, &error) == SQLITE_OK else {
+                let message = error.map { String(cString: $0) }
+                    ?? databaseMessage()
+                sqlite3_free(error)
+                throw FinanceError.database(message)
+            }
+        }
+        func quoted(_ value: String) -> String {
+            "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        func tableColumns(_ table: String) throws
+            -> [(name: String, type: String, primaryKeyOrder: Int)] {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                database, "PRAGMA table_info(\(quoted(table)))",
+                -1, &statement, nil
+            ) == SQLITE_OK else {
+                throw FinanceError.database(databaseMessage())
+            }
+            defer { sqlite3_finalize(statement) }
+            var values: [(String, String, Int)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                values.append((
+                    Self.text(statement, 1), Self.text(statement, 2),
+                    Int(sqlite3_column_int(statement, 5))
+                ))
+            }
+            return values
+        }
+        var currentTables: [String] = []
+        var tableStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            -1, &tableStatement, nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database(databaseMessage())
+        }
+        while sqlite3_step(tableStatement) == SQLITE_ROW {
+            currentTables.append(Self.text(tableStatement, 0))
+        }
+        sqlite3_finalize(tableStatement)
+
+        let archivedNames = archiveTables.compactMap { $0["name"] as? String }
+        let schemaNames = schemaTables.compactMap { $0["name"] as? String }
+        guard archivedNames.count == archiveTables.count,
+              Set(archivedNames).count == archivedNames.count,
+              Set(archivedNames) == Set(currentTables),
+              Set(schemaNames) == Set(currentTables),
+              schemaNames.count == schemaTables.count else {
+            throw FinanceError.database(
+                "Tabellenmenge und aktuelles FinanzVerwalter-Schema stimmen nicht überein."
+            )
+        }
+        for table in currentTables {
+            guard checksums["csv/\(table).csv"] != nil else {
+                throw FinanceError.database(
+                    "Die CSV-Repräsentation von \(table) fehlt."
+                )
+            }
+        }
+
+        let omittedColumns: [String: Set<String>] = [
+            "attachment_blobs": ["payload"],
+            "contract_documents": ["bookmark_data"],
+            "inventory_attachments": ["bookmark_data"]
+        ]
+        var archiveByName: [String: (columns: [String], rows: [[Any]])] = [:]
+        var calculatedRows = 0
+        for payload in archiveTables {
+            guard let name = payload["name"] as? String,
+                  let columns = payload["columns"] as? [String],
+                  let rows = payload["rows"] as? [[Any]],
+                  columns.count <= 256,
+                  rows.allSatisfy({ $0.count == columns.count }) else {
+                throw FinanceError.database(
+                    "Eine Tabelle in data.json besitzt ungültige Spalten oder Zeilen."
+                )
+            }
+            let actual = try tableColumns(name)
+            var expected = actual.filter {
+                omittedColumns[name]?.contains($0.name) != true
+            }.map(\.name)
+            if name == "attachment_blobs" { expected.append("relative_path") }
+            guard columns == expected,
+                  let schemaPayload = schemaTables.first(where: {
+                      ($0["name"] as? String) == name
+                  }),
+                  let schemaColumns = schemaPayload["columns"] as? [[String: Any]],
+                  schemaColumns.compactMap({ $0["name"] as? String }) == columns,
+                  (schemaPayload["row_count"] as? NSNumber)?.intValue == rows.count else {
+                throw FinanceError.database(
+                    "Die Spaltenbeschreibung von \(name) stimmt nicht mit dem aktuellen Schema überein."
+                )
+            }
+            calculatedRows += rows.count
+            archiveByName[name] = (columns, rows)
+        }
+        guard calculatedRows == declaredRowCount,
+              archiveByName["attachment_blobs"]?.rows.count
+                == declaredAttachmentCount else {
+            throw FinanceError.database(
+                "Die deklarierten Zeilen- oder Anhangszahlen sind widersprüchlich."
+            )
+        }
+
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        func bind(_ value: Any, type: String, to statement: OpaquePointer?, at index: Int32) throws {
+            let code: Int32
+            if value is NSNull {
+                code = sqlite3_bind_null(statement, index)
+            } else if let text = value as? String {
+                code = sqlite3_bind_text(statement, index, text, -1, transient)
+            } else if let number = value as? NSNumber {
+                guard CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                    throw FinanceError.database("Ein unerwarteter JSON-Wahrheitswert wurde gefunden.")
+                }
+                if type.uppercased().contains("INT") {
+                    guard let integer = Int64(number.stringValue) else {
+                        throw FinanceError.database("Eine Ganzzahl liegt außerhalb des unterstützten Bereichs.")
+                    }
+                    code = sqlite3_bind_int64(statement, index, integer)
+                } else {
+                    let double = number.doubleValue
+                    guard double.isFinite else {
+                        throw FinanceError.database("Eine Fließkommazahl ist nicht endlich.")
+                    }
+                    code = sqlite3_bind_double(statement, index, double)
+                }
+            } else if let blob = value as? Data,
+                      blob.count <= 256 * 1_024 * 1_024 {
+                code = blob.withUnsafeBytes {
+                    sqlite3_bind_blob(
+                        statement, index, $0.baseAddress,
+                        Int32($0.count), transient
+                    )
+                }
+            } else if let encoded = value as? [String: Any],
+                      encoded["encoding"] as? String == "base64",
+                      let base64 = encoded["value"] as? String,
+                      let blob = Data(base64Encoded: base64),
+                      blob.count <= 256 * 1_024 * 1_024 {
+                code = blob.withUnsafeBytes {
+                    sqlite3_bind_blob(
+                        statement, index, $0.baseAddress,
+                        Int32($0.count), transient
+                    )
+                }
+            } else {
+                throw FinanceError.database(
+                    "Ein Tabellenwert besitzt eine nicht unterstützte JSON-Kodierung."
+                )
+            }
+            guard code == SQLITE_OK else {
+                throw FinanceError.database(databaseMessage())
+            }
+        }
+
+        var referencedAttachments = Set<String>()
+        var transactionStarted = false
+        do {
+            try executeImport("PRAGMA foreign_keys=OFF")
+            try executeImport("BEGIN IMMEDIATE")
+            transactionStarted = true
+            for table in currentTables {
+                try executeImport("DELETE FROM \(quoted(table))")
+            }
+            for table in currentTables {
+                guard let payload = archiveByName[table] else {
+                    throw FinanceError.database("Die Tabelle \(table) fehlt im Archiv.")
+                }
+                let actualColumns = try tableColumns(table)
+                let insertColumns: [(name: String, type: String)]
+                if table == "attachment_blobs" {
+                    insertColumns = actualColumns.map { ($0.name, $0.type) }
+                } else {
+                    insertColumns = actualColumns.filter {
+                        omittedColumns[table]?.contains($0.name) != true
+                    }.map { ($0.name, $0.type) }
+                }
+                let placeholders = Array(
+                    repeating: "?", count: insertColumns.count
+                ).joined(separator: ",")
+                let sql = "INSERT INTO \(quoted(table)) ("
+                    + insertColumns.map { quoted($0.name) }.joined(separator: ",")
+                    + ") VALUES (\(placeholders))"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+                        == SQLITE_OK else {
+                    throw FinanceError.database(databaseMessage())
+                }
+                defer { sqlite3_finalize(statement) }
+                let columnIndexes = Dictionary(
+                    uniqueKeysWithValues: payload.columns.enumerated().map {
+                        ($0.element, $0.offset)
+                    }
+                )
+                for row in payload.rows {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    for (offset, column) in insertColumns.enumerated() {
+                        let value: Any
+                        if table == "attachment_blobs", column.name == "payload" {
+                            guard let shaIndex = columnIndexes["sha256"],
+                                  let mimeIndex = columnIndexes["mime_type"],
+                                  let countIndex = columnIndexes["byte_count"],
+                                  let pathIndex = columnIndexes["relative_path"],
+                                  let sha = row[shaIndex] as? String,
+                                  let mime = row[mimeIndex] as? String,
+                                  let byteCount = row[countIndex] as? NSNumber,
+                                  let relative = row[pathIndex] as? String else {
+                                throw FinanceError.database("Ein Anhangeintrag ist unvollständig.")
+                            }
+                            let extensionValue: String = switch mime.lowercased() {
+                            case "application/pdf": "pdf"
+                            case "image/png": "png"
+                            case "image/jpeg": "jpg"
+                            case "text/csv": "csv"
+                            case "application/x-qif": "qif"
+                            case "application/xml", "text/xml": "xml"
+                            default: "bin"
+                            }
+                            let normalizedSHA = sha.lowercased()
+                            guard normalizedSHA.count == 64,
+                                  normalizedSHA.allSatisfy(\.isHexDigit),
+                                  relative == "attachments/\(normalizedSHA).\(extensionValue)",
+                                  checksums[relative] != nil,
+                                  referencedAttachments.insert(relative).inserted else {
+                                throw FinanceError.database("Ein Anhangspfad ist ungültig oder doppelt.")
+                            }
+                            let blob = try Data(
+                                contentsOf: archive.appendingPathComponent(relative),
+                                options: [.mappedIfSafe]
+                            )
+                            guard blob.count > 0,
+                                  blob.count <= Self.maximumAttachmentBytes,
+                                  byteCount.int64Value == Int64(blob.count),
+                                  digest(blob) == normalizedSHA else {
+                                throw FinanceError.database("Ein Anhang stimmt nicht mit seinen Metadaten überein.")
+                            }
+                            value = blob
+                        } else {
+                            guard let sourceIndex = columnIndexes[column.name] else {
+                                throw FinanceError.database(
+                                    "Die Spalte \(table).\(column.name) fehlt im Archiv."
+                                )
+                            }
+                            value = row[sourceIndex]
+                        }
+                        try bind(
+                            value, type: column.type, to: statement,
+                            at: Int32(offset + 1)
+                        )
+                    }
+                    guard sqlite3_step(statement) == SQLITE_DONE else {
+                        throw FinanceError.database(databaseMessage())
+                    }
+                }
+            }
+            let archivedAttachmentFiles = Set(
+                checksums.keys.filter { $0.hasPrefix("attachments/") }
+            )
+            guard referencedAttachments == archivedAttachmentFiles else {
+                throw FinanceError.database(
+                    "Das Archiv enthält fehlende oder nicht referenzierte Anhänge."
+                )
+            }
+            let allowedFiles = requiredRootFiles
+                .union(["checksums.sha256"])
+                .union(currentTables.map { "csv/\($0).csv" })
+                .union(referencedAttachments)
+            guard actualFiles == allowedFiles else {
+                throw FinanceError.database(
+                    "Das Archiv enthält Dateien außerhalb der dokumentierten Paketstruktur."
+                )
+            }
+            for table in currentTables {
+                var countStatement: OpaquePointer?
+                guard sqlite3_prepare_v2(
+                    database,
+                    "SELECT COUNT(*) FROM \(quoted(table))",
+                    -1, &countStatement, nil
+                ) == SQLITE_OK,
+                      sqlite3_step(countStatement) == SQLITE_ROW else {
+                    if let countStatement { sqlite3_finalize(countStatement) }
+                    throw FinanceError.database(databaseMessage())
+                }
+                let importedCount = Int(sqlite3_column_int64(countStatement, 0))
+                sqlite3_finalize(countStatement)
+                guard importedCount == archiveByName[table]?.rows.count else {
+                    throw FinanceError.database(
+                        "Die importierte Zeilenzahl von \(table) ist widersprüchlich."
+                    )
+                }
+            }
+            var foreignKeyStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                database, "PRAGMA foreign_key_check", -1,
+                &foreignKeyStatement, nil
+            ) == SQLITE_OK else {
+                throw FinanceError.database(databaseMessage())
+            }
+            let foreignKeyResult = sqlite3_step(foreignKeyStatement)
+            sqlite3_finalize(foreignKeyStatement)
+            guard foreignKeyResult == SQLITE_DONE else {
+                throw FinanceError.database(
+                    "Der Rückimport verletzt mindestens eine Tabellenbeziehung."
+                )
+            }
+            var integrityStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                database, "PRAGMA integrity_check", -1,
+                &integrityStatement, nil
+            ) == SQLITE_OK,
+                  sqlite3_step(integrityStatement) == SQLITE_ROW,
+                  Self.text(integrityStatement, 0) == "ok" else {
+                if let integrityStatement { sqlite3_finalize(integrityStatement) }
+                throw FinanceError.database(
+                    "Die importierte Finanzdatei besteht die Integritätsprüfung nicht."
+                )
+            }
+            sqlite3_finalize(integrityStatement)
+            try executeImport("COMMIT")
+            transactionStarted = false
+            try executeImport("PRAGMA foreign_keys=ON")
+            try executeImport("PRAGMA journal_mode=DELETE")
+        } catch {
+            if transactionStarted { try? executeImport("ROLLBACK") }
+            throw error
+        }
+        guard sqlite3_close(database) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Die importierte Finanzdatei konnte nicht geschlossen werden."
+            )
+        }
+        importDatabase = nil
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: stage.path + suffix)
+            if fileManager.fileExists(atPath: sidecar.path) {
+                try fileManager.removeItem(at: sidecar)
+            }
+        }
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: stage.path
+        )
+        let renameResult = stage.withUnsafeFileSystemRepresentation { source in
+            target.withUnsafeFileSystemRepresentation { destination in
+                guard let source, let destination else { return Int32(-1) }
+                return Darwin.rename(source, destination)
+            }
+        }
+        guard renameResult == 0 else {
+            let message = String(cString: strerror(errno))
+            throw FinanceError.database(
+                "Die neue Finanzdatei konnte nicht atomar freigegeben werden: \(message)"
+            )
+        }
+        targetCreatedByImport = true
+        try Self.validateBackup(at: target)
+        let targetValues = try target.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard targetValues.isRegularFile == true,
+              targetValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Das fertige Importziel ist keine reguläre, direkte Datei."
+            )
+        }
+        published = true
+        return OpenDataArchiveImportSummary(
+            archiveURL: archive,
+            financeFileURL: target,
+            formatVersion: 1,
+            tableCount: archiveTables.count,
+            rowCount: calculatedRows,
+            attachmentCount: declaredAttachmentCount,
+            importedSettings: importedSettings,
+            checksumManifestSHA256: digest(manifestData)
         )
     }
 

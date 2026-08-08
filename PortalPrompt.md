@@ -2372,5 +2372,31 @@ exakte Dateimenge sowie jede Prüfsumme erneut. Entferne bei jedem Fehler nur
 eigene Zwischenartefakte. Teste vollständige Tabellenabdeckung, Beziehungen,
 Splits, exakte Anhangsbytes, CSV-BOM und Escaping, Geheimnis-/Pfadausschluss,
 Rechte, deterministische Wiederholung bei festem Zeitpunkt, Quellintegrität,
-Zielschutz und das Fehlen liegengebliebener Zwischenordner. Kennzeichne einen
-späteren Rückimport ausdrücklich als offen.
+Zielschutz und das Fehlen liegengebliebener Zwischenordner.
+
+Behandle `data.json` als autoritative Rekonstruktionsquelle und die CSV-Dateien
+als verpflichtende offene Spiegel. Ergänze im Ablage-Menü und im Bereich
+`Import/Export` den Rückimport in eine neue `.qdata`-Datei. Akzeptiere nur
+Paketformat 1 und exakt die aktuelle Datenbankschemaversion. Prüfe vor dem
+JSON-Lesen das vollständige SHA-256-Manifest, die exakte dokumentierte
+Dateimenge, reguläre Dateien ohne Symlinks, sichere relative Pfade und feste
+Grenzen für Gesamtgröße, Manifest, JSON, Schema, Einstellungen, Tabellen,
+Spalten, Zeilen, BLOBs und Anhänge. Lehne unbekannte oder fehlende Tabellen,
+Spalten, CSV-Spiegel und Zusatzdateien ab.
+
+Erzeuge im Zielordner zunächst eine private neue Datenbank mit dem aktuellen
+Schema. Rekonstruiere jede Anwendungstabelle innerhalb einer einzigen
+Transaktion mit unveränderten Primär- und Fremdschlüsseln. Lade
+Anhangspayloads ausschließlich vom aus SHA-256 und MIME-Typ erwarteten
+relativen Pfad und prüfe Größe und Inhalts-Hash erneut. Vergleiche nach dem
+Einfügen jede Tabellenzeilenzahl, führe `foreign_key_check` und
+`integrity_check` aus und veröffentliche erst dann eine private `0600`-Datei
+atomar am neuen Ziel. Überschreibe weder ein vorhandenes Ziel noch die aktive
+Finanzdatei und entferne im Fehlerfall ausschließlich eigene
+Zwischenartefakte. Öffne die neue Datei erst nach Erfolg und erstelle dabei
+wie bei jedem Dateiwechsel eine Sicherung der bisherigen Datei. Übernimm
+archivierte Oberflächeneinstellungen niemals ungefragt. Teste vollständigen
+Tabellen-, Beziehungs-, Split-, Hierarchie-, Tag- und Anhangsrundlauf,
+Quellunveränderlichkeit, Zielschutz, Rechte, fehlende Sidecars sowie die
+Abweisung manipulierter Hashes, Pfad-Ausbrüche, Symlinks und selbst korrekt im
+Manifest eingetragener Zusatzdateien.
