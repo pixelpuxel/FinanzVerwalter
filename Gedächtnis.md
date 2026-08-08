@@ -4128,3 +4128,41 @@ Rechtsberatung.
   Wegen der weiterhin gesperrten macOS-Sitzung wurde transparent kein neuer
   Screenshot behauptet. Exakter kumulativer Zielzählerstand vor dem Versand:
   24.383.545 Tokens.
+
+## 08.08.2026 – Fachauswertungsfenster ins Hauptfenster zurückführen
+
+- Alle sieben Fachauswertungsfenster besitzen nun `Ins Hauptfenster`. Die
+  Aktion übergibt jeweils die im Außenfenster aktuell bearbeitete Query, nicht
+  den ursprünglichen Öffnungszustand, schließt das Außenfenster und aktiviert
+  den passenden Dialog in der Hauptnavigation.
+- `SpecializedReportLaunchPayload` bildet die sieben Querytypen als
+  codierbare Enum-Fälle ab. `SpecializedReportLaunchRequest` ergänzt eine
+  frische UUID; Typ und Payload können dadurch nicht auseinanderlaufen. Der
+  Launch wird einmalig verbraucht und nach Schließen des Dialogs verworfen.
+  ADR 0050 dokumentiert den Ablauf.
+- Der gezielte finale Test unter
+  `build/TestResults/SpecializedReintegration-targeted-final-20260808-0212.xcresult`
+  prüft Fenster- und Launch-Rundläufe für alle sieben Typen. Der vollständige
+  Lauf unter
+  `build/TestResults/SpecializedReintegration-full-final-20260808-0212.xcresult`
+  umfasst 174 Tests: 172 bestanden, 2 ausdrücklich opt-in übersprungen, 0
+  Fehler und 0 erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-SpecializedReintegration-Product` wurde erfolgreich
+  gebaut, lokal ad-hoc signiert und streng geprüft. Die ausführbare Datei hat
+  SHA-256
+  `d50679ade79884d21141c55bd511405abf4c54237191a80b0159087ca4fec052`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0216-specialized-reintegration/`; die
+  konsistente Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0216-specialized-reintegration/Meine Finanzen.qdata`.
+  Beide installierten Apps sind binär identisch, der Desktop-Link zeigt auf
+  `/Applications`, Finder wurde auf die App gelenkt und Prozess 76187 läuft
+  daraus. Die Produktivdatei meldet Integrität `ok`, keine
+  Fremdschlüsselverletzung, Schema 39 und unverändert 97 Konten, 2.170
+  Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  daher wird keine sichtbare UI-Abnahme oder ein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand nach Installation: 24.526.759 Tokens.
+- Die Implementierung ist im Commit `3f822eb` gesichert. Veröffentlichung auf
+  GitHub und Telegram-Nachweis folgen im nächsten Evidenzschritt.
