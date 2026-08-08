@@ -4324,3 +4324,46 @@ Rechtsberatung.
 - Telegram-Nachricht 1156 meldet den geprüften Stand im `/quicken`-Thread 894.
   Wegen der gesperrten Sitzung wurde transparent kein Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 25.210.597 Tokens.
+
+## 08.08.2026 – Historische Depotperformance und erneute Installation
+
+- `security_prices` wird nun als persistente, sortierte Kursreihe gemeinsam
+  mit dem übrigen Finanzdateizustand geladen. Der Depotbericht rekonstruiert
+  Bestände und bewertet sie je Währung mit dem letzten bekannten Kurs am oder
+  vor dem jeweiligen Stichtag. Explizite Kurse haben am selben Tag Vorrang vor
+  aus Käufen oder Verkäufen abgeleiteten Kursen; es gibt keine Interpolation
+  und keine implizite Währungsumrechnung.
+- Der neue Reiter `Performance` trennt absoluten Gewinn, einfache Rendite,
+  zeitgewichtete Rendite, exaktdatierte geldgewichtete Jahresrendite und
+  annualisierte zeitgewichtete Rendite. Ein-/Auszahlungen, Nettoerträge,
+  Gebühren und Steuern werden getrennt ausgewiesen. Fehlende Kurse machen die
+  betroffene Kennzahl sichtbar nicht berechenbar; das älteste für den
+  Endstichtag verwendete Kursdatum bleibt als Aktualitätshinweis sichtbar.
+- Oberfläche, CSV, PDF und Druck verwenden denselben Snapshot und erklären
+  die Formeln. ADR 0054 dokumentiert die Cashflow- und Währungstrennung;
+  `PortalPrompt.md`, README und Anforderungsmatrix beschreiben den Stand
+  reproduzierbar. Benchmarkvergleich und Zielallokation bleiben offen.
+- Der vollständige finale Testlauf unter
+  `build/TestResults/Performance-final-20260808-0328.xcresult` umfasst 176
+  Tests: 174 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-Performance-Product` wurde erfolgreich gebaut, lokal
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `04c93bb579deded75210c3d1ac33d33e3b0c5a7c32f91827df95dc8a9cd7a3b4`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0325-performance/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0325-performance/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch. Die bestehende
+  Desktop-Verknüpfung zeigt auf `/Applications`; Finder wurde auf die App
+  gelenkt und Prozess 84343 läuft aus der systemweiten Installation. Light
+  Mode ist aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt die gesperrte Sitzung; deshalb wird
+  keine sichtbare UI-Abnahme und kein neuer Screenshot behauptet. Exakter
+  kumulativer Zielzählerstand nach Installation: 25.554.801 Tokens.
+- Die Implementierung ist im Commit `1a40577` festgehalten. Der Release- und
+  Installationsnachweis wird anschließend separat veröffentlicht.
