@@ -118,6 +118,65 @@ enum FinanceFilePreferences {
     }
 }
 
+enum OpenDataExportPreferences {
+    static let safeKeys: [String] = [
+        "appearanceMode",
+        AutomaticBackupPreferences.enabledKey,
+        AutomaticBackupPreferences.intervalHoursKey,
+        AutomaticBackupPreferences.maximumCountKey,
+        AutomaticBackupPreferences.maximumAgeDaysKey,
+        AppShortcutConfiguration.storageKey,
+        "registerMiniReportVisibleV1",
+        "registerMiniReportDimensionV1",
+        "registerSplitViewVisibleV1",
+        "registerSecondaryAccountIDV1",
+        "registerRowMode",
+        "registerVisibleColumnsV1",
+        "registerAmountColumnModeV1",
+        "registerVisibleColumnsIncludesBalanceV4",
+        "savedRegisterViewsV1",
+        "registerOpenAccountTabsV1",
+        "registerF3FieldV1",
+        "registerSortColumnV1",
+        "registerSortAscendingV1",
+        "registerQuickEntryVisibleV1",
+        "combinedRegisterSecondaryAccountIDsV1",
+        "combinedRegisterSecondaryForecastV1",
+        "combinedRegisterAccountIDsV1",
+        "savedCombinedRegisterViewsV1",
+        "combinedRegisterSplitVisibleV1",
+        "importMatchDateWindowDaysV1",
+        "csvImportProfilesV1",
+        "bankingMatchDateWindowDaysV1"
+    ]
+
+    static func values(from defaults: UserDefaults = .standard) -> [String: String] {
+        var result: [String: String] = [:]
+        for key in safeKeys {
+            guard let value = defaults.object(forKey: key) else { continue }
+            switch value {
+            case let string as String:
+                result[key] = string
+            case let number as NSNumber:
+                result[key] = number.stringValue
+            case let data as Data:
+                result[key] = String(data: data, encoding: .utf8)
+                    ?? "base64:" + data.base64EncodedString()
+            case let array as [Any]:
+                if JSONSerialization.isValidJSONObject(array),
+                   let data = try? JSONSerialization.data(
+                       withJSONObject: array, options: [.sortedKeys]
+                   ) {
+                    result[key] = String(decoding: data, as: UTF8.self)
+                }
+            default:
+                continue
+            }
+        }
+        return result
+    }
+}
+
 struct FinanceFileSnapshot: Equatable, Sendable {
     let url: URL
     let byteCount: Int64
@@ -654,6 +713,23 @@ final class FinanceAppStore: ObservableObject {
             errorMessage = nil
             statusText = "Geprüfte Reparaturkopie erstellt: \(snapshot.url.lastPathComponent) · SHA-256 \(snapshot.sha256.prefix(12))…"
             return snapshot
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func exportOpenDataArchive(at url: URL) -> OpenDataArchiveSummary? {
+        guard let repository else { return nil }
+        do {
+            let summary = try repository.exportOpenDataArchive(
+                to: url,
+                settings: OpenDataExportPreferences.values(from: preferences)
+            )
+            errorMessage = nil
+            statusText = "Offenes Datenarchiv exportiert: \(summary.tableCount) Tabellen · \(summary.rowCount) Zeilen · \(summary.attachmentCount) Anhänge"
+            return summary
         } catch {
             present(error)
             return nil

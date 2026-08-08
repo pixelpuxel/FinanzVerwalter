@@ -6477,6 +6477,22 @@ struct ImportExportView: View {
                     }
                 }
 
+                GroupBox("Offener Gesamtexport") {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text("Versioniertes JSON-Archiv mit CSV und Originalanhängen")
+                            Text("Exportiert einen konsistenten, dokumentierten Tabellenstand und freigegebene Einstellungen ohne Dateipfade oder Zugangsdaten.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Datenarchiv exportieren …", systemImage: "shippingbox") {
+                            exportOpenDataArchive()
+                        }
+                    }
+                    .padding(8)
+                }
+
                 GroupBox("Datensicherheit") {
                     HStack {
                         VStack(alignment: .leading) {
@@ -6665,6 +6681,26 @@ struct ImportExportView: View {
     private func clearPendingCSV() {
         pendingCSVData = nil
         pendingCSVName = ""
+    }
+
+    private func exportOpenDataArchive() {
+        guard let source = store.currentFinanceFileURL else { return }
+        let archiveType = UTType(
+            exportedAs: "de.pixelpuxel.finanzverwalter.open-data-archive",
+            conformingTo: .package
+        )
+        let panel = NSSavePanel()
+        panel.title = "Offenes Finanzdatenarchiv exportieren"
+        panel.prompt = "Exportieren"
+        panel.allowedContentTypes = [archiveType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue =
+            "\(source.deletingPathExtension().lastPathComponent) Datenexport.finanzarchiv"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "finanzarchiv" {
+            url.appendPathExtension("finanzarchiv")
+        }
+        _ = store.exportOpenDataArchive(at: url)
     }
 
     private func loadCSVProfiles() {

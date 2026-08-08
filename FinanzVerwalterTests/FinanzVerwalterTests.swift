@@ -12613,6 +12613,245 @@ final class FinanzVerwalterTests: XCTestCase {
         )
     }
 
+    func testOpenDataArchiveExportsEveryTableCSVAttachmentsAndSafeSettings() throws {
+        let context = try TestDatabase()
+        let account = FinanceAccount(
+            id: UUID(), name: "Exportkonto", institution: "Testbank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 12_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let category = FinanceCategory(
+            id: UUID(), parentID: nil, name: "Exportkategorie",
+            kind: .expense, color: "orange", isActive: true
+        )
+        let tag = FinanceTag(
+            id: UUID(), parentID: nil, name: "Exportklasse", color: "blue",
+            description: "Offener Export", isActive: true
+        )
+        try context.store.saveAccount(account)
+        try context.store.saveCategory(category)
+        try context.store.saveTag(tag)
+        let split = FinanceSplit(
+            id: UUID(), categoryID: category.id, amountMinor: -1_234,
+            memo: "vollständig", sortOrder: 0, tagIDs: [tag.id]
+        )
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: account.id,
+            bookingDate: Date(timeIntervalSince1970: 1_767_225_600),
+            valueDate: Date(timeIntervalSince1970: 1_767_312_000),
+            payee: "Exportlieferant", purpose: "JSON, CSV und Anhang",
+            categoryID: nil, amountMinor: -1_234, currency: "EUR",
+            status: .booked, memo: "portable Daten", reference: "EXP-1",
+            transferID: nil, importFingerprint: nil, splits: [split],
+            tagIDs: [tag.id]
+        )
+        try context.store.saveTransaction(transaction)
+        let attachmentPayload = Data(
+            "%PDF-1.7\nOffener FinanzVerwalter Export\n%%EOF\n".utf8
+        )
+        let attachmentSource = context.directory.appendingPathComponent(
+            "exportbeleg.pdf"
+        )
+        try attachmentPayload.write(to: attachmentSource)
+        let attachment = try context.store.addAttachment(
+            from: attachmentSource,
+            to: .transaction,
+            entityID: transaction.id
+        )
+
+        let suiteName = "FinanzVerwalterOpenExport.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("dark", forKey: "appearanceMode")
+        defaults.set(false, forKey: AutomaticBackupPreferences.enabledKey)
+        defaults.set("/privater/pfad/Finanzen.qdata", forKey: "lastFinanceFilePath")
+        defaults.set("niemals-exportieren", forKey: "bankingAccessToken")
+        let safeSettings = OpenDataExportPreferences.values(from: defaults)
+        XCTAssertEqual(safeSettings["appearanceMode"], "dark")
+        XCTAssertEqual(
+            safeSettings[AutomaticBackupPreferences.enabledKey], "0"
+        )
+        XCTAssertNil(safeSettings["lastFinanceFilePath"])
+        XCTAssertNil(safeSettings["bankingAccessToken"])
+
+        let sourceBefore = try FinanceFileSnapshotManager.snapshot(
+            for: context.store.fileURL
+        )
+        let fixedExportDate = Date(timeIntervalSince1970: 1_775_001_600)
+        let firstURL = context.directory.appendingPathComponent(
+            "Offener Export 1.finanzarchiv", isDirectory: true
+        )
+        let secondURL = context.directory.appendingPathComponent(
+            "Offener Export 2.finanzarchiv", isDirectory: true
+        )
+        let first = try context.store.exportOpenDataArchive(
+            to: firstURL,
+            settings: safeSettings,
+            exportedAt: fixedExportDate
+        )
+        let second = try context.store.exportOpenDataArchive(
+            to: secondURL,
+            settings: safeSettings,
+            exportedAt: fixedExportDate
+        )
+
+        let expectedTableCount = Int(try sqliteScalar(
+            context.store.fileURL,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ))
+        XCTAssertEqual(first.formatVersion, 1)
+        XCTAssertEqual(first.tableCount, expectedTableCount)
+        XCTAssertEqual(first.attachmentCount, 1)
+        XCTAssertGreaterThan(first.rowCount, 0)
+        XCTAssertEqual(
+            first.fileCount,
+            expectedTableCount + first.attachmentCount + 5
+        )
+        XCTAssertGreaterThan(first.byteCount, 0)
+        XCTAssertEqual(first.checksumManifestSHA256.count, 64)
+        XCTAssertEqual(
+            first.checksumManifestSHA256,
+            second.checksumManifestSHA256
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: firstURL.appendingPathComponent("checksums.sha256")),
+            try Data(contentsOf: secondURL.appendingPathComponent("checksums.sha256"))
+        )
+        XCTAssertEqual(
+            try FinanceFileSnapshotManager.snapshot(for: context.store.fileURL),
+            sourceBefore
+        )
+        XCTAssertTrue(try context.store.integrityCheck())
+
+        let data = try Data(
+            contentsOf: firstURL.appendingPathComponent("data.json")
+        )
+        let root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(
+            root["format"] as? String,
+            "de.pixelpuxel.finanzverwalter.open-data"
+        )
+        XCTAssertEqual((root["format_version"] as? NSNumber)?.intValue, 1)
+        let tables = try XCTUnwrap(root["tables"] as? [[String: Any]])
+        XCTAssertEqual(tables.count, expectedTableCount)
+        XCTAssertEqual(Set(tables.compactMap { $0["name"] as? String }).count,
+                       expectedTableCount)
+
+        func exportedTable(_ name: String) throws -> [String: Any] {
+            try XCTUnwrap(tables.first { ($0["name"] as? String) == name })
+        }
+        let accounts = try exportedTable("accounts")
+        let accountColumns = try XCTUnwrap(accounts["columns"] as? [String])
+        let accountRows = try XCTUnwrap(accounts["rows"] as? [[Any]])
+        let accountIDIndex = try XCTUnwrap(accountColumns.firstIndex(of: "id"))
+        XCTAssertTrue(accountRows.contains {
+            ($0[accountIDIndex] as? String) == account.id.uuidString
+        })
+        let transactions = try exportedTable("transactions")
+        let transactionColumns = try XCTUnwrap(
+            transactions["columns"] as? [String]
+        )
+        let transactionRows = try XCTUnwrap(transactions["rows"] as? [[Any]])
+        let transactionIDIndex = try XCTUnwrap(
+            transactionColumns.firstIndex(of: "id")
+        )
+        XCTAssertTrue(transactionRows.contains {
+            ($0[transactionIDIndex] as? String) == transaction.id.uuidString
+        })
+        let splitTable = try exportedTable("transaction_splits")
+        let splitColumns = try XCTUnwrap(splitTable["columns"] as? [String])
+        let splitRows = try XCTUnwrap(splitTable["rows"] as? [[Any]])
+        let splitIDIndex = try XCTUnwrap(splitColumns.firstIndex(of: "id"))
+        XCTAssertTrue(splitRows.contains {
+            ($0[splitIDIndex] as? String) == split.id.uuidString
+        })
+        let blobs = try exportedTable("attachment_blobs")
+        let blobColumns = try XCTUnwrap(blobs["columns"] as? [String])
+        XCTAssertFalse(blobColumns.contains("payload"))
+        XCTAssertTrue(blobColumns.contains("relative_path"))
+        XCTAssertFalse(
+            String(decoding: data, as: UTF8.self).contains(
+                attachmentPayload.base64EncodedString()
+            )
+        )
+
+        let attachmentURL = firstURL.appendingPathComponent(
+            "attachments/\(attachment.sha256).pdf"
+        )
+        XCTAssertEqual(try Data(contentsOf: attachmentURL), attachmentPayload)
+        let csvFiles = try FileManager.default.contentsOfDirectory(
+            at: firstURL.appendingPathComponent("csv"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(csvFiles.filter { $0.pathExtension == "csv" }.count,
+                       expectedTableCount)
+        let transactionCSV = try Data(contentsOf: firstURL
+            .appendingPathComponent("csv/transactions.csv"))
+        XCTAssertTrue(transactionCSV.starts(with: Data([0xEF, 0xBB, 0xBF])))
+        XCTAssertTrue(String(decoding: transactionCSV, as: UTF8.self)
+            .contains(transaction.id.uuidString))
+
+        let settingsText = try String(
+            contentsOf: firstURL.appendingPathComponent("settings.json"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(settingsText.contains("appearanceMode"))
+        XCTAssertFalse(settingsText.contains("privater/pfad"))
+        XCTAssertFalse(settingsText.contains("niemals-exportieren"))
+        let schemaText = try String(
+            contentsOf: firstURL.appendingPathComponent("schema.json"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(schemaText.contains("bookmark_data"))
+        XCTAssertTrue(schemaText.contains("inventory_attachments.bookmark_data"))
+        XCTAssertTrue(schemaText.contains("attachment_blobs.payload"))
+
+        let rootPermissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: firstURL.path)[.posixPermissions]
+                as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(rootPermissions, 0o700)
+        let dataPermissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(
+                atPath: firstURL.appendingPathComponent("data.json").path
+            )[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(dataPermissions, 0o600)
+
+        let checksumText = try String(
+            contentsOf: firstURL.appendingPathComponent("checksums.sha256"),
+            encoding: .utf8
+        )
+        for line in checksumText.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            XCTAssertEqual(parts.count, 2)
+            let expected = String(parts[0])
+            let relative = String(parts[1])
+            let payload = try Data(contentsOf: firstURL.appendingPathComponent(relative))
+            XCTAssertEqual(SHA256.hash(data: payload).hexString, expected)
+        }
+
+        let occupied = context.directory.appendingPathComponent(
+            "Belegt.finanzarchiv"
+        )
+        let sentinel = Data("nicht überschreiben".utf8)
+        try sentinel.write(to: occupied)
+        XCTAssertThrowsError(try context.store.exportOpenDataArchive(
+            to: occupied, settings: [:]
+        ))
+        XCTAssertEqual(try Data(contentsOf: occupied), sentinel)
+        XCTAssertThrowsError(try context.store.exportOpenDataArchive(
+            to: context.directory.appendingPathComponent("Falsch.json"),
+            settings: [:]
+        ))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: context.directory.path)
+                .contains { $0.hasPrefix(".finanzverwalter-export-") }
+        )
+    }
+
     func testBackupPreviewIsReadOnlyAndSummarizesRestoreContents() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(

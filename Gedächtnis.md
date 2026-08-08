@@ -4476,3 +4476,59 @@ Rechtsberatung.
 - Telegram-Nachricht 1171 meldet den Stand im `/quicken`-Thread 894. Wegen der
   gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 26.040.535 Tokens.
+
+## 08.08.2026 – Versioniertes offenes Gesamtdatenarchiv
+
+- Der erneute Abgleich mit Abschnitt 15.4 des Master-Prompts hat bestätigt,
+  dass fachliche Einzel- und Backupexporte vorhanden waren, aber ein
+  vollständiger offener Gesamtexport noch fehlte. `Ablage` und
+  `Import/Export` bieten nun `Offenes Datenarchiv exportieren …` für ein
+  neues `.finanzarchiv`-Paket an.
+- Der Export liest einen konsistenten SQLite-Online-Snapshot unveränderlich
+  und schreibt jede Anwendungstabelle stabil nach Primärschlüssel sowohl in
+  das versionierte `data.json` als auch in eine RFC-4180-CSV mit UTF-8-BOM.
+  `schema.json` dokumentiert Spalten und Schlüssel; `README.txt` erklärt das
+  Paket.
+- Deduplizierte Anhangspayloads werden vor der Ausgabe nach Größe und SHA-256
+  geprüft und einmalig als Originaldatei unter `attachments/` abgelegt. In
+  JSON und CSV steht stattdessen ein relativer Pfad. Gerätegebundene
+  Vertrags- und Inventar-Bookmarks, letzte/lokale Finanzdateipfade, Zugangsdaten und
+  Banking-/API-Token werden ausdrücklich ausgelassen. `settings.json`
+  verwendet eine feste Whitelist fachlicher Einstellungen.
+- Das Paket entsteht in einem privaten `0700`-Zwischenordner; Dateien sind
+  `0600`. `checksums.sha256` umfasst jede andere Datei. Erst nach atomarer
+  Freigabe werden exakte Dateimenge und sämtliche Hashes am endgültigen Ziel
+  erneut geprüft. Vorhandene Ziele, falsche Endungen, Symlink-Zielordner,
+  korrupte Anhänge und unerwartete Dateien führen ohne Quelländerung zum
+  Fehler. ADR 0057 hält Format, Datenschutzgrenze und den noch offenen
+  Rückimport fest.
+- Der gezielte Exporttest und vier zusammenhängende
+  Sicherungs-/Kopie-/Reparatur-/Archivtests sind grün. Die finale Härtung
+  schließt auch das alte Inventar-Bookmark aus, prüft versteckte unerwartete
+  Zieldateien und verwendet einen atomaren Same-Directory-`rename`. Der
+  vollständige finale XCTest-Lauf ist unter
+  `build/TestResults/OpenExport-final-direct-20260808-0448.log` protokolliert
+  und umfasst 179 Tests: 177 bestanden, 2 ausdrücklich opt-in übersprungen,
+  0 Fehler und 0 unerwartete Fehler. Wegen eines Xcode-GUI-Testlauncher-Hängers
+  in der gesperrten Sitzung wurde das vollständig frisch kompilierte
+  XCTest-Bundle direkt mit `xcrun xctest` ausgeführt.
+- Der native arm64-Release unter
+  `build/DerivedData-OpenExport-FinalProduct` wurde
+  sauber neu gebaut, lokal signiert und streng geprüft. Die ausführbare Datei
+  hat SHA-256
+  `de4671ce4668bcee44def2fc3676743fcf1d702c08744f79c940fc2f648f7e3f`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0451-open-export-final/` sowie zusätzlich
+  unter `build/InstallBackups/20260808-0427-open-export/`; die jüngste
+  konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0451-open-export-final/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind binär identisch. Der Desktop-Link
+  zeigt auf `/Applications`; Finder wurde auf die App gelenkt und Prozess
+  95667 läuft aus der systemweiten Installation. Light Mode ist aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt die gesperrte Sitzung; deshalb wird
+  keine sichtbare UI-Abnahme und kein neuer Screenshot behauptet. Exakter
+  kumulativer Zielzählerstand nach finaler Installation: 26.673.779 Tokens.

@@ -112,6 +112,10 @@ struct FinanzVerwalterApp: App {
                     createRepairCopy()
                 }
                 .disabled(store.currentFinanceFileURL == nil)
+                Button("Offenes Datenarchiv exportieren …") {
+                    exportOpenDataArchive()
+                }
+                .disabled(store.currentFinanceFileURL == nil)
                 Button("Finanzdatei archivieren …") {
                     archiveFinanceFile()
                 }
@@ -312,6 +316,26 @@ struct FinanzVerwalterApp: App {
             url.appendPathExtension("qdata")
         }
         _ = store.createRepairCopy(at: url)
+    }
+
+    private func exportOpenDataArchive() {
+        guard let source = store.currentFinanceFileURL else { return }
+        let archiveType = UTType(
+            exportedAs: "de.pixelpuxel.finanzverwalter.open-data-archive",
+            conformingTo: .package
+        )
+        let panel = NSSavePanel()
+        panel.title = "Offenes Finanzdatenarchiv exportieren"
+        panel.prompt = "Exportieren"
+        panel.allowedContentTypes = [archiveType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue =
+            "\(source.deletingPathExtension().lastPathComponent) Datenexport.finanzarchiv"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "finanzarchiv" {
+            url.appendPathExtension("finanzarchiv")
+        }
+        _ = store.exportOpenDataArchive(at: url)
     }
 
     private func closeFinanceFile() {

@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SQLite3
 
@@ -13,6 +14,17 @@ struct FinanceBackupPreview: Equatable, Sendable {
     let latestBookingDate: Date?
     let byteCount: Int64
     let modifiedAt: Date?
+}
+
+struct OpenDataArchiveSummary: Equatable, Sendable {
+    let url: URL
+    let formatVersion: Int
+    let tableCount: Int
+    let rowCount: Int
+    let attachmentCount: Int
+    let fileCount: Int
+    let byteCount: Int64
+    let checksumManifestSHA256: String
 }
 
 final class SQLiteFinanceStore {
@@ -10381,6 +10393,473 @@ final class SQLiteFinanceStore {
                 try FileManager.default.removeItem(at: sidecar)
             }
         }
+    }
+
+    func exportOpenDataArchive(
+        to rawTarget: URL,
+        settings: [String: String],
+        exportedAt: Date = .now,
+        fileManager: FileManager = .default
+    ) throws -> OpenDataArchiveSummary {
+        let target = rawTarget.standardizedFileURL
+        guard target.pathExtension.lowercased() == "finanzarchiv" else {
+            throw FinanceError.database(
+                "Das offene Datenarchiv muss die Endung .finanzarchiv besitzen."
+            )
+        }
+        guard target.path != fileURL.standardizedFileURL.path else {
+            throw FinanceError.database(
+                "Die aktive Finanzdatei darf nicht als Exportziel verwendet werden."
+            )
+        }
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw FinanceError.database("Am Exportziel existiert bereits eine Datei.")
+        }
+        let parent = target.deletingLastPathComponent()
+        let parentValues = try parent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard parentValues.isDirectory == true,
+              parentValues.isSymbolicLink != true else {
+            throw FinanceError.database(
+                "Der Exportordner ist kein regulärer, direkter Ordner."
+            )
+        }
+
+        let stage = parent.appendingPathComponent(
+            ".finanzverwalter-export-\(UUID().uuidString).tmp",
+            isDirectory: true
+        )
+        let snapshotURL = stage.appendingPathComponent("snapshot.qdata")
+        var published = false
+        defer {
+            try? fileManager.removeItem(at: stage)
+            if !published { try? fileManager.removeItem(at: target) }
+        }
+        try fileManager.createDirectory(
+            at: stage, withIntermediateDirectories: false
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: stage.path
+        )
+        try backup(to: snapshotURL)
+
+        var exportDatabase: OpaquePointer?
+        let immutableURI = snapshotURL.absoluteString + "?immutable=1"
+        guard sqlite3_open_v2(
+            immutableURI,
+            &exportDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let database = exportDatabase else {
+            if let exportDatabase { sqlite3_close(exportDatabase) }
+            throw FinanceError.database(
+                "Der konsistente Exportsnapshot konnte nicht geöffnet werden."
+            )
+        }
+        defer {
+            if let exportDatabase { sqlite3_close(exportDatabase) }
+        }
+
+        func quotedIdentifier(_ value: String) -> String {
+            "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+
+        func sha256(_ data: Data) -> String {
+            SHA256.hash(data: data)
+                .map { String(format: "%02x", $0) }
+                .joined()
+        }
+
+        var generatedChecksums: [String: String] = [:]
+        func writeFile(_ data: Data, relativePath: String) throws {
+            let components = relativePath.split(separator: "/").map(String.init)
+            guard !components.isEmpty,
+                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+                throw FinanceError.database("Der Exportpfad ist ungültig.")
+            }
+            let url = components.reduce(stage) { $0.appendingPathComponent($1) }
+            let directory = url.deletingLastPathComponent()
+            try fileManager.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            try fileManager.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path
+            )
+            try data.write(to: url, options: .atomic)
+            try fileManager.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
+            generatedChecksums[relativePath] = sha256(data)
+        }
+
+        func mimeExtension(_ mimeType: String) -> String {
+            switch mimeType.lowercased() {
+            case "application/pdf": "pdf"
+            case "image/png": "png"
+            case "image/jpeg": "jpg"
+            case "text/csv": "csv"
+            case "application/x-qif": "qif"
+            case "application/xml", "text/xml": "xml"
+            default: "bin"
+            }
+        }
+
+        var attachmentPaths: [String: String] = [:]
+        var attachmentCount = 0
+        var attachmentStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT sha256,mime_type,byte_count,payload FROM attachment_blobs ORDER BY sha256",
+            -1,
+            &attachmentStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database("Das Anhängemanifest konnte nicht gelesen werden.")
+        }
+        while sqlite3_step(attachmentStatement) == SQLITE_ROW {
+            let digest = Self.text(attachmentStatement, 0).lowercased()
+            let mimeType = Self.text(attachmentStatement, 1)
+            let byteCount = sqlite3_column_int64(attachmentStatement, 2)
+            let payload = Self.data(attachmentStatement, 3)
+            guard digest.count == 64,
+                  digest.allSatisfy({ $0.isHexDigit }),
+                  byteCount == Int64(payload.count),
+                  sha256(payload) == digest else {
+                sqlite3_finalize(attachmentStatement)
+                throw FinanceError.database(
+                    "Ein Anhang stimmt nicht mit seinem SHA-256-Manifest überein."
+                )
+            }
+            let relativePath = "attachments/\(digest).\(mimeExtension(mimeType))"
+            try writeFile(payload, relativePath: relativePath)
+            attachmentPaths[digest] = relativePath
+            attachmentCount += 1
+        }
+        sqlite3_finalize(attachmentStatement)
+
+        var tables: [String] = []
+        var tableStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            -1,
+            &tableStatement,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database("Die Exporttabellen konnten nicht ermittelt werden.")
+        }
+        while sqlite3_step(tableStatement) == SQLITE_ROW {
+            tables.append(Self.text(tableStatement, 0))
+        }
+        sqlite3_finalize(tableStatement)
+
+        let omittedColumns: [String: Set<String>] = [
+            "attachment_blobs": ["payload"],
+            "contract_documents": ["bookmark_data"],
+            "inventory_attachments": ["bookmark_data"]
+        ]
+        var tablePayloads: [[String: Any]] = []
+        var schemaTables: [[String: Any]] = []
+        var totalRowCount = 0
+
+        func csvField(_ value: String) -> String {
+            guard value.contains(",") || value.contains("\"")
+                    || value.contains("\n") || value.contains("\r") else {
+                return value
+            }
+            return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+
+        for table in tables {
+            var columns: [(name: String, type: String, primaryKeyOrder: Int)] = []
+            var infoStatement: OpaquePointer?
+            let infoSQL = "PRAGMA table_info(\(quotedIdentifier(table)))"
+            guard sqlite3_prepare_v2(
+                database, infoSQL, -1, &infoStatement, nil
+            ) == SQLITE_OK else {
+                throw FinanceError.database("Das Schema von \(table) konnte nicht gelesen werden.")
+            }
+            while sqlite3_step(infoStatement) == SQLITE_ROW {
+                let name = Self.text(infoStatement, 1)
+                guard omittedColumns[table]?.contains(name) != true else { continue }
+                columns.append(
+                    (
+                        name: name,
+                        type: Self.text(infoStatement, 2),
+                        primaryKeyOrder: Int(sqlite3_column_int(infoStatement, 5))
+                    )
+                )
+            }
+            sqlite3_finalize(infoStatement)
+            guard !columns.isEmpty else { continue }
+
+            var exportColumns = columns
+            if table == "attachment_blobs" {
+                exportColumns.append(("relative_path", "TEXT", 0))
+            }
+            let selectedColumns = columns.map { quotedIdentifier($0.name) }
+                .joined(separator: ",")
+            let primaryKeys = columns.filter { $0.primaryKeyOrder > 0 }
+                .sorted { $0.primaryKeyOrder < $1.primaryKeyOrder }
+            let orderClause = primaryKeys.isEmpty
+                ? " ORDER BY rowid"
+                : " ORDER BY " + primaryKeys.map { quotedIdentifier($0.name) }
+                    .joined(separator: ",")
+            let sql = "SELECT \(selectedColumns) FROM \(quotedIdentifier(table))\(orderClause)"
+            var rowStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &rowStatement, nil) == SQLITE_OK else {
+                throw FinanceError.database("Die Daten aus \(table) konnten nicht gelesen werden.")
+            }
+            var rows: [[Any]] = []
+            var csvLines = [exportColumns.map { csvField($0.name) }.joined(separator: ",")]
+            while sqlite3_step(rowStatement) == SQLITE_ROW {
+                var jsonRow: [Any] = []
+                var csvRow: [String] = []
+                for index in columns.indices {
+                    let type = sqlite3_column_type(rowStatement, Int32(index))
+                    switch type {
+                    case SQLITE_NULL:
+                        jsonRow.append(NSNull())
+                        csvRow.append("")
+                    case SQLITE_INTEGER:
+                        let value = sqlite3_column_int64(rowStatement, Int32(index))
+                        jsonRow.append(NSNumber(value: value))
+                        csvRow.append(String(value))
+                    case SQLITE_FLOAT:
+                        let value = sqlite3_column_double(rowStatement, Int32(index))
+                        jsonRow.append(NSNumber(value: value))
+                        csvRow.append(String(format: "%.17g", locale: Locale(identifier: "en_US_POSIX"), value))
+                    case SQLITE_BLOB:
+                        let value = Self.data(rowStatement, Int32(index)).base64EncodedString()
+                        jsonRow.append(["encoding": "base64", "value": value])
+                        csvRow.append("base64:" + value)
+                    default:
+                        let value = Self.text(rowStatement, Int32(index))
+                        jsonRow.append(value)
+                        csvRow.append(value)
+                    }
+                }
+                if table == "attachment_blobs",
+                   let shaIndex = columns.firstIndex(where: { $0.name == "sha256" }),
+                   let digest = jsonRow[shaIndex] as? String,
+                   let relativePath = attachmentPaths[digest.lowercased()] {
+                    jsonRow.append(relativePath)
+                    csvRow.append(relativePath)
+                } else if table == "attachment_blobs" {
+                    sqlite3_finalize(rowStatement)
+                    throw FinanceError.database(
+                        "Ein Anhangeintrag besitzt keine exportierte Originaldatei."
+                    )
+                }
+                rows.append(jsonRow)
+                csvLines.append(csvRow.map(csvField).joined(separator: ","))
+            }
+            sqlite3_finalize(rowStatement)
+            totalRowCount += rows.count
+            tablePayloads.append([
+                "name": table,
+                "columns": exportColumns.map(\.name),
+                "rows": rows
+            ])
+            schemaTables.append([
+                "name": table,
+                "columns": exportColumns.map {
+                    [
+                        "name": $0.name,
+                        "sqlite_type": $0.type,
+                        "primary_key_order": $0.primaryKeyOrder
+                    ] as [String: Any]
+                },
+                "omitted_columns": Array(omittedColumns[table] ?? []).sorted(),
+                "row_count": rows.count
+            ])
+            let csv = "\u{feff}" + csvLines.joined(separator: "\r\n") + "\r\n"
+            try writeFile(
+                Data(csv.utf8), relativePath: "csv/\(table).csv"
+            )
+        }
+
+        let exportedTimestamp = Self.timestamp(exportedAt)
+        let dataRoot: [String: Any] = [
+            "format": "de.pixelpuxel.finanzverwalter.open-data",
+            "format_version": 1,
+            "database_schema_version": try scalarInt("PRAGMA user_version"),
+            "exported_at": exportedTimestamp,
+            "table_count": tablePayloads.count,
+            "row_count": totalRowCount,
+            "attachment_count": attachmentCount,
+            "tables": tablePayloads
+        ]
+        let schemaRoot: [String: Any] = [
+            "format": "de.pixelpuxel.finanzverwalter.open-data-schema",
+            "format_version": 1,
+            "value_encoding": [
+                "NULL": "JSON null / leeres CSV-Feld",
+                "INTEGER": "JSON number / dezimale Ganzzahl",
+                "REAL": "JSON number / POSIX-Dezimalzahl",
+                "TEXT": "JSON string / RFC-4180-Feld",
+                "BLOB": "JSON-Objekt mit encoding=base64 / CSV-Präfix base64:"
+            ],
+            "tables": schemaTables,
+            "notes": [
+                "attachment_blobs.payload liegt dedupliziert unter attachments/ und wird über relative_path referenziert.",
+                "contract_documents.bookmark_data und inventory_attachments.bookmark_data sind gerätegebundene Sicherheitsbookmarks und werden nicht exportiert.",
+                "settings.json enthält ausschließlich freigegebene Darstellungs-, Register-, Import- und Sicherungseinstellungen; keine Dateipfade oder Zugangsdaten."
+            ]
+        ]
+        let jsonOptions: JSONSerialization.WritingOptions = [
+            .prettyPrinted, .sortedKeys, .withoutEscapingSlashes
+        ]
+        try writeFile(
+            try JSONSerialization.data(withJSONObject: dataRoot, options: jsonOptions),
+            relativePath: "data.json"
+        )
+        try writeFile(
+            try JSONSerialization.data(withJSONObject: schemaRoot, options: jsonOptions),
+            relativePath: "schema.json"
+        )
+        try writeFile(
+            try JSONSerialization.data(
+                withJSONObject: [
+                    "format": "de.pixelpuxel.finanzverwalter.settings",
+                    "format_version": 1,
+                    "values": settings
+                ],
+                options: jsonOptions
+            ),
+            relativePath: "settings.json"
+        )
+        let readme = """
+        FinanzVerwalter – offenes Datenarchiv, Formatversion 1
+
+        data.json enthält den vollständigen portablen Tabellenstand des konsistenten Exportsnapshots.
+        schema.json dokumentiert Spalten, SQLite-Typen, Primärschlüssel und bewusst ausgelassene gerätegebundene Felder.
+        csv/ enthält jede exportierte Tabelle zusätzlich als UTF-8/RFC-4180-Datei.
+        attachments/ enthält Originalanhänge dedupliziert nach SHA-256; attachment_links erhält Dateiname und Fachbezug.
+        settings.json enthält ausschließlich freigegebene Einstellungen ohne Dateipfade oder Zugangsdaten.
+        checksums.sha256 schützt alle Nutzdateien des Archivs. Pfade sind relativ zum Archivwurzelordner.
+
+        Exportzeitpunkt (UTC): \(exportedTimestamp)
+        Datenbankschema: \(try scalarInt("PRAGMA user_version"))
+        """
+        try writeFile(Data(readme.utf8), relativePath: "README.txt")
+
+        guard sqlite3_close(database) == SQLITE_OK else {
+            throw FinanceError.database("Der Exportsnapshot konnte nicht geschlossen werden.")
+        }
+        exportDatabase = nil
+        try fileManager.removeItem(at: snapshotURL)
+
+        let checksumLines = generatedChecksums.keys.sorted().map {
+            "\(generatedChecksums[$0]!)  \($0)"
+        }
+        let checksumData = Data((checksumLines.joined(separator: "\n") + "\n").utf8)
+        let checksumManifestSHA256 = sha256(checksumData)
+        try checksumData.write(
+            to: stage.appendingPathComponent("checksums.sha256"), options: .atomic
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stage.appendingPathComponent("checksums.sha256").path
+        )
+
+        let renameResult = stage.withUnsafeFileSystemRepresentation { source in
+            target.withUnsafeFileSystemRepresentation { destination in
+                guard let source, let destination else { return Int32(-1) }
+                return Darwin.rename(source, destination)
+            }
+        }
+        guard renameResult == 0 else {
+            let message = String(cString: strerror(errno))
+            throw FinanceError.database(
+                "Das Datenarchiv konnte nicht atomar freigegeben werden: \(message)"
+            )
+        }
+        let expectedFiles = Set(generatedChecksums.keys).union(["checksums.sha256"])
+        let validationRoot = target.resolvingSymlinksInPath()
+        var actualFiles = Set<String>()
+        var totalBytes: Int64 = 0
+        func validateDirectory(_ directory: URL, prefix: String) throws {
+            let children = try fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .fileSizeKey
+                ],
+                options: []
+            )
+            for url in children {
+                let values = try url.resourceValues(
+                    forKeys: [
+                        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                        .fileSizeKey
+                    ]
+                )
+                guard values.isSymbolicLink != true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Symlink."
+                    )
+                }
+                let relative = prefix.isEmpty
+                    ? url.lastPathComponent
+                    : prefix + "/" + url.lastPathComponent
+                if values.isDirectory == true {
+                    try validateDirectory(url, prefix: relative)
+                    continue
+                }
+                guard values.isRegularFile == true else {
+                    throw FinanceError.database(
+                        "Das Datenarchiv enthält einen unerlaubten Dateityp."
+                    )
+                }
+                actualFiles.insert(relative)
+                totalBytes += Int64(values.fileSize ?? 0)
+                if let expected = generatedChecksums[relative] {
+                    let payload = try Data(
+                        contentsOf: url, options: [.mappedIfSafe]
+                    )
+                    guard sha256(payload) == expected else {
+                        throw FinanceError.database(
+                            "Die Prüfsumme von \(relative) stimmt nach der Freigabe nicht."
+                        )
+                    }
+                }
+            }
+        }
+        try validateDirectory(validationRoot, prefix: "")
+        guard actualFiles == expectedFiles else {
+            let missing = expectedFiles.subtracting(actualFiles).sorted()
+            let unexpected = actualFiles.subtracting(expectedFiles).sorted()
+            throw FinanceError.database(
+                "Das fertige Datenarchiv ist unvollständig (fehlend: \(missing.joined(separator: ", ")); unerwartet: \(unexpected.joined(separator: ", ")))."
+            )
+        }
+        guard sha256(
+            try Data(contentsOf: target.appendingPathComponent("checksums.sha256"))
+        ) == checksumManifestSHA256 else {
+            throw FinanceError.database(
+                "Das Prüfsummenmanifest wurde nach der Freigabe verändert."
+            )
+        }
+        let rootValues = try target.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard rootValues.isDirectory == true,
+              rootValues.isSymbolicLink != true else {
+            throw FinanceError.database("Das fertige Datenarchiv ist kein reguläres Paket.")
+        }
+        published = true
+        return OpenDataArchiveSummary(
+            url: target,
+            formatVersion: 1,
+            tableCount: tablePayloads.count,
+            rowCount: totalRowCount,
+            attachmentCount: attachmentCount,
+            fileCount: expectedFiles.count,
+            byteCount: totalBytes,
+            checksumManifestSHA256: checksumManifestSHA256
+        )
     }
 
     /// Erzeugt eine gewartete, eigenständig geprüfte Kopie. Die aktive

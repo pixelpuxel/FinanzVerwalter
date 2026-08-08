@@ -2316,3 +2316,44 @@ abgeglichene Seiten, Nullbeträge, unvollständige Paare und Einzeländerungen
 sind harte Fehler. Erfasse die Paaränderung als ein Auditereignis und ein
 vollständiges Zwei-Seiten-Undo. Teste stabile IDs, Salden, Datum/Zweck,
 Einzelpfadsperre, Undo und Fremdwährungskurse.
+
+# Reproduzierbarer vollständiger offener Datenexport
+
+Ergänze im Ablage-Menü und im Bereich `Import/Export` die Aktion
+`Offenes Datenarchiv exportieren …`. Das Ziel ist ein neues Paket mit der
+Endung `.finanzarchiv`; vorhandene Ziele, Symlink-Zielordner und andere
+Endungen sind harte Fehler. Erzeuge zuerst per SQLite-Online-Backup einen
+konsistenten, unabhängigen Snapshot in einem privaten versteckten
+Zwischenordner. Die aktive Finanzdatei darf während des Exports weder
+checkpointed noch fachlich verändert werden.
+
+Das Paketformat besitzt Kennung
+`de.pixelpuxel.finanzverwalter.open-data` und Versionsnummer 1. Schreibe
+`data.json` mit jeder nicht internen SQLite-Tabelle, Spaltennamen und Zeilen,
+`csv/<tabelle>.csv` als RFC 4180 mit UTF-8-BOM für dieselben Daten sowie
+`schema.json` mit SQL-Typen und Primärschlüsselpositionen. Sortiere jede
+Tabelle stabil nach ihrem vollständigen Primärschlüssel; Tabellen ohne
+Primärschlüssel nach `rowid`. Bewahre UUIDs und Fremdschlüssel unverändert.
+Kodierte Rest-BLOBs werden als Base64-Objekt beschrieben.
+
+Exportiere `attachment_blobs.payload` nicht erneut in JSON oder CSV. Prüfe
+zuerst deklarierte Größe und SHA-256, schreibe jeden deduplizierten Payload
+unter `attachments/<sha256>.<erweiterung>` und ersetze das Feld in den
+Tabellenexporten durch `relative_path`. Lasse gerätegebundene
+`contract_documents.bookmark_data` sowie
+`inventory_attachments.bookmark_data` ausdrücklich weg und dokumentiere
+diese Auslassungen im Schema. Schreibe in `settings.json` ausschließlich eine feste
+Whitelist für Darstellung, automatische Sicherung, Shortcuts,
+Kontoblattansichten/-tabs/-sortierung, Importprofile und Matchingfenster.
+Exportiere nie zuletzt verwendete Dateipfade, Security-Scoped Bookmarks,
+Passwörter, Zugangsdaten oder Banking-/API-Token.
+
+Ergänze eine menschenlesbare `README.txt`. Setze Paketordner auf `0700` und
+Dateien auf `0600`. Erzeuge zuletzt `checksums.sha256` für jede andere Datei,
+verschiebe den Zwischenordner atomar und validiere am endgültigen Ziel die
+exakte Dateimenge sowie jede Prüfsumme erneut. Entferne bei jedem Fehler nur
+eigene Zwischenartefakte. Teste vollständige Tabellenabdeckung, Beziehungen,
+Splits, exakte Anhangsbytes, CSV-BOM und Escaping, Geheimnis-/Pfadausschluss,
+Rechte, deterministische Wiederholung bei festem Zeitpunkt, Quellintegrität,
+Zielschutz und das Fehlen liegengebliebener Zwischenordner. Kennzeichne einen
+späteren Rückimport ausdrücklich als offen.

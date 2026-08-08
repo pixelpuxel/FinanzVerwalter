@@ -840,6 +840,29 @@ kennzeichnet die Funktion als Verwaltungshilfe, nicht als Steuerberatung.
 
 ## Datensicherung und Wiederherstellung
 
+### Offenes Gesamtdatenarchiv
+
+`Ablage > Offenes Datenarchiv exportieren …` und der Bereich
+`Import/Export` erzeugen ein neues `.finanzarchiv`-Paket. Das Paket ist kein
+proprietäres Backup, sondern ein dokumentierter, versionierter Gesamtexport:
+`data.json` enthält alle Tabellen und Beziehungen, `csv/` eine RFC-4180-Datei
+mit UTF-8-BOM je Tabelle, `schema.json` Spalten und Primärschlüssel sowie
+`attachments/` die gespeicherten Belegdateien. `settings.json` enthält nur
+eine ausdrücklich freigegebene Auswahl fachlicher Einstellungen. Lokale
+Dateipfade, Security-Scoped Bookmarks, Zugangs- und Banking-Token werden nicht
+exportiert.
+
+Das Format heißt `de.pixelpuxel.finanzverwalter.open-data`, beginnt mit
+Version 1 und verwendet stabile Primärschlüsselreihenfolgen. Binärwerte werden
+Base64-kodiert; Anhangspayloads liegen stattdessen einmalig hashadressiert im
+Anhangsordner. `README.txt` erklärt das Paket, `checksums.sha256` deckt jede
+andere Datei ab. Der Export entsteht in einem privaten `0700`-Zwischenordner
+aus einem konsistenten SQLite-Online-Snapshot, prüft Anhangsgröße und -hash,
+setzt Dateien auf `0600`, wird nur an ein neues Ziel atomar freigegeben und
+validiert danach Dateimenge und sämtliche Prüfsummen erneut. Die geöffnete
+Finanzdatei bleibt unverändert. Das Paket ist bewusst offen; ein
+Rückimport-Assistent ist noch nicht implementiert.
+
 `Import/Export` erstellt manuelle vollständige SQLite-Sicherungen und prüft
 sie vor der Ausgabe. Vor einem Restore zeigt eine modale, tastaturbedienbare
 Vorschau Dateiname, Finanzdateiname, Basiswährung, Schema, Konten-,
