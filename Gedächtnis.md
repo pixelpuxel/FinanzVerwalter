@@ -4815,3 +4815,9 @@ Rechtsberatung.
   Kategorien.
 - Exakter kumulativer Zielzählerstand nach Release und Installation:
   28.519.813 Tokens.
+- Die Reihenfolgensteuerung wurde als Commit `bc1746f` veröffentlicht und der
+  Draft-PR #1 um Bedienung, Vollsuite und neuen Release-Hash ergänzt.
+- Telegram-Nachricht 1206 dokumentiert den Stand im `/quicken`-Thread 894;
+  wegen der gesperrten Sitzung weiterhin ohne behaupteten Screenshot.
+- Exakter kumulativer Zielzählerstand nach GitHub- und Telegram-Übergabe:
+  28.525.685 Tokens.
