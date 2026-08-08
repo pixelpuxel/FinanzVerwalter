@@ -2263,3 +2263,27 @@ Kennzahlen und Formeln aus demselben Snapshot übernehmen. Teste persistente
 Kursreihen, einen deterministischen Einjahresfall mit Kauf, Ausschüttung und
 Endkurs, die Trennung von absoluter Rendite, TWR und XIRR sowie Exportinhalte.
 Benchmarkvergleich und Zielallokation bleiben ausdrücklich offen.
+
+# Umbuchungspaare im Kontoblatt atomar bearbeiten
+
+Eine Buchungszeile mit `transferID` darf niemals den normalen
+Einzelbuchungseditor oder `saveTransaction` verwenden. Leite `Bearbeiten`,
+Doppelklick und die zweite Kontoblattansicht stattdessen in einen eigenen
+Paar-Editor. Ermittle die Sollseite ausschließlich über den negativen und die
+Habenseite über den positiven Betrag; fehlen genau zwei eindeutige Seiten,
+brich ohne Schreibzugriff ab.
+
+Der Paar-Editor hält Quell- und Zielkonto unveränderlich fest und erlaubt
+Datum, Verwendungszweck sowie Abgangs- und Gutschriftsbetrag zu ändern. Bei
+gleicher Währung müssen beide positiven Eingabebeträge identisch sein. Bei
+verschiedenen Kontowährungen speichere beide Beträge getrennt, aktualisiere die
+gegenseitigen Originalbeträge und leite beide reziproken achtstelligen Kurse
+neu mit Decimal-/Banker's-Rundung ab.
+
+Schreibe beide vorhandenen Transaktions-IDs in einer SQLite-Transaktion,
+erhalte `transferID` und Herkunft, aktualisiere Empfängernamen aus dem jeweils
+anderen Konto und berechne Duplikatfingerabdrücke neu. Geschlossene Konten,
+abgeglichene Seiten, Nullbeträge, unvollständige Paare und Einzeländerungen
+sind harte Fehler. Erfasse die Paaränderung als ein Auditereignis und ein
+vollständiges Zwei-Seiten-Undo. Teste stabile IDs, Salden, Datum/Zweck,
+Einzelpfadsperre, Undo und Fremdwährungskurse.

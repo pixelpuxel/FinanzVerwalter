@@ -226,6 +226,14 @@ unter dem gebuchten Betrag. Summen und Salden bleiben immer nach Währung
 getrennt; ohne explizite Umrechnungsregel werden verschiedene Währungen nicht
 addiert.
 
+`Bearbeiten` und ein Doppelklick auf eine Umbuchungszeile öffnen im Kontoblatt
+einen eigenen Paar-Editor. Datum, Verwendungszweck und – bei Fremdwährungen
+getrennt – beide Beträge werden in genau einer SQLite-Transaktion auf beiden
+Kontoseiten geändert. Die Konten bleiben dabei fest, abgeglichene Seiten sind
+geschützt und ein normaler Einzelbuchungs-Speicherpfad weist jede
+Transferseite ab. Die vollständige Paaränderung erhält IDs und Transferbezug,
+wird auditiert und lässt sich als ein gemeinsames Undo zurücknehmen.
+
 ## Beleganhänge an Buchungen
 
 Bei einer bereits gespeicherten Buchung verwaltet der Buchungseditor mehrere
@@ -411,7 +419,8 @@ und einzelne Umbuchungsseiten bleiben geschützt. Die Kontoänderung erfolgt
 atomar und wird in der Auditspur protokolliert.
 
 Nach Erstellen, Bearbeiten, Verschieben, gemeinsamer Kategorie-/Klassen-
-Änderung, Löschen oder Erstellen einer Umbuchung erscheint im Kontoblatt
+Änderung, Löschen sowie Erstellen oder Bearbeiten einer Umbuchung erscheint im
+Kontoblatt
 `Rückgängig`. FinanzVerwalter speichert dafür vor und nach der Änderung einen
 vollständigen, persistenten Buchungssnapshot. Ein Löschvorgang oder eine
 Umbuchung wird immer als gesamtes Paket wiederhergestellt. Vor dem Undo wird

@@ -1035,16 +1035,23 @@ private struct AccountGroupEditorRow: View {
 struct TransferEditorView: View {
     @EnvironmentObject private var store: FinanceAppStore
     @Environment(\.dismiss) private var dismiss
+    let transferID: UUID?
     @State private var sourceID: UUID?
     @State private var destinationID: UUID?
     @State private var sourceAmount = ""
     @State private var destinationAmount = ""
     @State private var date = Date()
     @State private var purpose = "Umbuchung"
+    @State private var initialized = false
+
+    init(transferID: UUID? = nil) {
+        self.transferID = transferID
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Umbuchung").font(.title2.bold())
+            Text(transferID == nil ? "Umbuchung" : "Umbuchung bearbeiten")
+                .font(.title2.bold())
             Text("Beide Kontoseiten werden als ein atomarer Vorgang gespeichert.")
                 .foregroundStyle(.secondary)
             Form {
@@ -1055,6 +1062,7 @@ struct TransferEditorView: View {
                             .tag(UUID?.some($0.id))
                     }
                 }
+                .disabled(transferID != nil)
                 Picker("Auf Konto", selection: $destinationID) {
                     Text("Bitte wählen").tag(UUID?.none)
                     ForEach(openAccounts.filter { $0.id != sourceID }) {
@@ -1062,6 +1070,7 @@ struct TransferEditorView: View {
                             .tag(UUID?.some($0.id))
                     }
                 }
+                .disabled(transferID != nil)
                 TextField(
                     "Abgang \(sourceAccount?.currency ?? "")",
                     text: $sourceAmount,
@@ -1097,15 +1106,26 @@ struct TransferEditorView: View {
                 Spacer()
                 Button("Abbrechen", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Umbuchen") {
+                Button(transferID == nil ? "Umbuchen" : "Änderungen speichern") {
                     guard let sourceID, let destinationID else { return }
-                    if store.createTransfer(
-                        from: sourceID, to: destinationID,
-                        sourceAmount: sourceAmount,
-                        destinationAmount: isForeignCurrency
-                            ? destinationAmount : sourceAmount,
-                        date: date, purpose: purpose
-                    ) {
+                    let saved = if let transferID {
+                        store.updateTransfer(
+                            id: transferID,
+                            sourceAmount: sourceAmount,
+                            destinationAmount: isForeignCurrency
+                                ? destinationAmount : sourceAmount,
+                            date: date, purpose: purpose
+                        )
+                    } else {
+                        store.createTransfer(
+                            from: sourceID, to: destinationID,
+                            sourceAmount: sourceAmount,
+                            destinationAmount: isForeignCurrency
+                                ? destinationAmount : sourceAmount,
+                            date: date, purpose: purpose
+                        )
+                    }
+                    if saved {
                         dismiss()
                     }
                 }
@@ -1125,12 +1145,11 @@ struct TransferEditorView: View {
         }
         .padding(24)
         .frame(width: 500)
+        .accessibilityIdentifier(
+            transferID == nil ? "transferEditor.create" : "transferEditor.edit"
+        )
         .onAppear {
-            sourceID = store.selectedAccountID.flatMap { selectedID in
-                openAccounts.contains(where: { $0.id == selectedID })
-                    ? selectedID : nil
-            } ?? openAccounts.first?.id
-            destinationID = openAccounts.first { $0.id != sourceID }?.id
+            initialize()
         }
         .onChange(of: sourceID) {
             if destinationID == sourceID {
@@ -1188,6 +1207,37 @@ struct TransferEditorView: View {
     private func synchronizeAmountsIfNeeded() {
         guard !isForeignCurrency else { return }
         destinationAmount = sourceAmount
+    }
+
+    private func initialize() {
+        guard !initialized else { return }
+        initialized = true
+        if let transferID {
+            let members = store.transactions.filter { $0.transferID == transferID }
+            guard let source = members.first(where: { $0.amountMinor < 0 }),
+                  let destination = members.first(where: { $0.amountMinor > 0 })
+            else {
+                store.errorMessage = "Die Umbuchung ist nicht vollständig."
+                return
+            }
+            sourceID = source.accountID
+            destinationID = destination.accountID
+            sourceAmount = Money(
+                minorUnits: abs(source.amountMinor), currency: source.currency
+            ).editingString
+            destinationAmount = Money(
+                minorUnits: destination.amountMinor,
+                currency: destination.currency
+            ).editingString
+            date = source.bookingDate
+            purpose = source.purpose
+            return
+        }
+        sourceID = store.selectedAccountID.flatMap { selectedID in
+            openAccounts.contains(where: { $0.id == selectedID })
+                ? selectedID : nil
+        } ?? openAccounts.first?.id
+        destinationID = openAccounts.first { $0.id != sourceID }?.id
     }
 }
 

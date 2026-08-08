@@ -961,6 +961,87 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(try context.store.accountBalanceMinor(account: destination), 25_000)
     }
 
+    func testTransferUpdateChangesBothSidesAtomicallyAndSupportsUndo() throws {
+        let context = try TestDatabase()
+        let source = FinanceAccount(
+            id: UUID(), name: "Giro", institution: "", type: .checking,
+            currency: "EUR", openingBalanceMinor: 100_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        let destination = FinanceAccount(
+            id: UUID(), name: "Rücklage", institution: "", type: .savings,
+            currency: "EUR", openingBalanceMinor: 0,
+            isHidden: false, isClosed: false, sortOrder: 1
+        )
+        try context.store.saveAccount(source)
+        try context.store.saveAccount(destination)
+        let originalDate = Date(timeIntervalSince1970: 1_735_689_600)
+        let editedDate = Date(timeIntervalSince1970: 1_738_368_000)
+        try context.store.createTransfer(
+            from: source, to: destination, amountMinor: 25_000,
+            date: originalDate, purpose: "Erste Rücklage"
+        )
+        let original = try context.store.transactions()
+        let transferID = try XCTUnwrap(original.first?.transferID)
+        let originalIDs = Set(original.map(\.id))
+
+        XCTAssertThrowsError(
+            try context.store.updateTransfer(
+                id: transferID,
+                sourceAmountMinor: .min,
+                destinationAmountMinor: 40_000,
+                date: editedDate,
+                purpose: "Darf nicht teilweise schreiben"
+            )
+        )
+        XCTAssertEqual(try context.store.transactions(), original)
+
+        try context.store.updateTransfer(
+            id: transferID,
+            sourceAmountMinor: 40_000,
+            destinationAmountMinor: 40_000,
+            date: editedDate,
+            purpose: "Erhöhte Rücklage"
+        )
+
+        let edited = try context.store.transactions()
+        XCTAssertEqual(edited.count, 2)
+        XCTAssertEqual(Set(edited.map(\.id)), originalIDs)
+        XCTAssertEqual(Set(edited.compactMap(\.transferID)), Set([transferID]))
+        XCTAssertEqual(edited.reduce(Int64.zero) { $0 + $1.amountMinor }, 0)
+        XCTAssertTrue(edited.allSatisfy { $0.bookingDate == editedDate })
+        XCTAssertTrue(edited.allSatisfy { $0.valueDate == editedDate })
+        XCTAssertTrue(edited.allSatisfy { $0.purpose == "Erhöhte Rücklage" })
+        XCTAssertEqual(edited.first { $0.amountMinor < 0 }?.payee, destination.name)
+        XCTAssertEqual(edited.first { $0.amountMinor > 0 }?.payee, source.name)
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: source), 60_000)
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: destination), 40_000)
+
+        var forbiddenSingleSide = try XCTUnwrap(
+            edited.first { $0.amountMinor < 0 }
+        )
+        forbiddenSingleSide.purpose = "Nur eine Seite"
+        XCTAssertThrowsError(
+            try context.store.saveTransaction(forbiddenSingleSide)
+        )
+        XCTAssertTrue(
+            try context.store.transactions().allSatisfy {
+                $0.purpose == "Erhöhte Rücklage"
+            }
+        )
+
+        let undo = try XCTUnwrap(try context.store.latestTransactionUndo())
+        XCTAssertEqual(undo.title, "Umbuchung bearbeitet")
+        XCTAssertEqual(undo.transactionCount, 2)
+        XCTAssertEqual(try context.store.undoTransactionMutation(id: undo.id), 2)
+        let restored = try context.store.transactions()
+        XCTAssertEqual(Set(restored.map(\.id)), originalIDs)
+        XCTAssertTrue(restored.allSatisfy { $0.bookingDate == originalDate })
+        XCTAssertTrue(restored.allSatisfy { $0.purpose == "Erste Rücklage" })
+        XCTAssertEqual(restored.reduce(Int64.zero) { $0 + $1.amountMinor }, 0)
+        XCTAssertTrue(try context.store.integrityCheck())
+    }
+
     func testForeignCurrencyTransferPersistsBothAmountsRatesAndBalances() throws {
         let context = try TestDatabase()
         let euro = FinanceAccount(
@@ -1006,6 +1087,34 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertNoThrow(try destination.validate())
         XCTAssertEqual(try context.store.accountBalanceMinor(account: euro), -10_000)
         XCTAssertEqual(try context.store.accountBalanceMinor(account: dollar), 10_950)
+
+        let transferID = try XCTUnwrap(source.transferID)
+        let editedDate = Date(timeIntervalSince1970: 1_738_368_000)
+        try context.store.updateTransfer(
+            id: transferID,
+            sourceAmountMinor: 12_000,
+            destinationAmountMinor: 13_200,
+            date: editedDate,
+            purpose: "Währungstausch angepasst"
+        )
+        let edited = try context.store.transactions()
+        let editedSource = try XCTUnwrap(edited.first { $0.accountID == euro.id })
+        let editedDestination = try XCTUnwrap(
+            edited.first { $0.accountID == dollar.id }
+        )
+        XCTAssertEqual(editedSource.amountMinor, -12_000)
+        XCTAssertEqual(editedSource.originalAmountMinor, -13_200)
+        XCTAssertEqual(editedSource.originalCurrency, "USD")
+        XCTAssertEqual(editedDestination.amountMinor, 13_200)
+        XCTAssertEqual(editedDestination.originalAmountMinor, 12_000)
+        XCTAssertEqual(editedDestination.originalCurrency, "EUR")
+        XCTAssertEqual(editedDestination.exchangeRateScaled, 110_000_000)
+        XCTAssertTrue(edited.allSatisfy { $0.bookingDate == editedDate })
+        XCTAssertTrue(edited.allSatisfy {
+            $0.purpose == "Währungstausch angepasst"
+        })
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: euro), -12_000)
+        XCTAssertEqual(try context.store.accountBalanceMinor(account: dollar), 13_200)
         XCTAssertTrue(try context.store.integrityCheck())
     }
 

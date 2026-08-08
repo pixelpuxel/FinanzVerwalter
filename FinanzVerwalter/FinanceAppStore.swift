@@ -1565,6 +1565,49 @@ final class FinanceAppStore: ObservableObject {
         )
     }
 
+    func updateTransfer(
+        id transferID: UUID,
+        sourceAmount: String,
+        destinationAmount: String,
+        date: Date,
+        purpose: String
+    ) -> Bool {
+        guard let repository else { return false }
+        let members = transactions.filter { $0.transferID == transferID }
+        guard let sourceValue = members.first(where: { $0.amountMinor < 0 }),
+              let destinationValue = members.first(where: { $0.amountMinor > 0 }),
+              let source = accounts.first(where: {
+                  $0.id == sourceValue.accountID
+              }),
+              let destination = accounts.first(where: {
+                  $0.id == destinationValue.accountID
+              }) else {
+            errorMessage = "Die Umbuchung ist nicht vollständig."
+            return false
+        }
+        do {
+            let sourceMoney = try Money(
+                parsing: sourceAmount, currency: source.currency
+            )
+            let destinationMoney = try Money(
+                parsing: destinationAmount, currency: destination.currency
+            )
+            try repository.updateTransfer(
+                id: transferID,
+                sourceAmountMinor: abs(sourceMoney.minorUnits),
+                destinationAmountMinor: abs(destinationMoney.minorUnits),
+                date: date,
+                purpose: purpose
+            )
+            try load()
+            statusText = "Umbuchung atomar aktualisiert"
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
     func createTransfer(
         from sourceID: UUID,
         to destinationID: UUID,

@@ -8603,11 +8603,21 @@ final class SQLiteFinanceStore {
         try validateVATReferences(value)
         let before = try transactionSnapshots(ids: [value.id])
         var existingStatus: String?
-        try query("SELECT status FROM transactions WHERE id=?", [.text(value.id.uuidString)]) {
+        var existingTransferID: String?
+        try query(
+            "SELECT status,transfer_id FROM transactions WHERE id=?",
+            [.text(value.id.uuidString)]
+        ) {
             existingStatus = Self.text($0, 0)
+            existingTransferID = Self.optionalText($0, 1)
         }
         if existingStatus == TransactionStatus.reconciled.rawValue {
             throw FinanceError.protectedTransaction
+        }
+        if existingTransferID != nil || value.transferID != nil {
+            throw FinanceError.database(
+                "Eine Umbuchung kann nur als zusammengehöriges Buchungspaar geändert werden."
+            )
         }
         let now = Self.timestamp(Date())
         try transaction {
@@ -9117,6 +9127,10 @@ final class SQLiteFinanceStore {
                     "Quell- und Zielkonto müssen verschieden, vorhanden und geöffnet sein."
                 )
             }
+            guard sourceAmountMinor != .min,
+                  destinationAmountMinor != .min else {
+                throw FinanceError.invalidAmount("Überlauf")
+            }
             let sourceAmount = abs(sourceAmountMinor)
             let destinationAmount = abs(destinationAmountMinor)
             guard sourceAmount > 0, destinationAmount > 0 else {
@@ -9177,6 +9191,116 @@ final class SQLiteFinanceStore {
                 ? "\(purpose); \(Money(minorUnits: sourceAmount, currency: source.currency).editingString) \(source.currency) → \(Money(minorUnits: destinationAmount, currency: destination.currency).editingString) \(destination.currency)"
                 : purpose
             try audit(entity: "transfer", id: transferID, action: "create", details: details)
+        }
+    }
+
+    func updateTransfer(
+        id transferID: UUID,
+        sourceAmountMinor: Int64,
+        destinationAmountMinor: Int64,
+        date: Date,
+        purpose: String
+    ) throws {
+        let now = Self.timestamp(Date())
+        try transaction {
+            let members = try transactions().filter { $0.transferID == transferID }
+            guard members.count == 2,
+                  var sourceValue = members.first(where: { $0.amountMinor < 0 }),
+                  var destinationValue = members.first(where: { $0.amountMinor > 0 }),
+                  sourceValue.id != destinationValue.id
+            else {
+                throw FinanceError.database(
+                    "Die Umbuchung ist unvollständig oder besitzt keine eindeutige Soll-/Habenseite."
+                )
+            }
+            guard sourceValue.status != .reconciled,
+                  destinationValue.status != .reconciled else {
+                throw FinanceError.protectedTransaction
+            }
+            let accountsByID = Dictionary(
+                uniqueKeysWithValues: try accounts().map { ($0.id, $0) }
+            )
+            guard let source = accountsByID[sourceValue.accountID],
+                  let destination = accountsByID[destinationValue.accountID],
+                  !source.isClosed, !destination.isClosed,
+                  source.id != destination.id else {
+                throw FinanceError.database(
+                    "Beide Konten der Umbuchung müssen vorhanden, verschieden und geöffnet sein."
+                )
+            }
+            guard sourceAmountMinor != .min,
+                  destinationAmountMinor != .min else {
+                throw FinanceError.invalidAmount("Überlauf")
+            }
+            let sourceAmount = abs(sourceAmountMinor)
+            let destinationAmount = abs(destinationAmountMinor)
+            guard sourceAmount > 0, destinationAmount > 0 else {
+                throw FinanceError.invalidAmount("0")
+            }
+            let isForeignCurrency = source.currency.uppercased()
+                != destination.currency.uppercased()
+            guard isForeignCurrency || sourceAmount == destinationAmount else {
+                throw FinanceError.invalidExchangeRate(
+                    "Bei gleicher Währung müssen beide Kontoseiten denselben Betrag besitzen."
+                )
+            }
+            let sourceRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: destinationAmount,
+                originalCurrency: destination.currency,
+                bookedMinor: sourceAmount,
+                bookedCurrency: source.currency
+            ) : nil
+            let destinationRate = isForeignCurrency ? try ExchangeRate.derived(
+                originalMinor: sourceAmount,
+                originalCurrency: source.currency,
+                bookedMinor: destinationAmount,
+                bookedCurrency: destination.currency
+            ) : nil
+            let memberIDs = Set(members.map(\.id))
+            let before = try transactionSnapshots(ids: memberIDs)
+
+            sourceValue.bookingDate = date
+            sourceValue.valueDate = date
+            sourceValue.payee = destination.name
+            sourceValue.purpose = purpose
+            sourceValue.amountMinor = -sourceAmount
+            sourceValue.currency = source.currency
+            sourceValue.originalAmountMinor = isForeignCurrency
+                ? -destinationAmount : nil
+            sourceValue.originalCurrency = isForeignCurrency
+                ? destination.currency : ""
+            sourceValue.exchangeRateScaled = sourceRate?.scaledValue
+            sourceValue.duplicateFingerprint = ""
+
+            destinationValue.bookingDate = date
+            destinationValue.valueDate = date
+            destinationValue.payee = source.name
+            destinationValue.purpose = purpose
+            destinationValue.amountMinor = destinationAmount
+            destinationValue.currency = destination.currency
+            destinationValue.originalAmountMinor = isForeignCurrency
+                ? sourceAmount : nil
+            destinationValue.originalCurrency = isForeignCurrency
+                ? source.currency : ""
+            destinationValue.exchangeRateScaled = destinationRate?.scaledValue
+            destinationValue.duplicateFingerprint = ""
+
+            try writeTransaction(sourceValue, now: now)
+            try writeTransaction(destinationValue, now: now)
+            let after = try transactionSnapshots(ids: memberIDs)
+            try recordTransactionUndo(
+                title: "Umbuchung bearbeitet",
+                before: before,
+                after: after,
+                now: now
+            )
+            let details = isForeignCurrency
+                ? "\(purpose); \(Money(minorUnits: sourceAmount, currency: source.currency).editingString) \(source.currency) → \(Money(minorUnits: destinationAmount, currency: destination.currency).editingString) \(destination.currency)"
+                : purpose
+            try audit(
+                entity: "transfer", id: transferID,
+                action: "update", details: details
+            )
         }
     }
 

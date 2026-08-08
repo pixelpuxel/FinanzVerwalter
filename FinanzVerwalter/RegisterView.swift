@@ -9,6 +9,8 @@ struct RegisterView: View {
     @State private var showEditor = false
     @State private var showBulkEditor = false
     @State private var editingTransaction: FinanceTransaction?
+    @State private var editingTransferID: UUID?
+    @State private var showTransferEditor = false
     @State private var movingTransaction: FinanceTransaction?
     @State private var editorTemplate: TransactionTemplate?
     @State private var showTemplateNameEditor = false
@@ -456,11 +458,9 @@ struct RegisterView: View {
                     if ids.count == 1,
                        let transaction = store.transactions.first(where: {
                            ids.contains($0.id)
-                       }) {
+                        }) {
                         Button("Bearbeiten") {
-                            editingTransaction = transaction
-                            editorTemplate = nil
-                            showEditor = true
+                            edit(transaction)
                         }
                         Button("Duplizieren …", systemImage: "plus.square.on.square") {
                             prepareDuplicate(transaction)
@@ -504,9 +504,7 @@ struct RegisterView: View {
                         prepareDeletion()
                     }
                 } primaryAction: { ids in
-                    editingTransaction = store.transactions.first { ids.contains($0.id) }
-                    editorTemplate = nil
-                    showEditor = editingTransaction != nil
+                    edit(store.transactions.first { ids.contains($0.id) })
                 }
                 .overlay {
                     if visibleTransactions.isEmpty {
@@ -533,9 +531,7 @@ struct RegisterView: View {
                         ),
                         excludedAccountID: store.selectedAccountID,
                         edit: { transaction in
-                            editingTransaction = transaction
-                            editorTemplate = nil
-                            showEditor = true
+                            edit(transaction)
                         }
                     )
                     .frame(minWidth: 380, idealWidth: 520)
@@ -581,6 +577,9 @@ struct RegisterView: View {
                 transaction: editingTransaction,
                 template: editorTemplate
             )
+        }
+        .sheet(isPresented: $showTransferEditor) {
+            TransferEditorView(transferID: editingTransferID)
         }
         .sheet(isPresented: $showBulkEditor) {
             BulkCategoryEditorView(transactionIDs: selection) {
@@ -937,6 +936,20 @@ struct RegisterView: View {
             return nil
         }
         return store.transactions.first { $0.id == id }
+    }
+
+    private func edit(_ transaction: FinanceTransaction?) {
+        guard let transaction else { return }
+        editorTemplate = nil
+        if let transferID = transaction.transferID {
+            editingTransaction = nil
+            editingTransferID = transferID
+            showTransferEditor = true
+        } else {
+            editingTransferID = nil
+            editingTransaction = transaction
+            showEditor = true
+        }
     }
 
     private var secondaryAccountID: UUID? {
