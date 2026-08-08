@@ -12503,6 +12503,116 @@ final class FinanzVerwalterTests: XCTestCase {
         XCTAssertEqual(app.accounts.map(\.id), [account.id])
     }
 
+    @MainActor
+    func testRepairCopyRebuildsOnlyIndependentValidatedCopy() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "finanzverwalter-repair-copy-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("Quelle.qdata")
+        let repository = try SQLiteFinanceStore(fileURL: sourceURL)
+        let account = FinanceAccount(
+            id: UUID(), name: "Reparaturtest", institution: "Bank",
+            type: .checking, currency: "EUR", openingBalanceMinor: 10_000,
+            isHidden: false, isClosed: false, sortOrder: 0
+        )
+        try repository.saveAccount(account)
+        let transaction = FinanceTransaction(
+            id: UUID(), accountID: account.id, bookingDate: Date(timeIntervalSince1970: 1_767_225_600),
+            valueDate: nil, payee: "Werkstatt", purpose: "Kopie warten",
+            categoryID: nil, amountMinor: -1_234, currency: "EUR",
+            status: .booked, memo: "Quelle bleibt offen", reference: "R-1",
+            transferID: nil, importFingerprint: nil, splits: []
+        )
+        try repository.saveTransaction(transaction)
+        let sourceSnapshotBefore = try FinanceFileSnapshotManager.snapshot(
+            for: sourceURL
+        )
+        let sourceAccountsBefore = try repository.accounts()
+        let sourceTransactionsBefore = try repository.transactions()
+        let app = FinanceAppStore(repository: repository)
+
+        let repairURL = directory.appendingPathComponent(
+            "Quelle Reparaturkopie.qdata"
+        )
+        let repaired = try XCTUnwrap(app.createRepairCopy(at: repairURL))
+
+        XCTAssertEqual(repaired.url.path, repairURL.path)
+        XCTAssertEqual(
+            repaired,
+            try FinanceFileSnapshotManager.snapshot(for: repairURL)
+        )
+        XCTAssertEqual(
+            try FinanceFileSnapshotManager.snapshot(for: sourceURL),
+            sourceSnapshotBefore
+        )
+        XCTAssertEqual(try repository.accounts(), sourceAccountsBefore)
+        XCTAssertEqual(try repository.transactions(), sourceTransactionsBefore)
+        XCTAssertEqual(app.currentFinanceFileURL?.path, sourceURL.path)
+        XCTAssertEqual(app.accounts.map(\.id), [account.id])
+        XCTAssertTrue(app.statusText.contains("Reparaturkopie erstellt"))
+
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: repairURL.path
+        )
+        let permissions = try XCTUnwrap(
+            attributes[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(permissions, 0o600)
+        XCTAssertNoThrow(try SQLiteFinanceStore.validateBackup(at: repairURL))
+        XCTAssertEqual(
+            try sqliteScalar(
+                repairURL,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check"
+            ),
+            0
+        )
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: repairURL.path + suffix)
+            )
+        }
+
+        let repairedStore = try SQLiteFinanceStore(fileURL: repairURL)
+        XCTAssertEqual(try repairedStore.accounts().map(\.id), [account.id])
+        XCTAssertEqual(
+            try repairedStore.transactions().map(\.id), [transaction.id]
+        )
+        XCTAssertTrue(try repairedStore.integrityCheck())
+        repairedStore.close()
+
+        let repairedAfterOpening = try FinanceFileSnapshotManager.snapshot(
+            for: repairURL
+        )
+        XCTAssertNil(app.createRepairCopy(at: repairURL))
+        XCTAssertEqual(
+            try FinanceFileSnapshotManager.snapshot(for: repairURL),
+            repairedAfterOpening
+        )
+        XCTAssertNil(app.createRepairCopy(at: sourceURL))
+        XCTAssertNil(app.createRepairCopy(
+            at: directory.appendingPathComponent("Falsche Endung.qbackup")
+        ))
+        let occupiedURL = directory.appendingPathComponent("Belegt.qdata")
+        let sentinel = Data("bestehende Datei bleibt erhalten".utf8)
+        try sentinel.write(to: occupiedURL)
+        XCTAssertThrowsError(try repository.repairCopy(to: occupiedURL))
+        XCTAssertEqual(try Data(contentsOf: occupiedURL), sentinel)
+        XCTAssertEqual(try repository.accounts(), sourceAccountsBefore)
+        XCTAssertEqual(try repository.transactions(), sourceTransactionsBefore)
+        XCTAssertTrue(try repository.integrityCheck())
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains { $0.hasPrefix(".finanzverwalter-") }
+        )
+    }
+
     func testBackupPreviewIsReadOnlyAndSummarizesRestoreContents() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(

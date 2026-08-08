@@ -127,17 +127,18 @@ struct FinanceFileSnapshot: Equatable, Sendable {
 enum FinanceFileSnapshotKind: Sendable {
     case copy
     case archive
+    case repair
 
     var requiredExtension: String {
         switch self {
-        case .copy: "qdata"
+        case .copy, .repair: "qdata"
         case .archive: "qarchive"
         }
     }
 
     var permissions: Int {
         switch self {
-        case .copy: 0o600
+        case .copy, .repair: 0o600
         case .archive: 0o400
         }
     }
@@ -178,7 +179,12 @@ enum FinanceFileSnapshotManager {
             ".finanzverwalter-\(UUID().uuidString).tmp"
         )
         defer { try? fileManager.removeItem(at: staged) }
-        try repository.backup(to: staged)
+        switch kind {
+        case .copy, .archive:
+            try repository.backup(to: staged)
+        case .repair:
+            try repository.repairCopy(to: staged)
+        }
         try SQLiteFinanceStore.validateBackup(at: staged)
         try fileManager.setAttributes(
             [.posixPermissions: kind.permissions], ofItemAtPath: staged.path
@@ -631,6 +637,22 @@ final class FinanceAppStore: ObservableObject {
             )
             errorMessage = nil
             statusText = "Schreibgeschütztes Archiv erstellt: \(snapshot.url.lastPathComponent) · SHA-256 \(snapshot.sha256.prefix(12))…"
+            return snapshot
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func createRepairCopy(at url: URL) -> FinanceFileSnapshot? {
+        guard let repository else { return nil }
+        do {
+            let snapshot = try FinanceFileSnapshotManager.create(
+                repository: repository, at: url, kind: .repair
+            )
+            errorMessage = nil
+            statusText = "Geprüfte Reparaturkopie erstellt: \(snapshot.url.lastPathComponent) · SHA-256 \(snapshot.sha256.prefix(12))…"
             return snapshot
         } catch {
             present(error)

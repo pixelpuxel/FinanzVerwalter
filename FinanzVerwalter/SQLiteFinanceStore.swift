@@ -10383,6 +10383,113 @@ final class SQLiteFinanceStore {
         }
     }
 
+    /// Erzeugt eine gewartete, eigenständig geprüfte Kopie. Die aktive
+    /// Verbindung und ihre Quelldatei werden dabei niemals ersetzt.
+    func repairCopy(to target: URL) throws {
+        let manager = FileManager.default
+        let sourcePath = fileURL.standardizedFileURL.path
+        let targetPath = target.standardizedFileURL.path
+        guard sourcePath != targetPath else {
+            throw FinanceError.database(
+                "Die aktive Finanzdatei darf nicht als Reparaturziel verwendet werden."
+            )
+        }
+        guard !manager.fileExists(atPath: targetPath) else {
+            throw FinanceError.database(
+                "Am Ziel der Reparaturkopie existiert bereits eine Datei."
+            )
+        }
+        var completed = false
+        defer {
+            if !completed {
+                try? manager.removeItem(at: target)
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    try? manager.removeItem(
+                        at: URL(fileURLWithPath: target.path + suffix)
+                    )
+                }
+            }
+        }
+
+        try backup(to: target)
+
+        var repairDatabase: OpaquePointer?
+        guard sqlite3_open_v2(
+            target.path,
+            &repairDatabase,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let database = repairDatabase else {
+            if let repairDatabase { sqlite3_close(repairDatabase) }
+            throw FinanceError.database(
+                "Die Reparaturkopie konnte nicht zur Wartung geöffnet werden."
+            )
+        }
+        defer {
+            if let repairDatabase { sqlite3_close(repairDatabase) }
+        }
+
+        guard sqlite3_busy_timeout(database, 5_000) == SQLITE_OK,
+              sqlite3_db_readonly(database, "main") == 0 else {
+            throw FinanceError.database(
+                "Die Reparaturkopie konnte nicht exklusiv gewartet werden."
+            )
+        }
+        guard sqlite3_exec(
+            database,
+            "PRAGMA foreign_keys=ON; REINDEX; VACUUM; PRAGMA optimize; PRAGMA journal_mode=DELETE;",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Indizes oder Seiten der Reparaturkopie konnten nicht neu aufgebaut werden."
+            )
+        }
+
+        var foreignKeyCheck: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database, "PRAGMA foreign_key_check", -1, &foreignKeyCheck, nil
+        ) == SQLITE_OK else {
+            throw FinanceError.invalidBackup
+        }
+        guard sqlite3_step(foreignKeyCheck) == SQLITE_DONE else {
+            sqlite3_finalize(foreignKeyCheck)
+            throw FinanceError.database(
+                "Die Reparaturkopie enthält verletzte Datenbeziehungen."
+            )
+        }
+        sqlite3_finalize(foreignKeyCheck)
+
+        var integrityCheck: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database, "PRAGMA integrity_check", -1, &integrityCheck, nil
+        ) == SQLITE_OK else {
+            throw FinanceError.invalidBackup
+        }
+        guard sqlite3_step(integrityCheck) == SQLITE_ROW,
+              Self.text(integrityCheck, 0) == "ok" else {
+            sqlite3_finalize(integrityCheck)
+            throw FinanceError.invalidBackup
+        }
+        sqlite3_finalize(integrityCheck)
+
+        guard sqlite3_close(database) == SQLITE_OK else {
+            throw FinanceError.database(
+                "Die geprüfte Reparaturkopie konnte nicht geschlossen werden."
+            )
+        }
+        repairDatabase = nil
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = URL(fileURLWithPath: target.path + suffix)
+            if manager.fileExists(atPath: sidecar.path) {
+                try manager.removeItem(at: sidecar)
+            }
+        }
+        try Self.validateBackup(at: target)
+        completed = true
+    }
+
     func integrityCheck() throws -> Bool {
         var result = ""
         try query("PRAGMA integrity_check") { result = Self.text($0, 0) }

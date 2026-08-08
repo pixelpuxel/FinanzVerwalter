@@ -108,6 +108,10 @@ struct FinanzVerwalterApp: App {
                     createFinanceFileCopy()
                 }
                 .disabled(store.currentFinanceFileURL == nil)
+                Button("Reparaturkopie erstellen …") {
+                    createRepairCopy()
+                }
+                .disabled(store.currentFinanceFileURL == nil)
                 Button("Finanzdatei archivieren …") {
                     archiveFinanceFile()
                 }
@@ -283,6 +287,31 @@ struct FinanzVerwalterApp: App {
             url.appendPathExtension("qarchive")
         }
         _ = store.archiveFinanceFile(at: url)
+    }
+
+    private func createRepairCopy() {
+        guard let source = store.currentFinanceFileURL else { return }
+        let explanation = NSAlert()
+        explanation.messageText = "Reparaturkopie erstellen?"
+        explanation.informativeText =
+            "FinanzVerwalter erstellt eine unabhängige Kopie, baut darin Indizes und Datenbankseiten neu auf und prüft anschließend Fremdschlüssel und Integrität. Die geöffnete Finanzdatei bleibt unverändert."
+        explanation.alertStyle = .informational
+        explanation.addButton(withTitle: "Ziel wählen …")
+        explanation.addButton(withTitle: "Abbrechen")
+        guard explanation.runModal() == .alertFirstButtonReturn else { return }
+
+        let panel = NSSavePanel()
+        panel.title = "Reparaturkopie der Finanzdatei erstellen"
+        panel.prompt = "Reparaturkopie erstellen"
+        panel.allowedContentTypes = [financeFileType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue =
+            "\(source.deletingPathExtension().lastPathComponent) Reparaturkopie.qdata"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "qdata" {
+            url.appendPathExtension("qdata")
+        }
+        _ = store.createRepairCopy(at: url)
     }
 
     private func closeFinanceFile() {

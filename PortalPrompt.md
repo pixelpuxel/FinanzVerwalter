@@ -1715,6 +1715,35 @@ Sicherung, Mengen- und Altersrotation, eigenständige Lesbarkeit ohne
 Seitendateien, Quell-/Zielschutz, Alt-Schema-Sicherung, Zukunftsschema-
 Ablehnung, Restore-Regression und Datenbankintegrität.
 
+# Reparaturmodus ausschließlich auf einer Kopie
+
+Ergänze den bestehenden Manager für atomare Finanzdateikopien um die Art
+`repair`. Das Ziel muss eine neue `.qdata`-Datei in einem regulären,
+nicht-symbolischen Ordner sein, darf weder existieren noch der aktiven Datei
+entsprechen und erhält `0600`. Erzeuge zunächst per `sqlite3_backup` eine
+vollständige versteckte Zwischenkopie. Öffne nur diese Kopie schreibbar und
+führe bei aktivierten Fremdschlüsseln nacheinander `REINDEX`, `VACUUM`,
+`PRAGMA optimize` und `journal_mode=DELETE` aus. Verlange anschließend eine
+leere `foreign_key_check`-Ergebnismenge und `integrity_check=ok`, schließe die
+Verbindung vollständig und entferne WAL-, SHM- und Journal-Seitendateien.
+
+Validiere die Zwischenkopie danach erneut unveränderlich, setze die privaten
+Rechte, berechne Größe und SHA-256 und verschiebe sie atomar auf das endgültige
+Ziel. Vergleiche Größe und Hash nach dem Verschieben. Bei jedem Fehler werden
+nur selbst erzeugte Zwischenartefakte entfernt; ein vorher vorhandenes Ziel
+bleibt unangetastet. Die aktive Verbindung bleibt geöffnet und die
+Quelldatei wird niemals durch die Reparaturkopie ersetzt. Biete die Aktion
+unter `Ablage > Reparaturkopie erstellen …` mit einer Erklärung dieser
+Schutzwirkung und einem Save-Panel an.
+
+Teste die aktive Quelldatei vor und nach der Aktion bytegenau und fachlich,
+öffne die fertige Kopie erneut und vergleiche Konto- und Buchungs-IDs. Prüfe
+außerdem `0600`, Fremdschlüssel, Integrität, fehlende Sidecars, Selbstziel,
+falsche Endung, vorhandenes Ziel, Aufräumen versteckter Zwischenartefakte und
+die fortgesetzte Nutzbarkeit der aktiven Datei. Beschreibe die Funktion als
+sicheren Wartungsmodus für eine lesbare Kopie, nicht als Garantie zur Rettung
+beliebig physisch zerstörter SQLite-Dateien.
+
 # Reproduzierbare Fremdwährungsbuchungen
 
 Speichere jede Buchung zwingend in der Währung ihres Kontos. Ergänze für einen

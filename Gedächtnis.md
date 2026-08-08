@@ -4423,3 +4423,48 @@ Rechtsberatung.
 - Telegram-Nachricht 1167 meldet den Stand im `/quicken`-Thread 894. Wegen der
   gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
   Exakter kumulativer Zielzählerstand vor dem Versand: 25.845.208 Tokens.
+
+## 08.08.2026 – Reparaturmodus ausschließlich auf einer Kopie
+
+- Der erneute P0-Abgleich mit dem Master-Prompt hat den fehlenden
+  Reparaturmodus auf einer Kopie als nächste klar belegte Lücke ergeben.
+  `Ablage > Reparaturkopie erstellen …` erklärt die Schutzwirkung und lässt
+  ein neues `.qdata`-Ziel wählen; die aktive Datei wird weder ersetzt noch
+  reparierend beschrieben.
+- Der bestehende atomare Dateisnapshot-Manager erzeugt zunächst per
+  `sqlite3_backup` eine versteckte, unabhängige Zwischenkopie. Nur dort werden
+  mit aktivierten Fremdschlüsseln `REINDEX`, `VACUUM`, `PRAGMA optimize` und
+  `journal_mode=DELETE` ausgeführt. Eine leere `foreign_key_check`-Menge und
+  `integrity_check=ok` sind zwingend.
+- Erst nach vollständigem Schließen, Entfernen aller WAL-/SHM-/Journalreste,
+  erneuter unveränderlicher Backupvalidierung, privaten `0600`-Rechten sowie
+  Größen- und SHA-256-Prüfung wird die Kopie atomar freigegeben. Aktive Datei,
+  falsche Endung, Symlink-Ordner und vorhandene Ziele werden abgewiesen;
+  Fehler entfernen ausschließlich selbst erzeugte Zwischenartefakte.
+- Der neue Regressionstest belegt byte- und fachlich unveränderte Quelle,
+  stabile Konto-/Buchungs-IDs, erneutes Öffnen der Kopie, Rechte,
+  Fremdschlüssel, Integrität, Sidecar-Freiheit, Zielschutz und fortgesetzte
+  Nutzbarkeit der aktiven Datei. Vier gezielte Sicherungs-/Archivtests sind
+  grün.
+- Der vollständige finale Lauf unter
+  `build/TestResults/RepairCopy-final-full-20260808-0358.xcresult` umfasst 178
+  Tests: 176 bestanden, 2 ausdrücklich opt-in übersprungen, 0 Fehler und 0
+  erwartete Fehler.
+- Der native arm64-Release unter
+  `build/DerivedData-RepairCopy-Product` wurde sauber neu gebaut, lokal
+  signiert und streng geprüft. Die ausführbare Datei hat SHA-256
+  `e3cade5fcdd89b3be58f7d728fc1198466265331ab0459c4c3f80b8a73db21ce`.
+- Die vorherigen Installationen liegen wiederherstellbar unter
+  `build/InstallBackups/20260808-0358-repair-copy/`; die konsistente
+  Produktivsicherung liegt unter
+  `build/ProductionBackups/20260808-0358-repair-copy/Meine Finanzen.qdata`.
+  `/Applications/FinanzVerwalter.app` und
+  `~/Applications/FinanzVerwalter.app` sind bytegleich. Der Desktop-Link zeigt
+  auf `/Applications`; Finder wurde auf die App gelenkt und Prozess 88529
+  läuft aus der systemweiten Installation. Light Mode ist aktiv.
+- Produktivdatei und Sicherung melden Integrität `ok`, Schema 39 und
+  unverändert 97 Konten, 2.170 Buchungen sowie 782 Kategorien.
+- `CGSSessionScreenIsLocked=Yes` bestätigt weiterhin die gesperrte Sitzung;
+  deshalb wird keine sichtbare UI-Abnahme und kein neuer Screenshot
+  behauptet. Exakter kumulativer Zielzählerstand nach Installation:
+  26.024.694 Tokens.

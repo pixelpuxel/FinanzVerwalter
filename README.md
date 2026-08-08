@@ -862,8 +862,18 @@ Jede Sicherung wird aus SQLite-WAL vollständig in eine allein nutzbare Datei
 checkpointed, unveränderlich geprüft und erst danach freigegeben. Vor einer
 Schema-Migration entsteht unabhängig von der Rotation eine eigene Sicherung;
 Dateien mit einem neueren unbekannten Schema werden unverändert abgewiesen.
-Verschlüsselung, externe Sicherungsziele und der Reparaturmodus auf einer
-Kopie sind noch nicht implementiert.
+
+`Ablage > Reparaturkopie erstellen …` erzeugt ausschließlich eine neue
+`.qdata`-Datei. In einer versteckten Zwischenkopie werden Indizes mit
+`REINDEX` und Datenbankseiten mit `VACUUM` neu aufgebaut. Erst wenn
+Fremdschlüsselprüfung und `integrity_check` erfolgreich sind, wird die
+Kopie mit privaten `0600`-Rechten und geprüfter SHA-256-Prüfsumme atomar am
+gewählten Ziel freigegeben. Die geöffnete Finanzdatei wird weder ersetzt noch
+für die Wartung beschrieben. Vorhandene Ziele, Symlink-Ordner, falsche
+Endungen und die aktive Datei selbst werden abgewiesen. Die Funktion ist ein
+sicherer Wartungsmodus auf einer lesbaren Kopie, kein Versprechen, beliebig
+physisch zerstörte SQLite-Dateien retten zu können. Verschlüsselung und
+externe Sicherungsziele sind noch nicht implementiert.
 
 ## Zahlungsverkehr
 
