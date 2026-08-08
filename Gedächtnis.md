@@ -4366,4 +4366,10 @@ Rechtsberatung.
   keine sichtbare UI-Abnahme und kein neuer Screenshot behauptet. Exakter
   kumulativer Zielzählerstand nach Installation: 25.554.801 Tokens.
 - Die Implementierung ist im Commit `1a40577` festgehalten. Der Release- und
-  Installationsnachweis wird anschließend separat veröffentlicht.
+  Installationsnachweis wurde mit Commit `d714f97` veröffentlicht. Lokaler
+  HEAD, Remote-Branch und GitHub Draft-PR #1 zeigten anschließend exakt
+  `d714f97839191365491e6bb2daf71b5401275aa5`; die PR-Beschreibung enthält den
+  aktuellen Performance-, Test- und Installationsnachweis.
+- Telegram-Nachricht 1162 meldet den Stand im `/quicken`-Thread 894. Wegen der
+  gesperrten Sitzung wurde transparent kein neuer Screenshot behauptet.
+  Exakter kumulativer Zielzählerstand vor dem Versand: 25.573.695 Tokens.
